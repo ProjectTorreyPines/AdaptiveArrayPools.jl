@@ -1,6 +1,8 @@
 module AdaptiveArrayPools
 
-export AdaptiveArrayPool, acquire!, mark, reset, pool_stats
+export AdaptiveArrayPool, acquire!, pool_stats
+# Note: mark/reset! are NOT exported to avoid conflict with Base.mark
+# Users should use: import AdaptiveArrayPools: mark, reset!
 export @use_pool, @use_global_pool, @maybe_use_global_pool
 export ENABLE_POOLING, POOL_DEBUG
 
@@ -86,36 +88,36 @@ end
 end
 
 # ==============================================================================
-# State Management (Mark & Reset)
+# State Management (Checkpoint & Restore)
 # ==============================================================================
 
 """
     mark(pool)
 
 Snapshots the current state of the pool (usage counts).
+Returns a state object that can be passed to `reset!`.
 """
 function mark(pool::AdaptiveArrayPool)
     # Snapshot current usage counts for all active types
-    # We use IdDict to minimize overhead, though a custom struct or Tuple might be faster in extreme cases.
     return IdDict{DataType, Int}(T => p.in_use for (T, p) in pool.pools)
 end
 
 mark(::Nothing) = nothing
 
 """
-    reset(pool, state)
+    reset!(pool, state)
 
 Restores the pool to a previously marked state.
 """
-function reset(pool::AdaptiveArrayPool, state::IdDict{DataType, Int})
-    # 1. Restore state for pools that existed at mark time
+function reset!(pool::AdaptiveArrayPool, state::IdDict{DataType, Int})
+    # 1. Restore state for pools that existed at checkpoint time
     for (T, count) in state
         if haskey(pool.pools, T)
             pool.pools[T].in_use = count
         end
     end
-    
-    # 2. Reset any pools created AFTER mark (they shouldn't exist in the caller's scope)
+
+    # 2. Reset any pools created AFTER checkpoint (they shouldn't exist in the caller's scope)
     for (T, p) in pool.pools
         if !haskey(state, T)
             p.in_use = 0
@@ -123,7 +125,7 @@ function reset(pool::AdaptiveArrayPool, state::IdDict{DataType, Int})
     end
 end
 
-reset(::Nothing, ::Nothing) = nothing
+reset!(::Nothing, ::Nothing) = nothing
 
 # ==============================================================================
 # Global Pool (Task Local Storage) & Configuration
@@ -188,22 +190,25 @@ If `pool_name` is not in the arguments of the function definition, it injects it
 """
 macro use_pool(pool, expr)
     if Meta.isexpr(expr, [:function, :(=)])
+        # For function definitions: inject pool arg and wrap the body
         expr = _inject_pool_arg(pool, expr)
+        return _wrap_function_body_with_pool(pool, expr)
     end
 
+    # For expressions: wrap in checkpoint/restore
     quote
         local _p = $(esc(pool))
-        local _state = mark(_p)
+        local _state = $mark(_p)
         try
             local _result = $(esc(expr))
-            
-            if POOL_DEBUG[] && _p !== nothing
-                _validate_pool_return(_result, _p)
+
+            if $POOL_DEBUG[] && _p !== nothing
+                $_validate_pool_return(_result, _p)
             end
-            
+
             _result
         finally
-            reset(_p, _state)
+            $reset!(_p, _state)
         end
     end
 end
@@ -240,32 +245,54 @@ function _generate_global_pool_code(pool_name, expr, force_enable)
         def_head = expr.head
         call_expr = expr.args[1]
         body = expr.args[2]
-        
+
         new_body = quote
             local $(esc(pool_name)) = $pool_instance
-            local _state = mark($(esc(pool_name)))
+            local _state = $mark($(esc(pool_name)))
             try
                 $(esc(body))
             finally
-                reset($(esc(pool_name)), _state)
+                $reset!($(esc(pool_name)), _state)
             end
         end
-        
+
         return Expr(def_head, esc(call_expr), new_body)
     else
         return quote
             local $(esc(pool_name)) = $pool_instance
-            local _state = mark($(esc(pool_name)))
+            local _state = $mark($(esc(pool_name)))
             try
                 $(esc(expr))
             finally
-                reset($(esc(pool_name)), _state)
+                $reset!($(esc(pool_name)), _state)
             end
         end
     end
 end
 
 # --- Helper Functions for Macros ---
+
+function _wrap_function_body_with_pool(pool_sym, func_def)
+    def_head = func_def.head  # :function or :(=)
+    call_expr = func_def.args[1]
+    body = func_def.args[2]
+
+    # Wrap the body in checkpoint/restore logic
+    new_body = quote
+        local _state = $mark($(esc(pool_sym)))
+        try
+            local _result = $(esc(body))
+            if $POOL_DEBUG[] && $(esc(pool_sym)) !== nothing
+                $_validate_pool_return(_result, $(esc(pool_sym)))
+            end
+            _result
+        finally
+            $reset!($(esc(pool_sym)), _state)
+        end
+    end
+
+    return Expr(def_head, esc(call_expr), new_body)
+end
 
 function _inject_pool_arg(pool_sym, func_def)
     if !isa(pool_sym, Symbol) return func_def end
