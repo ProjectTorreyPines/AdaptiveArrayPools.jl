@@ -523,36 +523,68 @@ macro maybe_use_global_pool(pool_name, expr)
 end
 
 function _generate_global_pool_code(pool_name, expr, force_enable)
-    pool_instance = if force_enable
-        :(get_global_pool())
-    else
-        :(ENABLE_POOLING[] ? get_global_pool() : nothing)
-    end
-
     if Meta.isexpr(expr, [:function, :(=)]) && _is_function_def(expr)
         def_head = expr.head
         call_expr = expr.args[1]
         body = expr.args[2]
 
-        new_body = quote
-            local $(esc(pool_name)) = $pool_instance
-            $mark!($(esc(pool_name)))
-            try
-                $(esc(body))
-            finally
-                $reset!($(esc(pool_name)))
+        if force_enable
+            # Always use pool - no Union type
+            new_body = quote
+                local $(esc(pool_name)) = get_global_pool()
+                $mark!($(esc(pool_name)))
+                try
+                    $(esc(body))
+                finally
+                    $reset!($(esc(pool_name)))
+                end
+            end
+        else
+            # Split branches completely to avoid Union{Nothing, AdaptiveArrayPool} boxing
+            new_body = quote
+                if $ENABLE_POOLING[]
+                    local $(esc(pool_name)) = get_global_pool()
+                    $mark!($(esc(pool_name)))
+                    try
+                        $(esc(body))
+                    finally
+                        $reset!($(esc(pool_name)))
+                    end
+                else
+                    local $(esc(pool_name)) = nothing
+                    $(esc(body))
+                end
             end
         end
 
         return Expr(def_head, esc(call_expr), new_body)
     else
-        return quote
-            local $(esc(pool_name)) = $pool_instance
-            $mark!($(esc(pool_name)))
-            try
-                $(esc(expr))
-            finally
-                $reset!($(esc(pool_name)))
+        # Block mode
+        if force_enable
+            return quote
+                local $(esc(pool_name)) = get_global_pool()
+                $mark!($(esc(pool_name)))
+                try
+                    $(esc(expr))
+                finally
+                    $reset!($(esc(pool_name)))
+                end
+            end
+        else
+            # Split branches completely to avoid Union boxing
+            return quote
+                if $ENABLE_POOLING[]
+                    local $(esc(pool_name)) = get_global_pool()
+                    $mark!($(esc(pool_name)))
+                    try
+                        $(esc(expr))
+                    finally
+                        $reset!($(esc(pool_name)))
+                    end
+                else
+                    local $(esc(pool_name)) = nothing
+                    $(esc(expr))
+                end
             end
         end
     end

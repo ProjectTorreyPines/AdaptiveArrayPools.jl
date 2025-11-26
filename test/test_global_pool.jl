@@ -90,48 +90,94 @@ end
     ENABLE_POOLING[] = old_state
 end
 
-@testset "@maybe_use_global_pool allocation comparison" begin
-    old_state = ENABLE_POOLING[]
+# Function barrier for accurate allocation measurement
+function test_zero_alloc_maybe_use_global_pool()
+    # 1. Nothing
+    a1 = @allocated @maybe_use_global_pool pool begin
+        nothing
+    end
 
-    # With pooling enabled - should have minimal allocations after warm-up
+    # 2. acquire! only
+    a2 = @allocated @maybe_use_global_pool pool begin
+        v = acquire!(pool, Float64, 100)
+        nothing
+    end
+
+    # 3. acquire! + fill
+    a3 = @allocated @maybe_use_global_pool pool begin
+        v = acquire!(pool, Float64, 100)
+        v .= 1.0
+        nothing
+    end
+
+    # 4. @use_global_pool acquire! + fill
+    a4 = @allocated @use_global_pool pool begin
+        v = acquire!(pool, Float64, 100)
+        v .= 1.0
+        nothing
+    end
+
+    return (a1, a2, a3, a4)
+end
+
+function test_pooling_vs_no_pooling()
+    # With pooling
+    ENABLE_POOLING[] = true
+    alloc_with = @allocated @maybe_use_global_pool pool begin
+        v = acquire!(pool, Float64, 100)
+        v .= 1.0
+        nothing
+    end
+
+    # Without pooling
+    ENABLE_POOLING[] = false
+    alloc_without = @allocated @maybe_use_global_pool pool begin
+        v = acquire!(pool, Float64, 100)
+        v .= 1.0
+        nothing
+    end
+
+    return (alloc_with, alloc_without)
+end
+
+@testset "@maybe_use_global_pool zero-allocation" begin
+    old_state = ENABLE_POOLING[]
     ENABLE_POOLING[] = true
 
-    Nvec = 100
+    # Warm-up (compile)
+    test_zero_alloc_maybe_use_global_pool()
+    test_zero_alloc_maybe_use_global_pool()
+
+    # Measure
+    a1, a2, a3, a4 = test_zero_alloc_maybe_use_global_pool()
+
+    println("  @maybe_use_global_pool nothing: $a1 bytes")
+    println("  @maybe_use_global_pool acquire!: $a2 bytes")
+    println("  @maybe_use_global_pool acquire! + fill: $a3 bytes")
+    println("  @use_global_pool acquire! + fill: $a4 bytes")
+
+    @test a1 == 0
+    @test a2 == 0
+    @test a3 == 0
+    @test a4 == 0
+
+    ENABLE_POOLING[] = old_state
+end
+
+@testset "@maybe_use_global_pool pooling vs no-pooling" begin
+    old_state = ENABLE_POOLING[]
 
     # Warm-up
-    for _ in 1:3
-        @maybe_use_global_pool pool begin
-            v = acquire!(pool, Float64, Nvec)
-            v .= 1.0
-            nothing
-        end
-    end
+    ENABLE_POOLING[] = true
+    test_pooling_vs_no_pooling()
+    test_pooling_vs_no_pooling()
 
-    allocs_enabled = @allocated begin
-        for _ in 1:100
-            @maybe_use_global_pool pool begin
-                v = acquire!(pool, Float64, Nvec)
-                v .= 1.0
-            end
-        end
-    end
+    alloc_with, alloc_without = test_pooling_vs_no_pooling()
 
-    # With pooling disabled - should allocate every time
-    ENABLE_POOLING[] = false
+    println("  Allocations with pooling: $alloc_with bytes")
+    println("  Allocations without pooling: $alloc_without bytes")
 
-    allocs_disabled = @allocated begin
-        for _ in 1:100
-            @maybe_use_global_pool pool begin
-                v = acquire!(pool, Float64, Nvec)
-                v .= 1.0
-            end
-        end
-    end
-
-    # Pooling should use significantly less memory
-    @test allocs_enabled < allocs_disabled
-    println("  Allocations with pooling: $(allocs_enabled) bytes")
-    println("  Allocations without pooling: $(allocs_disabled) bytes")
+    @test alloc_with < alloc_without
 
     ENABLE_POOLING[] = old_state
 end
