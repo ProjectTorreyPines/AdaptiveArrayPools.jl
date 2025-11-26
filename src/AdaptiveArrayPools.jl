@@ -6,8 +6,8 @@ export AdaptiveArrayPool, acquire!, pool_stats
 export @use_pool, @use_global_pool, @maybe_use_global_pool
 export ENABLE_POOLING, POOL_DEBUG
 
-# Note: mark!/reset!/empty! are NOT exported to avoid conflict with Base
-# Users should use: import AdaptiveArrayPools: mark!, reset!, empty!
+# Note: checkpoint!/rewind! are not exported to keep the public API minimal
+# Users can import them: import AdaptiveArrayPools: checkpoint!, rewind!
 
 # Core data structures
 include("types.jl")
