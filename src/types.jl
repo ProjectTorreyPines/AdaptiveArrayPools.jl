@@ -10,14 +10,14 @@ Internal structure managing a list of vectors for a specific type `T`.
 ## v3 Features (View Caching + SoA)
 - `views`: Cached SubArray objects for zero-allocation hot path
 - `view_lengths`: Separate length tracking for cache-friendly comparison (SoA pattern)
-- `saved_stack`: Nested mark/reset support with zero allocation
+- `saved_stack`: Nested checkpoint/rewind support with zero allocation
 """
 mutable struct TypedPool{T}
     vectors::Vector{Vector{T}}   # Actual memory storage
     views::Vector{SubArray{T, 1, Vector{T}, Tuple{UnitRange{Int64}}, true}}  # Cached views
     view_lengths::Vector{Int}    # SoA: cached view lengths (cache-friendly Int comparison)
-    in_use::Int                  # Number of currently checked-out vectors
-    saved_stack::Vector{Int}     # Stack for nested mark/reset (zero alloc after warmup)
+    n_active::Int                # Number of currently active (checked-out) vectors
+    saved_stack::Vector{Int}     # Stack for nested checkpoint/rewind (zero alloc after warmup)
 end
 
 TypedPool{T}() where {T} = TypedPool{T}(
@@ -40,7 +40,7 @@ A high-performance memory pool supporting multiple data types.
 ## v2 Features
 - **Fixed Slots**: Float64, Float32, Int64, Int32, ComplexF64, Bool have dedicated fields (zero Dict lookup)
 - **Fallback**: Other types use IdDict (still fast, but with lookup overhead)
-- **Zero Allocation**: mark!/reset! use internal stacks, no allocation after warmup
+- **Zero Allocation**: checkpoint!/rewind! use internal stacks, no allocation after warmup
 
 ## Thread Safety
 This pool is **NOT thread-safe**. Use one pool per Task via `get_global_pool()`.

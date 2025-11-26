@@ -1,5 +1,5 @@
 # ==============================================================================
-# Macros (v2: using mark!/reset! without state object)
+# Macros (v2: using checkpoint!/rewind! without state object)
 # ==============================================================================
 
 """
@@ -37,10 +37,10 @@ macro use_pool(pool, expr)
         return _wrap_function_body_with_pool(pool, expr)
     end
 
-    # Block mode: wrap in mark!/reset!
+    # Block mode: wrap in checkpoint!/rewind!
     quote
         local _pool = $(esc(pool))
-        $mark!(_pool)
+        $checkpoint!(_pool)
         try
             local _result = $(esc(expr))
             if $POOL_DEBUG[] && _pool !== nothing
@@ -48,7 +48,7 @@ macro use_pool(pool, expr)
             end
             _result
         finally
-            $reset!(_pool)
+            $rewind!(_pool)
         end
     end
 end
@@ -110,11 +110,11 @@ function _generate_global_pool_code(pool_name, expr, force_enable)
             # Always use pool - no Union type
             new_body = quote
                 local $(esc(pool_name)) = get_global_pool()
-                $mark!($(esc(pool_name)))
+                $checkpoint!($(esc(pool_name)))
                 try
                     $(esc(body))
                 finally
-                    $reset!($(esc(pool_name)))
+                    $rewind!($(esc(pool_name)))
                 end
             end
         else
@@ -122,11 +122,11 @@ function _generate_global_pool_code(pool_name, expr, force_enable)
             new_body = quote
                 if $ENABLE_POOLING[]
                     local $(esc(pool_name)) = get_global_pool()
-                    $mark!($(esc(pool_name)))
+                    $checkpoint!($(esc(pool_name)))
                     try
                         $(esc(body))
                     finally
-                        $reset!($(esc(pool_name)))
+                        $rewind!($(esc(pool_name)))
                     end
                 else
                     local $(esc(pool_name)) = nothing
@@ -141,11 +141,11 @@ function _generate_global_pool_code(pool_name, expr, force_enable)
         if force_enable
             return quote
                 local $(esc(pool_name)) = get_global_pool()
-                $mark!($(esc(pool_name)))
+                $checkpoint!($(esc(pool_name)))
                 try
                     $(esc(expr))
                 finally
-                    $reset!($(esc(pool_name)))
+                    $rewind!($(esc(pool_name)))
                 end
             end
         else
@@ -153,11 +153,11 @@ function _generate_global_pool_code(pool_name, expr, force_enable)
             return quote
                 if $ENABLE_POOLING[]
                     local $(esc(pool_name)) = get_global_pool()
-                    $mark!($(esc(pool_name)))
+                    $checkpoint!($(esc(pool_name)))
                     try
                         $(esc(expr))
                     finally
-                        $reset!($(esc(pool_name)))
+                        $rewind!($(esc(pool_name)))
                     end
                 else
                     local $(esc(pool_name)) = nothing
@@ -176,7 +176,7 @@ function _wrap_function_body_with_pool(pool_sym, func_def)
     body = func_def.args[2]
 
     new_body = quote
-        $mark!($(esc(pool_sym)))
+        $checkpoint!($(esc(pool_sym)))
         try
             local _result = $(esc(body))
             if $POOL_DEBUG[] && $(esc(pool_sym)) !== nothing
@@ -184,7 +184,7 @@ function _wrap_function_body_with_pool(pool_sym, func_def)
             end
             _result
         finally
-            $reset!($(esc(pool_sym)))
+            $rewind!($(esc(pool_sym)))
         end
     end
 

@@ -1,9 +1,9 @@
 # ==============================================================================
-# Checkout (Internal)
+# Get View (Internal)
 # ==============================================================================
 
 """
-    checkout!(tp::TypedPool{T}, n::Int) -> SubArray
+    get_view!(tp::TypedPool{T}, n::Int) -> SubArray
 
 Internal function to get a vector view of size `n` from the typed pool.
 
@@ -12,9 +12,9 @@ Internal function to get a vector view of size `n` from the typed pool.
 - Cache miss: Creates new view, updates cache
 - Uses `view_lengths` for fast Int comparison (no pointer dereference)
 """
-function checkout!(tp::TypedPool{T}, n::Int) where {T}
-    tp.in_use += 1
-    idx = tp.in_use
+function get_view!(tp::TypedPool{T}, n::Int) where {T}
+    tp.n_active += 1
+    idx = tp.n_active
 
     # 1. Need to expand pool (new slot)
     if idx > length(tp.vectors)
@@ -68,7 +68,7 @@ end
 """
 @inline function acquire!(pool::AdaptiveArrayPool, ::Type{T}, n::Int) where {T}
     tp = get_typed_pool!(pool, T)
-    return checkout!(tp, n)
+    return get_view!(tp, n)
 end
 
 # Multi-dimensional support (Flat Buffer + Reshape)
@@ -88,70 +88,71 @@ end
 end
 
 # ==============================================================================
-# State Management (v2: Zero-Allocation mark!/reset!)
+# State Management (v2: Zero-Allocation checkpoint!/rewind!)
 # ==============================================================================
 
 """
-    mark!(pool::AdaptiveArrayPool)
+    checkpoint!(pool::AdaptiveArrayPool)
 
-Save the current pool state to internal stacks. No return value.
+Save the current pool state (n_active counters) to internal stacks.
 
 This is called automatically by `@use_pool` and related macros.
 After warmup, this function has **zero allocation**.
 
-See also: [`reset!`](@ref), [`@use_pool`](@ref)
+See also: [`rewind!`](@ref), [`@use_pool`](@ref)
 """
-function mark!(pool::AdaptiveArrayPool)
+function checkpoint!(pool::AdaptiveArrayPool)
     # Fixed slots - direct field access, no Dict lookup
-    push!(pool.float64.saved_stack, pool.float64.in_use)
-    push!(pool.float32.saved_stack, pool.float32.in_use)
-    push!(pool.int64.saved_stack, pool.int64.in_use)
-    push!(pool.int32.saved_stack, pool.int32.in_use)
-    push!(pool.complexf64.saved_stack, pool.complexf64.in_use)
-    push!(pool.bool.saved_stack, pool.bool.in_use)
+    push!(pool.float64.saved_stack, pool.float64.n_active)
+    push!(pool.float32.saved_stack, pool.float32.n_active)
+    push!(pool.int64.saved_stack, pool.int64.n_active)
+    push!(pool.int32.saved_stack, pool.int32.n_active)
+    push!(pool.complexf64.saved_stack, pool.complexf64.n_active)
+    push!(pool.bool.saved_stack, pool.bool.n_active)
 
     # Others - iterate without allocation (values() returns iterator)
     for p in values(pool.others)
-        push!(p.saved_stack, p.in_use)
+        push!(p.saved_stack, p.n_active)
     end
 
     return nothing
 end
 
-mark!(::Nothing) = nothing
+checkpoint!(::Nothing) = nothing
 
 """
-    reset!(pool::AdaptiveArrayPool)
+    rewind!(pool::AdaptiveArrayPool)
 
-Restore the pool state from internal stacks. No arguments needed.
+Restore the pool state (n_active counters) from internal stacks.
 
-Handles edge case: types added after mark! get their in_use set to 0.
+Only the counters are restored; allocated memory remains for reuse.
+Handles edge case: types added after checkpoint! get their n_active set to 0.
 
-See also: [`mark!`](@ref), [`@use_pool`](@ref)
+See also: [`checkpoint!`](@ref), [`@use_pool`](@ref)
 """
-function reset!(pool::AdaptiveArrayPool)
+function rewind!(pool::AdaptiveArrayPool)
     # Fixed slots
-    pool.float64.in_use = pop!(pool.float64.saved_stack)
-    pool.float32.in_use = pop!(pool.float32.saved_stack)
-    pool.int64.in_use = pop!(pool.int64.saved_stack)
-    pool.int32.in_use = pop!(pool.int32.saved_stack)
-    pool.complexf64.in_use = pop!(pool.complexf64.saved_stack)
-    pool.bool.in_use = pop!(pool.bool.saved_stack)
+    pool.float64.n_active = pop!(pool.float64.saved_stack)
+    pool.float32.n_active = pop!(pool.float32.saved_stack)
+    pool.int64.n_active = pop!(pool.int64.saved_stack)
+    pool.int32.n_active = pop!(pool.int32.saved_stack)
+    pool.complexf64.n_active = pop!(pool.complexf64.saved_stack)
+    pool.bool.n_active = pop!(pool.bool.saved_stack)
 
-    # Others - handle edge case: new types added after mark!
+    # Others - handle edge case: new types added after checkpoint!
     for p in values(pool.others)
         if isempty(p.saved_stack)
-            # Type was added after mark! - reset to 0
-            p.in_use = 0
+            # Type was added after checkpoint! - reset to 0
+            p.n_active = 0
         else
-            p.in_use = pop!(p.saved_stack)
+            p.n_active = pop!(p.saved_stack)
         end
     end
 
     return nothing
 end
 
-reset!(::Nothing) = nothing
+rewind!(::Nothing) = nothing
 
 # ==============================================================================
 # Pool Clearing
@@ -166,7 +167,7 @@ function Base.empty!(tp::TypedPool)
     empty!(tp.vectors)
     empty!(tp.views)
     empty!(tp.view_lengths)
-    tp.in_use = 0
+    tp.n_active = 0
     empty!(tp.saved_stack)
     return tp
 end

@@ -60,7 +60,7 @@ function pool_stats(pool::AdaptiveArrayPool)
             total_elements = sum(length(v) for v in tp.vectors; init=0)
             println("  $name (fixed slot):")
             println("    Vectors: $(length(tp.vectors))")
-            println("    In Use:  $(tp.in_use)")
+            println("    Active:  $(tp.n_active)")
             println("    Total elements: $total_elements")
         end
     end
@@ -70,7 +70,7 @@ function pool_stats(pool::AdaptiveArrayPool)
         total_elements = sum(length(v) for v in tp.vectors; init=0)
         println("  $T (fallback):")
         println("    Vectors: $(length(tp.vectors))")
-        println("    In Use:  $(tp.in_use)")
+        println("    Active:  $(tp.n_active)")
         println("    Total elements: $total_elements")
     end
 end

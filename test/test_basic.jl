@@ -8,12 +8,12 @@
     @test eltype(v1) == Float64
 
     # Access internal state via fixed slot
-    @test pool.float64.in_use == 1
+    @test pool.float64.n_active == 1
 
     # Second acquire
     v2 = acquire!(pool, Float64, 8)
     @test length(v2) == 8
-    @test pool.float64.in_use == 2
+    @test pool.float64.n_active == 2
 
     # Values are independent
     v1 .= 1.0
@@ -33,7 +33,7 @@ end
 
     # Should expand pool
     v3 = acquire!(pool, Float64, 5)
-    @test pool.float64.in_use == 3
+    @test pool.float64.n_active == 3
     @test length(pool.float64.vectors) >= 3
     @test v3 isa SubArray
 end
@@ -57,32 +57,32 @@ end
     # Float64 - fixed slot
     v64 = acquire!(pool, Float64, 5)
     @test eltype(v64) == Float64
-    @test pool.float64.in_use == 1
+    @test pool.float64.n_active == 1
 
     # Float32 - fixed slot
     v32 = acquire!(pool, Float32, 5)
     @test eltype(v32) == Float32
-    @test pool.float32.in_use == 1
+    @test pool.float32.n_active == 1
 
     # Int64 - fixed slot
     vi64 = acquire!(pool, Int64, 5)
     @test eltype(vi64) == Int64
-    @test pool.int64.in_use == 1
+    @test pool.int64.n_active == 1
 
     # Int32 - fixed slot
     vi32 = acquire!(pool, Int32, 5)
     @test eltype(vi32) == Int32
-    @test pool.int32.in_use == 1
+    @test pool.int32.n_active == 1
 
     # ComplexF64 - fixed slot
     vc = acquire!(pool, ComplexF64, 5)
     @test eltype(vc) == ComplexF64
-    @test pool.complexf64.in_use == 1
+    @test pool.complexf64.n_active == 1
 
     # Bool - fixed slot
     vb = acquire!(pool, Bool, 5)
     @test eltype(vb) == Bool
-    @test pool.bool.in_use == 1
+    @test pool.bool.n_active == 1
 end
 
 @testset "Fallback types (others)" begin
@@ -92,7 +92,7 @@ end
     vu8 = acquire!(pool, UInt8, 10)
     @test eltype(vu8) == UInt8
     @test haskey(pool.others, UInt8)
-    @test pool.others[UInt8].in_use == 1
+    @test pool.others[UInt8].n_active == 1
 
     # Float16 - not a fixed slot
     v16 = acquire!(pool, Float16, 10)

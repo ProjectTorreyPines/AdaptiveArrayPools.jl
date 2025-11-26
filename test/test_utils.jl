@@ -32,7 +32,7 @@ end
     @test !occursin("Float64", output)
 
     # Add some vectors to fixed slots
-    mark!(pool)
+    checkpoint!(pool)
     v1 = acquire!(pool, Float64, 100)
     v2 = acquire!(pool, Float32, 50)
     v3 = acquire!(pool, Int64, 25)
@@ -42,19 +42,19 @@ end
     @test occursin("Float32 (fixed slot):", output)
     @test occursin("Int64 (fixed slot):", output)
     @test occursin("Vectors: 1", output)
-    @test occursin("In Use:  1", output)
+    @test occursin("Active:  1", output)
 
-    reset!(pool)
+    rewind!(pool)
 
     # Test with fallback types (others)
-    mark!(pool)
+    checkpoint!(pool)
     v_uint8 = acquire!(pool, UInt8, 200)
 
     output = @capture_out pool_stats(pool)
     @test occursin("UInt8 (fallback):", output)
     @test occursin("Total elements: 200", output)
 
-    reset!(pool)
+    rewind!(pool)
 end
 
 @testset "POOL_DEBUG flag" begin
@@ -107,7 +107,7 @@ end
 
 @testset "_validate_pool_return" begin
     pool = AdaptiveArrayPool()
-    mark!(pool)
+    checkpoint!(pool)
 
     # Non-SubArray values pass validation
     _validate_pool_return(42, pool)
@@ -124,13 +124,13 @@ end
     pool_view = acquire!(pool, Float64, 10)
     @test_throws ErrorException _validate_pool_return(pool_view, pool)
 
-    reset!(pool)
+    rewind!(pool)
 
     # Test with fallback type (others)
-    mark!(pool)
+    checkpoint!(pool)
     pool_view_uint8 = acquire!(pool, UInt8, 10)
     @test_throws ErrorException _validate_pool_return(pool_view_uint8, pool)
-    reset!(pool)
+    rewind!(pool)
 
     # Nothing pool always passes
     _validate_pool_return(pool_view, nothing)
@@ -139,7 +139,7 @@ end
 
 @testset "_validate_pool_return with all fixed slots" begin
     pool = AdaptiveArrayPool()
-    mark!(pool)
+    checkpoint!(pool)
 
     # Test each fixed slot type
     v_f64 = acquire!(pool, Float64, 5)
@@ -156,5 +156,5 @@ end
     @test_throws ErrorException _validate_pool_return(v_c64, pool)
     @test_throws ErrorException _validate_pool_return(v_bool, pool)
 
-    reset!(pool)
+    rewind!(pool)
 end

@@ -2,16 +2,16 @@
     pool = AdaptiveArrayPool()
 
     v_outer = acquire!(pool, Float64, 10)
-    @test pool.float64.in_use == 1
+    @test pool.float64.n_active == 1
 
     result = @use_pool pool begin
         v1 = acquire!(pool, Float64, 20)
         v2 = acquire!(pool, Float64, 30)
-        @test pool.float64.in_use == 3
+        @test pool.float64.n_active == 3
         sum(v1) + sum(v2)
     end
 
-    @test pool.float64.in_use == 1
+    @test pool.float64.n_active == 1
     @test result isa Number
 
     v_outer .= 42.0
@@ -41,7 +41,7 @@ end
 
     result = outer_computation(pool)
     @test result == 40.0
-    @test pool.float64.in_use == 0
+    @test pool.float64.n_active == 0
 end
 
 @testset "@use_pool function definition mode" begin
@@ -58,7 +58,7 @@ end
     mypool = AdaptiveArrayPool()
     result2 = test_auto_inject(x; pool=mypool)
     @test result2 == 12.0
-    @test mypool.float64.in_use == 0
+    @test mypool.float64.n_active == 0
 end
 
 @testset "@use_pool short-form function" begin
@@ -69,7 +69,7 @@ end
 
     mypool = AdaptiveArrayPool()
     @test test_short(x; pool=mypool) == 6.0
-    @test mypool.float64.in_use == 0
+    @test mypool.float64.n_active == 0
 end
 
 @testset "@use_pool with existing kwargs" begin
@@ -85,7 +85,7 @@ end
 
     mypool = AdaptiveArrayPool()
     @test test_existing_kwargs(x; pool=mypool, scale=4.0) == 24.0
-    @test mypool.float64.in_use == 0
+    @test mypool.float64.n_active == 0
 end
 
 @testset "@use_pool with where clause" begin
@@ -100,5 +100,5 @@ end
 
     mypool = AdaptiveArrayPool()
     @test test_where(x; pool=mypool) == 9.0
-    @test mypool.float64.in_use == 0
+    @test mypool.float64.n_active == 0
 end

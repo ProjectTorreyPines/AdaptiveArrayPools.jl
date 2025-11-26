@@ -13,7 +13,7 @@ include("types.jl")
 # Debugging & validation utilities (needed by macros)
 include("utils.jl")
 
-# Core operations: checkout!, acquire!, mark!, reset!, empty!
+# Core operations: get_view!, acquire!, checkpoint!, rewind!, empty!
 include("core.jl")
 
 # Global pool (Task Local Storage)
