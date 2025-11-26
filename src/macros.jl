@@ -3,15 +3,18 @@
 # ==============================================================================
 
 """
-    @use_pool pool expr
-    @use_pool pool function_definition
+    @with_pool pool expr
+    @with_pool pool function_definition
 
-Executes code with automatic pool state management.
+Executes code with an explicit pool object and automatic state management.
+This is for advanced use cases where you manage your own pool instance.
+
+For most users, prefer `@use_pool` which uses the global (task-local) pool.
 
 ## Block Mode
 ```julia
 pool = AdaptiveArrayPool()
-result = @use_pool pool begin
+result = @with_pool pool begin
     v = acquire!(pool, Float64, 100)
     sum(v)
 end
@@ -20,7 +23,7 @@ end
 
 ## Function Definition Mode
 ```julia
-@use_pool pool function compute(x)
+@with_pool pool function compute(x)
     temp = acquire!(pool, Float64, length(x))
     temp .= x .* 2
     sum(temp)
@@ -30,7 +33,7 @@ compute([1.0, 2.0])              # pool=nothing (allocates)
 compute([1.0, 2.0]; pool=mypool) # uses pool
 ```
 """
-macro use_pool(pool, expr)
+macro with_pool(pool, expr)
     # Compile-time check: if pooling disabled, just run expr with pool=nothing
     if !USE_POOLING
         if Meta.isexpr(expr, [:function, :(=)]) && _is_function_def(expr)
@@ -73,37 +76,46 @@ macro use_pool(pool, expr)
 end
 
 """
-    @use_global_pool pool_name expr
-    @use_global_pool pool_name function_definition
+    @use_pool pool_name expr
+    @use_pool pool_name function_definition
 
-Binds `pool_name` to the global (task-local) pool.
-Always uses the pool regardless of `MAYBE_POOLING_ENABLED`.
+Binds `pool_name` to the global (task-local) pool and executes code with
+automatic state management. This is the recommended macro for most use cases.
 
-## Example
+## Block Mode
 ```julia
-@use_global_pool pool function fast_compute(n)
+result = @use_pool pool begin
+    v = acquire!(pool, Float64, 100)
+    v .= 1.0
+    sum(v)
+end
+```
+
+## Function Definition Mode
+```julia
+@use_pool pool function fast_compute(n)
     v = acquire!(pool, Float64, n)
     v .= 1.0
     sum(v)
 end
 ```
 """
-macro use_global_pool(pool_name, expr)
-    _generate_global_pool_code(pool_name, expr, true)
+macro use_pool(pool_name, expr)
+    _generate_pool_code(pool_name, expr, true)
 end
 
 """
-    @maybe_use_global_pool pool_name expr
-    @maybe_use_global_pool pool_name function_definition
+    @maybe_use_pool pool_name expr
+    @maybe_use_pool pool_name function_definition
 
 Conditionally binds `pool_name` to the global pool based on `MAYBE_POOLING_ENABLED[]`.
 If disabled, `pool_name` becomes `nothing`, and `acquire!` falls back to standard allocation.
 
-Useful for libraries that want to let users control pooling behavior.
+Useful for libraries that want to let users control pooling behavior at runtime.
 
 ## Example
 ```julia
-@maybe_use_global_pool pool function compute(n)
+@maybe_use_pool pool function compute(n)
     v = acquire!(pool, Float64, n)  # Allocates if MAYBE_POOLING_ENABLED[] == false
     sum(v)
 end
@@ -115,11 +127,11 @@ MAYBE_POOLING_ENABLED[] = true
 compute(100)  # Uses pool
 ```
 """
-macro maybe_use_global_pool(pool_name, expr)
-    _generate_global_pool_code(pool_name, expr, false)
+macro maybe_use_pool(pool_name, expr)
+    _generate_pool_code(pool_name, expr, false)
 end
 
-function _generate_global_pool_code(pool_name, expr, force_enable)
+function _generate_pool_code(pool_name, expr, force_enable)
     # Compile-time check: if pooling disabled, just run expr with pool=nothing
     if !USE_POOLING
         if Meta.isexpr(expr, [:function, :(=)]) && _is_function_def(expr)

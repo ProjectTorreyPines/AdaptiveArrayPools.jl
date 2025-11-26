@@ -64,7 +64,7 @@ end
     pool = AdaptiveArrayPool()
 
     # When debug is off, no validation happens even if SubArray is returned
-    result = @use_pool pool begin
+    result = @with_pool pool begin
         v = acquire!(pool, Float64, 10)
         v  # Returning SubArray - would be unsafe in real code
     end
@@ -80,13 +80,13 @@ end
     pool = AdaptiveArrayPool()
 
     # Should throw error when returning SubArray with debug on
-    @test_throws ErrorException @use_pool pool begin
+    @test_throws ErrorException @with_pool pool begin
         v = acquire!(pool, Float64, 10)
         v  # Unsafe: returning pool-backed SubArray
     end
 
     # Safe returns should work fine
-    result = @use_pool pool begin
+    result = @with_pool pool begin
         v = acquire!(pool, Float64, 10)
         v .= 1.0
         sum(v)  # Safe: returning scalar
@@ -94,7 +94,7 @@ end
     @test result == 10.0
 
     # Returning a copy is also safe
-    result = @use_pool pool begin
+    result = @with_pool pool begin
         v = acquire!(pool, Float64, 5)
         v .= 2.0
         collect(v)  # Safe: returning a copy

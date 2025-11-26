@@ -1,5 +1,5 @@
-@testset "@use_global_pool" begin
-    @use_global_pool pool function global_test(n)
+@testset "@use_pool" begin
+    @use_pool pool function global_test(n)
         v = acquire!(pool, Float64, n)
         v .= 1.0
         return sum(v)
@@ -12,8 +12,8 @@
     @test res2 == 20.0
 end
 
-@testset "@use_global_pool block mode" begin
-    result = @use_global_pool pool begin
+@testset "@use_pool block mode" begin
+    result = @use_pool pool begin
         v = acquire!(pool, Float64, 15)
         v .= 3.0
         sum(v)
@@ -21,12 +21,12 @@ end
     @test result == 45.0
 end
 
-@testset "@maybe_use_global_pool with pooling enabled" begin
+@testset "@maybe_use_pool with pooling enabled" begin
     # Ensure pooling is enabled
     old_state = MAYBE_POOLING_ENABLED[]
     MAYBE_POOLING_ENABLED[] = true
 
-    @maybe_use_global_pool pool function maybe_test_enabled(n)
+    @maybe_use_pool pool function maybe_test_enabled(n)
         v = acquire!(pool, Float64, n)
         v .= 2.0
         return sum(v)
@@ -36,7 +36,7 @@ end
     @test res == 20.0
 
     # Verify pool was used (pool is not nothing)
-    result_type = @maybe_use_global_pool pool begin
+    result_type = @maybe_use_pool pool begin
         pool !== nothing
     end
     @test result_type == true
@@ -44,11 +44,11 @@ end
     MAYBE_POOLING_ENABLED[] = old_state
 end
 
-@testset "@maybe_use_global_pool with pooling disabled" begin
+@testset "@maybe_use_pool with pooling disabled" begin
     old_state = MAYBE_POOLING_ENABLED[]
     MAYBE_POOLING_ENABLED[] = false
 
-    @maybe_use_global_pool pool function maybe_test_disabled(n)
+    @maybe_use_pool pool function maybe_test_disabled(n)
         v = acquire!(pool, Float64, n)
         v .= 2.0
         return sum(v)
@@ -58,7 +58,7 @@ end
     @test res == 20.0
 
     # Verify pool was nothing (fallback allocation used)
-    result_type = @maybe_use_global_pool pool begin
+    result_type = @maybe_use_pool pool begin
         pool === nothing
     end
     @test result_type == true
@@ -66,12 +66,12 @@ end
     MAYBE_POOLING_ENABLED[] = old_state
 end
 
-@testset "@maybe_use_global_pool block mode" begin
+@testset "@maybe_use_pool block mode" begin
     old_state = MAYBE_POOLING_ENABLED[]
 
     # Enabled
     MAYBE_POOLING_ENABLED[] = true
-    result1 = @maybe_use_global_pool pool begin
+    result1 = @maybe_use_pool pool begin
         v = acquire!(pool, Float64, 5)
         v .= 4.0
         sum(v)
@@ -80,7 +80,7 @@ end
 
     # Disabled
     MAYBE_POOLING_ENABLED[] = false
-    result2 = @maybe_use_global_pool pool begin
+    result2 = @maybe_use_pool pool begin
         v = acquire!(pool, Float64, 5)
         v .= 4.0
         sum(v)
@@ -93,25 +93,25 @@ end
 # Function barrier for accurate allocation measurement
 function test_zero_alloc_maybe_use_global_pool()
     # 1. Nothing
-    a1 = @allocated @maybe_use_global_pool pool begin
+    a1 = @allocated @maybe_use_pool pool begin
         nothing
     end
 
     # 2. acquire! only
-    a2 = @allocated @maybe_use_global_pool pool begin
+    a2 = @allocated @maybe_use_pool pool begin
         v = acquire!(pool, Float64, 100)
         nothing
     end
 
     # 3. acquire! + fill
-    a3 = @allocated @maybe_use_global_pool pool begin
+    a3 = @allocated @maybe_use_pool pool begin
         v = acquire!(pool, Float64, 100)
         v .= 1.0
         nothing
     end
 
-    # 4. @use_global_pool acquire! + fill
-    a4 = @allocated @use_global_pool pool begin
+    # 4. @use_pool acquire! + fill
+    a4 = @allocated @use_pool pool begin
         v = acquire!(pool, Float64, 100)
         v .= 1.0
         nothing
@@ -123,7 +123,7 @@ end
 function test_pooling_vs_no_pooling()
     # With pooling
     MAYBE_POOLING_ENABLED[] = true
-    alloc_with = @allocated @maybe_use_global_pool pool begin
+    alloc_with = @allocated @maybe_use_pool pool begin
         v = acquire!(pool, Float64, 100)
         v .= 1.0
         nothing
@@ -131,7 +131,7 @@ function test_pooling_vs_no_pooling()
 
     # Without pooling
     MAYBE_POOLING_ENABLED[] = false
-    alloc_without = @allocated @maybe_use_global_pool pool begin
+    alloc_without = @allocated @maybe_use_pool pool begin
         v = acquire!(pool, Float64, 100)
         v .= 1.0
         nothing
@@ -140,7 +140,7 @@ function test_pooling_vs_no_pooling()
     return (alloc_with, alloc_without)
 end
 
-@testset "@maybe_use_global_pool zero-allocation" begin
+@testset "@maybe_use_pool zero-allocation" begin
     old_state = MAYBE_POOLING_ENABLED[]
     MAYBE_POOLING_ENABLED[] = true
 
@@ -151,10 +151,10 @@ end
     # Measure
     a1, a2, a3, a4 = test_zero_alloc_maybe_use_global_pool()
 
-    println("  @maybe_use_global_pool nothing: $a1 bytes")
-    println("  @maybe_use_global_pool acquire!: $a2 bytes")
-    println("  @maybe_use_global_pool acquire! + fill: $a3 bytes")
-    println("  @use_global_pool acquire! + fill: $a4 bytes")
+    println("  @maybe_use_pool nothing: $a1 bytes")
+    println("  @maybe_use_pool acquire!: $a2 bytes")
+    println("  @maybe_use_pool acquire! + fill: $a3 bytes")
+    println("  @use_pool acquire! + fill: $a4 bytes")
 
     @test a1 == 0
     @test a2 == 0
@@ -164,7 +164,7 @@ end
     MAYBE_POOLING_ENABLED[] = old_state
 end
 
-@testset "@maybe_use_global_pool pooling vs no-pooling" begin
+@testset "@maybe_use_pool pooling vs no-pooling" begin
     old_state = MAYBE_POOLING_ENABLED[]
 
     # Warm-up

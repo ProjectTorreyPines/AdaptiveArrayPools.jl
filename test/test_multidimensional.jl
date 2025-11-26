@@ -35,10 +35,10 @@
     @test size(mat_alloc) == (10, 10)
 end
 
-@testset "Multi-dimensional with @use_pool" begin
+@testset "Multi-dimensional with @with_pool" begin
     pool = AdaptiveArrayPool()
 
-    @use_pool pool function matrix_computation(n::Int)
+    @with_pool pool function matrix_computation(n::Int)
         mat = acquire!(pool, Float64, n, n)
         mat .= 1.0
         vec = acquire!(pool, Float64, n)
