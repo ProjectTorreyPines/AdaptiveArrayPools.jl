@@ -31,6 +31,25 @@ compute([1.0, 2.0]; pool=mypool) # uses pool
 ```
 """
 macro use_pool(pool, expr)
+    # Compile-time check: if pooling disabled, just run expr with pool=nothing
+    if !USE_POOLING
+        if Meta.isexpr(expr, [:function, :(=)]) && _is_function_def(expr)
+            # Don't inject pool arg - just define function with pool=nothing inside
+            def_head = expr.head
+            call_expr = expr.args[1]
+            body = expr.args[2]
+            new_body = quote
+                local $(esc(pool)) = nothing
+                $(esc(body))
+            end
+            return Expr(def_head, esc(call_expr), new_body)
+        end
+        return quote
+            local $(esc(pool)) = nothing
+            $(esc(expr))
+        end
+    end
+
     if Meta.isexpr(expr, [:function, :(=)]) && _is_function_def(expr)
         # Function definition mode: inject pool arg and wrap body
         expr = _inject_pool_arg(pool, expr)
@@ -58,7 +77,7 @@ end
     @use_global_pool pool_name function_definition
 
 Binds `pool_name` to the global (task-local) pool.
-Always uses the pool regardless of `ENABLE_POOLING`.
+Always uses the pool regardless of `MAYBE_POOLING_ENABLED`.
 
 ## Example
 ```julia
@@ -77,7 +96,7 @@ end
     @maybe_use_global_pool pool_name expr
     @maybe_use_global_pool pool_name function_definition
 
-Conditionally binds `pool_name` to the global pool based on `ENABLE_POOLING[]`.
+Conditionally binds `pool_name` to the global pool based on `MAYBE_POOLING_ENABLED[]`.
 If disabled, `pool_name` becomes `nothing`, and `acquire!` falls back to standard allocation.
 
 Useful for libraries that want to let users control pooling behavior.
@@ -85,14 +104,14 @@ Useful for libraries that want to let users control pooling behavior.
 ## Example
 ```julia
 @maybe_use_global_pool pool function compute(n)
-    v = acquire!(pool, Float64, n)  # Allocates if ENABLE_POOLING[] == false
+    v = acquire!(pool, Float64, n)  # Allocates if MAYBE_POOLING_ENABLED[] == false
     sum(v)
 end
 
-ENABLE_POOLING[] = false
+MAYBE_POOLING_ENABLED[] = false
 compute(100)  # Normal allocation
 
-ENABLE_POOLING[] = true
+MAYBE_POOLING_ENABLED[] = true
 compute(100)  # Uses pool
 ```
 """
@@ -101,6 +120,25 @@ macro maybe_use_global_pool(pool_name, expr)
 end
 
 function _generate_global_pool_code(pool_name, expr, force_enable)
+    # Compile-time check: if pooling disabled, just run expr with pool=nothing
+    if !USE_POOLING
+        if Meta.isexpr(expr, [:function, :(=)]) && _is_function_def(expr)
+            def_head = expr.head
+            call_expr = expr.args[1]
+            body = expr.args[2]
+            new_body = quote
+                local $(esc(pool_name)) = nothing
+                $(esc(body))
+            end
+            return Expr(def_head, esc(call_expr), new_body)
+        else
+            return quote
+                local $(esc(pool_name)) = nothing
+                $(esc(expr))
+            end
+        end
+    end
+
     if Meta.isexpr(expr, [:function, :(=)]) && _is_function_def(expr)
         def_head = expr.head
         call_expr = expr.args[1]
@@ -120,7 +158,7 @@ function _generate_global_pool_code(pool_name, expr, force_enable)
         else
             # Split branches completely to avoid Union{Nothing, AdaptiveArrayPool} boxing
             new_body = quote
-                if $ENABLE_POOLING[]
+                if $MAYBE_POOLING_ENABLED[]
                     local $(esc(pool_name)) = get_global_pool()
                     $checkpoint!($(esc(pool_name)))
                     try
@@ -151,7 +189,7 @@ function _generate_global_pool_code(pool_name, expr, force_enable)
         else
             # Split branches completely to avoid Union boxing
             return quote
-                if $ENABLE_POOLING[]
+                if $MAYBE_POOLING_ENABLED[]
                     local $(esc(pool_name)) = get_global_pool()
                     $checkpoint!($(esc(pool_name)))
                     try
