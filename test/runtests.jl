@@ -16,5 +16,6 @@ else
         include("test_multidimensional.jl")
         include("test_macros.jl")
         include("test_global_pool.jl")
+        include("test_utils.jl")
     end
 end

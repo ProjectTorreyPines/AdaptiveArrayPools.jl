@@ -105,6 +105,140 @@ end
     @test pool.others[UInt16].in_use == 0
 end
 
+@testset "View cache hit and miss" begin
+    pool = AdaptiveArrayPool()
+
+    # First acquire - creates new slot
+    mark!(pool)
+    v1 = acquire!(pool, Float64, 100)
+    @test length(v1) == 100
+    reset!(pool)
+
+    # Same size - cache hit (zero alloc after warmup)
+    mark!(pool)
+    v2 = acquire!(pool, Float64, 100)
+    @test length(v2) == 100
+    @test parent(v1) === parent(v2)  # Same backing vector
+    reset!(pool)
+
+    # Larger size - cache miss, needs resize
+    mark!(pool)
+    v3 = acquire!(pool, Float64, 200)
+    @test length(v3) == 200
+    @test length(parent(v3)) >= 200  # Backing vector was resized
+    reset!(pool)
+
+    # Smaller size - cache miss, but no resize needed
+    mark!(pool)
+    v4 = acquire!(pool, Float64, 50)
+    @test length(v4) == 50
+    @test length(parent(v4)) >= 200  # Backing vector still large
+    reset!(pool)
+end
+
+@testset "Fallback types mark/reset" begin
+    pool = AdaptiveArrayPool()
+
+    # Use a fallback type (not in fixed slots)
+    mark!(pool)
+    v1 = acquire!(pool, UInt8, 100)
+    v2 = acquire!(pool, UInt8, 50)
+    @test pool.others[UInt8].in_use == 2
+    reset!(pool)
+    @test pool.others[UInt8].in_use == 0
+
+    # Nested mark/reset with fallback
+    mark!(pool)
+    v1 = acquire!(pool, UInt8, 100)
+    @test pool.others[UInt8].in_use == 1
+
+    mark!(pool)  # Nested
+    v2 = acquire!(pool, UInt8, 50)
+    @test pool.others[UInt8].in_use == 2
+
+    reset!(pool)
+    @test pool.others[UInt8].in_use == 1
+
+    reset!(pool)
+    @test pool.others[UInt8].in_use == 0
+end
+
+@testset "Nothing fallback methods" begin
+    # acquire! with nothing pool
+    v1 = acquire!(nothing, Float64, 100)
+    @test v1 isa Vector{Float64}
+    @test length(v1) == 100
+
+    # Multi-dimensional acquire! with nothing
+    mat = acquire!(nothing, Float64, 10, 20)
+    @test mat isa Array{Float64, 2}
+    @test size(mat) == (10, 20)
+
+    tensor = acquire!(nothing, Int32, 3, 4, 5)
+    @test tensor isa Array{Int32, 3}
+    @test size(tensor) == (3, 4, 5)
+
+    # empty! with nothing
+    @test empty!(nothing) === nothing
+end
+
+@testset "empty! pool clearing" begin
+    import AdaptiveArrayPools: empty!
+
+    pool = AdaptiveArrayPool()
+
+    # Add vectors to fixed slots
+    mark!(pool)
+    v1 = acquire!(pool, Float64, 100)
+    v2 = acquire!(pool, Float32, 50)
+    v3 = acquire!(pool, Int64, 25)
+    v4 = acquire!(pool, Int32, 10)
+    v5 = acquire!(pool, ComplexF64, 5)
+    v6 = acquire!(pool, Bool, 20)
+    reset!(pool)
+
+    # Add fallback type
+    mark!(pool)
+    v_uint8 = acquire!(pool, UInt8, 200)
+    reset!(pool)
+
+    # Verify pool has data
+    @test length(pool.float64.vectors) == 1
+    @test length(pool.float32.vectors) == 1
+    @test length(pool.int64.vectors) == 1
+    @test length(pool.int32.vectors) == 1
+    @test length(pool.complexf64.vectors) == 1
+    @test length(pool.bool.vectors) == 1
+    @test haskey(pool.others, UInt8)
+
+    # Clear the pool
+    result = empty!(pool)
+    @test result === pool  # Returns self
+
+    # Verify all fixed slots are cleared
+    @test isempty(pool.float64.vectors)
+    @test isempty(pool.float64.views)
+    @test isempty(pool.float64.view_lengths)
+    @test pool.float64.in_use == 0
+    @test isempty(pool.float64.saved_stack)
+
+    @test isempty(pool.float32.vectors)
+    @test isempty(pool.int64.vectors)
+    @test isempty(pool.int32.vectors)
+    @test isempty(pool.complexf64.vectors)
+    @test isempty(pool.bool.vectors)
+
+    # Verify fallback types are cleared
+    @test isempty(pool.others)
+
+    # Pool should still be usable after empty!
+    mark!(pool)
+    v_new = acquire!(pool, Float64, 50)
+    @test length(v_new) == 50
+    @test pool.float64.in_use == 1
+    reset!(pool)
+end
+
 @testset "Allocation test (Zero Alloc)" begin
     pool = AdaptiveArrayPool()
 
