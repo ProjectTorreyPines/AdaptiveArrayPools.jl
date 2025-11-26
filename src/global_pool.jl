@@ -2,6 +2,8 @@
 # Global Pool (Task Local Storage) & Configuration
 # ==============================================================================
 
+using Preferences: @load_preference
+
 """
     USE_POOLING::Bool
 
@@ -13,11 +15,23 @@ to normal allocation.
 This enables zero-overhead when pooling is disabled, as the compiler can
 eliminate all pool-related code paths.
 
-Future: Can be integrated with `Preferences.jl` for per-project configuration.
+## Configuration via Preferences.jl
+
+Set in your project's `LocalPreferences.toml`:
+```toml
+[AdaptiveArrayPools]
+use_pooling = false
+```
+
+Or programmatically (requires restart):
+```julia
+using Preferences
+Preferences.set_preferences!(AdaptiveArrayPools, "use_pooling" => false)
+```
 
 Default: `true`
 """
-const USE_POOLING = true
+const USE_POOLING = @load_preference("use_pooling", true)::Bool
 
 """
     MAYBE_POOLING_ENABLED
