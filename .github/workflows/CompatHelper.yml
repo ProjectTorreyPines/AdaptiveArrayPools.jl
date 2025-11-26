@@ -1,0 +1,14 @@
+name: CompatHelper
+
+on:
+  schedule:
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+
+jobs:
+  CompatHelper:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: julia-actions/CompatHelper@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
