@@ -68,7 +68,7 @@ using BenchmarkTools
 
 # ❌ Naive Approach: Allocates new arrays every single call
 function compute_naive(n::Int)
-    mat1 = rand(n, n)  # Allocation!
+    mat1 = rand(n, n) # Allocation!
     mat2 = rand(n, n) # Allocation!
 
     mat3 = mat1 * mat2 # Allocation!
@@ -112,24 +112,12 @@ end
 - **Type Stable**: Optimized for `Float64`, `Int`, and other common types using fixed-slot caching.
 - **Non-Intrusive**: If you disable pooling via preferences, `acquire!` compiles down to a standard `Array` allocation.
 
-## API Reference
+## Documentation
 
-### Macros
-
-| Macro | Description |
-|-------|-------------|
-| `@use_pool name expr` | **Recommended.** Injects a global, task-local pool named `name`. Automatically checkpoints and rewinds. |
-| `@maybe_use_pool name expr` | Same as `@use_pool`, but can be toggled on/off at runtime via `MAYBE_POOLING_ENABLED[]`. |
-| `@with_pool pool expr` | Uses a specific pool instance provided by the user. |
-
-### Functions
-
-| Function | Description |
-|----------|-------------|
-| `acquire!(pool, T, dims...)` | Returns a `SubArray{T}` of size `dims` from the pool. |
-| `release!(pool, array)` | Explicitly returns an array to the pool (optional, usually handled by rewind). |
-| `checkpoint!(pool)` | Saves the current pool state (stack pointer). |
-| `rewind!(pool)` | Restores the pool to the last checkpoint, freeing all arrays acquired since then. |
+- [API Reference](docs/api.md) - Macros, functions, and types
+- [Runtime Toggle: @maybe_use_pool](docs/maybe_use_pool.md) - Control pooling at runtime
+- [Explicit Pool: @with_pool](docs/with_pool.md) - Advanced use with custom pool instances
+- [Configuration](docs/configuration.md) - Preferences.jl integration
 
 ## Configuration
 
