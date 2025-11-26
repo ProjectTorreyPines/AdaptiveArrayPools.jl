@@ -268,5 +268,5 @@ end
     # Should be very low - no IdDict allocation anymore
     # (some overhead from view allocation is expected)
     @test allocs < 100_000
-    println("  Allocations after warm-up (v2): $(allocs) bytes for 100 iterations")
+    println("  Allocations after warm-up: $(allocs) bytes for 100 iterations")
 end

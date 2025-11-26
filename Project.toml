@@ -3,5 +3,8 @@ uuid = "5768322a-0810-4546-8322-123456789abc"
 version = "0.1.0"
 authors = ["Min-Gu Yoo <mgyoo86@gmail.com>"]
 
+[deps]
+Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
+
 [compat]
 julia = "1.10"

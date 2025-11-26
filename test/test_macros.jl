@@ -102,3 +102,74 @@ end
     @test test_where(x; pool=mypool) == 9.0
     @test mypool.float64.n_active == 0
 end
+
+@testset "@use_pool block mode with POOL_DEBUG" begin
+    old_debug = POOL_DEBUG[]
+    POOL_DEBUG[] = true
+
+    pool = AdaptiveArrayPool()
+
+    # Safe return (scalar) should work
+    result = @use_pool pool begin
+        v = acquire!(pool, Float64, 10)
+        v .= 1.0
+        sum(v)  # Safe: returning scalar
+    end
+    @test result == 10.0
+
+    # Safe return (copy) should work
+    result = @use_pool pool begin
+        v = acquire!(pool, Float64, 5)
+        v .= 2.0
+        collect(v)  # Safe: returning copy
+    end
+    @test result == [2.0, 2.0, 2.0, 2.0, 2.0]
+
+    # Unsafe return should throw
+    @test_throws ErrorException @use_pool pool begin
+        v = acquire!(pool, Float64, 10)
+        v  # Unsafe: returning pool-backed SubArray
+    end
+
+    POOL_DEBUG[] = old_debug
+end
+
+@testset "@use_pool function mode with POOL_DEBUG" begin
+    old_debug = POOL_DEBUG[]
+    POOL_DEBUG[] = true
+
+    # Define function that returns scalar (safe)
+    @use_pool pool function safe_sum_func(n::Int)
+        v = acquire!(pool, Float64, n)
+        v .= 1.0
+        sum(v)
+    end
+
+    mypool = AdaptiveArrayPool()
+    @test safe_sum_func(10; pool=mypool) == 10.0
+    @test mypool.float64.n_active == 0
+
+    # Define function that returns copy (safe)
+    @use_pool pool function safe_copy_func(n::Int)
+        v = acquire!(pool, Float64, n)
+        v .= 3.0
+        collect(v)
+    end
+
+    @test safe_copy_func(3; pool=mypool) == [3.0, 3.0, 3.0]
+    @test mypool.float64.n_active == 0
+
+    POOL_DEBUG[] = old_debug
+end
+
+@testset "@use_pool short-form with where clause" begin
+    # Short-form function with where clause (covers line 201-202)
+    @use_pool pool test_short_where(x::Vector{T}) where {T<:Number} = sum(acquire!(pool, T, length(x)) .= x)
+
+    x = [1.0, 2.0, 3.0]
+    @test test_short_where(x) == 6.0
+
+    mypool = AdaptiveArrayPool()
+    @test test_short_where(x; pool=mypool) == 6.0
+    @test mypool.float64.n_active == 0
+end

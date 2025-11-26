@@ -1,5 +1,7 @@
 module AdaptiveArrayPools
 
+using Printf
+
 export AdaptiveArrayPool, acquire!, pool_stats
 export @use_pool, @use_global_pool, @maybe_use_global_pool
 export ENABLE_POOLING, POOL_DEBUG

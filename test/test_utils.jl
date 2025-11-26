@@ -27,9 +27,8 @@ end
 
     # Empty pool stats
     output = @capture_out pool_stats(pool)
-    @test occursin("AdaptiveArrayPool Statistics:", output)
-    # No fixed slots should be printed for empty pool
-    @test !occursin("Float64", output)
+    @test occursin("AdaptiveArrayPool", output)
+    @test occursin("empty", output)
 
     # Add some vectors to fixed slots
     checkpoint!(pool)
@@ -38,11 +37,11 @@ end
     v3 = acquire!(pool, Int64, 25)
 
     output = @capture_out pool_stats(pool)
-    @test occursin("Float64 (fixed slot):", output)
-    @test occursin("Float32 (fixed slot):", output)
-    @test occursin("Int64 (fixed slot):", output)
-    @test occursin("Vectors: 1", output)
-    @test occursin("Active:  1", output)
+    @test occursin("Float64 (fixed)", output)
+    @test occursin("Float32 (fixed)", output)
+    @test occursin("Int64 (fixed)", output)
+    @test occursin("arrays: 1", output)
+    @test occursin("active: 1", output)
 
     rewind!(pool)
 
@@ -51,8 +50,8 @@ end
     v_uint8 = acquire!(pool, UInt8, 200)
 
     output = @capture_out pool_stats(pool)
-    @test occursin("UInt8 (fallback):", output)
-    @test occursin("Total elements: 200", output)
+    @test occursin("UInt8 (fallback)", output)
+    @test occursin("elements: 200", output)
 
     rewind!(pool)
 end
@@ -157,4 +156,97 @@ end
     @test_throws ErrorException _validate_pool_return(v_bool, pool)
 
     rewind!(pool)
+end
+
+@testset "_format_bytes" begin
+    import AdaptiveArrayPools: _format_bytes
+
+    # Bytes (< 1024)
+    @test _format_bytes(0) == "0 bytes"
+    @test _format_bytes(100) == "100 bytes"
+    @test _format_bytes(1023) == "1023 bytes"
+
+    # KiB (1024 <= bytes < 1024^2)
+    @test _format_bytes(1024) == "1.000 KiB"
+    @test _format_bytes(2048) == "2.000 KiB"
+    @test _format_bytes(1536) == "1.500 KiB"  # 1.5 KiB
+
+    # MiB (1024^2 <= bytes < 1024^3)
+    @test _format_bytes(1024^2) == "1.000 MiB"
+    @test _format_bytes(2 * 1024^2) == "2.000 MiB"
+    @test _format_bytes(Int(1.5 * 1024^2)) == "1.500 MiB"
+
+    # GiB (bytes >= 1024^3)
+    @test _format_bytes(1024^3) == "1.000 GiB"
+    @test _format_bytes(2 * 1024^3) == "2.000 GiB"
+end
+
+@testset "Base.show for TypedPool" begin
+    import AdaptiveArrayPools: TypedPool
+
+    # Empty TypedPool - compact show
+    tp_empty = TypedPool{Float64}()
+    output = sprint(show, tp_empty)
+    @test output == "TypedPool{Float64}(empty)"
+
+    # Non-empty TypedPool - compact show
+    pool = AdaptiveArrayPool()
+    checkpoint!(pool)
+    acquire!(pool, Float64, 100)
+    acquire!(pool, Float64, 50)
+
+    output = sprint(show, pool.float64)
+    @test occursin("TypedPool{Float64}", output)
+    @test occursin("vectors=2", output)
+    @test occursin("active=2", output)
+    @test occursin("elements=150", output)
+
+    # Multi-line show (MIME"text/plain")
+    output = sprint(show, MIME("text/plain"), pool.float64)
+    @test occursin("TypedPool{Float64}", output)
+    @test occursin("arrays:", output)
+    @test occursin("active:", output)
+
+    rewind!(pool)
+end
+
+@testset "Base.show for AdaptiveArrayPool" begin
+    # Empty pool - compact show
+    pool_empty = AdaptiveArrayPool()
+    output = sprint(show, pool_empty)
+    @test occursin("AdaptiveArrayPool", output)
+    @test occursin("types=0", output)
+    @test occursin("vectors=0", output)
+    @test occursin("active=0", output)
+
+    # Non-empty pool - compact show
+    pool = AdaptiveArrayPool()
+    checkpoint!(pool)
+    acquire!(pool, Float64, 100)
+    acquire!(pool, Int64, 50)
+    acquire!(pool, UInt8, 25)  # fallback type
+
+    output = sprint(show, pool)
+    @test occursin("AdaptiveArrayPool", output)
+    @test occursin("types=3", output)
+    @test occursin("vectors=3", output)
+    @test occursin("active=3", output)
+
+    # Multi-line show (MIME"text/plain")
+    output = sprint(show, MIME("text/plain"), pool)
+    @test occursin("AdaptiveArrayPool", output)
+    @test occursin("Float64 (fixed)", output)
+    @test occursin("Int64 (fixed)", output)
+    @test occursin("UInt8 (fallback)", output)
+
+    rewind!(pool)
+end
+
+@testset "pool_stats for empty TypedPool" begin
+    import AdaptiveArrayPools: TypedPool
+
+    tp = TypedPool{Float64}()
+    output = @capture_out pool_stats(tp)
+    @test occursin("Float64", output)
+    @test occursin("empty", output)
 end
