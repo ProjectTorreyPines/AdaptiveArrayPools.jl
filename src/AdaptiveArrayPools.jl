@@ -4,43 +4,80 @@ export AdaptiveArrayPool, acquire!, pool_stats
 export @use_pool, @use_global_pool, @maybe_use_global_pool
 export ENABLE_POOLING, POOL_DEBUG
 
-# Note: mark!/reset! are NOT exported to avoid conflict with Base
-# Users should use: import AdaptiveArrayPools: mark!, reset!
+# Note: mark!/reset!/empty! are NOT exported to avoid conflict with Base
+# Users should use: import AdaptiveArrayPools: mark!, reset!, empty!
 
 # ==============================================================================
-# Core Data Structures (v2: with saved_stack for zero-allocation mark/reset)
+# Core Data Structures (v3: View Caching + SoA for zero-allocation hot path)
 # ==============================================================================
 
 """
     TypedPool{T}
 
 Internal structure managing a list of vectors for a specific type `T`.
-Includes `saved_stack` for nested mark/reset support with zero allocation.
+
+## v3 Features (View Caching + SoA)
+- `views`: Cached SubArray objects for zero-allocation hot path
+- `view_lengths`: Separate length tracking for cache-friendly comparison (SoA pattern)
+- `saved_stack`: Nested mark/reset support with zero allocation
 """
 mutable struct TypedPool{T}
     vectors::Vector{Vector{T}}   # Actual memory storage
+    views::Vector{SubArray{T, 1, Vector{T}, Tuple{UnitRange{Int64}}, true}}  # Cached views
+    view_lengths::Vector{Int}    # SoA: cached view lengths (cache-friendly Int comparison)
     in_use::Int                  # Number of currently checked-out vectors
     saved_stack::Vector{Int}     # Stack for nested mark/reset (zero alloc after warmup)
 end
 
-TypedPool{T}() where {T} = TypedPool{T}(Vector{T}[], 0, Int[])
+TypedPool{T}() where {T} = TypedPool{T}(
+    Vector{T}[],
+    SubArray{T, 1, Vector{T}, Tuple{UnitRange{Int64}}, true}[],
+    Int[],
+    0,
+    Int[]
+)
 
 """
     checkout!(tp::TypedPool{T}, n::Int) -> SubArray
 
 Internal function to get a vector view of size `n` from the typed pool.
+
+## v3: View Caching with SoA
+- Cache hit (same size): Returns cached SubArray (zero allocation)
+- Cache miss: Creates new view, updates cache
+- Uses `view_lengths` for fast Int comparison (no pointer dereference)
 """
+# @inline function checkout!(tp::TypedPool{T}, n::Int) where {T}
 function checkout!(tp::TypedPool{T}, n::Int) where {T}
     tp.in_use += 1
-    if tp.in_use > length(tp.vectors)
+    idx = tp.in_use
+
+    # 1. Need to expand pool (new slot)
+    if idx > length(tp.vectors)
         push!(tp.vectors, Vector{T}(undef, n))
-        return view(tp.vectors[end], 1:n)
+        new_view = view(tp.vectors[idx], 1:n)
+        push!(tp.views, new_view)
+        push!(tp.view_lengths, n)
+        return new_view
     end
-    v = tp.vectors[tp.in_use]
-    if length(v) < n
-        resize!(v, n)
+
+    # 2. Cache hit: same size requested -> return cached view (ZERO ALLOC)
+    @inbounds cached_len = tp.view_lengths[idx]
+    if cached_len == n
+        return @inbounds tp.views[idx]
     end
-    return view(v, 1:n)
+
+    # 3. Cache miss: different size -> update cache
+    @inbounds vec = tp.vectors[idx]
+    if length(vec) < n
+        resize!(vec, n)
+    end
+
+    new_view = view(vec, 1:n)
+    @inbounds tp.views[idx] = new_view
+    @inbounds tp.view_lengths[idx] = n
+
+    return new_view
 end
 
 # ==============================================================================
@@ -60,7 +97,7 @@ A high-performance memory pool supporting multiple data types.
 ## Thread Safety
 This pool is **NOT thread-safe**. Use one pool per Task via `get_global_pool()`.
 """
-struct AdaptiveArrayPool
+mutable struct AdaptiveArrayPool
     # Fixed Slots: common types with zero lookup overhead
     float64::TypedPool{Float64}
     float32::TypedPool{Float32}
@@ -214,6 +251,63 @@ end
 reset!(::Nothing) = nothing
 
 # ==============================================================================
+# Pool Clearing
+# ==============================================================================
+
+"""
+    empty!(tp::TypedPool)
+
+Clear all internal storage of a TypedPool, releasing all memory.
+"""
+function Base.empty!(tp::TypedPool)
+    empty!(tp.vectors)
+    empty!(tp.views)
+    empty!(tp.view_lengths)
+    tp.in_use = 0
+    empty!(tp.saved_stack)
+    return tp
+end
+
+"""
+    empty!(pool::AdaptiveArrayPool)
+
+Completely clear the pool, releasing all stored vectors and resetting all state.
+
+This is useful when you want to free memory or start fresh without creating
+a new pool instance.
+
+## Example
+```julia
+pool = AdaptiveArrayPool()
+v = acquire!(pool, Float64, 1000)
+# ... use v ...
+empty!(pool)  # Release all memory
+```
+
+## Warning
+Any SubArrays previously acquired from this pool become invalid after `empty!`.
+"""
+function Base.empty!(pool::AdaptiveArrayPool)
+    # Fixed slots
+    empty!(pool.float64)
+    empty!(pool.float32)
+    empty!(pool.int64)
+    empty!(pool.int32)
+    empty!(pool.complexf64)
+    empty!(pool.bool)
+
+    # Others - clear all TypedPools then the IdDict itself
+    for tp in values(pool.others)
+        empty!(tp)
+    end
+    empty!(pool.others)
+
+    return pool
+end
+
+Base.empty!(::Nothing) = nothing
+
+# ==============================================================================
 # Global Pool (Task Local Storage) & Configuration
 # ==============================================================================
 
@@ -227,6 +321,8 @@ Default: `true`
 """
 const ENABLE_POOLING = Ref(true)
 
+const _POOL_KEY = :ADAPTIVE_ARRAY_POOL
+
 """
     get_global_pool() -> AdaptiveArrayPool
 
@@ -235,11 +331,17 @@ Retrieves (or creates) the `AdaptiveArrayPool` for the current Task.
 Each Task gets its own pool instance via `task_local_storage()`,
 ensuring thread safety without locks.
 """
-function get_global_pool()
-    get!(task_local_storage(), :ADAPTIVE_ARRAY_POOL) do
-        AdaptiveArrayPool()
-    end::AdaptiveArrayPool
+@inline function get_global_pool()
+    tls = task_local_storage()
+    if haskey(tls, _POOL_KEY)
+        return tls[_POOL_KEY]::AdaptiveArrayPool
+    else
+        pool = AdaptiveArrayPool()
+        tls[_POOL_KEY] = pool
+        return pool
+    end
 end
+
 
 # ==============================================================================
 # Debugging & Safety

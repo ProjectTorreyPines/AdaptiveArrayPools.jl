@@ -96,18 +96,21 @@ end
     # With pooling enabled - should have minimal allocations after warm-up
     ENABLE_POOLING[] = true
 
+    Nvec = 100
+
     # Warm-up
     for _ in 1:3
         @maybe_use_global_pool pool begin
-            v = acquire!(pool, Float64, 100)
+            v = acquire!(pool, Float64, Nvec)
             v .= 1.0
+            nothing
         end
     end
 
     allocs_enabled = @allocated begin
         for _ in 1:100
             @maybe_use_global_pool pool begin
-                v = acquire!(pool, Float64, 100)
+                v = acquire!(pool, Float64, Nvec)
                 v .= 1.0
             end
         end
@@ -119,7 +122,7 @@ end
     allocs_disabled = @allocated begin
         for _ in 1:100
             @maybe_use_global_pool pool begin
-                v = acquire!(pool, Float64, 100)
+                v = acquire!(pool, Float64, Nvec)
                 v .= 1.0
             end
         end
