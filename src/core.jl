@@ -78,12 +78,21 @@ end
     return reshape(flat_view, dims)
 end
 
+# Tuple support: allows acquire!(pool, T, size(A)) where size(A) returns NTuple{N,Int}
+@inline function acquire!(pool::AdaptiveArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
+    acquire!(pool, T, dims...)
+end
+
 # Fallback: When pool is `nothing` (e.g. pooling disabled), allocate normally
 @inline function acquire!(::Nothing, ::Type{T}, n::Int) where {T}
     Vector{T}(undef, n)
 end
 
 @inline function acquire!(::Nothing, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
+    Array{T, N}(undef, dims)
+end
+
+@inline function acquire!(::Nothing, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
     Array{T, N}(undef, dims)
 end
 

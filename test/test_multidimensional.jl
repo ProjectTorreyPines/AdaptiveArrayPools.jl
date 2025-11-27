@@ -35,6 +35,27 @@
     @test size(mat_alloc) == (10, 10)
 end
 
+@testset "Tuple-based acquire!" begin
+    pool = AdaptiveArrayPool()
+
+    # Tuple from size()
+    ref_array = zeros(3, 4)
+    dims = size(ref_array)
+    mat = acquire!(pool, Float64, dims)
+    @test size(mat) == (3, 4)
+    @test mat isa Base.ReshapedArray
+
+    # 3D tuple
+    dims3d = (2, 3, 4)
+    tensor = acquire!(pool, Float64, dims3d)
+    @test size(tensor) == (2, 3, 4)
+
+    # Fallback with nothing
+    mat_alloc = acquire!(nothing, Float64, dims)
+    @test mat_alloc isa Array{Float64, 2}
+    @test size(mat_alloc) == (3, 4)
+end
+
 @testset "Multi-dimensional with @with_pool" begin
     pool = AdaptiveArrayPool()
 
