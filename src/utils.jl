@@ -144,6 +144,21 @@ function pool_stats(pool::AdaptiveArrayPool; io::IO=stdout)
     end
 end
 
+"""
+    pool_stats(; io::IO=stdout)
+
+Print statistics for the global (Task-local) pool.
+
+# Example
+```julia
+@use_pool begin
+    v = acquire!(pool, Float64, 100)
+    pool_stats()  # Shows global pool stats
+end
+```
+"""
+pool_stats(; io::IO=stdout) = pool_stats(get_global_pool(); io)
+
 # ==============================================================================
 # Base.show (delegates to pool_stats)
 # ==============================================================================
