@@ -151,6 +151,14 @@ function _generate_pool_code(pool_name, expr, force_enable)
         end
     end
 
+    # Extract types from acquire! calls for optimized checkpoint/rewind
+    target_expr = Meta.isexpr(expr, [:function, :(=)]) && _is_function_def(expr) ? expr.args[2] : expr
+    all_types = _extract_acquire_types(target_expr)
+    static_types, has_dynamic = _filter_static_types(all_types)
+
+    # Use typed checkpoint/rewind if all types are static, otherwise fallback to full
+    use_typed = !has_dynamic && !isempty(static_types)
+
     if Meta.isexpr(expr, [:function, :(=)]) && _is_function_def(expr)
         def_head = expr.head
         call_expr = expr.args[1]
@@ -158,25 +166,31 @@ function _generate_pool_code(pool_name, expr, force_enable)
 
         if force_enable
             # Always use pool - no Union type
+            checkpoint_call = use_typed ? _generate_typed_checkpoint_call(esc(pool_name), static_types) : :($checkpoint!($(esc(pool_name))))
+            rewind_call = use_typed ? _generate_typed_rewind_call(esc(pool_name), static_types) : :($rewind!($(esc(pool_name))))
+
             new_body = quote
                 local $(esc(pool_name)) = get_global_pool()
-                $checkpoint!($(esc(pool_name)))
+                $checkpoint_call
                 try
                     $(esc(body))
                 finally
-                    $rewind!($(esc(pool_name)))
+                    $rewind_call
                 end
             end
         else
             # Split branches completely to avoid Union{Nothing, AdaptiveArrayPool} boxing
+            checkpoint_call = use_typed ? _generate_typed_checkpoint_call(esc(pool_name), static_types) : :($checkpoint!($(esc(pool_name))))
+            rewind_call = use_typed ? _generate_typed_rewind_call(esc(pool_name), static_types) : :($rewind!($(esc(pool_name))))
+
             new_body = quote
                 if $MAYBE_POOLING_ENABLED[]
                     local $(esc(pool_name)) = get_global_pool()
-                    $checkpoint!($(esc(pool_name)))
+                    $checkpoint_call
                     try
                         $(esc(body))
                     finally
-                        $rewind!($(esc(pool_name)))
+                        $rewind_call
                     end
                 else
                     local $(esc(pool_name)) = nothing
@@ -188,14 +202,17 @@ function _generate_pool_code(pool_name, expr, force_enable)
         return Expr(def_head, esc(call_expr), new_body)
     else
         # Block mode
+        checkpoint_call = use_typed ? _generate_typed_checkpoint_call(esc(pool_name), static_types) : :($checkpoint!($(esc(pool_name))))
+        rewind_call = use_typed ? _generate_typed_rewind_call(esc(pool_name), static_types) : :($rewind!($(esc(pool_name))))
+
         if force_enable
             return quote
                 local $(esc(pool_name)) = get_global_pool()
-                $checkpoint!($(esc(pool_name)))
+                $checkpoint_call
                 try
                     $(esc(expr))
                 finally
-                    $rewind!($(esc(pool_name)))
+                    $rewind_call
                 end
             end
         else
@@ -203,11 +220,11 @@ function _generate_pool_code(pool_name, expr, force_enable)
             return quote
                 if $MAYBE_POOLING_ENABLED[]
                     local $(esc(pool_name)) = get_global_pool()
-                    $checkpoint!($(esc(pool_name)))
+                    $checkpoint_call
                     try
                         $(esc(expr))
                     finally
-                        $rewind!($(esc(pool_name)))
+                        $rewind_call
                     end
                 else
                     local $(esc(pool_name)) = nothing
@@ -307,4 +324,105 @@ function _get_arg_name(arg)
         return length(arg.args) == 2 ? arg.args[1] : :_
     end
     return arg
+end
+
+# --- Type Extraction for Optimized checkpoint!/rewind! ---
+
+"""
+    _extract_acquire_types(expr) -> (static_types, has_dynamic)
+
+Extract type arguments from acquire!(pool, Type, ...) calls in an expression.
+Returns a tuple of (static_types::Vector, has_dynamic::Bool).
+
+Static types (like Float64, Int64) can be used for typed checkpoint.
+Dynamic types (like T where T is a variable) require fallback to full checkpoint.
+"""
+function _extract_acquire_types(expr, types=Set{Any}())
+    if expr isa Expr
+        # Match: acquire!(pool, Type, ...)
+        if expr.head == :call && length(expr.args) >= 3
+            fn = expr.args[1]
+            if fn == :acquire! || (fn isa Expr && fn.head == :. &&
+                                   length(fn.args) >= 2 && fn.args[end] == QuoteNode(:acquire!))
+                type_arg = expr.args[3]
+                push!(types, type_arg)
+            end
+        end
+        # Recurse into sub-expressions
+        for arg in expr.args
+            _extract_acquire_types(arg, types)
+        end
+    end
+    return types
+end
+
+"""
+    _filter_static_types(types) -> (static_types, has_dynamic)
+
+Separate static types (known concrete types) from dynamic types (type parameters).
+"""
+function _filter_static_types(types)
+    # Known concrete types that are safe to use for typed checkpoint
+    # Includes aliases (Int = Int64, UInt = UInt64, etc.)
+    known_types = Set{Symbol}([
+        :Float64, :Float32, :Float16,
+        :Int64, :Int32, :Int16, :Int8, :Int,      # Int is alias for Int64
+        :UInt64, :UInt32, :UInt16, :UInt8, :UInt, # UInt is alias for UInt64
+        :ComplexF64, :ComplexF32,
+        :Bool, :Char, :String
+    ])
+
+    static_types = Any[]
+    has_dynamic = false
+    for t in types
+        if t isa Symbol
+            if t in known_types
+                # Known concrete type like Float64 - use it
+                push!(static_types, t)
+            elseif length(string(t)) == 1
+                # Single-letter symbol like T, S, N - likely type parameter
+                has_dynamic = true
+            else
+                # Multi-letter symbol like MyOwnType - assume concrete type
+                push!(static_types, t)
+            end
+        elseif t isa Expr && t.head == :curly
+            # Parametric type like Vector{Float64} - treat as dynamic for safety
+            has_dynamic = true
+        else
+            # GlobalRef or other concrete type
+            push!(static_types, t)
+        end
+    end
+    return static_types, has_dynamic
+end
+
+"""
+    _generate_typed_checkpoint_call(pool_expr, types)
+
+Generate checkpoint!(pool, T1, T2, ...) call expression.
+"""
+function _generate_typed_checkpoint_call(pool_expr, types)
+    if isempty(types)
+        return :($checkpoint!($pool_expr))
+    else
+        # esc types so they resolve in caller's namespace (Float64, not AdaptiveArrayPools.Float64)
+        escaped_types = [esc(t) for t in types]
+        return :($checkpoint!($pool_expr, $(escaped_types...)))
+    end
+end
+
+"""
+    _generate_typed_rewind_call(pool_expr, types)
+
+Generate rewind!(pool, T1, T2, ...) call expression.
+Types are passed in original order; rewind! handles reversal internally.
+"""
+function _generate_typed_rewind_call(pool_expr, types)
+    if isempty(types)
+        return :($rewind!($pool_expr))
+    else
+        escaped_types = [esc(t) for t in types]
+        return :($rewind!($pool_expr, $(escaped_types...)))
+    end
 end

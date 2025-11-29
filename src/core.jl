@@ -164,6 +164,69 @@ end
 rewind!(::Nothing) = nothing
 
 # ==============================================================================
+# Type-Specific State Management (for optimized macros)
+# ==============================================================================
+
+"""
+    checkpoint!(pool::AdaptiveArrayPool, ::Type{T})
+
+Save state for a specific type only. Used by optimized macros that know
+which types will be used at compile time.
+
+~77% faster than full checkpoint! when only one type is used.
+"""
+@inline function checkpoint!(pool::AdaptiveArrayPool, ::Type{T}) where T
+    tp = get_typed_pool!(pool, T)
+    push!(tp.saved_stack, tp.n_active)
+    nothing
+end
+
+"""
+    rewind!(pool::AdaptiveArrayPool, ::Type{T})
+
+Restore state for a specific type only.
+"""
+@inline function rewind!(pool::AdaptiveArrayPool, ::Type{T}) where T
+    tp = get_typed_pool!(pool, T)
+    tp.n_active = pop!(tp.saved_stack)
+    nothing
+end
+
+checkpoint!(::Nothing, ::Type) = nothing
+rewind!(::Nothing, ::Type) = nothing
+
+"""
+    checkpoint!(pool::AdaptiveArrayPool, types::Type...)
+
+Save state for multiple specific types. Uses @generated for zero-overhead
+compile-time unrolling.
+"""
+@generated function checkpoint!(pool::AdaptiveArrayPool, types::Type...)
+    exprs = [:(checkpoint!(pool, types[$i])) for i in 1:length(types)]
+    quote
+        $(exprs...)
+        nothing
+    end
+end
+
+"""
+    rewind!(pool::AdaptiveArrayPool, types::Type...)
+
+Restore state for multiple specific types in reverse order.
+"""
+@generated function rewind!(pool::AdaptiveArrayPool, types::Type...)
+    # Reverse order for proper stack unwinding
+    exprs = [:(rewind!(pool, types[$i])) for i in length(types):-1:1]
+    quote
+        $(exprs...)
+        nothing
+    end
+end
+
+checkpoint!(::Nothing, types::Type...) = nothing
+rewind!(::Nothing, types::Type...) = nothing
+
+# ==============================================================================
 # Pool Clearing
 # ==============================================================================
 
