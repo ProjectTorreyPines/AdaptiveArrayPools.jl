@@ -154,7 +154,8 @@ function _generate_pool_code(pool_name, expr, force_enable)
     # Extract types from acquire! calls for optimized checkpoint/rewind
     target_expr = Meta.isexpr(expr, [:function, :(=)]) && _is_function_def(expr) ? expr.args[2] : expr
     all_types = _extract_acquire_types(target_expr)
-    static_types, has_dynamic = _filter_static_types(all_types)
+    local_vars = _extract_local_assignments(target_expr)
+    static_types, has_dynamic = _filter_static_types(all_types, local_vars)
 
     # Use typed checkpoint/rewind if all types are static, otherwise fallback to full
     use_typed = !has_dynamic && !isempty(static_types)
@@ -329,13 +330,46 @@ end
 # --- Type Extraction for Optimized checkpoint!/rewind! ---
 
 """
-    _extract_acquire_types(expr) -> (static_types, has_dynamic)
+    _extract_local_assignments(expr, locals=Set{Symbol}()) -> Set{Symbol}
+
+Find all symbols that are assigned locally in the expression body.
+These cannot be used for typed checkpoint since they're defined after checkpoint!.
+
+Detects patterns like: `T = eltype(x)`, `local T = ...`, etc.
+"""
+function _extract_local_assignments(expr, locals=Set{Symbol}())
+    if expr isa Expr
+        if expr.head == :(=) && length(expr.args) >= 1
+            lhs = expr.args[1]
+            # Simple assignment: T = ...
+            if lhs isa Symbol
+                push!(locals, lhs)
+            # Typed assignment: T::Type = ...
+            elseif Meta.isexpr(lhs, :(::)) && length(lhs.args) >= 1 && lhs.args[1] isa Symbol
+                push!(locals, lhs.args[1])
+            end
+        elseif expr.head == :local
+            # local T or local T = ...
+            for arg in expr.args
+                if arg isa Symbol
+                    push!(locals, arg)
+                elseif Meta.isexpr(arg, :(=)) && arg.args[1] isa Symbol
+                    push!(locals, arg.args[1])
+                end
+            end
+        end
+        # Recurse
+        for arg in expr.args
+            _extract_local_assignments(arg, locals)
+        end
+    end
+    return locals
+end
+
+"""
+    _extract_acquire_types(expr) -> Set{Any}
 
 Extract type arguments from acquire!(pool, Type, ...) calls in an expression.
-Returns a tuple of (static_types::Vector, has_dynamic::Bool).
-
-Static types (like Float64, Int64) can be used for typed checkpoint.
-Dynamic types (like T where T is a variable) require fallback to full checkpoint.
 """
 function _extract_acquire_types(expr, types=Set{Any}())
     if expr isa Expr
@@ -357,43 +391,40 @@ function _extract_acquire_types(expr, types=Set{Any}())
 end
 
 """
-    _filter_static_types(types) -> (static_types, has_dynamic)
+    _filter_static_types(types, local_vars=Set{Symbol}()) -> (static_types, has_dynamic)
 
-Separate static types (known concrete types) from dynamic types (type parameters).
+Filter types for typed checkpoint/rewind generation.
+
+- Symbols NOT in local_vars are passed through (type parameters, global types)
+- Symbols IN local_vars trigger fallback (defined after checkpoint!)
+- Parametric types like Vector{T} trigger fallback
+
+Type parameters (T, S from `where` clause) resolve to concrete types at runtime.
+Local variables (T = eltype(x)) are defined after checkpoint! and cannot be used.
 """
-function _filter_static_types(types)
-    # Known concrete types that are safe to use for typed checkpoint
-    # Includes aliases (Int = Int64, UInt = UInt64, etc.)
-    known_types = Set{Symbol}([
-        :Float64, :Float32, :Float16,
-        :Int64, :Int32, :Int16, :Int8, :Int,      # Int is alias for Int64
-        :UInt64, :UInt32, :UInt16, :UInt8, :UInt, # UInt is alias for UInt64
-        :ComplexF64, :ComplexF32,
-        :Bool, :Char, :String
-    ])
-
+function _filter_static_types(types, local_vars=Set{Symbol}())
     static_types = Any[]
     has_dynamic = false
+
     for t in types
         if t isa Symbol
-            if t in known_types
-                # Known concrete type like Float64 - use it
-                push!(static_types, t)
-            elseif length(string(t)) == 1
-                # Single-letter symbol like T, S, N - likely type parameter
+            if t in local_vars
+                # Local variable like T = eltype(x) - defined after checkpoint!
+                # Must fall back to full checkpoint
                 has_dynamic = true
             else
-                # Multi-letter symbol like MyOwnType - assume concrete type
+                # Type parameter or global type - safe to use
                 push!(static_types, t)
             end
         elseif t isa Expr && t.head == :curly
-            # Parametric type like Vector{Float64} - treat as dynamic for safety
+            # Parametric type like Vector{Float64} - can't use as Type argument
             has_dynamic = true
         else
-            # GlobalRef or other concrete type
+            # GlobalRef or other concrete type reference
             push!(static_types, t)
         end
     end
+
     return static_types, has_dynamic
 end
 
