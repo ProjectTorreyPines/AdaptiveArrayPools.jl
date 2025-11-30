@@ -239,6 +239,68 @@ end
     rewind!(pool)
 end
 
+@testset "Typed checkpoint!/rewind! (generated functions)" begin
+    pool = AdaptiveArrayPool()
+
+    # Single type - checkpoint! and rewind!
+    checkpoint!(pool, Float64)
+    v1 = acquire!(pool, Float64, 10)
+    @test pool.float64.n_active == 1
+    rewind!(pool, Float64)
+    @test pool.float64.n_active == 0
+
+    # Multiple types - checkpoint! and rewind!
+    checkpoint!(pool, Float64, Int64)
+    v_f64 = acquire!(pool, Float64, 10)
+    v_i64 = acquire!(pool, Int64, 5)
+    @test pool.float64.n_active == 1
+    @test pool.int64.n_active == 1
+    rewind!(pool, Float64, Int64)
+    @test pool.float64.n_active == 0
+    @test pool.int64.n_active == 0
+
+    # Three types
+    checkpoint!(pool, Float64, Int64, Float32)
+    v1 = acquire!(pool, Float64, 10)
+    v2 = acquire!(pool, Int64, 5)
+    v3 = acquire!(pool, Float32, 3)
+    @test pool.float64.n_active == 1
+    @test pool.int64.n_active == 1
+    @test pool.float32.n_active == 1
+    rewind!(pool, Float64, Int64, Float32)
+    @test pool.float64.n_active == 0
+    @test pool.int64.n_active == 0
+    @test pool.float32.n_active == 0
+
+    # All fixed types
+    checkpoint!(pool, Float64, Float32, Int64, Int32, ComplexF64, Bool)
+    acquire!(pool, Float64, 10)
+    acquire!(pool, Float32, 10)
+    acquire!(pool, Int64, 10)
+    acquire!(pool, Int32, 10)
+    acquire!(pool, ComplexF64, 10)
+    acquire!(pool, Bool, 10)
+    @test pool.float64.n_active == 1
+    @test pool.float32.n_active == 1
+    @test pool.int64.n_active == 1
+    @test pool.int32.n_active == 1
+    @test pool.complexf64.n_active == 1
+    @test pool.bool.n_active == 1
+    rewind!(pool, Float64, Float32, Int64, Int32, ComplexF64, Bool)
+    @test pool.float64.n_active == 0
+    @test pool.float32.n_active == 0
+    @test pool.int64.n_active == 0
+    @test pool.int32.n_active == 0
+    @test pool.complexf64.n_active == 0
+    @test pool.bool.n_active == 0
+
+    # nothing fallback with types
+    @test checkpoint!(nothing, Float64) === nothing
+    @test checkpoint!(nothing, Float64, Int64) === nothing
+    @test rewind!(nothing, Float64) === nothing
+    @test rewind!(nothing, Float64, Int64) === nothing
+end
+
 @testset "Allocation test (Zero Alloc)" begin
     pool = AdaptiveArrayPool()
 

@@ -5,3 +5,4 @@ coverage/
 docs/build/
 docs/site/
 Manifest.toml
+LocalPreferences.toml
