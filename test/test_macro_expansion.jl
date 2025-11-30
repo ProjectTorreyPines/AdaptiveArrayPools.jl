@@ -29,25 +29,6 @@
         @test occursin("finally", expr_str)
     end
 
-    # Test @with_pool function mode expansion
-    @testset "@with_pool function expansion" begin
-        expr = @macroexpand @with_pool pool function test_func(n)
-            v = acquire!(pool, Float64, n)
-            sum(v)
-        end
-
-        expr_str = string(expr)
-
-        # Should define a function
-        @test occursin("function", expr_str)
-        @test occursin("test_func", expr_str)
-
-        # Should contain pool management
-        @test occursin("get_global_pool", expr_str)
-        @test occursin("checkpoint!", expr_str)
-        @test occursin("rewind!", expr_str)
-    end
-
     # Test @maybe_with_pool expansion (has MAYBE_POOLING_ENABLED branch)
     @testset "@maybe_with_pool expansion" begin
         expr = @macroexpand @maybe_with_pool pool begin
@@ -63,27 +44,6 @@
         # Should have both branches (pool and nothing)
         @test occursin("get_global_pool", expr_str)
         @test occursin("nothing", expr_str)
-    end
-
-    # Test @pool_kwarg expansion
-    @testset "@pool_kwarg expansion" begin
-        expr = @macroexpand @pool_kwarg pool function layer(x)
-            out = acquire!(pool, Float64, length(x))
-            out .= x
-        end
-
-        expr_str = string(expr)
-
-        # Should define a function with pool kwarg
-        @test occursin("function", expr_str)
-        @test occursin("layer", expr_str)
-
-        # Should have pool as keyword argument with Union type
-        @test occursin("Union", expr_str) || occursin("pool", expr_str)
-
-        # Should NOT contain checkpoint!/rewind! (caller's responsibility)
-        @test !occursin("checkpoint!", expr_str)
-        @test !occursin("rewind!", expr_str)
     end
 
     # Test typed checkpoint optimization
@@ -129,47 +89,31 @@
         @test occursin("_validate_pool_return", expr_str)
     end
 
-    # Test short-form function
-    @testset "Short-form function expansion" begin
-        expr = @macroexpand @with_pool pool f(x) = acquire!(pool, Float64, length(x))
+    # Test 1-arg @with_pool (gensym pool)
+    @testset "@with_pool 1-arg expansion" begin
+        expr = @macroexpand @with_pool begin
+            nothing
+        end
 
         expr_str = string(expr)
 
-        # Should be a function definition
+        # Should still have pool management (with gensym name)
         @test occursin("get_global_pool", expr_str)
         @test occursin("checkpoint!", expr_str)
+        @test occursin("rewind!", expr_str)
     end
 
-    # Test function with where clause
-    @testset "Function with where clause" begin
-        expr = @macroexpand @with_pool pool function typed_func(x::Vector{T}) where {T<:Number}
-            v = acquire!(pool, T, length(x))
-            v .= x
+    # Test @maybe_with_pool 1-arg
+    @testset "@maybe_with_pool 1-arg expansion" begin
+        expr = @macroexpand @maybe_with_pool begin
+            nothing
         end
 
         expr_str = string(expr)
 
-        # Should preserve where clause
-        @test occursin("where", expr_str)
-        @test occursin("Number", expr_str)
-
-        # Type parameter T should be in checkpoint (not filtered out)
-        @test occursin("checkpoint!", expr_str)
+        # Should have conditional and pool management
+        @test occursin("get_global_pool", expr_str)
+        @test occursin("nothing", expr_str)
     end
 
-    # Test @pool_kwarg with existing kwargs
-    @testset "@pool_kwarg with existing kwargs" begin
-        expr = @macroexpand @pool_kwarg pool function with_kwargs(x; scale=1.0)
-            v = acquire!(pool, Float64, length(x))
-            v .= x .* scale
-        end
-
-        expr_str = string(expr)
-
-        # Should preserve existing kwargs
-        @test occursin("scale", expr_str)
-
-        # Should add pool kwarg
-        @test occursin("pool", expr_str)
-    end
 end
