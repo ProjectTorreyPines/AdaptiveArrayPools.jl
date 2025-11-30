@@ -1,121 +1,54 @@
 # ==============================================================================
-# Macros (v2: using checkpoint!/rewind! without state object)
+# Macros for AdaptiveArrayPools
 # ==============================================================================
 
 """
     @with_pool pool expr
     @with_pool pool function_definition
 
-Executes code with an explicit pool object and automatic state management.
-This is for advanced use cases where you manage your own pool instance.
+Binds `pool` to the global (task-local) pool and executes code with
+automatic state management (checkpoint/rewind).
 
-For most users, prefer `@use_pool` which uses the global (task-local) pool.
+This is the primary macro for most use cases.
 
 ## Block Mode
 ```julia
-pool = AdaptiveArrayPool()
 result = @with_pool pool begin
-    v = acquire!(pool, Float64, 100)
-    sum(v)
-end
-# Pool state restored here
-```
-
-## Function Definition Mode
-```julia
-@with_pool pool function compute(x)
-    temp = acquire!(pool, Float64, length(x))
-    temp .= x .* 2
-    sum(temp)
-end
-# `pool` keyword argument is auto-injected
-compute([1.0, 2.0])              # pool=nothing (allocates)
-compute([1.0, 2.0]; pool=mypool) # uses pool
-```
-"""
-macro with_pool(pool, expr)
-    # Compile-time check: if pooling disabled, just run expr with pool=nothing
-    if !USE_POOLING
-        if Meta.isexpr(expr, [:function, :(=)]) && _is_function_def(expr)
-            # Don't inject pool arg - just define function with pool=nothing inside
-            def_head = expr.head
-            call_expr = expr.args[1]
-            body = expr.args[2]
-            new_body = quote
-                local $(esc(pool)) = nothing
-                $(esc(body))
-            end
-            return Expr(def_head, esc(call_expr), new_body)
-        end
-        return quote
-            local $(esc(pool)) = nothing
-            $(esc(expr))
-        end
-    end
-
-    if Meta.isexpr(expr, [:function, :(=)]) && _is_function_def(expr)
-        # Function definition mode: inject pool arg and wrap body
-        expr = _inject_pool_arg(pool, expr)
-        return _wrap_function_body_with_pool(pool, expr)
-    end
-
-    # Block mode: wrap in checkpoint!/rewind!
-    quote
-        local _pool = $(esc(pool))
-        $checkpoint!(_pool)
-        try
-            local _result = $(esc(expr))
-            if $POOL_DEBUG[] && _pool !== nothing
-                $_validate_pool_return(_result, _pool)
-            end
-            _result
-        finally
-            $rewind!(_pool)
-        end
-    end
-end
-
-"""
-    @use_pool pool_name expr
-    @use_pool pool_name function_definition
-
-Binds `pool_name` to the global (task-local) pool and executes code with
-automatic state management. This is the recommended macro for most use cases.
-
-## Block Mode
-```julia
-result = @use_pool pool begin
     v = acquire!(pool, Float64, 100)
     v .= 1.0
     sum(v)
 end
+# Pool state automatically restored here
 ```
 
 ## Function Definition Mode
 ```julia
-@use_pool pool function fast_compute(n)
+@with_pool pool function fast_compute(n)
     v = acquire!(pool, Float64, n)
     v .= 1.0
     sum(v)
 end
+# Each call gets its own checkpoint/rewind scope
 ```
+
+See also: [`@maybe_with_pool`](@ref), [`@pool_kwarg`](@ref)
 """
-macro use_pool(pool_name, expr)
+macro with_pool(pool_name, expr)
     _generate_pool_code(pool_name, expr, true)
 end
 
 """
-    @maybe_use_pool pool_name expr
-    @maybe_use_pool pool_name function_definition
+    @maybe_with_pool pool expr
+    @maybe_with_pool pool function_definition
 
-Conditionally binds `pool_name` to the global pool based on `MAYBE_POOLING_ENABLED[]`.
-If disabled, `pool_name` becomes `nothing`, and `acquire!` falls back to standard allocation.
+Conditionally binds `pool` to the global pool based on `MAYBE_POOLING_ENABLED[]`.
+If disabled, `pool` becomes `nothing`, and `acquire!` falls back to standard allocation.
 
 Useful for libraries that want to let users control pooling behavior at runtime.
 
 ## Example
 ```julia
-@maybe_use_pool pool function compute(n)
+@maybe_with_pool pool function compute(n)
     v = acquire!(pool, Float64, n)  # Allocates if MAYBE_POOLING_ENABLED[] == false
     sum(v)
 end
@@ -126,10 +59,72 @@ compute(100)  # Normal allocation
 MAYBE_POOLING_ENABLED[] = true
 compute(100)  # Uses pool
 ```
+
+See also: [`@with_pool`](@ref), [`MAYBE_POOLING_ENABLED`](@ref)
 """
-macro maybe_use_pool(pool_name, expr)
+macro maybe_with_pool(pool_name, expr)
     _generate_pool_code(pool_name, expr, false)
 end
+
+"""
+    @pool_kwarg pool function_definition
+
+Injects a `pool` keyword argument into the function signature.
+Does NOT add checkpoint/rewind - the caller is responsible for state management.
+
+This is useful for building composable pool-aware functions where the caller
+controls when to checkpoint.
+
+## Example
+```julia
+@pool_kwarg pool function layer_forward(x)
+    out = acquire!(pool, Float64, size(x))
+    out .= x .* 2
+    return out
+end
+
+# Usage:
+layer_forward(x)                     # pool=nothing → normal allocation
+layer_forward(x; pool=mypool)        # uses provided pool (caller must checkpoint!)
+
+# Typical usage pattern:
+@with_pool p begin
+    result = layer_forward(x; pool=p)  # p is checkpointed by @with_pool
+end
+```
+
+See also: [`@with_pool`](@ref)
+"""
+macro pool_kwarg(pool_sym, func_def)
+    # Only works with function definitions
+    if !(Meta.isexpr(func_def, [:function, :(=)]) && _is_function_def(func_def))
+        error("@pool_kwarg requires a function definition")
+    end
+
+    # Compile-time check: if pooling disabled, just define function with pool=nothing
+    if !USE_POOLING
+        def_head = func_def.head
+        call_expr = func_def.args[1]
+        body = func_def.args[2]
+        new_body = quote
+            local $(esc(pool_sym)) = nothing
+            $(esc(body))
+        end
+        return Expr(def_head, esc(call_expr), new_body)
+    end
+
+    # Inject pool kwarg and define function (no checkpoint/rewind)
+    func_def = _inject_pool_arg(pool_sym, func_def)
+    def_head = func_def.head
+    call_expr = func_def.args[1]
+    body = func_def.args[2]
+
+    return Expr(def_head, esc(call_expr), esc(body))
+end
+
+# ==============================================================================
+# Internal: Code Generation
+# ==============================================================================
 
 function _generate_pool_code(pool_name, expr, force_enable)
     # Compile-time check: if pooling disabled, just run expr with pool=nothing
@@ -211,7 +206,11 @@ function _generate_pool_code(pool_name, expr, force_enable)
                 local $(esc(pool_name)) = get_global_pool()
                 $checkpoint_call
                 try
-                    $(esc(expr))
+                    local _result = $(esc(expr))
+                    if $POOL_DEBUG[]
+                        $_validate_pool_return(_result, $(esc(pool_name)))
+                    end
+                    _result
                 finally
                     $rewind_call
                 end
@@ -223,7 +222,11 @@ function _generate_pool_code(pool_name, expr, force_enable)
                     local $(esc(pool_name)) = get_global_pool()
                     $checkpoint_call
                     try
-                        $(esc(expr))
+                        local _result = $(esc(expr))
+                        if $POOL_DEBUG[]
+                            $_validate_pool_return(_result, $(esc(pool_name)))
+                        end
+                        _result
                     finally
                         $rewind_call
                     end
@@ -236,28 +239,9 @@ function _generate_pool_code(pool_name, expr, force_enable)
     end
 end
 
-# --- Helper Functions for Macros ---
-
-function _wrap_function_body_with_pool(pool_sym, func_def)
-    def_head = func_def.head
-    call_expr = func_def.args[1]
-    body = func_def.args[2]
-
-    new_body = quote
-        $checkpoint!($(esc(pool_sym)))
-        try
-            local _result = $(esc(body))
-            if $POOL_DEBUG[] && $(esc(pool_sym)) !== nothing
-                $_validate_pool_return(_result, $(esc(pool_sym)))
-            end
-            _result
-        finally
-            $rewind!($(esc(pool_sym)))
-        end
-    end
-
-    return Expr(def_head, esc(call_expr), new_body)
-end
+# ==============================================================================
+# Internal: Helper Functions
+# ==============================================================================
 
 function _is_function_def(expr)
     if expr.head == :function
@@ -327,7 +311,9 @@ function _get_arg_name(arg)
     return arg
 end
 
-# --- Type Extraction for Optimized checkpoint!/rewind! ---
+# ==============================================================================
+# Internal: Type Extraction for Optimized checkpoint!/rewind!
+# ==============================================================================
 
 """
     _extract_local_assignments(expr, locals=Set{Symbol}()) -> Set{Symbol}

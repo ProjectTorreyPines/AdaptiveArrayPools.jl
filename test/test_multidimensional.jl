@@ -57,8 +57,7 @@ end
 end
 
 @testset "Multi-dimensional with @with_pool" begin
-    pool = AdaptiveArrayPool()
-
+    # Using @with_pool (global pool, checkpoint/rewind)
     @with_pool pool function matrix_computation(n::Int)
         mat = acquire!(pool, Float64, n, n)
         mat .= 1.0
@@ -67,12 +66,27 @@ end
         return sum(mat) + sum(vec)
     end
 
-    # Without pool
     result1 = matrix_computation(10)
     @test result1 == 120.0
 
-    # With pool
-    result2 = matrix_computation(10; pool)
+    # Using @pool_kwarg (kwarg injection, no checkpoint/rewind)
+    @pool_kwarg pool function matrix_computation_kwarg(n::Int)
+        mat = acquire!(pool, Float64, n, n)
+        mat .= 1.0
+        vec = acquire!(pool, Float64, n)
+        vec .= 2.0
+        return sum(mat) + sum(vec)
+    end
+
+    # Without pool (normal allocation)
+    result2 = matrix_computation_kwarg(10)
     @test result2 == 120.0
-    @test pool.float64.n_active == 0
+
+    # With explicit pool (caller manages checkpoint)
+    mypool = AdaptiveArrayPool()
+    checkpoint!(mypool)
+    result3 = matrix_computation_kwarg(10; pool=mypool)
+    rewind!(mypool)
+    @test result3 == 120.0
+    @test mypool.float64.n_active == 0
 end

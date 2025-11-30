@@ -61,7 +61,6 @@ end
 
     # Default is false
     POOL_DEBUG[] = false
-    pool = AdaptiveArrayPool()
 
     # When debug is off, no validation happens even if SubArray is returned
     result = @with_pool pool begin
@@ -76,8 +75,6 @@ end
 @testset "POOL_DEBUG with safety violation" begin
     old_debug = POOL_DEBUG[]
     POOL_DEBUG[] = true
-
-    pool = AdaptiveArrayPool()
 
     # Should throw error when returning SubArray with debug on
     @test_throws ErrorException @with_pool pool begin
