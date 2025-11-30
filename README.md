@@ -115,7 +115,10 @@ end
 
 ## Important: User Responsibility
 
-**Arrays acquired from a pool are only valid within the `@with_pool` scope.**
+This library prioritizes **zero-overhead performance** over runtime safety checks. Two fundamental rules must be followed:
+
+1. **Scope Rule**: Arrays acquired from a pool are only valid within the `@with_pool` scope.
+2. **Task Rule**: Pool objects must not be shared across Tasks (see [Multi-Threading Usage](#multi-threading-usage)).
 
 When `@with_pool` ends, all acquired arrays are "rewound" and their memory becomes available for reuse. Using them after the scope ends leads to **undefined behavior** (data corruption, crashes).
 
@@ -187,13 +190,42 @@ end
 
 - **True Zero Allocation**: Not just array data, but the `SubArray` (View) wrappers are also cached.
 - **Low Overhead**: Optimized to have < 100 ns overhead for pool management, suitable for tight inner loops.
-- **Task-Local Safety**: `@with_pool` uses `task_local_storage`, making it safe for multi-threaded code.
+- **Task-Local Isolation**: Each Task gets its own pool via `task_local_storage()`. Thread-safe when `@with_pool` is called within each task's scope (see [Multi-Threading Usage](#multi-threading-usage) below).
 - **Type Stable**: Optimized for `Float64`, `Int`, and other common types using fixed-slot caching.
 - **Non-Intrusive**: If you disable pooling via preferences, `acquire!` compiles down to a standard `Array` allocation.
+
+## Multi-Threading Usage
+
+AdaptiveArrayPools uses `task_local_storage()` for **task-local isolation**: each Julia Task gets its own independent pool.
+
+```julia
+# ✅ SAFE: @with_pool inside @threads
+Threads.@threads for i in 1:N
+    @with_pool pool begin
+        a = acquire!(pool, Float64, 100)
+    end
+end
+
+# ❌ UNSAFE: @with_pool outside @threads (race condition!)
+@with_pool pool Threads.@threads for i in 1:N
+    a = acquire!(pool, Float64, 100)  # All threads share one pool!
+end
+```
+
+| Pattern | Safety |
+|---------|--------|
+| `@with_pool` inside `@threads` | ✅ Safe |
+| `@with_pool` outside `@threads` | ❌ Unsafe |
+| Function with `@with_pool` called from `@threads` | ✅ Safe |
+
+> **Important**: Pool objects must not be shared across Tasks. This library does not add locks—correct usage is the user's responsibility.
+
+For detailed explanation including Julia's Task/Thread model and why thread-local pools don't work, see **[Multi-Threading Guide](docs/multi-threading.md)**.
 
 ## Documentation
 
 - [API Reference](docs/api.md) - Macros, functions, and types
+- [Multi-Threading Guide](docs/multi-threading.md) - Task/Thread model, safe patterns, and design rationale
 - [Runtime Toggle: @maybe_with_pool](docs/maybe_with_pool.md) - Control pooling at runtime
 - [Configuration](docs/configuration.md) - Preferences.jl integration
 
