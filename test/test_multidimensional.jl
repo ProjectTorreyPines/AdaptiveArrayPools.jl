@@ -71,11 +71,11 @@ end
         matrix_computation(10, pool)
     end
     @test result1 == 120.0
-    @test get_global_pool().float64.n_active == 0
+    @test get_task_local_pool().float64.n_active == 0
 
-    # Alternative: function uses get_global_pool() directly
+    # Alternative: function uses get_task_local_pool() directly
     function matrix_computation_global(n::Int)
-        pool = get_global_pool()
+        pool = get_task_local_pool()
         mat = acquire!(pool, Float64, n, n)
         mat .= 1.0
         vec = acquire!(pool, Float64, n)
@@ -87,7 +87,7 @@ end
         matrix_computation_global(10)
     end
     @test result2 == 120.0
-    @test get_global_pool().float64.n_active == 0
+    @test get_task_local_pool().float64.n_active == 0
 
     # With explicit pool (caller manages checkpoint)
     mypool = AdaptiveArrayPool()

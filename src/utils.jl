@@ -147,17 +147,17 @@ end
 """
     pool_stats(; io::IO=stdout)
 
-Print statistics for the global (Task-local) pool.
+Print statistics for the task-local pool.
 
 # Example
 ```julia
 @with_pool begin
     v = acquire!(pool, Float64, 100)
-    pool_stats()  # Shows global pool stats
+    pool_stats()  # Shows task-local pool stats
 end
 ```
 """
-pool_stats(; io::IO=stdout) = pool_stats(get_global_pool(); io)
+pool_stats(; io::IO=stdout) = pool_stats(get_task_local_pool(); io)
 
 # ==============================================================================
 # Base.show (delegates to pool_stats)

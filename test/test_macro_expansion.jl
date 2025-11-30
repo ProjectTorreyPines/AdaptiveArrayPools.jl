@@ -16,9 +16,9 @@
         # Should be a let block or quote block
         @test expr isa Expr
 
-        # Should contain get_global_pool() call
+        # Should contain get_task_local_pool() call
         expr_str = string(expr)
-        @test occursin("get_global_pool", expr_str)
+        @test occursin("get_task_local_pool", expr_str)
 
         # Should contain checkpoint! and rewind!
         @test occursin("checkpoint!", expr_str)
@@ -42,7 +42,7 @@
         @test occursin("RefValue", expr_str) || occursin("if", expr_str)
 
         # Should have both branches (pool and nothing)
-        @test occursin("get_global_pool", expr_str)
+        @test occursin("get_task_local_pool", expr_str)
         @test occursin("nothing", expr_str)
     end
 
@@ -98,7 +98,7 @@
         expr_str = string(expr)
 
         # Should still have pool management (with gensym name)
-        @test occursin("get_global_pool", expr_str)
+        @test occursin("get_task_local_pool", expr_str)
         @test occursin("checkpoint!", expr_str)
         @test occursin("rewind!", expr_str)
     end
@@ -112,7 +112,7 @@
         expr_str = string(expr)
 
         # Should have conditional and pool management
-        @test occursin("get_global_pool", expr_str)
+        @test occursin("get_task_local_pool", expr_str)
         @test occursin("nothing", expr_str)
     end
 

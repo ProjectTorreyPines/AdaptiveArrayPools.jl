@@ -1,5 +1,5 @@
 # ==============================================================================
-# Global Pool (Task Local Storage) & Configuration
+# Task-Local Pool & Configuration
 # ==============================================================================
 
 using Preferences: @load_preference
@@ -52,7 +52,7 @@ const MAYBE_POOLING_ENABLED = Ref(true)
 const _POOL_KEY = :ADAPTIVE_ARRAY_POOL
 
 """
-    get_global_pool() -> AdaptiveArrayPool
+    get_task_local_pool() -> AdaptiveArrayPool
 
 Retrieves (or creates) the `AdaptiveArrayPool` for the current Task.
 
@@ -61,7 +61,7 @@ ensuring thread safety without locks.
 
 Uses `get!` for single hash lookup (~30% faster than haskey+getindex).
 """
-@inline function get_global_pool()
+@inline function get_task_local_pool()
     get!(task_local_storage(), _POOL_KEY) do
         AdaptiveArrayPool()
     end::AdaptiveArrayPool

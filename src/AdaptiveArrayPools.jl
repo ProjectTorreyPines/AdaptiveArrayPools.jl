@@ -2,7 +2,7 @@ module AdaptiveArrayPools
 
 using Printf
 
-export AdaptiveArrayPool, acquire!, pool_stats, get_global_pool
+export AdaptiveArrayPool, acquire!, pool_stats, get_task_local_pool
 export @with_pool, @maybe_with_pool
 export USE_POOLING, MAYBE_POOLING_ENABLED, POOL_DEBUG
 
@@ -18,8 +18,8 @@ include("utils.jl")
 # Core operations: get_view!, acquire!, checkpoint!, rewind!, empty!
 include("core.jl")
 
-# Global pool (Task Local Storage)
-include("global_pool.jl")
+# Task-local pool
+include("task_local_pool.jl")
 
 # Macros: @with_pool, @maybe_with_pool
 include("macros.jl")

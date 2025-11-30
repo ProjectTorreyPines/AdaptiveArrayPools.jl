@@ -42,7 +42,7 @@ end
 
 # Without pool name (for simple blocks)
 @with_pool begin
-    inner_function()  # inner function can use get_global_pool()
+    inner_function()  # inner function can use get_task_local_pool()
 end
 ```
 
@@ -145,7 +145,7 @@ function _generate_pool_code(pool_name, expr, force_enable)
 
     if force_enable
         return quote
-            local $(esc(pool_name)) = get_global_pool()
+            local $(esc(pool_name)) = get_task_local_pool()
             $checkpoint_call
             try
                 local _result = $(esc(expr))
@@ -161,7 +161,7 @@ function _generate_pool_code(pool_name, expr, force_enable)
         # Split branches completely to avoid Union boxing
         return quote
             if $MAYBE_POOLING_ENABLED[]
-                local $(esc(pool_name)) = get_global_pool()
+                local $(esc(pool_name)) = get_task_local_pool()
                 $checkpoint_call
                 try
                     local _result = $(esc(expr))
@@ -204,7 +204,7 @@ function _generate_function_pool_code(pool_name, func_def, force_enable, disable
 
     if force_enable
         new_body = quote
-            local $(esc(pool_name)) = get_global_pool()
+            local $(esc(pool_name)) = get_task_local_pool()
             $checkpoint_call
             try
                 $(esc(body))
@@ -215,7 +215,7 @@ function _generate_function_pool_code(pool_name, func_def, force_enable, disable
     else
         new_body = quote
             if $MAYBE_POOLING_ENABLED[]
-                local $(esc(pool_name)) = get_global_pool()
+                local $(esc(pool_name)) = get_task_local_pool()
                 $checkpoint_call
                 try
                     $(esc(body))

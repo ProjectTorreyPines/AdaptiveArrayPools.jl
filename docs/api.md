@@ -18,7 +18,7 @@
 | `rewind!(pool)` | Restores the pool to the last checkpoint, freeing all arrays acquired since then. |
 | `rewind!(pool, T...)` | Type-specific rewind for optimized performance. |
 | `pool_stats(pool)` | Prints detailed statistics about pool usage. |
-| `get_global_pool()` | Returns the task-local global pool instance. |
+| `get_task_local_pool()` | Returns the task-local pool instance. |
 | `empty!(pool)` | Clears all internal storage, releasing all memory. |
 
 ## Types

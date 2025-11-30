@@ -167,7 +167,7 @@ end
 
 ```julia
 # ❌ DANGER: Race condition!
-pool = get_global_pool()  # Main Task's pool
+pool = get_task_local_pool()  # Main Task's pool
 Threads.@threads for i in 1:N
     a = acquire!(pool, Float64, 100)  # Shared access!
 end

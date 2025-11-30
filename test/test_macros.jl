@@ -60,13 +60,13 @@ end
         sum(v)
     end
     @test result == 10.0
-    @test get_global_pool().float64.n_active == 0
+    @test get_task_local_pool().float64.n_active == 0
 end
 
 @testset "@with_pool 1-arg (no pool name)" begin
     # When you don't need the pool variable, use 1-arg form
     function inner_uses_global(n)
-        pool = get_global_pool()
+        pool = get_task_local_pool()
         v = acquire!(pool, Float64, n)
         v .= 2.0
         sum(v)
@@ -76,7 +76,7 @@ end
         inner_uses_global(5)
     end
     @test result == 10.0
-    @test get_global_pool().float64.n_active == 0
+    @test get_task_local_pool().float64.n_active == 0
 end
 
 @testset "@with_pool nested scopes" begin
@@ -109,7 +109,7 @@ end
         compute_with_pool(x, pool)
     end
     @test result == 12.0
-    @test get_global_pool().float64.n_active == 0
+    @test get_task_local_pool().float64.n_active == 0
 end
 
 @testset "@maybe_with_pool enabled" begin
@@ -121,7 +121,7 @@ end
         sum(v)
     end
     @test result == 30.0
-    @test get_global_pool().float64.n_active == 0
+    @test get_task_local_pool().float64.n_active == 0
 end
 
 @testset "@maybe_with_pool disabled" begin
@@ -144,7 +144,7 @@ end
     MAYBE_POOLING_ENABLED[] = true
 
     result = @maybe_with_pool begin
-        pool = get_global_pool()
+        pool = get_task_local_pool()
         v = acquire!(pool, Float64, 5)
         v .= 1.0
         sum(v)
@@ -176,5 +176,5 @@ end
     @test res == 10.0
     
     # Check if pool is clean after call
-    @test get_global_pool().float64.n_active == 0
+    @test get_task_local_pool().float64.n_active == 0
 end

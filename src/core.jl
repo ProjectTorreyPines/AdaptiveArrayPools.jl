@@ -66,7 +66,7 @@ After the enclosing `@with_pool` block ends, the memory is reclaimed for reuse.
 
 ## Example
 ```julia
-@use_global_pool pool begin
+@with_pool pool begin
     v = acquire!(pool, Float64, 100)
     v .= 1.0
     sum(v)
