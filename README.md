@@ -47,6 +47,9 @@ end
 
 # 2. Run it in a loop
 function run_simulation()
+
+    pool_stats()  # Before: pool is empty
+
     total = 0.0
 
     # First call: Pool allocates internal memory
@@ -57,6 +60,9 @@ function run_simulation()
     for i in 1:1000
         total += heavy_computation(100)
     end
+
+    pool_stats()  # After: pool is populated and ready for reuse
+
     return total
 end
 ```
@@ -189,7 +195,6 @@ end
 
 - [API Reference](docs/api.md) - Macros, functions, and types
 - [Runtime Toggle: @maybe_with_pool](docs/maybe_with_pool.md) - Control pooling at runtime
-- [Kwarg Injection: @pool_kwarg](docs/pool_kwarg.md) - For composable library functions
 - [Configuration](docs/configuration.md) - Preferences.jl integration
 
 ## Configuration

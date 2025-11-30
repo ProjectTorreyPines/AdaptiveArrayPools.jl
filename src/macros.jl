@@ -12,7 +12,26 @@ Calls `checkpoint!` on entry and `rewind!` on exit (even if errors occur).
 If `pool_name` is omitted, a hidden variable is used (useful when you don't
 need to reference the pool directly).
 
-## Example
+## Function Definition
+Wrap function definitions to inject pool lifecycle into the body:
+
+```julia
+# Long form function
+@with_pool pool function compute_stats(data)
+    tmp = acquire!(pool, Float64, length(data))
+    tmp .= data
+    mean(tmp), std(tmp)
+end
+
+# Short form function
+@with_pool pool fast_sum(data) = begin
+    tmp = acquire!(pool, eltype(data), length(data))
+    tmp .= data
+    sum(tmp)
+end
+```
+
+## Block Usage
 ```julia
 # With explicit pool name
 @with_pool pool begin
@@ -60,7 +79,18 @@ If disabled, `pool_name` becomes `nothing`, and `acquire!` falls back to standar
 
 Useful for libraries that want to let users control pooling behavior at runtime.
 
-## Example
+## Function Definition
+Like `@with_pool`, wrap function definitions:
+
+```julia
+@maybe_with_pool pool function process_data(data)
+    tmp = acquire!(pool, Float64, length(data))  # Conditionally pooled
+    tmp .= data
+    sum(tmp)
+end
+```
+
+## Block Usage
 ```julia
 MAYBE_POOLING_ENABLED[] = false
 @maybe_with_pool pool begin
@@ -84,12 +114,23 @@ end
 function _generate_pool_code(pool_name, expr, force_enable)
     # Compile-time check: if pooling disabled, just run expr with pool=nothing
     if !USE_POOLING
-        return quote
-            local $(esc(pool_name)) = $(nothing)
-            $(esc(expr))
+        if Meta.isexpr(expr, [:function, :(=)]) && _is_function_def(expr)
+            # Function definition: inject local pool = nothing at start of body
+            return _generate_function_pool_code(pool_name, expr, force_enable, true)
+        else
+            return quote
+                local $(esc(pool_name)) = $(nothing)
+                $(esc(expr))
+            end
         end
     end
 
+    # Check if function definition
+    if Meta.isexpr(expr, [:function, :(=)]) && _is_function_def(expr)
+        return _generate_function_pool_code(pool_name, expr, force_enable, false)
+    end
+
+    # Block logic
     # Extract types from acquire! calls for optimized checkpoint/rewind
     # Only extract types for calls to the target pool (pool_name)
     all_types = _extract_acquire_types(expr, pool_name)
@@ -137,6 +178,72 @@ function _generate_pool_code(pool_name, expr, force_enable)
             end
         end
     end
+end
+
+function _generate_function_pool_code(pool_name, func_def, force_enable, disable_pooling)
+    def_head = func_def.head
+    call_expr = func_def.args[1]
+    body = func_def.args[2]
+
+    if disable_pooling
+        new_body = quote
+            local $(esc(pool_name)) = $(nothing)
+            $(esc(body))
+        end
+        return Expr(def_head, esc(call_expr), new_body)
+    end
+
+    # Analyze body for types
+    all_types = _extract_acquire_types(body, pool_name)
+    local_vars = _extract_local_assignments(body)
+    static_types, has_dynamic = _filter_static_types(all_types, local_vars)
+    use_typed = !has_dynamic && !isempty(static_types)
+
+    checkpoint_call = use_typed ? _generate_typed_checkpoint_call(esc(pool_name), static_types) : :($checkpoint!($(esc(pool_name))))
+    rewind_call = use_typed ? _generate_typed_rewind_call(esc(pool_name), static_types) : :($rewind!($(esc(pool_name))))
+
+    if force_enable
+        new_body = quote
+            local $(esc(pool_name)) = get_global_pool()
+            $checkpoint_call
+            try
+                $(esc(body))
+            finally
+                $rewind_call
+            end
+        end
+    else
+        new_body = quote
+            if $MAYBE_POOLING_ENABLED[]
+                local $(esc(pool_name)) = get_global_pool()
+                $checkpoint_call
+                try
+                    $(esc(body))
+                finally
+                    $rewind_call
+                end
+            else
+                local $(esc(pool_name)) = $(nothing)
+                $(esc(body))
+            end
+        end
+    end
+
+    return Expr(def_head, esc(call_expr), new_body)
+end
+
+function _is_function_def(expr)
+    if expr.head == :function
+        return true
+    end
+    if expr.head == :(=) && length(expr.args) >= 1
+        lhs = expr.args[1]
+        while Meta.isexpr(lhs, [:where, :(::)])
+            lhs = lhs.args[1]
+        end
+        return Meta.isexpr(lhs, :call)
+    end
+    return false
 end
 
 # ==============================================================================

@@ -163,3 +163,18 @@ end
     # Reset
     MAYBE_POOLING_ENABLED[] = true
 end
+
+@testset "@with_pool function definition" begin
+    @with_pool p1 function my_test_func(n)
+        v = acquire!(p1, Float64, n)
+        v .= 1.0
+        sum(v)
+    end
+
+    # Check if it works
+    res = my_test_func(10)
+    @test res == 10.0
+    
+    # Check if pool is clean after call
+    @test get_global_pool().float64.n_active == 0
+end

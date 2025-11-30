@@ -6,7 +6,6 @@
 |-------|-------------|
 | `@with_pool name expr` | **Recommended.** Injects a global, task-local pool named `name`. Automatically checkpoints and rewinds. |
 | `@maybe_with_pool name expr` | Same as `@with_pool`, but can be toggled on/off at runtime via `MAYBE_POOLING_ENABLED[]`. |
-| `@pool_kwarg name func_def` | Adds `pool` as a keyword argument to a function. No automatic checkpoint/rewind. |
 
 ## Functions
 
