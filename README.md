@@ -61,67 +61,6 @@ function run_simulation()
 end
 ```
 
-## Important: User Responsibility
-
-**Arrays acquired from a pool are only valid within the `@with_pool` scope.**
-
-When `@with_pool` ends, all acquired arrays are "rewound" and their memory becomes available for reuse. Using them after the scope ends leads to **undefined behavior** (data corruption, crashes).
-
-### Safe Patterns
-
-```julia
-@with_pool pool function safe_example(n)
-    v = acquire!(pool, Float64, n)
-    v .= 1.0
-
-    # ✅ Return computed values (scalars, tuples, etc.)
-    return sum(v), length(v)
-end
-
-@with_pool pool function safe_copy(n)
-    v = acquire!(pool, Float64, n)
-    v .= rand(n)
-
-    # ✅ Return a copy if you need the data outside
-    return copy(v)
-end
-```
-
-### Unsafe Patterns (DO NOT DO THIS)
-
-```julia
-@with_pool pool function unsafe_return(n)
-    v = acquire!(pool, Float64, n)
-    v .= 1.0
-    return v  # ❌ UNSAFE: Returning pool-backed array!
-end
-
-result = unsafe_return(100)
-# result now points to memory that may be overwritten!
-
-# ❌ Also unsafe: storing in global variables, closures, etc.
-global_storage = nothing
-@with_pool pool begin
-    v = acquire!(pool, Float64, 100)
-    global_storage = v  # ❌ UNSAFE: escaping via global
-end
-```
-
-### Debugging with POOL_DEBUG
-
-Enable `POOL_DEBUG` to catch direct returns of pool-backed arrays:
-
-```julia
-POOL_DEBUG[] = true  # Enable safety checks
-
-@with_pool pool begin
-    v = acquire!(pool, Float64, 10)
-    v  # Throws ErrorException: "Returning SubArray backed by pool..."
-end
-```
-
-> **Note:** `POOL_DEBUG` only catches direct returns, not indirect escapes (globals, closures). It's a development aid, not a guarantee.
-
 ## Why Use This?
 
 In high-performance computing, allocating temporary arrays inside a loop creates significant GC pressure, causing stuttering and performance degradation. Manual in-place operations (passing pre-allocated buffers) avoid this but require tedious buffer management and argument passing, making code complex and error-prone.
@@ -166,12 +105,82 @@ end
 
 > **Performance Note:**
 > - **vs Manual Pre-allocation**: This library achieves performance comparable to manually passing pre-allocated buffers (in-place operations), but without the boilerplate of managing buffer lifecycles.
-> - **Low Overhead**: The overhead of `acquire!` is typically **sub-microsecond** (< 1μs), making it negligible for most workloads compared to the cost of memory allocation.
+> - **Low Overhead**: The overhead of `@with_pool` (including checkpoint/rewind) is typically **tens of nanoseconds** (< 100 ns), making it negligible for most workloads compared to the cost of memory allocation.
+
+## Important: User Responsibility
+
+**Arrays acquired from a pool are only valid within the `@with_pool` scope.**
+
+When `@with_pool` ends, all acquired arrays are "rewound" and their memory becomes available for reuse. Using them after the scope ends leads to **undefined behavior** (data corruption, crashes).
+
+<details>
+<summary><b>Safe Patterns</b> (click to expand)</summary>
+
+```julia
+@with_pool pool function safe_example(n)
+    v = acquire!(pool, Float64, n)
+    v .= 1.0
+
+    # ✅ Return computed values (scalars, tuples, etc.)
+    return sum(v), length(v)
+end
+
+@with_pool pool function safe_copy(n)
+    v = acquire!(pool, Float64, n)
+    v .= rand(n)
+
+    # ✅ Return a copy if you need the data outside
+    return copy(v)
+end
+```
+
+</details>
+
+<details>
+<summary><b>Unsafe Patterns (DO NOT DO THIS)</b> (click to expand)</summary>
+
+```julia
+@with_pool pool function unsafe_return(n)
+    v = acquire!(pool, Float64, n)
+    v .= 1.0
+    return v  # ❌ UNSAFE: Returning pool-backed array!
+end
+
+result = unsafe_return(100)
+# result now points to memory that may be overwritten!
+
+# ❌ Also unsafe: storing in global variables, closures, etc.
+global_storage = nothing
+@with_pool pool begin
+    v = acquire!(pool, Float64, 100)
+    global_storage = v  # ❌ UNSAFE: escaping via global
+end
+```
+
+</details>
+
+<details>
+<summary><b>Debugging with POOL_DEBUG</b> (click to expand)</summary>
+
+Enable `POOL_DEBUG` to catch direct returns of pool-backed arrays:
+
+```julia
+POOL_DEBUG[] = true  # Enable safety checks
+
+@with_pool pool begin
+    v = acquire!(pool, Float64, 10)
+    v  # Throws ErrorException: "Returning SubArray backed by pool..."
+end
+```
+
+> **Note:** `POOL_DEBUG` only catches direct returns, not indirect escapes (globals, closures). It's a development aid, not a guarantee.
+
+</details>
 
 ## Key Features
 
 - **True Zero Allocation**: Not just array data, but the `SubArray` (View) wrappers are also cached.
-- **Low Overhead**: Optimized to have < 1μs overhead per acquisition, suitable for tight inner loops.
+- **Low Overhead**: Optimized to have < 100 ns overhead for pool management, suitable for tight inner loops.
 - **Task-Local Safety**: `@with_pool` uses `task_local_storage`, making it safe for multi-threaded code.
 - **Type Stable**: Optimized for `Float64`, `Int`, and other common types using fixed-slot caching.
 - **Non-Intrusive**: If you disable pooling via preferences, `acquire!` compiles down to a standard `Array` allocation.
