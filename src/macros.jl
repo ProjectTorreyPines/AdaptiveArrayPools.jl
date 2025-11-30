@@ -91,7 +91,8 @@ function _generate_pool_code(pool_name, expr, force_enable)
     end
 
     # Extract types from acquire! calls for optimized checkpoint/rewind
-    all_types = _extract_acquire_types(expr)
+    # Only extract types for calls to the target pool (pool_name)
+    all_types = _extract_acquire_types(expr, pool_name)
     local_vars = _extract_local_assignments(expr)
     static_types, has_dynamic = _filter_static_types(all_types, local_vars)
 
@@ -180,24 +181,30 @@ function _extract_local_assignments(expr, locals=Set{Symbol}())
 end
 
 """
-    _extract_acquire_types(expr) -> Set{Any}
+    _extract_acquire_types(expr, target_pool) -> Set{Any}
 
-Extract type arguments from acquire!(pool, Type, ...) calls in an expression.
+Extract type arguments from acquire!(target_pool, Type, ...) calls in an expression.
+Only extracts types from calls where the first argument matches `target_pool`.
+This prevents AST pollution when multiple pools are used in the same block.
 """
-function _extract_acquire_types(expr, types=Set{Any}())
+function _extract_acquire_types(expr, target_pool, types=Set{Any}())
     if expr isa Expr
         # Match: acquire!(pool, Type, ...)
         if expr.head == :call && length(expr.args) >= 3
             fn = expr.args[1]
             if fn == :acquire! || (fn isa Expr && fn.head == :. &&
                                    length(fn.args) >= 2 && fn.args[end] == QuoteNode(:acquire!))
-                type_arg = expr.args[3]
-                push!(types, type_arg)
+                # Check if the pool argument matches our target pool
+                pool_arg = expr.args[2]
+                if pool_arg == target_pool
+                    type_arg = expr.args[3]
+                    push!(types, type_arg)
+                end
             end
         end
         # Recurse into sub-expressions
         for arg in expr.args
-            _extract_acquire_types(arg, types)
+            _extract_acquire_types(arg, target_pool, types)
         end
     end
     return types

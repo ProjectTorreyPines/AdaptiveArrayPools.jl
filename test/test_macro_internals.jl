@@ -189,7 +189,7 @@ import AdaptiveArrayPools: _extract_local_assignments, _filter_static_types, _ex
         # Single acquire! call
         @testset "single acquire!" begin
             expr = :(acquire!(pool, Float64, 10))
-            types = _extract_acquire_types(expr)
+            types = _extract_acquire_types(expr, :pool)
             @test :Float64 in types
             @test length(types) == 1
         end
@@ -200,7 +200,7 @@ import AdaptiveArrayPools: _extract_local_assignments, _filter_static_types, _ex
                 v1 = acquire!(pool, Float64, 10)
                 v2 = acquire!(pool, Int64, 5)
             end
-            types = _extract_acquire_types(expr)
+            types = _extract_acquire_types(expr, :pool)
             @test :Float64 in types
             @test :Int64 in types
             @test length(types) == 2
@@ -212,7 +212,7 @@ import AdaptiveArrayPools: _extract_local_assignments, _filter_static_types, _ex
                 v1 = acquire!(pool, Float64, 10)
                 v2 = acquire!(pool, Float64, 20)
             end
-            types = _extract_acquire_types(expr)
+            types = _extract_acquire_types(expr, :pool)
             @test :Float64 in types
             @test length(types) == 1  # Set deduplicates
         end
@@ -220,14 +220,14 @@ import AdaptiveArrayPools: _extract_local_assignments, _filter_static_types, _ex
         # Type parameter
         @testset "type parameter" begin
             expr = :(acquire!(pool, T, 10))
-            types = _extract_acquire_types(expr)
+            types = _extract_acquire_types(expr, :pool)
             @test :T in types
         end
 
         # Parametric type
         @testset "parametric type" begin
             expr = :(acquire!(pool, Vector{Float64}, 10))
-            types = _extract_acquire_types(expr)
+            types = _extract_acquire_types(expr, :pool)
             @test length(types) == 1
             # It should capture the curly expression
         end
@@ -235,7 +235,7 @@ import AdaptiveArrayPools: _extract_local_assignments, _filter_static_types, _ex
         # No acquire! calls
         @testset "no acquire!" begin
             expr = :(sum(x))
-            types = _extract_acquire_types(expr)
+            types = _extract_acquire_types(expr, :pool)
             @test isempty(types)
         end
 
@@ -248,7 +248,7 @@ import AdaptiveArrayPools: _extract_local_assignments, _filter_static_types, _ex
                     v = acquire!(pool, Float32, 10)
                 end
             end
-            types = _extract_acquire_types(expr)
+            types = _extract_acquire_types(expr, :pool)
             @test :Float64 in types
             @test :Float32 in types
         end
@@ -256,8 +256,34 @@ import AdaptiveArrayPools: _extract_local_assignments, _filter_static_types, _ex
         # Qualified acquire! call (AdaptiveArrayPools.acquire!)
         @testset "qualified acquire!" begin
             expr = :(AdaptiveArrayPools.acquire!(pool, Int32, 5))
-            types = _extract_acquire_types(expr)
+            types = _extract_acquire_types(expr, :pool)
             @test :Int32 in types
+        end
+
+        # AST pollution test: different pool should NOT be extracted
+        @testset "different pool (no pollution)" begin
+            expr = quote
+                v1 = acquire!(p1, Float64, 10)  # p1 uses Float64
+                v2 = acquire!(p2, Int, 10)       # p2 uses Int
+            end
+            # Extract for p1 - should only get Float64
+            types_p1 = _extract_acquire_types(expr, :p1)
+            @test :Float64 in types_p1
+            @test :Int ∉ types_p1
+            @test length(types_p1) == 1
+
+            # Extract for p2 - should only get Int
+            types_p2 = _extract_acquire_types(expr, :p2)
+            @test :Int in types_p2
+            @test :Float64 ∉ types_p2
+            @test length(types_p2) == 1
+        end
+
+        # Unmatched pool returns empty
+        @testset "unmatched pool" begin
+            expr = :(acquire!(other_pool, Float64, 10))
+            types = _extract_acquire_types(expr, :pool)
+            @test isempty(types)
         end
     end
 
@@ -270,7 +296,7 @@ import AdaptiveArrayPools: _extract_local_assignments, _filter_static_types, _ex
                 v2 = acquire!(pool, Int64, 5)
             end
             local_vars = _extract_local_assignments(expr)
-            types = _extract_acquire_types(expr)
+            types = _extract_acquire_types(expr, :pool)
             static_types, has_dynamic = _filter_static_types(types, local_vars)
 
             @test :Float64 in static_types
@@ -284,7 +310,7 @@ import AdaptiveArrayPools: _extract_local_assignments, _filter_static_types, _ex
                 v = acquire!(pool, T, 10)
             end
             local_vars = _extract_local_assignments(expr)
-            types = _extract_acquire_types(expr)
+            types = _extract_acquire_types(expr, :pool)
             static_types, has_dynamic = _filter_static_types(types, local_vars)
 
             @test :T in local_vars
@@ -300,12 +326,35 @@ import AdaptiveArrayPools: _extract_local_assignments, _filter_static_types, _ex
                 v2 = acquire!(pool, Float64, 20)
             end
             local_vars = _extract_local_assignments(expr)
-            types = _extract_acquire_types(expr)
+            types = _extract_acquire_types(expr, :pool)
             static_types, has_dynamic = _filter_static_types(types, local_vars)
 
             @test :Float64 in static_types
             @test :T ∉ static_types
             @test has_dynamic
+        end
+
+        # Integration test for AST pollution fix
+        @testset "multi-pool isolation" begin
+            expr = quote
+                v1 = acquire!(p1, Float64, 10)
+                v2 = acquire!(p2, Int, 5)
+                v3 = acquire!(p1, Int32, 3)
+            end
+            local_vars = _extract_local_assignments(expr)
+
+            # p1 should only have Float64 and Int32
+            types_p1 = _extract_acquire_types(expr, :p1)
+            static_p1, _ = _filter_static_types(types_p1, local_vars)
+            @test :Float64 in static_p1
+            @test :Int32 in static_p1
+            @test :Int ∉ static_p1
+
+            # p2 should only have Int
+            types_p2 = _extract_acquire_types(expr, :p2)
+            static_p2, _ = _filter_static_types(types_p2, local_vars)
+            @test :Int in static_p2
+            @test :Float64 ∉ static_p2
         end
     end
 
