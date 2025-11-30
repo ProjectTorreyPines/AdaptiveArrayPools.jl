@@ -19,14 +19,14 @@ Pkg.add("AdaptiveArrayPools")
 
 ## Quick Start
 
-The `@use_pool` macro automatically manages the pool's lifecycle. It checkpoints the pool state at the start of the block/function and rewinds it at the end, making all acquired arrays available for reuse.
+The `@with_pool` macro automatically manages the pool's lifecycle. It checkpoints the pool state at the start of the block/function and rewinds it at the end, making all acquired arrays available for reuse.
 
 ```julia
 using AdaptiveArrayPools
 using LinearAlgebra
 
 # 1. Define a function that needs temporary arrays
-@use_pool pool function heavy_computation(n)
+@with_pool pool function heavy_computation(n)
     # Acquire temporary arrays from the pool (returns Views)
     # These are "borrowed" from pre-allocated, auto-managed memory pool
     A_mat = acquire!(pool, Float64, n, n)
@@ -40,7 +40,7 @@ using LinearAlgebra
     # Perform computation (A * x = b)
     mul!(b_vec, A_mat, x_vec)
 
-    return sum(b_vec)
+    return sum(b_vec)  # ✅ Return scalar - safe
     # Function exit: Pool automatically "rewinds".
     # A, x, and b are now free to be reused by the next call.
 end
@@ -61,6 +61,67 @@ function run_simulation()
 end
 ```
 
+## Important: User Responsibility
+
+**Arrays acquired from a pool are only valid within the `@with_pool` scope.**
+
+When `@with_pool` ends, all acquired arrays are "rewound" and their memory becomes available for reuse. Using them after the scope ends leads to **undefined behavior** (data corruption, crashes).
+
+### Safe Patterns
+
+```julia
+@with_pool pool function safe_example(n)
+    v = acquire!(pool, Float64, n)
+    v .= 1.0
+
+    # ✅ Return computed values (scalars, tuples, etc.)
+    return sum(v), length(v)
+end
+
+@with_pool pool function safe_copy(n)
+    v = acquire!(pool, Float64, n)
+    v .= rand(n)
+
+    # ✅ Return a copy if you need the data outside
+    return copy(v)
+end
+```
+
+### Unsafe Patterns (DO NOT DO THIS)
+
+```julia
+@with_pool pool function unsafe_return(n)
+    v = acquire!(pool, Float64, n)
+    v .= 1.0
+    return v  # ❌ UNSAFE: Returning pool-backed array!
+end
+
+result = unsafe_return(100)
+# result now points to memory that may be overwritten!
+
+# ❌ Also unsafe: storing in global variables, closures, etc.
+global_storage = nothing
+@with_pool pool begin
+    v = acquire!(pool, Float64, 100)
+    global_storage = v  # ❌ UNSAFE: escaping via global
+end
+```
+
+### Debugging with POOL_DEBUG
+
+Enable `POOL_DEBUG` to catch direct returns of pool-backed arrays:
+
+```julia
+POOL_DEBUG[] = true  # Enable safety checks
+
+@with_pool pool begin
+    v = acquire!(pool, Float64, 10)
+    v  # Throws ErrorException: "Returning SubArray backed by pool..."
+end
+```
+
+> **Note:** `POOL_DEBUG` only catches direct returns, not indirect escapes (globals, closures). It's a development aid, not a guarantee.
+
 ## Why Use This?
 
 In high-performance computing, allocating temporary arrays inside a loop creates significant GC pressure, causing stuttering and performance degradation. Manual in-place operations (passing pre-allocated buffers) avoid this but require tedious buffer management and argument passing, making code complex and error-prone.
@@ -79,7 +140,7 @@ function compute_naive(n::Int)
 end
 
 # ✅ Pooled Approach: Zero allocations in steady state, clean syntax (no manual buffer passing)
-@use_pool pool function compute_pooled(n::Int)
+@with_pool pool function compute_pooled(n::Int)
     # Get Views from auto-managed pool (No allocation)
     mat1 = acquire!(pool, Float64, n, n)
     mat2 = acquire!(pool, Float64, n, n)
@@ -111,15 +172,15 @@ end
 
 - **True Zero Allocation**: Not just array data, but the `SubArray` (View) wrappers are also cached.
 - **Low Overhead**: Optimized to have < 1μs overhead per acquisition, suitable for tight inner loops.
-- **Task-Local Safety**: `@use_pool` uses `task_local_storage`, making it safe for multi-threaded code.
+- **Task-Local Safety**: `@with_pool` uses `task_local_storage`, making it safe for multi-threaded code.
 - **Type Stable**: Optimized for `Float64`, `Int`, and other common types using fixed-slot caching.
 - **Non-Intrusive**: If you disable pooling via preferences, `acquire!` compiles down to a standard `Array` allocation.
 
 ## Documentation
 
 - [API Reference](docs/api.md) - Macros, functions, and types
-- [Runtime Toggle: @maybe_use_pool](docs/maybe_use_pool.md) - Control pooling at runtime
-- [Explicit Pool: @with_pool](docs/with_pool.md) - Advanced use with custom pool instances
+- [Runtime Toggle: @maybe_with_pool](docs/maybe_with_pool.md) - Control pooling at runtime
+- [Kwarg Injection: @pool_kwarg](docs/pool_kwarg.md) - For composable library functions
 - [Configuration](docs/configuration.md) - Preferences.jl integration
 
 ## Configuration
