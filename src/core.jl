@@ -22,6 +22,13 @@ function get_view!(tp::TypedPool{T}, n::Int) where {T}
         new_view = view(tp.vectors[idx], 1:n)
         push!(tp.views, new_view)
         push!(tp.view_lengths, n)
+
+        # Warn at powers of 2 (512, 1024, 2048, ...) - possible missing rewind!()
+        if idx >= 512 && (idx & (idx - 1)) == 0
+            total_bytes = sum(length, tp.vectors) * sizeof(T)
+            @warn "TypedPool{$T} growing large ($idx arrays, ~$(Base.format_bytes(total_bytes))). Missing rewind!()?"
+        end
+
         return new_view
     end
 
