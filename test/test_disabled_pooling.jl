@@ -21,64 +21,28 @@
     @test USE_POOLING == false
     println("USE_POOLING = ", USE_POOLING)
 
-    # Test @with_pool - should set pool=nothing
-    @with_pool pool function test_with_pool_disabled(n)
+    # Test @with_pool block mode - should set pool=nothing
+    result1 = @with_pool pool begin
         @test pool === nothing
-        v = acquire!(pool, Float64, n)  # fallback to normal allocation
+        v = acquire!(pool, Float64, 10)  # fallback to normal allocation
         @test v isa Vector{Float64}
-        @test length(v) == n
+        @test length(v) == 10
         v .= 1.0
         sum(v)
     end
-
-    result1 = test_with_pool_disabled(10)
     @test result1 == 10.0
-    println("@with_pool function mode: PASS")
+    println("@with_pool block mode: PASS")
 
-    # Test @with_pool block mode
-    result2 = @with_pool pool begin
+    # Test @maybe_with_pool block mode - should also set pool=nothing
+    result2 = @maybe_with_pool pool begin
         @test pool === nothing
         v = acquire!(pool, Float64, 5)
         @test v isa Vector{Float64}
-        v .= 2.0
-        sum(v)
-    end
-    @test result2 == 10.0
-    println("@with_pool block mode: PASS")
-
-    # Test @maybe_with_pool - should also set pool=nothing
-    @maybe_with_pool pool function test_maybe_disabled(n)
-        @test pool === nothing
-        v = acquire!(pool, Float64, n)
-        v .= 3.0
-        sum(v)
-    end
-
-    result3 = test_maybe_disabled(10)
-    @test result3 == 30.0
-    println("@maybe_with_pool function mode: PASS")
-
-    # Test @maybe_with_pool block mode
-    result4 = @maybe_with_pool pool begin
-        @test pool === nothing
-        v = acquire!(pool, Float64, 5)
         v .= 4.0
         sum(v)
     end
-    @test result4 == 20.0
+    @test result2 == 20.0
     println("@maybe_with_pool block mode: PASS")
-
-    # Test @pool_kwarg - should set pool=nothing in function body
-    @pool_kwarg pool function test_pool_kwarg_disabled(n)
-        @test pool === nothing
-        v = acquire!(pool, Float64, n)
-        v .= 5.0
-        sum(v)
-    end
-
-    result5 = test_pool_kwarg_disabled(10)
-    @test result5 == 50.0
-    println("@pool_kwarg: PASS")
 
     # Restore preference for other tests
     set_preferences!("AdaptiveArrayPools", "use_pooling" => true; force=true)

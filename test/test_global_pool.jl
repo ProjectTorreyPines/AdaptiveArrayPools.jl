@@ -1,14 +1,19 @@
 @testset "@with_pool" begin
-    @with_pool pool function global_test(n)
+    # Define a function that takes pool as argument
+    function global_test(n, pool)
         v = acquire!(pool, Float64, n)
         v .= 1.0
         return sum(v)
     end
 
-    res = global_test(10)
+    res = @with_pool pool begin
+        global_test(10, pool)
+    end
     @test res == 10.0
 
-    res2 = global_test(20)
+    res2 = @with_pool pool begin
+        global_test(20, pool)
+    end
     @test res2 == 20.0
 end
 
@@ -26,13 +31,15 @@ end
     old_state = MAYBE_POOLING_ENABLED[]
     MAYBE_POOLING_ENABLED[] = true
 
-    @maybe_with_pool pool function maybe_test_enabled(n)
+    function maybe_test_enabled(n, pool)
         v = acquire!(pool, Float64, n)
         v .= 2.0
         return sum(v)
     end
 
-    res = maybe_test_enabled(10)
+    res = @maybe_with_pool pool begin
+        maybe_test_enabled(10, pool)
+    end
     @test res == 20.0
 
     # Verify pool was used (pool is not nothing)
@@ -48,13 +55,15 @@ end
     old_state = MAYBE_POOLING_ENABLED[]
     MAYBE_POOLING_ENABLED[] = false
 
-    @maybe_with_pool pool function maybe_test_disabled(n)
+    function maybe_test_disabled(n, pool)
         v = acquire!(pool, Float64, n)
         v .= 2.0
         return sum(v)
     end
 
-    res = maybe_test_disabled(10)
+    res = @maybe_with_pool pool begin
+        maybe_test_disabled(10, pool)
+    end
     @test res == 20.0
 
     # Verify pool was nothing (fallback allocation used)
@@ -120,21 +129,31 @@ function test_zero_alloc_maybe_with_pool()
     return (a1, a2, a3, a4)
 end
 
-function test_pooling_vs_no_pooling()
-    # With pooling
+# Accumulator to prevent compiler from optimizing away allocations
+const _test_accumulator = Ref(0.0)
+
+# Test runtime toggle within a single function
+function test_runtime_toggle()
+    # With pooling enabled
     MAYBE_POOLING_ENABLED[] = true
-    alloc_with = @allocated @maybe_with_pool pool begin
-        v = acquire!(pool, Float64, 100)
-        v .= 1.0
-        nothing
+    alloc_with = @allocated begin
+        r = @maybe_with_pool pool begin
+            v = acquire!(pool, Float64, 100)
+            v .= 1.0
+            sum(v)
+        end
+        _test_accumulator[] += r
     end
 
-    # Without pooling
+    # With pooling disabled (toggle in same function!)
     MAYBE_POOLING_ENABLED[] = false
-    alloc_without = @allocated @maybe_with_pool pool begin
-        v = acquire!(pool, Float64, 100)
-        v .= 1.0
-        nothing
+    alloc_without = @allocated begin
+        r = @maybe_with_pool pool begin
+            v = acquire!(pool, Float64, 100)
+            v .= 1.0
+            sum(v)
+        end
+        _test_accumulator[] += r
     end
 
     return (alloc_with, alloc_without)
@@ -167,16 +186,20 @@ end
 @testset "@maybe_with_pool pooling vs no-pooling" begin
     old_state = MAYBE_POOLING_ENABLED[]
 
-    # Warm-up
+    # Warm-up (compile the function, warm up pool)
     MAYBE_POOLING_ENABLED[] = true
-    test_pooling_vs_no_pooling()
-    test_pooling_vs_no_pooling()
+    test_runtime_toggle()
+    test_runtime_toggle()
 
-    alloc_with, alloc_without = test_pooling_vs_no_pooling()
+    # Measure - tests runtime toggle within single function
+    alloc_with, alloc_without = test_runtime_toggle()
 
     println("  Allocations with pooling: $alloc_with bytes")
     println("  Allocations without pooling: $alloc_without bytes")
 
+    # Pooling should allocate less than normal allocation
+    # Without pooling: Vector{Float64}(undef, 100) = 800+ bytes
+    # With pooling: 0 bytes (after warm-up)
     @test alloc_with < alloc_without
 
     MAYBE_POOLING_ENABLED[] = old_state

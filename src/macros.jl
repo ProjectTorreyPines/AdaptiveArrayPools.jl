@@ -1,125 +1,80 @@
 # ==============================================================================
-# Macros for AdaptiveArrayPools
+# Macros for AdaptiveArrayPools (v3: Simplified Lifecycle Management)
 # ==============================================================================
 
 """
-    @with_pool pool expr
-    @with_pool pool function_definition
+    @with_pool pool_name expr
+    @with_pool expr
 
-Binds `pool` to the global (task-local) pool and executes code with
-automatic state management (checkpoint/rewind).
+Executes code within a pooling scope with automatic lifecycle management.
+Calls `checkpoint!` on entry and `rewind!` on exit (even if errors occur).
 
-This is the primary macro for most use cases.
+If `pool_name` is omitted, a hidden variable is used (useful when you don't
+need to reference the pool directly).
 
-## Block Mode
+## Example
 ```julia
-result = @with_pool pool begin
+# With explicit pool name
+@with_pool pool begin
     v = acquire!(pool, Float64, 100)
     v .= 1.0
     sum(v)
 end
-# Pool state automatically restored here
-```
 
-## Function Definition Mode
-```julia
-@with_pool pool function fast_compute(n)
-    v = acquire!(pool, Float64, n)
-    v .= 1.0
-    sum(v)
+# Without pool name (for simple blocks)
+@with_pool begin
+    inner_function()  # inner function can use get_global_pool()
 end
-# Each call gets its own checkpoint/rewind scope
 ```
 
-See also: [`@maybe_with_pool`](@ref), [`@pool_kwarg`](@ref)
+## Nesting
+Nested `@with_pool` blocks work correctly - each maintains its own checkpoint.
+
+```julia
+@with_pool p1 begin
+    v1 = acquire!(p1, Float64, 10)
+    inner = @with_pool p2 begin
+        v2 = acquire!(p2, Float64, 5)
+        sum(v2)
+    end
+    # v1 is still valid here
+    sum(v1) + inner
+end
+```
 """
 macro with_pool(pool_name, expr)
     _generate_pool_code(pool_name, expr, true)
 end
 
-"""
-    @maybe_with_pool pool expr
-    @maybe_with_pool pool function_definition
+macro with_pool(expr)
+    pool_name = gensym(:pool)
+    _generate_pool_code(pool_name, expr, true)
+end
 
-Conditionally binds `pool` to the global pool based on `MAYBE_POOLING_ENABLED[]`.
-If disabled, `pool` becomes `nothing`, and `acquire!` falls back to standard allocation.
+"""
+    @maybe_with_pool pool_name expr
+    @maybe_with_pool expr
+
+Conditionally enables pooling based on `MAYBE_POOLING_ENABLED[]`.
+If disabled, `pool_name` becomes `nothing`, and `acquire!` falls back to standard allocation.
 
 Useful for libraries that want to let users control pooling behavior at runtime.
 
 ## Example
 ```julia
-@maybe_with_pool pool function compute(n)
-    v = acquire!(pool, Float64, n)  # Allocates if MAYBE_POOLING_ENABLED[] == false
-    sum(v)
-end
-
 MAYBE_POOLING_ENABLED[] = false
-compute(100)  # Normal allocation
-
-MAYBE_POOLING_ENABLED[] = true
-compute(100)  # Uses pool
+@maybe_with_pool pool begin
+    v = acquire!(pool, Float64, 100)  # Falls back to Vector{Float64}(undef, 100)
+end
 ```
-
-See also: [`@with_pool`](@ref), [`MAYBE_POOLING_ENABLED`](@ref)
 """
 macro maybe_with_pool(pool_name, expr)
     _generate_pool_code(pool_name, expr, false)
 end
 
-"""
-    @pool_kwarg pool function_definition
-
-Injects a `pool` keyword argument into the function signature.
-Does NOT add checkpoint/rewind - the caller is responsible for state management.
-
-This is useful for building composable pool-aware functions where the caller
-controls when to checkpoint.
-
-## Example
-```julia
-@pool_kwarg pool function layer_forward(x)
-    out = acquire!(pool, Float64, size(x))
-    out .= x .* 2
-    return out
-end
-
-# Usage:
-layer_forward(x)                     # pool=nothing → normal allocation
-layer_forward(x; pool=mypool)        # uses provided pool (caller must checkpoint!)
-
-# Typical usage pattern:
-@with_pool p begin
-    result = layer_forward(x; pool=p)  # p is checkpointed by @with_pool
-end
-```
-
-See also: [`@with_pool`](@ref)
-"""
-macro pool_kwarg(pool_sym, func_def)
-    # Only works with function definitions
-    if !(Meta.isexpr(func_def, [:function, :(=)]) && _is_function_def(func_def))
-        error("@pool_kwarg requires a function definition")
-    end
-
-    # Compile-time check: if pooling disabled, just define function with pool=nothing
-    if !USE_POOLING
-        def_head = func_def.head
-        call_expr = func_def.args[1]
-        body = func_def.args[2]
-        new_body = quote
-            local $(esc(pool_sym)) = nothing
-            $(esc(body))
-        end
-        return Expr(def_head, esc(call_expr), new_body)
-    end
-
-    # Inject pool kwarg and define function (no checkpoint/rewind)
-    func_def = _inject_pool_arg(pool_sym, func_def)
-    def_head = func_def.head
-    call_expr = func_def.args[1]
-    body = func_def.args[2]
-
-    return Expr(def_head, esc(call_expr), esc(body))
+macro maybe_with_pool(expr)
+    pool_name = gensym(:pool)
+    _generate_pool_code(pool_name, expr, false)
 end
 
 # ==============================================================================
@@ -129,80 +84,41 @@ end
 function _generate_pool_code(pool_name, expr, force_enable)
     # Compile-time check: if pooling disabled, just run expr with pool=nothing
     if !USE_POOLING
-        if Meta.isexpr(expr, [:function, :(=)]) && _is_function_def(expr)
-            def_head = expr.head
-            call_expr = expr.args[1]
-            body = expr.args[2]
-            new_body = quote
-                local $(esc(pool_name)) = nothing
-                $(esc(body))
-            end
-            return Expr(def_head, esc(call_expr), new_body)
-        else
-            return quote
-                local $(esc(pool_name)) = nothing
-                $(esc(expr))
-            end
+        return quote
+            local $(esc(pool_name)) = $(nothing)
+            $(esc(expr))
         end
     end
 
     # Extract types from acquire! calls for optimized checkpoint/rewind
-    target_expr = Meta.isexpr(expr, [:function, :(=)]) && _is_function_def(expr) ? expr.args[2] : expr
-    all_types = _extract_acquire_types(target_expr)
-    local_vars = _extract_local_assignments(target_expr)
+    all_types = _extract_acquire_types(expr)
+    local_vars = _extract_local_assignments(expr)
     static_types, has_dynamic = _filter_static_types(all_types, local_vars)
 
     # Use typed checkpoint/rewind if all types are static, otherwise fallback to full
     use_typed = !has_dynamic && !isempty(static_types)
 
-    if Meta.isexpr(expr, [:function, :(=)]) && _is_function_def(expr)
-        def_head = expr.head
-        call_expr = expr.args[1]
-        body = expr.args[2]
+    checkpoint_call = use_typed ? _generate_typed_checkpoint_call(esc(pool_name), static_types) : :($checkpoint!($(esc(pool_name))))
+    rewind_call = use_typed ? _generate_typed_rewind_call(esc(pool_name), static_types) : :($rewind!($(esc(pool_name))))
 
-        if force_enable
-            # Always use pool - no Union type
-            checkpoint_call = use_typed ? _generate_typed_checkpoint_call(esc(pool_name), static_types) : :($checkpoint!($(esc(pool_name))))
-            rewind_call = use_typed ? _generate_typed_rewind_call(esc(pool_name), static_types) : :($rewind!($(esc(pool_name))))
-
-            new_body = quote
-                local $(esc(pool_name)) = get_global_pool()
-                $checkpoint_call
-                try
-                    $(esc(body))
-                finally
-                    $rewind_call
+    if force_enable
+        return quote
+            local $(esc(pool_name)) = get_global_pool()
+            $checkpoint_call
+            try
+                local _result = $(esc(expr))
+                if $POOL_DEBUG[]
+                    $_validate_pool_return(_result, $(esc(pool_name)))
                 end
-            end
-        else
-            # Split branches completely to avoid Union{Nothing, AdaptiveArrayPool} boxing
-            checkpoint_call = use_typed ? _generate_typed_checkpoint_call(esc(pool_name), static_types) : :($checkpoint!($(esc(pool_name))))
-            rewind_call = use_typed ? _generate_typed_rewind_call(esc(pool_name), static_types) : :($rewind!($(esc(pool_name))))
-
-            new_body = quote
-                if $MAYBE_POOLING_ENABLED[]
-                    local $(esc(pool_name)) = get_global_pool()
-                    $checkpoint_call
-                    try
-                        $(esc(body))
-                    finally
-                        $rewind_call
-                    end
-                else
-                    local $(esc(pool_name)) = nothing
-                    $(esc(body))
-                end
+                _result
+            finally
+                $rewind_call
             end
         end
-
-        return Expr(def_head, esc(call_expr), new_body)
     else
-        # Block mode
-        checkpoint_call = use_typed ? _generate_typed_checkpoint_call(esc(pool_name), static_types) : :($checkpoint!($(esc(pool_name))))
-        rewind_call = use_typed ? _generate_typed_rewind_call(esc(pool_name), static_types) : :($rewind!($(esc(pool_name))))
-
-        if force_enable
-            return quote
+        # Split branches completely to avoid Union boxing
+        return quote
+            if $MAYBE_POOLING_ENABLED[]
                 local $(esc(pool_name)) = get_global_pool()
                 $checkpoint_call
                 try
@@ -214,101 +130,12 @@ function _generate_pool_code(pool_name, expr, force_enable)
                 finally
                     $rewind_call
                 end
-            end
-        else
-            # Split branches completely to avoid Union boxing
-            return quote
-                if $MAYBE_POOLING_ENABLED[]
-                    local $(esc(pool_name)) = get_global_pool()
-                    $checkpoint_call
-                    try
-                        local _result = $(esc(expr))
-                        if $POOL_DEBUG[]
-                            $_validate_pool_return(_result, $(esc(pool_name)))
-                        end
-                        _result
-                    finally
-                        $rewind_call
-                    end
-                else
-                    local $(esc(pool_name)) = nothing
-                    $(esc(expr))
-                end
+            else
+                local $(esc(pool_name)) = $(nothing)
+                $(esc(expr))
             end
         end
     end
-end
-
-# ==============================================================================
-# Internal: Helper Functions
-# ==============================================================================
-
-function _is_function_def(expr)
-    if expr.head == :function
-        return true
-    end
-    if expr.head == :(=) && length(expr.args) >= 1
-        lhs = expr.args[1]
-        while Meta.isexpr(lhs, [:where, :(::)])
-            lhs = lhs.args[1]
-        end
-        return Meta.isexpr(lhs, :call)
-    end
-    return false
-end
-
-function _inject_pool_arg(pool_sym, func_def)
-    if !isa(pool_sym, Symbol)
-        return func_def
-    end
-
-    call_expr = func_def.args[1]
-    target_expr = call_expr
-    while Meta.isexpr(target_expr, [:where, :(::)])
-        target_expr = target_expr.args[1]
-    end
-
-    if !Meta.isexpr(target_expr, :call)
-        return func_def
-    end
-
-    args = target_expr.args[2:end]
-    arg_names = Symbol[]
-    for arg in args
-        if Meta.isexpr(arg, :parameters)
-            for kw in arg.args
-                push!(arg_names, _get_arg_name(kw))
-            end
-        else
-            push!(arg_names, _get_arg_name(arg))
-        end
-    end
-
-    if pool_sym in arg_names
-        return func_def
-    end
-
-    # Inject keyword argument with Union type for flexibility
-    new_kwarg = Expr(:kw, Expr(:(::), pool_sym, :(Union{Nothing, AdaptiveArrayPool})), nothing)
-
-    if length(target_expr.args) >= 2 && Meta.isexpr(target_expr.args[2], :parameters)
-        push!(target_expr.args[2].args, new_kwarg)
-    else
-        params = Expr(:parameters, new_kwarg)
-        insert!(target_expr.args, 2, params)
-    end
-
-    return func_def
-end
-
-function _get_arg_name(arg)
-    if Meta.isexpr(arg, :kw)
-        arg = arg.args[1]
-    end
-    if Meta.isexpr(arg, :(::))
-        return length(arg.args) == 2 ? arg.args[1] : :_
-    end
-    return arg
 end
 
 # ==============================================================================

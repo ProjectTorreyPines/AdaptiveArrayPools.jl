@@ -1,4 +1,4 @@
-# Tests for explicit pool management with checkpoint!/rewind!
+# Tests for @with_pool and @maybe_with_pool macros
 import AdaptiveArrayPools: checkpoint!, rewind!
 
 @testset "Explicit pool with checkpoint!/rewind!" begin
@@ -53,104 +53,30 @@ end
     @test pool.float64.n_active == 0
 end
 
-@testset "@pool_kwarg function definition" begin
-    @pool_kwarg pool function test_auto_inject(x::Vector{Float64})
-        temp = acquire!(pool, Float64, length(x))
-        temp .= x .* 2
-        return sum(temp)
+@testset "@with_pool basic usage" begin
+    result = @with_pool pool begin
+        v = acquire!(pool, Float64, 10)
+        v .= 1.0
+        sum(v)
     end
-
-    x = [1.0, 2.0, 3.0]
-
-    # Without pool (uses normal allocation)
-    result1 = test_auto_inject(x)
-    @test result1 == 12.0
-
-    # With explicit pool (caller manages checkpoint)
-    mypool = AdaptiveArrayPool()
-    checkpoint!(mypool)
-    result2 = test_auto_inject(x; pool=mypool)
-    rewind!(mypool)
-    @test result2 == 12.0
-    @test mypool.float64.n_active == 0
+    @test result == 10.0
+    @test get_global_pool().float64.n_active == 0
 end
 
-@testset "@pool_kwarg short-form function" begin
-    @pool_kwarg pool test_short(x) = sum(acquire!(pool, Float64, length(x)) .= x)
-
-    x = [1.0, 2.0, 3.0]
-    @test test_short(x) == 6.0
-
-    mypool = AdaptiveArrayPool()
-    checkpoint!(mypool)
-    @test test_short(x; pool=mypool) == 6.0
-    rewind!(mypool)
-    @test mypool.float64.n_active == 0
-end
-
-@testset "@pool_kwarg with existing kwargs" begin
-    @pool_kwarg pool function test_existing_kwargs(x; scale=2.0)
-        temp = acquire!(pool, Float64, length(x))
-        temp .= x .* scale
-        return sum(temp)
+@testset "@with_pool 1-arg (no pool name)" begin
+    # When you don't need the pool variable, use 1-arg form
+    function inner_uses_global(n)
+        pool = get_global_pool()
+        v = acquire!(pool, Float64, n)
+        v .= 2.0
+        sum(v)
     end
 
-    x = [1.0, 2.0, 3.0]
-    @test test_existing_kwargs(x) == 12.0
-    @test test_existing_kwargs(x; scale=3.0) == 18.0
-
-    mypool = AdaptiveArrayPool()
-    checkpoint!(mypool)
-    @test test_existing_kwargs(x; pool=mypool, scale=4.0) == 24.0
-    rewind!(mypool)
-    @test mypool.float64.n_active == 0
-end
-
-@testset "@pool_kwarg with where clause" begin
-    @pool_kwarg pool function test_where(x::Vector{T}) where {T<:Number}
-        temp = acquire!(pool, T, length(x))
-        temp .= x .+ one(T)
-        return sum(temp)
+    result = @with_pool begin
+        inner_uses_global(5)
     end
-
-    x = [1.0, 2.0, 3.0]
-    @test test_where(x) == 9.0
-
-    mypool = AdaptiveArrayPool()
-    checkpoint!(mypool)
-    @test test_where(x; pool=mypool) == 9.0
-    rewind!(mypool)
-    @test mypool.float64.n_active == 0
-end
-
-@testset "@pool_kwarg short-form with where clause" begin
-    @pool_kwarg pool test_short_where(x::Vector{T}) where {T<:Number} = sum(acquire!(pool, T, length(x)) .= x)
-
-    x = [1.0, 2.0, 3.0]
-    @test test_short_where(x) == 6.0
-
-    mypool = AdaptiveArrayPool()
-    checkpoint!(mypool)
-    @test test_short_where(x; pool=mypool) == 6.0
-    rewind!(mypool)
-    @test mypool.float64.n_active == 0
-end
-
-@testset "@pool_kwarg combined with @with_pool" begin
-    # Define a layer function with @pool_kwarg
-    @pool_kwarg pool function layer(x)
-        out = acquire!(pool, Float64, length(x))
-        out .= x .* 2
-        return out
-    end
-
-    # Use it within @with_pool scope
-    result = @with_pool p begin
-        x = [1.0, 2.0, 3.0]
-        y = layer(x; pool=p)  # Uses the checkpointed pool
-        sum(y)
-    end
-    @test result == 12.0
+    @test result == 10.0
+    @test get_global_pool().float64.n_active == 0
 end
 
 @testset "@with_pool nested scopes" begin
@@ -169,4 +95,71 @@ end
         sum(v1) + inner
     end
     @test result == 20.0
+end
+
+@testset "@with_pool with function passing pool" begin
+    function compute_with_pool(x, pool)
+        temp = acquire!(pool, Float64, length(x))
+        temp .= x .* 2
+        sum(temp)
+    end
+
+    x = [1.0, 2.0, 3.0]
+    result = @with_pool pool begin
+        compute_with_pool(x, pool)
+    end
+    @test result == 12.0
+    @test get_global_pool().float64.n_active == 0
+end
+
+@testset "@maybe_with_pool enabled" begin
+    MAYBE_POOLING_ENABLED[] = true
+
+    result = @maybe_with_pool pool begin
+        v = acquire!(pool, Float64, 10)
+        v .= 3.0
+        sum(v)
+    end
+    @test result == 30.0
+    @test get_global_pool().float64.n_active == 0
+end
+
+@testset "@maybe_with_pool disabled" begin
+    MAYBE_POOLING_ENABLED[] = false
+
+    result = @maybe_with_pool pool begin
+        @test pool === nothing
+        v = acquire!(pool, Float64, 10)  # Falls back to normal allocation
+        @test v isa Vector{Float64}
+        v .= 4.0
+        sum(v)
+    end
+    @test result == 40.0
+
+    # Reset
+    MAYBE_POOLING_ENABLED[] = true
+end
+
+@testset "@maybe_with_pool 1-arg (no pool name)" begin
+    MAYBE_POOLING_ENABLED[] = true
+
+    result = @maybe_with_pool begin
+        pool = get_global_pool()
+        v = acquire!(pool, Float64, 5)
+        v .= 1.0
+        sum(v)
+    end
+    @test result == 5.0
+
+    MAYBE_POOLING_ENABLED[] = false
+    result2 = @maybe_with_pool begin
+        # Pool is nothing, so we allocate normally
+        v = Vector{Float64}(undef, 5)
+        v .= 2.0
+        sum(v)
+    end
+    @test result2 == 10.0
+
+    # Reset
+    MAYBE_POOLING_ENABLED[] = true
 end

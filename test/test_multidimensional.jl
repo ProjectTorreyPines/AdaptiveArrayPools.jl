@@ -57,8 +57,8 @@ end
 end
 
 @testset "Multi-dimensional with @with_pool" begin
-    # Using @with_pool (global pool, checkpoint/rewind)
-    @with_pool pool function matrix_computation(n::Int)
+    # Define a computation function that takes pool as argument
+    function matrix_computation(n::Int, pool)
         mat = acquire!(pool, Float64, n, n)
         mat .= 1.0
         vec = acquire!(pool, Float64, n)
@@ -66,11 +66,16 @@ end
         return sum(mat) + sum(vec)
     end
 
-    result1 = matrix_computation(10)
+    # Use @with_pool to manage lifecycle
+    result1 = @with_pool pool begin
+        matrix_computation(10, pool)
+    end
     @test result1 == 120.0
+    @test get_global_pool().float64.n_active == 0
 
-    # Using @pool_kwarg (kwarg injection, no checkpoint/rewind)
-    @pool_kwarg pool function matrix_computation_kwarg(n::Int)
+    # Alternative: function uses get_global_pool() directly
+    function matrix_computation_global(n::Int)
+        pool = get_global_pool()
         mat = acquire!(pool, Float64, n, n)
         mat .= 1.0
         vec = acquire!(pool, Float64, n)
@@ -78,14 +83,16 @@ end
         return sum(mat) + sum(vec)
     end
 
-    # Without pool (normal allocation)
-    result2 = matrix_computation_kwarg(10)
+    result2 = @with_pool begin
+        matrix_computation_global(10)
+    end
     @test result2 == 120.0
+    @test get_global_pool().float64.n_active == 0
 
     # With explicit pool (caller manages checkpoint)
     mypool = AdaptiveArrayPool()
     checkpoint!(mypool)
-    result3 = matrix_computation_kwarg(10; pool=mypool)
+    result3 = matrix_computation(10, mypool)
     rewind!(mypool)
     @test result3 == 120.0
     @test mypool.float64.n_active == 0
