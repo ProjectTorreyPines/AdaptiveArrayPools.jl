@@ -4,9 +4,9 @@
 
 | Macro | Description |
 |-------|-------------|
-| `@with_pool name expr` | **Recommended.** Creates a pool scope with automatic checkpoint/rewind. `name` is bound to the task-local pool. |
-| `@with_pool expr` | Same as above, but pool is not named (use when you don't need direct access). |
+| `@with_pool name expr` | **Recommended.** Injects a global, task-local pool named `name`. Automatically checkpoints and rewinds. |
 | `@maybe_with_pool name expr` | Same as `@with_pool`, but can be toggled on/off at runtime via `MAYBE_POOLING_ENABLED[]`. |
+| `@pool_kwarg name func_def` | Adds `pool` as a keyword argument to a function. No automatic checkpoint/rewind. |
 
 ## Functions
 
@@ -19,7 +19,6 @@
 | `rewind!(pool)` | Restores the pool to the last checkpoint, freeing all arrays acquired since then. |
 | `rewind!(pool, T...)` | Type-specific rewind for optimized performance. |
 | `pool_stats(pool)` | Prints detailed statistics about pool usage. |
-| `pool_stats()` | Prints statistics for the global task-local pool. |
 | `get_global_pool()` | Returns the task-local global pool instance. |
 | `empty!(pool)` | Clears all internal storage, releasing all memory. |
 
@@ -36,22 +35,6 @@
 | `USE_POOLING` | Compile-time constant. Set via `Preferences.jl` to disable all pooling. |
 | `MAYBE_POOLING_ENABLED` | Runtime `Ref{Bool}`. Only affects `@maybe_with_pool`. |
 | `POOL_DEBUG` | Runtime `Ref{Bool}`. Enable safety validation for debugging. |
-
-## Usage Pattern
-
-```julia
-# Define functions that take pool as argument
-function compute(n, pool)
-    v = acquire!(pool, Float64, n)
-    v .= 1.0
-    sum(v)
-end
-
-# Use @with_pool for lifecycle management
-result = @with_pool pool begin
-    compute(100, pool)
-end
-```
 
 ## Safety Notes
 

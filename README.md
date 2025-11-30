@@ -19,14 +19,14 @@ Pkg.add("AdaptiveArrayPools")
 
 ## Quick Start
 
-The `@with_pool` macro automatically manages the pool's lifecycle. It checkpoints the pool state at the start of the block and rewinds it at the end, making all acquired arrays available for reuse.
+The `@with_pool` macro automatically manages the pool's lifecycle. It checkpoints the pool state at the start of the block/function and rewinds it at the end, making all acquired arrays available for reuse.
 
 ```julia
 using AdaptiveArrayPools
 using LinearAlgebra
 
-# 1. Define a function that takes pool as an argument
-function heavy_computation(n, pool)
+# 1. Define a function that needs temporary arrays
+@with_pool pool function heavy_computation(n)
     # Acquire temporary arrays from the pool (returns Views)
     # These are "borrowed" from pre-allocated, auto-managed memory pool
     A_mat = acquire!(pool, Float64, n, n)
@@ -40,20 +40,22 @@ function heavy_computation(n, pool)
     # Perform computation (A * x = b)
     mul!(b_vec, A_mat, x_vec)
 
-    return sum(b_vec)  # Return scalar - safe
+    return sum(b_vec)  # ✅ Return scalar - safe
+    # Function exit: Pool automatically "rewinds".
+    # A, x, and b are now free to be reused by the next call.
 end
 
-# 2. Run it in a loop with @with_pool
+# 2. Run it in a loop
 function run_simulation()
     total = 0.0
 
+    # First call: Pool allocates internal memory
+    total += heavy_computation(100)
+
+    # Subsequent calls: Zero allocations!
+    # The same memory slots are reused for each iteration.
     for i in 1:1000
-        # @with_pool checkpoints on entry, rewinds on exit
-        total += @with_pool pool begin
-            heavy_computation(100, pool)
-        end
-        # Pool automatically "rewinds" here.
-        # All arrays acquired inside are now free to be reused.
+        total += heavy_computation(100)
     end
     return total
 end
@@ -67,7 +69,7 @@ In high-performance computing, allocating temporary arrays inside a loop creates
 using LinearAlgebra, Random
 using BenchmarkTools
 
-# Naive Approach: Allocates new arrays every single call
+# ❌ Naive Approach: Allocates new arrays every single call
 function compute_naive(n::Int)
     mat1 = rand(n, n) # Allocation!
     mat2 = rand(n, n) # Allocation!
@@ -76,8 +78,8 @@ function compute_naive(n::Int)
     return sum(mat3)
 end
 
-# Pooled Approach: Zero allocations in steady state
-function compute_pooled_inner(n, pool)
+# ✅ Pooled Approach: Zero allocations in steady state, clean syntax (no manual buffer passing)
+@with_pool pool function compute_pooled(n::Int)
     # Get Views from auto-managed pool (No allocation)
     mat1 = acquire!(pool, Float64, n, n)
     mat2 = acquire!(pool, Float64, n, n)
@@ -90,17 +92,15 @@ function compute_pooled_inner(n, pool)
     return sum(mat3)
 end
 
-compute_pooled(n) = @with_pool pool compute_pooled_inner(n, pool)
-
 # Naive: Large temporary allocations cause GC pressure
 @benchmark compute_naive(2000)
-# Time  (mean +/- std):   67.771 ms +/- 31.818 ms | GC (mean +/- std):  17.02% +/- 18.69%
-# Memory estimate: 91.59 MiB, allocs estimate: 9.
+# Time  (mean ± σ):   67.771 ms ±  31.818 ms ⚠️ ┊ GC (mean ± σ):  17.02% ± 18.69%  ⚠️
+# Memory estimate: 91.59 MiB ⚠️, allocs estimate: 9.
 
 # Pooled: Zero allocations, no GC pressure
 @benchmark compute_pooled(2000)
-# Time  (mean +/- std):   57.647 ms +/-  3.960 ms | GC (mean +/- std):  0.00% +/- 0.00%
-# Memory estimate: 0 bytes, allocs estimate: 0.
+# Time  (mean ± σ):   57.647 ms ±  3.960 ms ✅ ┊ GC (mean ± σ):  0.00% ± 0.00% ✅
+# Memory estimate: 0 bytes ✅, allocs estimate: 0.
 ```
 
 > **Performance Note:**
@@ -117,18 +117,20 @@ When `@with_pool` ends, all acquired arrays are "rewound" and their memory becom
 <summary><b>Safe Patterns</b> (click to expand)</summary>
 
 ```julia
-# Return computed values (scalars, tuples, etc.)
-result = @with_pool pool begin
+@with_pool pool function safe_example(n)
     v = acquire!(pool, Float64, n)
     v .= 1.0
-    sum(v), length(v)
+
+    # ✅ Return computed values (scalars, tuples, etc.)
+    return sum(v), length(v)
 end
 
-# Return a copy if you need the data outside
-data = @with_pool pool begin
+@with_pool pool function safe_copy(n)
     v = acquire!(pool, Float64, n)
     v .= rand(n)
-    copy(v)
+
+    # ✅ Return a copy if you need the data outside
+    return copy(v)
 end
 ```
 
@@ -138,19 +140,20 @@ end
 <summary><b>Unsafe Patterns (DO NOT DO THIS)</b> (click to expand)</summary>
 
 ```julia
-# UNSAFE: Returning pool-backed array directly
-result = @with_pool pool begin
+@with_pool pool function unsafe_return(n)
     v = acquire!(pool, Float64, n)
     v .= 1.0
-    v  # UNSAFE: Returning pool-backed array!
+    return v  # ❌ UNSAFE: Returning pool-backed array!
 end
+
+result = unsafe_return(100)
 # result now points to memory that may be overwritten!
 
-# Also unsafe: storing in global variables, closures, etc.
+# ❌ Also unsafe: storing in global variables, closures, etc.
 global_storage = nothing
 @with_pool pool begin
     v = acquire!(pool, Float64, 100)
-    global_storage = v  # UNSAFE: escaping via global
+    global_storage = v  # ❌ UNSAFE: escaping via global
 end
 ```
 
@@ -186,6 +189,7 @@ end
 
 - [API Reference](docs/api.md) - Macros, functions, and types
 - [Runtime Toggle: @maybe_with_pool](docs/maybe_with_pool.md) - Control pooling at runtime
+- [Kwarg Injection: @pool_kwarg](docs/pool_kwarg.md) - For composable library functions
 - [Configuration](docs/configuration.md) - Preferences.jl integration
 
 ## Configuration
