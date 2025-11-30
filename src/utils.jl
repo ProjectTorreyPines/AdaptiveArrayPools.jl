@@ -5,7 +5,7 @@
 """
     POOL_DEBUG
 
-When `true`, `@use_pool` macros validate that returned values don't
+When `true`, `@with_pool` macros validate that returned values don't
 reference pool memory (which would be unsafe).
 
 Default: `false`
@@ -103,7 +103,7 @@ Print detailed statistics about pool usage with colored output.
 # Example
 ```julia
 pool = AdaptiveArrayPool()
-@use_pool pool begin
+@with_pool pool begin
     v = acquire!(pool, Float64, 100)
     pool_stats(pool)
 end
@@ -151,7 +151,7 @@ Print statistics for the global (Task-local) pool.
 
 # Example
 ```julia
-@use_pool begin
+@with_pool begin
     v = acquire!(pool, Float64, 100)
     pool_stats()  # Shows global pool stats
 end

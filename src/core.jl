@@ -62,7 +62,7 @@ end
 Acquire a view of an array of type `T` with size `n` or dimensions `dims`.
 
 Returns a `SubArray` (1D) or `ReshapedArray` (multi-dimensional) backed by the pool.
-After the enclosing `@use_pool` block ends, the memory is reclaimed for reuse.
+After the enclosing `@with_pool` block ends, the memory is reclaimed for reuse.
 
 ## Example
 ```julia
@@ -112,10 +112,10 @@ end
 
 Save the current pool state (n_active counters) to internal stacks.
 
-This is called automatically by `@use_pool` and related macros.
+This is called automatically by `@with_pool` and related macros.
 After warmup, this function has **zero allocation**.
 
-See also: [`rewind!`](@ref), [`@use_pool`](@ref)
+See also: [`rewind!`](@ref), [`@with_pool`](@ref)
 """
 function checkpoint!(pool::AdaptiveArrayPool)
     # Fixed slots - direct field access, no Dict lookup
@@ -144,7 +144,7 @@ Restore the pool state (n_active counters) from internal stacks.
 Only the counters are restored; allocated memory remains for reuse.
 Handles edge case: types added after checkpoint! get their n_active set to 0.
 
-See also: [`checkpoint!`](@ref), [`@use_pool`](@ref)
+See also: [`checkpoint!`](@ref), [`@with_pool`](@ref)
 """
 function rewind!(pool::AdaptiveArrayPool)
     # Fixed slots

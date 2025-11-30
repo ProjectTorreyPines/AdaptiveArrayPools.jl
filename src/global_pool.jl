@@ -8,7 +8,7 @@ using Preferences: @load_preference
     USE_POOLING::Bool
 
 Compile-time constant (master switch) to completely disable pooling.
-When `false`, all macros (`@use_pool`, `@maybe_use_pool`, `@with_pool`)
+When `false`, all macros (`@with_pool`, `@maybe_with_pool`)
 generate code that uses `nothing` as the pool, causing `acquire!` to fall back
 to normal allocation.
 
@@ -36,12 +36,12 @@ const USE_POOLING = @load_preference("use_pooling", true)::Bool
 """
     MAYBE_POOLING_ENABLED
 
-Runtime flag for `@maybe_use_pool` macro only.
-When `false`, `@maybe_use_pool` will use `nothing` as the pool,
+Runtime flag for `@maybe_with_pool` macro only.
+When `false`, `@maybe_with_pool` will use `nothing` as the pool,
 causing `acquire!` to allocate normally.
 
-Note: This only affects `@maybe_use_pool`. The other macros
-(`@use_pool`, `@with_pool`) ignore this flag.
+Note: This only affects `@maybe_with_pool`.
+`@with_pool` ignores this flag (always uses pooling).
 
 For complete removal of pooling overhead at compile time, use `USE_POOLING` instead.
 
