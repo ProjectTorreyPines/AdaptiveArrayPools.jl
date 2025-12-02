@@ -301,6 +301,54 @@ end
     @test rewind!(nothing, Float64, Int64) === nothing
 end
 
+@testset "Direct TypedPool checkpoint!/rewind!" begin
+    import AdaptiveArrayPools: get_typed_pool!
+    pool = AdaptiveArrayPool()
+
+    # Get TypedPool directly
+    tp = get_typed_pool!(pool, Float64)
+    @test tp.n_active == 0
+
+    # Direct TypedPool checkpoint and rewind
+    checkpoint!(tp)
+    v1 = acquire!(pool, Float64, 100)
+    @test tp.n_active == 1
+    v2 = acquire!(pool, Float64, 200)
+    @test tp.n_active == 2
+    rewind!(tp)
+    @test tp.n_active == 0
+
+    # Nested checkpoint/rewind on TypedPool
+    checkpoint!(tp)
+    v1 = acquire!(pool, Float64, 10)
+    @test tp.n_active == 1
+
+    checkpoint!(tp)
+    v2 = acquire!(pool, Float64, 20)
+    @test tp.n_active == 2
+
+    checkpoint!(tp)
+    v3 = acquire!(pool, Float64, 30)
+    @test tp.n_active == 3
+
+    rewind!(tp)
+    @test tp.n_active == 2
+
+    rewind!(tp)
+    @test tp.n_active == 1
+
+    rewind!(tp)
+    @test tp.n_active == 0
+
+    # Verify type-specific checkpoint delegates to TypedPool
+    # (This tests the refactored implementation)
+    checkpoint!(pool, Float64)
+    v = acquire!(pool, Float64, 50)
+    @test tp.n_active == 1
+    rewind!(pool, Float64)
+    @test tp.n_active == 0
+end
+
 @testset "Allocation test (Zero Alloc)" begin
     pool = AdaptiveArrayPool()
 
