@@ -14,8 +14,14 @@ Internal structure managing a list of vectors for a specific type `T`.
 """
 mutable struct TypedPool{T}
     vectors::Vector{Vector{T}}   # Actual memory storage
-    views::Vector{SubArray{T, 1, Vector{T}, Tuple{UnitRange{Int64}}, true}}  # Cached views
+    views::Vector{SubArray{T, 1, Vector{T}, Tuple{UnitRange{Int64}}, true}}  # Cached 1D views
     view_lengths::Vector{Int}    # SoA: cached view lengths (cache-friendly Int comparison)
+
+    # N-D View Cache (zero-allocation for multi-dimensional acquire!)
+    nd_views::Vector{Any}        # Cached N-D SubArrays (various dimensions)
+    nd_dims::Vector{Any}         # Cached dims tuples (for comparison)
+    nd_ptrs::Vector{UInt}        # Pointer values at cache creation (resize detection)
+
     n_active::Int                # Number of currently active (checked-out) vectors
     saved_stack::Vector{Int}     # Stack for nested checkpoint/rewind (zero alloc after warmup)
 end
@@ -24,6 +30,9 @@ TypedPool{T}() where {T} = TypedPool{T}(
     Vector{T}[],
     SubArray{T, 1, Vector{T}, Tuple{UnitRange{Int64}}, true}[],
     Int[],
+    Any[],      # nd_views
+    Any[],      # nd_dims
+    UInt[],     # nd_ptrs
     0,
     Int[]
 )

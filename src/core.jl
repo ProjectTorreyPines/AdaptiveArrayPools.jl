@@ -52,6 +52,57 @@ function get_view!(tp::TypedPool{T}, n::Int) where {T}
 end
 
 # ==============================================================================
+# Get N-D View (Internal - Zero-Allocation Cache)
+# ==============================================================================
+
+"""
+    get_nd_view!(tp::TypedPool{T}, dims::NTuple{N,Int}) -> SubArray{T,N,Array{T,N}}
+
+Internal function to get an N-dimensional view from the typed pool with caching.
+
+## Cache Hit Conditions
+1. Same dims requested
+2. Same pointer (backing vector not resized)
+
+## Type Assertion
+Uses `::SubArray{T, N, Array{T, N}}` for type stability when retrieving from Vector{Any}.
+"""
+@inline function get_nd_view!(tp::TypedPool{T}, dims::NTuple{N, Int}) where {T, N}
+    total_len = prod(dims)
+    flat_view = get_view!(tp, total_len)
+    idx = tp.n_active
+
+    @inbounds vec = tp.vectors[idx]
+    current_ptr = UInt(pointer(vec))
+
+    # Expand cache slots if needed (warmup phase only)
+    while idx > length(tp.nd_views)
+        push!(tp.nd_views, nothing)
+        push!(tp.nd_dims, nothing)
+        push!(tp.nd_ptrs, UInt(0))
+    end
+
+    # Cache Hit: same dims AND same pointer (vector not resized)
+    @inbounds cached_dims = tp.nd_dims[idx]
+    @inbounds cached_ptr = tp.nd_ptrs[idx]
+
+    if cached_dims == dims && cached_ptr == current_ptr
+        # Type assertion for type stability (Vector{Any} → concrete type)
+        return @inbounds tp.nd_views[idx]::SubArray{T, N, Array{T, N}}
+    end
+
+    # Cache Miss: create new SubArray and cache it
+    arr = unsafe_wrap(Array{T, N}, pointer(flat_view), dims)
+    new_view = view(arr, ntuple(_ -> Colon(), Val(N))...)
+
+    @inbounds tp.nd_views[idx] = new_view
+    @inbounds tp.nd_dims[idx] = dims
+    @inbounds tp.nd_ptrs[idx] = current_ptr
+
+    return new_view
+end
+
+# ==============================================================================
 # Acquisition API
 # ==============================================================================
 
@@ -85,14 +136,10 @@ See also: [`unsafe_acquire!`](@ref) for raw `Array` access.
     return get_view!(tp, n)
 end
 
-# Multi-dimensional support (unsafe_wrap + view for concrete Array type)
+# Multi-dimensional support (zero-allocation with N-D cache)
 @inline function acquire!(pool::AdaptiveArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
-    total_len = prod(dims)
-    flat_view = acquire!(pool, T, total_len)
-    # Create concrete Array{T,N} backed by same memory
-    arr = unsafe_wrap(Array{T, N}, pointer(flat_view), dims)
-    # Return as SubArray for API consistency (prevents resize!)
-    return view(arr, ntuple(_ -> Colon(), Val(N))...)
+    tp = get_typed_pool!(pool, T)
+    return get_nd_view!(tp, dims)
 end
 
 # Tuple support: allows acquire!(pool, T, size(A)) where size(A) returns NTuple{N,Int}
@@ -365,6 +412,10 @@ function Base.empty!(tp::TypedPool)
     empty!(tp.vectors)
     empty!(tp.views)
     empty!(tp.view_lengths)
+    # Clear N-D caches
+    empty!(tp.nd_views)
+    empty!(tp.nd_dims)
+    empty!(tp.nd_ptrs)
     tp.n_active = 0
     empty!(tp.saved_stack)
     return tp
