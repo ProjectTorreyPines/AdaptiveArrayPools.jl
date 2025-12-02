@@ -407,22 +407,16 @@ rewind!(::Nothing) = nothing
 """
     checkpoint!(tp::TypedPool)
 
-Save state for a specific TypedPool directly.
+Internal method for saving TypedPool state.
 
-This provides low-level access for manual pool management without going
-through AdaptiveArrayPool. Useful for performance-critical scenarios where
-you have direct TypedPool references.
+!!! warning "Internal API"
+    This is an internal implementation detail. For manual pool management,
+    use the public API instead:
+    ```julia
+    checkpoint!(pool, Float64)  # Type-specific checkpoint
+    ```
 
-# Example
-```julia
-pool = AdaptiveArrayPool()
-tp = get_typed_pool!(pool, Float64)
-checkpoint!(tp)  # Save only Float64 pool state
-# ... do work ...
-rewind!(tp)  # Restore only Float64 pool state
-```
-
-See also: [`rewind!`](@ref), [`get_typed_pool!`](@ref)
+See also: [`checkpoint!(::AdaptiveArrayPool, ::Type)`](@ref), [`rewind!`](@ref)
 """
 @inline function checkpoint!(tp::TypedPool)
     push!(tp.saved_stack, tp.n_active)
@@ -432,9 +426,16 @@ end
 """
     rewind!(tp::TypedPool)
 
-Restore state for a specific TypedPool directly.
+Internal method for restoring TypedPool state.
 
-See also: [`checkpoint!`](@ref), [`get_typed_pool!`](@ref)
+!!! warning "Internal API"
+    This is an internal implementation detail. For manual pool management,
+    use the public API instead:
+    ```julia
+    rewind!(pool, Float64)  # Type-specific rewind
+    ```
+
+See also: [`rewind!(::AdaptiveArrayPool, ::Type)`](@ref), [`checkpoint!`](@ref)
 """
 @inline function rewind!(tp::TypedPool)
     tp.n_active = pop!(tp.saved_stack)
