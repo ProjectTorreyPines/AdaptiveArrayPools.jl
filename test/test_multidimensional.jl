@@ -1,3 +1,5 @@
+using AdaptiveArrayPools: checkpoint!, rewind!
+
 @testset "Multi-dimensional acquire!" begin
     pool = AdaptiveArrayPool()
 

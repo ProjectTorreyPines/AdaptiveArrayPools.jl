@@ -19,7 +19,7 @@ mutable struct TypedPool{T}
 
     # N-D View Cache (zero-allocation for multi-dimensional acquire!)
     nd_views::Vector{Any}        # Cached N-D SubArrays (various dimensions)
-    nd_dims::Vector{Any}         # Cached dims tuples (for comparison)
+    nd_dims::Vector{Any}         # Cached dimensions tuple (for safe zero-alloc comparison)
     nd_ptrs::Vector{UInt}        # Pointer values at cache creation (resize detection)
 
     n_active::Int                # Number of currently active (checked-out) vectors

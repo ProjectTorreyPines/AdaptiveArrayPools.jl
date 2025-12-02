@@ -61,7 +61,7 @@ end
 Internal function to get an N-dimensional view from the typed pool with caching.
 
 ## Cache Hit Conditions
-1. Same dims requested
+1. Same dims tuple (safe check via `isa` + `==`)
 2. Same pointer (backing vector not resized)
 
 ## Type Assertion
@@ -82,13 +82,16 @@ Uses `::SubArray{T, N, Array{T, N}}` for type stability when retrieving from Vec
         push!(tp.nd_ptrs, UInt(0))
     end
 
-    # Cache Hit: same dims AND same pointer (vector not resized)
+    # Cache Hit: same shape AND same pointer (vector not resized)
     @inbounds cached_dims = tp.nd_dims[idx]
     @inbounds cached_ptr = tp.nd_ptrs[idx]
 
-    if cached_dims == dims && cached_ptr == current_ptr
+    # Safe check: isa + == (Zero Allocation)
+    # We must check `isa NTuple{N, Int}` first to avoid dynamic dispatch on `==`
+    if cached_dims isa NTuple{N, Int} && cached_dims == dims && cached_ptr == current_ptr
         # Type assertion for type stability (Vector{Any} → concrete type)
-        return @inbounds tp.nd_views[idx]::SubArray{T, N, Array{T, N}}
+        # This is critical for zero-allocation performance
+        return @inbounds tp.nd_views[idx]::SubArray{T, N, Array{T, N}, Tuple{Vararg{Base.Slice{Base.OneTo{Int}}, N}}, true}
     end
 
     # Cache Miss: create new SubArray and cache it
