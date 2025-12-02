@@ -193,6 +193,7 @@ end
 - **Task-Local Isolation**: Each Task gets its own pool via `task_local_storage()`. Thread-safe when `@with_pool` is called within each task's scope (see [Multi-Threading Usage](#multi-threading-usage) below).
 - **Type Stable**: Optimized for `Float64`, `Int`, and other common types using fixed-slot caching.
 - **Non-Intrusive**: If you disable pooling via preferences, `acquire!` compiles down to a standard `Array` allocation.
+- **Flexible API**: Use `acquire!` for safe `SubArray` views, or `unsafe_acquire!` when raw `Array` is required.
 
 ## Multi-Threading Usage
 
@@ -221,6 +222,33 @@ end
 > **Important**: Pool objects must not be shared across Tasks. This library does not add locks—correct usage is the user's responsibility.
 
 For detailed explanation including Julia's Task/Thread model and why thread-local pools don't work, see **[Multi-Threading Guide](docs/multi-threading.md)**.
+
+## `acquire!` vs `unsafe_acquire!`
+
+By default, `acquire!` returns a **`SubArray`** (view) backed by pool memory. This is safe and prevents accidental `resize!` or `push!` operations.
+
+For cases where a **concrete `Array` type** is required (e.g., BLAS operations, FFI calls, or hot-path dispatch optimization), use `unsafe_acquire!`:
+
+```julia
+@with_pool pool begin
+    # acquire! returns SubArray (safe, prevents resize!)
+    v = acquire!(pool, Float64, 100)        # SubArray{Float64,1,Vector{Float64},...}
+    m = acquire!(pool, Float64, 10, 10)     # SubArray{Float64,2,Matrix{Float64},...}
+
+    # unsafe_acquire! returns raw Array (for BLAS, FFI, dispatch optimization)
+    A = unsafe_acquire!(pool, Float64, 100, 100)  # Matrix{Float64}
+    B = unsafe_acquire!(pool, Float64, 100, 100)  # Matrix{Float64}
+    C = similar(A)
+    mul!(C, A, B)  # BLAS can use A, B directly without SubArray overhead
+end
+```
+
+| Function | Return Type | Use Case |
+|----------|-------------|----------|
+| `acquire!(pool, T, dims...)` | `SubArray{T,N}` | General use, safe default |
+| `unsafe_acquire!(pool, T, dims...)` | `Array{T,N}` | BLAS, FFI, hot-path dispatch |
+
+> **Warning**: Both `acquire!` and `unsafe_acquire!` return memory that is only valid within the `@with_pool` scope. Do NOT call `resize!`, `push!`, or `append!` on arrays from `unsafe_acquire!`.
 
 ## Documentation
 
