@@ -54,11 +54,43 @@ end
     @test alloc == 0
 end
 
+function _test_acquire_loop()
+    pool = AdaptiveArrayPool()
+
+    # Warmup
+    for _ in 1:3
+        @with_pool pool begin
+            A = acquire!(pool, Float64, 10, 10)
+            B = acquire!(pool, Float64, 10, 10)
+            C = acquire!(pool, Float64, 10, 10)
+            fill!(A, 1.0)
+            fill!(B, 2.0)
+            @. C = A + B
+            sum(C)
+        end
+    end
+
+    # Measure loop
+    total = 0.0
+    alloc = @allocated for _ in 1:100
+        total += @with_pool pool begin
+            A = acquire!(pool, Float64, 10, 10)
+            B = acquire!(pool, Float64, 10, 10)
+            C = acquire!(pool, Float64, 10, 10)
+            fill!(A, 1.0)
+            fill!(B, 2.0)
+            @. C = A + B
+            sum(C)
+        end
+    end
+
+    return alloc, total
+end
+
 # ==============================================================================
 # Pattern 2: unsafe_acquire! only (raw Array)
-# Note: unsafe_acquire! returns raw Array via unsafe_wrap, which allocates
-#       Array header objects (~80 bytes per 2D array). Data memory is NOT allocated.
-#       This is unavoidable because unsafe_wrap must create Array objects.
+# Note: With N-D array caching, unsafe_acquire! achieves zero allocation on cache hit.
+#       The Array objects are cached and reused, avoiding heap allocations.
 # ==============================================================================
 
 function _test_unsafe_single()
@@ -91,19 +123,49 @@ function _test_unsafe_single()
     return alloc
 end
 
-@testset "README pattern: unsafe_acquire! minimal allocation (Array headers only)" begin
+@testset "README pattern: unsafe_acquire! zero-allocation" begin
     # Compile
     _test_unsafe_single()
     _test_unsafe_single()
 
     alloc = _test_unsafe_single()
-    println("  unsafe_acquire! (single iteration): $alloc bytes (Array headers only, no data)")
+    println("  unsafe_acquire! (single iteration): $alloc bytes")
 
-    # unsafe_wrap allocates Array header objects (~80 bytes per 2D array)
-    # 3 arrays × ~80 bytes = ~240 bytes
-    # This is NOT data allocation - data comes from the pool
-    @test alloc < 500  # Reasonable upper bound for 3 Array headers
-    @test alloc < 3 * 10 * 10 * 8  # Much less than actual data size (2400 bytes)
+    # With N-D array caching, unsafe_acquire! achieves zero allocation
+    @test alloc == 0
+end
+
+function _test_unsafe_loop()
+    pool = AdaptiveArrayPool()
+
+    # Warmup
+    for _ in 1:3
+        @with_pool pool begin
+            A = unsafe_acquire!(pool, Float64, 10, 10)
+            B = unsafe_acquire!(pool, Float64, 10, 10)
+            C = unsafe_acquire!(pool, Float64, 10, 10)
+            fill!(A, 1.0)
+            fill!(B, 2.0)
+            @. C = A + B
+            sum(C)
+        end
+    end
+
+    # Measure loop
+    total = 0.0
+    alloc = @allocated for _ in 1:100
+        total += @with_pool pool begin
+            A = unsafe_acquire!(pool, Float64, 10, 10)
+            B = unsafe_acquire!(pool, Float64, 10, 10)
+            C = unsafe_acquire!(pool, Float64, 10, 10)
+            fill!(A, 1.0)
+            fill!(B, 2.0)
+            @. C = A + B
+            sum(C)
+        end
+    end
+
+    return alloc, total
 end
 
 # ==============================================================================
