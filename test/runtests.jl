@@ -18,5 +18,6 @@ else
     include("test_utils.jl")
     include("test_macro_expansion.jl")
     include("test_macro_internals.jl")
+    include("test_zero_allocation.jl")
     include("test_disabled_pooling.jl")
 end

@@ -1,3 +1,5 @@
+using AdaptiveArrayPools: checkpoint!, rewind!
+
 @testset "Multi-dimensional acquire!" begin
     pool = AdaptiveArrayPool()
 
@@ -224,4 +226,39 @@ end
     nothing_unsafe = unsafe_acquire!(nothing, ref_mat)
     @test size(nothing_unsafe) == size(ref_mat)
     @test nothing_unsafe isa Matrix{Float64}
+end
+
+# Function barrier for accurate allocation measurement
+function test_nd_zero_alloc()
+    pool = AdaptiveArrayPool()
+
+    # Warmup phase (cache miss → allocations expected)
+    @with_pool pool begin
+        m = acquire!(pool, Float64, 10, 10)
+        m .= 1.0
+    end
+    @with_pool pool begin
+        m = acquire!(pool, Float64, 10, 10)
+        m .= 1.0
+    end
+
+    # Measure (cache hit → should be 0 bytes)
+    alloc = @allocated @with_pool pool begin
+        m = acquire!(pool, Float64, 10, 10)
+        m .= 1.0
+        nothing
+    end
+
+    return alloc
+end
+
+@testset "N-D acquire! zero-allocation (cache hit)" begin
+    # First call compiles the function
+    test_nd_zero_alloc()
+    test_nd_zero_alloc()
+
+    # Measure
+    alloc = test_nd_zero_alloc()
+    println("  N-D acquire! allocation (cache hit): $alloc bytes")
+    @test alloc == 0
 end
