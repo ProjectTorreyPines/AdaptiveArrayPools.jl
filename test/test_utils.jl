@@ -1,7 +1,3 @@
-# ==============================================================================
-# Tests for utils.jl: POOL_DEBUG, _validate_pool_return, pool_stats
-# ==============================================================================
-
 import AdaptiveArrayPools: _validate_pool_return
 
 # Helper macro to capture stdout (must be defined before use)
@@ -22,349 +18,358 @@ macro capture_out(expr)
     end
 end
 
-@testset "pool_stats" begin
-    pool = AdaptiveArrayPool()
+@testset "Utilities and Debugging" begin
 
-    # Empty pool stats
-    output = @capture_out pool_stats(pool)
-    @test occursin("AdaptiveArrayPool", output)
-    @test occursin("empty", output)
+    # ==============================================================================
+    # Tests for utils.jl: POOL_DEBUG, _validate_pool_return, pool_stats
+    # ==============================================================================
 
-    # Add some vectors to fixed slots
-    checkpoint!(pool)
-    v1 = acquire!(pool, Float64, 100)
-    v2 = acquire!(pool, Float32, 50)
-    v3 = acquire!(pool, Int64, 25)
 
-    output = @capture_out pool_stats(pool)
-    @test occursin("Float64 (fixed)", output)
-    @test occursin("Float32 (fixed)", output)
-    @test occursin("Int64 (fixed)", output)
-    @test occursin("arrays: 1", output)
-    @test occursin("active: 1", output)
+    @testset "pool_stats" begin
+        pool = AdaptiveArrayPool()
 
-    rewind!(pool)
+        # Empty pool stats
+        output = @capture_out pool_stats(pool)
+        @test occursin("AdaptiveArrayPool", output)
+        @test occursin("empty", output)
 
-    # Test with fallback types (others)
-    checkpoint!(pool)
-    v_uint8 = acquire!(pool, UInt8, 200)
+        # Add some vectors to fixed slots
+        checkpoint!(pool)
+        v1 = acquire!(pool, Float64, 100)
+        v2 = acquire!(pool, Float32, 50)
+        v3 = acquire!(pool, Int64, 25)
 
-    output = @capture_out pool_stats(pool)
-    @test occursin("UInt8 (fallback)", output)
-    @test occursin("elements: 200", output)
+        output = @capture_out pool_stats(pool)
+        @test occursin("Float64 (fixed)", output)
+        @test occursin("Float32 (fixed)", output)
+        @test occursin("Int64 (fixed)", output)
+        @test occursin("arrays: 1", output)
+        @test occursin("active: 1", output)
 
-    rewind!(pool)
-end
+        rewind!(pool)
 
-@testset "POOL_DEBUG flag" begin
-    old_debug = POOL_DEBUG[]
+        # Test with fallback types (others)
+        checkpoint!(pool)
+        v_uint8 = acquire!(pool, UInt8, 200)
 
-    # Default is false
-    POOL_DEBUG[] = false
+        output = @capture_out pool_stats(pool)
+        @test occursin("UInt8 (fallback)", output)
+        @test occursin("elements: 200", output)
 
-    # When debug is off, no validation happens even if SubArray is returned
-    result = @with_pool pool begin
-        v = acquire!(pool, Float64, 10)
-        v  # Returning SubArray - would be unsafe in real code
-    end
-    @test result isa SubArray  # No error when debug is off
-
-    POOL_DEBUG[] = old_debug
-end
-
-@testset "POOL_DEBUG with safety violation" begin
-    old_debug = POOL_DEBUG[]
-    POOL_DEBUG[] = true
-
-    # Should throw error when returning SubArray with debug on
-    @test_throws ErrorException @with_pool pool begin
-        v = acquire!(pool, Float64, 10)
-        v  # Unsafe: returning pool-backed SubArray
+        rewind!(pool)
     end
 
-    # Safe returns should work fine
-    result = @with_pool pool begin
-        v = acquire!(pool, Float64, 10)
-        v .= 1.0
-        sum(v)  # Safe: returning scalar
+    @testset "POOL_DEBUG flag" begin
+        old_debug = POOL_DEBUG[]
+
+        # Default is false
+        POOL_DEBUG[] = false
+
+        # When debug is off, no validation happens even if SubArray is returned
+        result = @with_pool pool begin
+            v = acquire!(pool, Float64, 10)
+            v  # Returning SubArray - would be unsafe in real code
+        end
+        @test result isa SubArray  # No error when debug is off
+
+        POOL_DEBUG[] = old_debug
     end
-    @test result == 10.0
 
-    # Returning a copy is also safe
-    result = @with_pool pool begin
-        v = acquire!(pool, Float64, 5)
-        v .= 2.0
-        collect(v)  # Safe: returning a copy
+    @testset "POOL_DEBUG with safety violation" begin
+        old_debug = POOL_DEBUG[]
+        POOL_DEBUG[] = true
+
+        # Should throw error when returning SubArray with debug on
+        @test_throws ErrorException @with_pool pool begin
+            v = acquire!(pool, Float64, 10)
+            v  # Unsafe: returning pool-backed SubArray
+        end
+
+        # Safe returns should work fine
+        result = @with_pool pool begin
+            v = acquire!(pool, Float64, 10)
+            v .= 1.0
+            sum(v)  # Safe: returning scalar
+        end
+        @test result == 10.0
+
+        # Returning a copy is also safe
+        result = @with_pool pool begin
+            v = acquire!(pool, Float64, 5)
+            v .= 2.0
+            collect(v)  # Safe: returning a copy
+        end
+        @test result == [2.0, 2.0, 2.0, 2.0, 2.0]
+
+        POOL_DEBUG[] = old_debug
     end
-    @test result == [2.0, 2.0, 2.0, 2.0, 2.0]
 
-    POOL_DEBUG[] = old_debug
-end
+    @testset "_validate_pool_return" begin
+        pool = AdaptiveArrayPool()
+        checkpoint!(pool)
 
-@testset "_validate_pool_return" begin
-    pool = AdaptiveArrayPool()
-    checkpoint!(pool)
+        # Non-SubArray values pass validation
+        _validate_pool_return(42, pool)
+        _validate_pool_return([1, 2, 3], pool)
+        _validate_pool_return("hello", pool)
+        _validate_pool_return(nothing, pool)
 
-    # Non-SubArray values pass validation
-    _validate_pool_return(42, pool)
-    _validate_pool_return([1, 2, 3], pool)
-    _validate_pool_return("hello", pool)
-    _validate_pool_return(nothing, pool)
+        # SubArray not from pool passes validation
+        external_vec = [1.0, 2.0, 3.0]
+        external_view = view(external_vec, 1:2)
+        _validate_pool_return(external_view, pool)
 
-    # SubArray not from pool passes validation
-    external_vec = [1.0, 2.0, 3.0]
-    external_view = view(external_vec, 1:2)
-    _validate_pool_return(external_view, pool)
+        # SubArray from pool fails validation (fixed slot)
+        pool_view = acquire!(pool, Float64, 10)
+        @test_throws ErrorException _validate_pool_return(pool_view, pool)
 
-    # SubArray from pool fails validation (fixed slot)
-    pool_view = acquire!(pool, Float64, 10)
-    @test_throws ErrorException _validate_pool_return(pool_view, pool)
+        rewind!(pool)
 
-    rewind!(pool)
+        # Test with fallback type (others)
+        checkpoint!(pool)
+        pool_view_uint8 = acquire!(pool, UInt8, 10)
+        @test_throws ErrorException _validate_pool_return(pool_view_uint8, pool)
+        rewind!(pool)
 
-    # Test with fallback type (others)
-    checkpoint!(pool)
-    pool_view_uint8 = acquire!(pool, UInt8, 10)
-    @test_throws ErrorException _validate_pool_return(pool_view_uint8, pool)
-    rewind!(pool)
+        # Nothing pool always passes
+        _validate_pool_return(pool_view, nothing)
+        _validate_pool_return(42, nothing)
+    end
 
-    # Nothing pool always passes
-    _validate_pool_return(pool_view, nothing)
-    _validate_pool_return(42, nothing)
-end
+    @testset "_validate_pool_return with all fixed slots" begin
+        pool = AdaptiveArrayPool()
+        checkpoint!(pool)
 
-@testset "_validate_pool_return with all fixed slots" begin
-    pool = AdaptiveArrayPool()
-    checkpoint!(pool)
+        # Test each fixed slot type
+        v_f64 = acquire!(pool, Float64, 5)
+        v_f32 = acquire!(pool, Float32, 5)
+        v_i64 = acquire!(pool, Int64, 5)
+        v_i32 = acquire!(pool, Int32, 5)
+        v_c64 = acquire!(pool, ComplexF64, 5)
+        v_bool = acquire!(pool, Bool, 5)
 
-    # Test each fixed slot type
-    v_f64 = acquire!(pool, Float64, 5)
-    v_f32 = acquire!(pool, Float32, 5)
-    v_i64 = acquire!(pool, Int64, 5)
-    v_i32 = acquire!(pool, Int32, 5)
-    v_c64 = acquire!(pool, ComplexF64, 5)
-    v_bool = acquire!(pool, Bool, 5)
+        @test_throws ErrorException _validate_pool_return(v_f64, pool)
+        @test_throws ErrorException _validate_pool_return(v_f32, pool)
+        @test_throws ErrorException _validate_pool_return(v_i64, pool)
+        @test_throws ErrorException _validate_pool_return(v_i32, pool)
+        @test_throws ErrorException _validate_pool_return(v_c64, pool)
+        @test_throws ErrorException _validate_pool_return(v_bool, pool)
 
-    @test_throws ErrorException _validate_pool_return(v_f64, pool)
-    @test_throws ErrorException _validate_pool_return(v_f32, pool)
-    @test_throws ErrorException _validate_pool_return(v_i64, pool)
-    @test_throws ErrorException _validate_pool_return(v_i32, pool)
-    @test_throws ErrorException _validate_pool_return(v_c64, pool)
-    @test_throws ErrorException _validate_pool_return(v_bool, pool)
+        rewind!(pool)
+    end
 
-    rewind!(pool)
-end
+    @testset "_format_bytes" begin
+        import AdaptiveArrayPools: _format_bytes
 
-@testset "_format_bytes" begin
-    import AdaptiveArrayPools: _format_bytes
+        # Bytes (< 1024)
+        @test _format_bytes(0) == "0 bytes"
+        @test _format_bytes(100) == "100 bytes"
+        @test _format_bytes(1023) == "1023 bytes"
 
-    # Bytes (< 1024)
-    @test _format_bytes(0) == "0 bytes"
-    @test _format_bytes(100) == "100 bytes"
-    @test _format_bytes(1023) == "1023 bytes"
+        # KiB (1024 <= bytes < 1024^2)
+        @test _format_bytes(1024) == "1.000 KiB"
+        @test _format_bytes(2048) == "2.000 KiB"
+        @test _format_bytes(1536) == "1.500 KiB"  # 1.5 KiB
 
-    # KiB (1024 <= bytes < 1024^2)
-    @test _format_bytes(1024) == "1.000 KiB"
-    @test _format_bytes(2048) == "2.000 KiB"
-    @test _format_bytes(1536) == "1.500 KiB"  # 1.5 KiB
+        # MiB (1024^2 <= bytes < 1024^3)
+        @test _format_bytes(1024^2) == "1.000 MiB"
+        @test _format_bytes(2 * 1024^2) == "2.000 MiB"
+        @test _format_bytes(Int(1.5 * 1024^2)) == "1.500 MiB"
 
-    # MiB (1024^2 <= bytes < 1024^3)
-    @test _format_bytes(1024^2) == "1.000 MiB"
-    @test _format_bytes(2 * 1024^2) == "2.000 MiB"
-    @test _format_bytes(Int(1.5 * 1024^2)) == "1.500 MiB"
+        # GiB (bytes >= 1024^3)
+        @test _format_bytes(1024^3) == "1.000 GiB"
+        @test _format_bytes(2 * 1024^3) == "2.000 GiB"
+    end
 
-    # GiB (bytes >= 1024^3)
-    @test _format_bytes(1024^3) == "1.000 GiB"
-    @test _format_bytes(2 * 1024^3) == "2.000 GiB"
-end
+    @testset "Base.show for TypedPool" begin
+        import AdaptiveArrayPools: TypedPool
 
-@testset "Base.show for TypedPool" begin
-    import AdaptiveArrayPools: TypedPool
+        # Empty TypedPool - compact show
+        tp_empty = TypedPool{Float64}()
+        output = sprint(show, tp_empty)
+        @test output == "TypedPool{Float64}(empty)"
 
-    # Empty TypedPool - compact show
-    tp_empty = TypedPool{Float64}()
-    output = sprint(show, tp_empty)
-    @test output == "TypedPool{Float64}(empty)"
+        # Non-empty TypedPool - compact show
+        pool = AdaptiveArrayPool()
+        checkpoint!(pool)
+        acquire!(pool, Float64, 100)
+        acquire!(pool, Float64, 50)
 
-    # Non-empty TypedPool - compact show
-    pool = AdaptiveArrayPool()
-    checkpoint!(pool)
-    acquire!(pool, Float64, 100)
-    acquire!(pool, Float64, 50)
+        output = sprint(show, pool.float64)
+        @test occursin("TypedPool{Float64}", output)
+        @test occursin("vectors=2", output)
+        @test occursin("active=2", output)
+        @test occursin("elements=150", output)
 
-    output = sprint(show, pool.float64)
-    @test occursin("TypedPool{Float64}", output)
-    @test occursin("vectors=2", output)
-    @test occursin("active=2", output)
-    @test occursin("elements=150", output)
+        # Multi-line show (MIME"text/plain")
+        output = sprint(show, MIME("text/plain"), pool.float64)
+        @test occursin("TypedPool{Float64}", output)
+        @test occursin("arrays:", output)
+        @test occursin("active:", output)
 
-    # Multi-line show (MIME"text/plain")
-    output = sprint(show, MIME("text/plain"), pool.float64)
-    @test occursin("TypedPool{Float64}", output)
-    @test occursin("arrays:", output)
-    @test occursin("active:", output)
+        rewind!(pool)
+    end
 
-    rewind!(pool)
-end
+    @testset "Base.show for AdaptiveArrayPool" begin
+        # Empty pool - compact show
+        pool_empty = AdaptiveArrayPool()
+        output = sprint(show, pool_empty)
+        @test occursin("AdaptiveArrayPool", output)
+        @test occursin("types=0", output)
+        @test occursin("vectors=0", output)
+        @test occursin("active=0", output)
 
-@testset "Base.show for AdaptiveArrayPool" begin
-    # Empty pool - compact show
-    pool_empty = AdaptiveArrayPool()
-    output = sprint(show, pool_empty)
-    @test occursin("AdaptiveArrayPool", output)
-    @test occursin("types=0", output)
-    @test occursin("vectors=0", output)
-    @test occursin("active=0", output)
+        # Non-empty pool - compact show
+        pool = AdaptiveArrayPool()
+        checkpoint!(pool)
+        acquire!(pool, Float64, 100)
+        acquire!(pool, Int64, 50)
+        acquire!(pool, UInt8, 25)  # fallback type
 
-    # Non-empty pool - compact show
-    pool = AdaptiveArrayPool()
-    checkpoint!(pool)
-    acquire!(pool, Float64, 100)
-    acquire!(pool, Int64, 50)
-    acquire!(pool, UInt8, 25)  # fallback type
+        output = sprint(show, pool)
+        @test occursin("AdaptiveArrayPool", output)
+        @test occursin("types=3", output)
+        @test occursin("vectors=3", output)
+        @test occursin("active=3", output)
 
-    output = sprint(show, pool)
-    @test occursin("AdaptiveArrayPool", output)
-    @test occursin("types=3", output)
-    @test occursin("vectors=3", output)
-    @test occursin("active=3", output)
+        # Multi-line show (MIME"text/plain")
+        output = sprint(show, MIME("text/plain"), pool)
+        @test occursin("AdaptiveArrayPool", output)
+        @test occursin("Float64 (fixed)", output)
+        @test occursin("Int64 (fixed)", output)
+        @test occursin("UInt8 (fallback)", output)
 
-    # Multi-line show (MIME"text/plain")
-    output = sprint(show, MIME("text/plain"), pool)
-    @test occursin("AdaptiveArrayPool", output)
-    @test occursin("Float64 (fixed)", output)
-    @test occursin("Int64 (fixed)", output)
-    @test occursin("UInt8 (fallback)", output)
+        rewind!(pool)
+    end
 
-    rewind!(pool)
-end
+    @testset "pool_stats for empty TypedPool" begin
+        import AdaptiveArrayPools: TypedPool
 
-@testset "pool_stats for empty TypedPool" begin
-    import AdaptiveArrayPools: TypedPool
+        tp = TypedPool{Float64}()
+        output = @capture_out pool_stats(tp)
+        @test occursin("Float64", output)
+        @test occursin("empty", output)
+    end
 
-    tp = TypedPool{Float64}()
-    output = @capture_out pool_stats(tp)
-    @test occursin("Float64", output)
-    @test occursin("empty", output)
-end
+    @testset "_validate_pool_return with N-D arrays" begin
+        pool = AdaptiveArrayPool()
+        checkpoint!(pool)
 
-@testset "_validate_pool_return with N-D arrays" begin
-    pool = AdaptiveArrayPool()
-    checkpoint!(pool)
-
-    # N-D SubArray from pool should fail validation (pointer overlap check)
-    mat = acquire!(pool, Float64, 10, 10)
-    @test mat isa SubArray{Float64, 2}
-    @test_throws ErrorException _validate_pool_return(mat, pool)
-
-    # 3D SubArray should also fail
-    tensor = acquire!(pool, Float64, 5, 5, 5)
-    @test tensor isa SubArray{Float64, 3}
-    @test_throws ErrorException _validate_pool_return(tensor, pool)
-
-    rewind!(pool)
-end
-
-@testset "_validate_pool_return with unsafe_acquire!" begin
-    pool = AdaptiveArrayPool()
-    checkpoint!(pool)
-
-    # Raw Vector from unsafe_acquire! should fail validation
-    v = unsafe_acquire!(pool, Float64, 100)
-    @test v isa Vector{Float64}
-    @test_throws ErrorException _validate_pool_return(v, pool)
-
-    # Raw Matrix from unsafe_acquire! should fail validation
-    mat = unsafe_acquire!(pool, Float64, 10, 10)
-    @test mat isa Matrix{Float64}
-    @test_throws ErrorException _validate_pool_return(mat, pool)
-
-    # Raw 3D Array from unsafe_acquire! should fail validation
-    tensor = unsafe_acquire!(pool, Float64, 5, 5, 5)
-    @test tensor isa Array{Float64, 3}
-    @test_throws ErrorException _validate_pool_return(tensor, pool)
-
-    rewind!(pool)
-end
-
-@testset "_validate_pool_return with view(unsafe_acquire!)" begin
-    # Bug fix test: view() wrapped around unsafe_acquire! result
-    # The parent Vector/Array is created by unsafe_wrap, not the pool's internal vector
-    # This requires pointer overlap check, not identity check
-    pool = AdaptiveArrayPool()
-    checkpoint!(pool)
-
-    # 1D: view(unsafe_acquire!(...), :) should fail validation
-    v = unsafe_acquire!(pool, Float64, 100)
-    v_view = view(v, :)
-    @test v_view isa SubArray
-    @test parent(v_view) === v  # Parent is unsafe_wrap'd Vector, not pool's internal vector
-    @test_throws ErrorException _validate_pool_return(v_view, pool)
-
-    # Partial view should also fail
-    v_partial = view(v, 1:50)
-    @test_throws ErrorException _validate_pool_return(v_partial, pool)
-
-    # 2D: view(unsafe_acquire!(...), :, :) should fail validation
-    mat = unsafe_acquire!(pool, Float64, 10, 10)
-    mat_view = view(mat, :, :)
-    @test mat_view isa SubArray
-    @test_throws ErrorException _validate_pool_return(mat_view, pool)
-
-    rewind!(pool)
-end
-
-@testset "_validate_pool_return external arrays pass" begin
-    pool = AdaptiveArrayPool()
-    checkpoint!(pool)
-
-    # Acquire some memory to populate the pool
-    _ = acquire!(pool, Float64, 100)
-
-    # External N-D arrays should pass validation
-    external_mat = zeros(Float64, 10, 10)
-    external_view = view(external_mat, :, :)
-    _validate_pool_return(external_view, pool)
-    _validate_pool_return(external_mat, pool)
-
-    # External 3D array should pass
-    external_tensor = zeros(Float64, 5, 5, 5)
-    _validate_pool_return(external_tensor, pool)
-
-    rewind!(pool)
-end
-
-@testset "POOL_DEBUG with N-D arrays" begin
-    old_debug = POOL_DEBUG[]
-    POOL_DEBUG[] = true
-
-    # N-D SubArray should throw error when returned
-    @test_throws ErrorException @with_pool pool begin
+        # N-D SubArray from pool should fail validation (pointer overlap check)
         mat = acquire!(pool, Float64, 10, 10)
-        mat  # Unsafe: returning pool-backed N-D SubArray
+        @test mat isa SubArray{Float64, 2}
+        @test_throws ErrorException _validate_pool_return(mat, pool)
+
+        # 3D SubArray should also fail
+        tensor = acquire!(pool, Float64, 5, 5, 5)
+        @test tensor isa SubArray{Float64, 3}
+        @test_throws ErrorException _validate_pool_return(tensor, pool)
+
+        rewind!(pool)
     end
 
-    # Raw Array from unsafe_acquire! should throw error when returned
-    @test_throws ErrorException @with_pool pool begin
+    @testset "_validate_pool_return with unsafe_acquire!" begin
+        pool = AdaptiveArrayPool()
+        checkpoint!(pool)
+
+        # Raw Vector from unsafe_acquire! should fail validation
+        v = unsafe_acquire!(pool, Float64, 100)
+        @test v isa Vector{Float64}
+        @test_throws ErrorException _validate_pool_return(v, pool)
+
+        # Raw Matrix from unsafe_acquire! should fail validation
         mat = unsafe_acquire!(pool, Float64, 10, 10)
-        mat  # Unsafe: returning raw Array backed by pool
+        @test mat isa Matrix{Float64}
+        @test_throws ErrorException _validate_pool_return(mat, pool)
+
+        # Raw 3D Array from unsafe_acquire! should fail validation
+        tensor = unsafe_acquire!(pool, Float64, 5, 5, 5)
+        @test tensor isa Array{Float64, 3}
+        @test_throws ErrorException _validate_pool_return(tensor, pool)
+
+        rewind!(pool)
     end
 
-    # Safe returns should work fine
-    result = @with_pool pool begin
-        mat = acquire!(pool, Float64, 10, 10)
-        mat .= 1.0
-        sum(mat)  # Safe: returning scalar
-    end
-    @test result == 100.0
+    @testset "_validate_pool_return with view(unsafe_acquire!)" begin
+        # Bug fix test: view() wrapped around unsafe_acquire! result
+        # The parent Vector/Array is created by unsafe_wrap, not the pool's internal vector
+        # This requires pointer overlap check, not identity check
+        pool = AdaptiveArrayPool()
+        checkpoint!(pool)
 
-    # Returning a copy is also safe
-    result = @with_pool pool begin
-        mat = acquire!(pool, Float64, 3, 3)
-        mat .= 2.0
-        collect(mat)  # Safe: returning a copy
-    end
-    @test result == fill(2.0, 3, 3)
+        # 1D: view(unsafe_acquire!(...), :) should fail validation
+        v = unsafe_acquire!(pool, Float64, 100)
+        v_view = view(v, :)
+        @test v_view isa SubArray
+        @test parent(v_view) === v  # Parent is unsafe_wrap'd Vector, not pool's internal vector
+        @test_throws ErrorException _validate_pool_return(v_view, pool)
 
-    POOL_DEBUG[] = old_debug
-end
+        # Partial view should also fail
+        v_partial = view(v, 1:50)
+        @test_throws ErrorException _validate_pool_return(v_partial, pool)
+
+        # 2D: view(unsafe_acquire!(...), :, :) should fail validation
+        mat = unsafe_acquire!(pool, Float64, 10, 10)
+        mat_view = view(mat, :, :)
+        @test mat_view isa SubArray
+        @test_throws ErrorException _validate_pool_return(mat_view, pool)
+
+        rewind!(pool)
+    end
+
+    @testset "_validate_pool_return external arrays pass" begin
+        pool = AdaptiveArrayPool()
+        checkpoint!(pool)
+
+        # Acquire some memory to populate the pool
+        _ = acquire!(pool, Float64, 100)
+
+        # External N-D arrays should pass validation
+        external_mat = zeros(Float64, 10, 10)
+        external_view = view(external_mat, :, :)
+        _validate_pool_return(external_view, pool)
+        _validate_pool_return(external_mat, pool)
+
+        # External 3D array should pass
+        external_tensor = zeros(Float64, 5, 5, 5)
+        _validate_pool_return(external_tensor, pool)
+
+        rewind!(pool)
+    end
+
+    @testset "POOL_DEBUG with N-D arrays" begin
+        old_debug = POOL_DEBUG[]
+        POOL_DEBUG[] = true
+
+        # N-D SubArray should throw error when returned
+        @test_throws ErrorException @with_pool pool begin
+            mat = acquire!(pool, Float64, 10, 10)
+            mat  # Unsafe: returning pool-backed N-D SubArray
+        end
+
+        # Raw Array from unsafe_acquire! should throw error when returned
+        @test_throws ErrorException @with_pool pool begin
+            mat = unsafe_acquire!(pool, Float64, 10, 10)
+            mat  # Unsafe: returning raw Array backed by pool
+        end
+
+        # Safe returns should work fine
+        result = @with_pool pool begin
+            mat = acquire!(pool, Float64, 10, 10)
+            mat .= 1.0
+            sum(mat)  # Safe: returning scalar
+        end
+        @test result == 100.0
+
+        # Returning a copy is also safe
+        result = @with_pool pool begin
+            mat = acquire!(pool, Float64, 3, 3)
+            mat .= 2.0
+            collect(mat)  # Safe: returning a copy
+        end
+        @test result == fill(2.0, 3, 3)
+
+        POOL_DEBUG[] = old_debug
+    end
+
+end # Utilities and Debugging
