@@ -1,5 +1,5 @@
 # ==============================================================================
-# Core Data Structures (v3: View Caching + SoA for zero-allocation hot path)
+# Core Data Structures
 # ==============================================================================
 
 """
@@ -62,7 +62,7 @@ TypedPool{T}() where {T} = TypedPool{T}(
 )
 
 # ==============================================================================
-# AdaptiveArrayPool (v2: Fixed Slots + Fallback)
+# AdaptiveArrayPool
 # ==============================================================================
 
 """
@@ -70,13 +70,13 @@ TypedPool{T}() where {T} = TypedPool{T}(
 
 A high-performance memory pool supporting multiple data types.
 
-## v2 Features
-- **Fixed Slots**: Float64, Float32, Int64, Int32, ComplexF64, Bool have dedicated fields (zero Dict lookup)
-- **Fallback**: Other types use IdDict (still fast, but with lookup overhead)
-- **Zero Allocation**: checkpoint!/rewind! use internal stacks, no allocation after warmup
+## Features
+- **Fixed Slots**: `Float64`, `Float32`, `Int64`, `Int32`, `ComplexF64`, `Bool` have dedicated fields (zero Dict lookup)
+- **Fallback**: Other types use `IdDict` (still fast, but with lookup overhead)
+- **Zero Allocation**: `checkpoint!/rewind!` use internal stacks, no allocation after warmup
 
 ## Thread Safety
-This pool is **NOT thread-safe**. Use one pool per Task via `get_global_pool()`.
+This pool is **NOT thread-safe**. Use one pool per Task via `get_task_local_pool()`.
 """
 mutable struct AdaptiveArrayPool
     # Fixed Slots: common types with zero lookup overhead

@@ -1,5 +1,5 @@
 # ==============================================================================
-# Macros for AdaptiveArrayPools (v3: Simplified Lifecycle Management)
+# Macros for AdaptiveArrayPools
 # ==============================================================================
 
 """

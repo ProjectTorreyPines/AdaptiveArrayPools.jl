@@ -1,16 +1,20 @@
 # ==============================================================================
-# Get View (Internal)
+# Get 1D View (Internal - Zero-Allocation Cache)
 # ==============================================================================
 
 """
-    get_view!(tp::TypedPool{T}, n::Int) -> SubArray
+    get_view!(tp::TypedPool{T}, n::Int) -> SubArray{T,1,Vector{T},...}
 
-Internal function to get a vector view of size `n` from the typed pool.
+Internal function to get a 1D vector view of size `n` from the typed pool.
 
-## v3: View Caching with SoA
-- Cache hit (same size): Returns cached SubArray (zero allocation)
-- Cache miss: Creates new view, updates cache
-- Uses `view_lengths` for fast Int comparison (no pointer dereference)
+## Cache Hit Conditions
+1. Same length requested (`view_lengths[idx] == n`)
+2. Slot already exists (`idx <= length(vectors)`)
+
+## Behavior
+- **Cache hit**: Returns cached `SubArray` (zero allocation)
+- **Cache miss**: Creates new view, updates cache
+- **Pool expansion**: Allocates new vector if needed, warns at powers of 2
 """
 function get_view!(tp::TypedPool{T}, n::Int) where {T}
     tp.n_active += 1
@@ -52,14 +56,21 @@ function get_view!(tp::TypedPool{T}, n::Int) where {T}
 end
 
 # ==============================================================================
-# Get N-D View (Internal - Zero-Allocation Cache)
+# Get N-D Array/View (Internal - Zero-Allocation Cache)
 # ==============================================================================
 
 """
     get_nd_array!(tp::TypedPool{T}, dims::NTuple{N,Int}) -> Array{T,N}
 
-Internal function to get an N-dimensional Array from the typed pool with caching.
-Used by `unsafe_acquire!` and as a backing for `get_nd_view!`.
+Internal function to get an N-dimensional `Array` from the typed pool with caching.
+Used by `unsafe_acquire!` directly and as a backing store for `get_nd_view!`.
+
+## Cache Hit Conditions
+1. Same dims tuple (`isa NTuple{N, Int} && cached_dims == dims`)
+2. Same pointer (backing vector not resized)
+
+## Type Assertion
+Uses `::Array{T, N}` for type stability when retrieving from `Vector{Any}`.
 """
 @inline function get_nd_array!(tp::TypedPool{T}, dims::NTuple{N, Int}) where {T, N}
     total_len = prod(dims)
@@ -294,7 +305,7 @@ end
 @inline unsafe_acquire!(::Nothing, x::AbstractArray) = similar(x)
 
 # ==============================================================================
-# State Management (v2: Zero-Allocation checkpoint!/rewind!)
+# State Management
 # ==============================================================================
 
 """
