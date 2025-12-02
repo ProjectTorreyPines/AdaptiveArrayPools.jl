@@ -56,6 +56,47 @@ end
 # ==============================================================================
 
 """
+    get_nd_array!(tp::TypedPool{T}, dims::NTuple{N,Int}) -> Array{T,N}
+
+Internal function to get an N-dimensional Array from the typed pool with caching.
+Used by `unsafe_acquire!` and as a backing for `get_nd_view!`.
+"""
+@inline function get_nd_array!(tp::TypedPool{T}, dims::NTuple{N, Int}) where {T, N}
+    total_len = prod(dims)
+    flat_view = get_view!(tp, total_len) # Increments n_active
+    idx = tp.n_active
+
+    @inbounds vec = tp.vectors[idx]
+    current_ptr = UInt(pointer(vec))
+
+    # Expand cache slots if needed
+    while idx > length(tp.nd_arrays)
+        push!(tp.nd_views, nothing)
+        push!(tp.nd_arrays, nothing)
+        push!(tp.nd_dims, nothing)
+        push!(tp.nd_ptrs, UInt(0))
+    end
+
+    # Cache Hit Check
+    @inbounds cached_dims = tp.nd_dims[idx]
+    @inbounds cached_ptr = tp.nd_ptrs[idx]
+
+    if cached_dims isa NTuple{N, Int} && cached_dims == dims && cached_ptr == current_ptr
+        return @inbounds tp.nd_arrays[idx]::Array{T, N}
+    end
+
+    # Cache Miss
+    arr = unsafe_wrap(Array{T, N}, pointer(flat_view), dims)
+    
+    @inbounds tp.nd_arrays[idx] = arr
+    @inbounds tp.nd_dims[idx] = dims
+    @inbounds tp.nd_ptrs[idx] = current_ptr
+    @inbounds tp.nd_views[idx] = nothing # Invalidate view cache
+
+    return arr
+end
+
+"""
     get_nd_view!(tp::TypedPool{T}, dims::NTuple{N,Int}) -> SubArray{T,N,Array{T,N}}
 
 Internal function to get an N-dimensional view from the typed pool with caching.
@@ -68,40 +109,22 @@ Internal function to get an N-dimensional view from the typed pool with caching.
 Uses `::SubArray{T, N, Array{T, N}}` for type stability when retrieving from Vector{Any}.
 """
 @inline function get_nd_view!(tp::TypedPool{T}, dims::NTuple{N, Int}) where {T, N}
-    total_len = prod(dims)
-    flat_view = get_view!(tp, total_len)
+    # Delegate to get_nd_array! to handle array caching and n_active increment
+    arr = get_nd_array!(tp, dims)
     idx = tp.n_active
 
-    @inbounds vec = tp.vectors[idx]
-    current_ptr = UInt(pointer(vec))
-
-    # Expand cache slots if needed (warmup phase only)
-    while idx > length(tp.nd_views)
-        push!(tp.nd_views, nothing)
-        push!(tp.nd_dims, nothing)
-        push!(tp.nd_ptrs, UInt(0))
+    # Check if view is already cached
+    @inbounds cached_view = tp.nd_views[idx]
+    
+    if cached_view !== nothing
+        # We can trust it's the right view because get_nd_array! clears it on miss
+        return cached_view::SubArray{T, N, Array{T, N}, Tuple{Vararg{Base.Slice{Base.OneTo{Int}}, N}}, true}
     end
 
-    # Cache Hit: same shape AND same pointer (vector not resized)
-    @inbounds cached_dims = tp.nd_dims[idx]
-    @inbounds cached_ptr = tp.nd_ptrs[idx]
-
-    # Safe check: isa + == (Zero Allocation)
-    # We must check `isa NTuple{N, Int}` first to avoid dynamic dispatch on `==`
-    if cached_dims isa NTuple{N, Int} && cached_dims == dims && cached_ptr == current_ptr
-        # Type assertion for type stability (Vector{Any} → concrete type)
-        # This is critical for zero-allocation performance
-        return @inbounds tp.nd_views[idx]::SubArray{T, N, Array{T, N}, Tuple{Vararg{Base.Slice{Base.OneTo{Int}}, N}}, true}
-    end
-
-    # Cache Miss: create new SubArray and cache it
-    arr = unsafe_wrap(Array{T, N}, pointer(flat_view), dims)
+    # Create new view
     new_view = view(arr, ntuple(_ -> Colon(), Val(N))...)
-
     @inbounds tp.nd_views[idx] = new_view
-    @inbounds tp.nd_dims[idx] = dims
-    @inbounds tp.nd_ptrs[idx] = current_ptr
-
+    
     return new_view
 end
 
@@ -222,20 +245,18 @@ See also: [`acquire!`](@ref) for safe `SubArray` access.
 """
 @inline function unsafe_acquire!(pool::AdaptiveArrayPool, ::Type{T}, n::Int) where {T}
     tp = get_typed_pool!(pool, T)
-    flat_view = get_view!(tp, n)
-    return unsafe_wrap(Vector{T}, pointer(flat_view), n)
+    return get_nd_array!(tp, (n,))
 end
 
 @inline function unsafe_acquire!(pool::AdaptiveArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
-    total_len = prod(dims)
     tp = get_typed_pool!(pool, T)
-    flat_view = get_view!(tp, total_len)
-    return unsafe_wrap(Array{T, N}, pointer(flat_view), dims)
+    return get_nd_array!(tp, dims)
 end
 
 # Tuple support
 @inline function unsafe_acquire!(pool::AdaptiveArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
-    unsafe_acquire!(pool, T, dims...)
+    tp = get_typed_pool!(pool, T)
+    return get_nd_array!(tp, dims)
 end
 
 # Fallback: When pool is `nothing`, allocate normally
@@ -417,6 +438,7 @@ function Base.empty!(tp::TypedPool)
     empty!(tp.view_lengths)
     # Clear N-D caches
     empty!(tp.nd_views)
+    empty!(tp.nd_arrays)
     empty!(tp.nd_dims)
     empty!(tp.nd_ptrs)
     tp.n_active = 0
