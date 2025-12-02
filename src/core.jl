@@ -405,6 +405,44 @@ rewind!(::Nothing) = nothing
 # ==============================================================================
 
 """
+    checkpoint!(tp::TypedPool)
+
+Internal method for saving TypedPool state.
+
+!!! warning "Internal API"
+    This is an internal implementation detail. For manual pool management,
+    use the public API instead:
+    ```julia
+    checkpoint!(pool, Float64)  # Type-specific checkpoint
+    ```
+
+See also: [`checkpoint!(::AdaptiveArrayPool, ::Type)`](@ref), [`rewind!`](@ref)
+"""
+@inline function checkpoint!(tp::TypedPool)
+    push!(tp.saved_stack, tp.n_active)
+    nothing
+end
+
+"""
+    rewind!(tp::TypedPool)
+
+Internal method for restoring TypedPool state.
+
+!!! warning "Internal API"
+    This is an internal implementation detail. For manual pool management,
+    use the public API instead:
+    ```julia
+    rewind!(pool, Float64)  # Type-specific rewind
+    ```
+
+See also: [`rewind!(::AdaptiveArrayPool, ::Type)`](@ref), [`checkpoint!`](@ref)
+"""
+@inline function rewind!(tp::TypedPool)
+    tp.n_active = pop!(tp.saved_stack)
+    nothing
+end
+
+"""
     checkpoint!(pool::AdaptiveArrayPool, ::Type{T})
 
 Save state for a specific type only. Used by optimized macros that know
@@ -413,9 +451,7 @@ which types will be used at compile time.
 ~77% faster than full checkpoint! when only one type is used.
 """
 @inline function checkpoint!(pool::AdaptiveArrayPool, ::Type{T}) where T
-    tp = get_typed_pool!(pool, T)
-    push!(tp.saved_stack, tp.n_active)
-    nothing
+    checkpoint!(get_typed_pool!(pool, T))
 end
 
 """
@@ -424,9 +460,7 @@ end
 Restore state for a specific type only.
 """
 @inline function rewind!(pool::AdaptiveArrayPool, ::Type{T}) where T
-    tp = get_typed_pool!(pool, T)
-    tp.n_active = pop!(tp.saved_stack)
-    nothing
+    rewind!(get_typed_pool!(pool, T))
 end
 
 checkpoint!(::Nothing, ::Type) = nothing

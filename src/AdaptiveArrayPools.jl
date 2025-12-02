@@ -5,9 +5,7 @@ using Printf
 export AdaptiveArrayPool, acquire!, unsafe_acquire!, pool_stats, get_task_local_pool
 export @with_pool, @maybe_with_pool
 export USE_POOLING, MAYBE_POOLING_ENABLED, POOL_DEBUG
-
-# Note: checkpoint!/rewind! are not exported to keep the public API minimal
-# Users can import them: import AdaptiveArrayPools: checkpoint!, rewind!
+export checkpoint!, rewind!
 
 # Core data structures
 include("types.jl")
