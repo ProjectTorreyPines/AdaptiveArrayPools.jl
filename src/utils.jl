@@ -16,11 +16,11 @@ function _validate_pool_return(val, pool::AdaptiveArrayPool)
     # 1. Check SubArray
     if val isa SubArray
         p = parent(val)
-        if p isa Vector
-            # 1D case: identity check (original behavior)
-            _check_vector_identity(p, pool)
-        elseif p isa Array
-            # N-D case: pointer overlap check (for unsafe_wrap backed arrays)
+        # Use pointer overlap check for ALL Array parents (Vector <: Array)
+        # This catches both:
+        # - acquire!() returns: SubArray backed by pool's internal Vector
+        # - view(unsafe_acquire!()): SubArray backed by unsafe_wrap'd Array
+        if p isa Array
             _check_pointer_overlap(p, pool)
         end
         return
@@ -32,28 +32,7 @@ function _validate_pool_return(val, pool::AdaptiveArrayPool)
     end
 end
 
-# Check if vector is identical to any pool vector (1D case)
-function _check_vector_identity(p::Vector, pool::AdaptiveArrayPool)
-    # Check fixed slots
-    for tp in (pool.float64, pool.float32, pool.int64, pool.int32, pool.complexf64, pool.bool)
-        for v in tp.vectors
-            if v === p
-                error("Safety Violation: The function returned a SubArray backed by the AdaptiveArrayPool. This is unsafe as the memory will be reclaimed. Please return a copy (collect) or a scalar.")
-            end
-        end
-    end
-
-    # Check others
-    for tp in values(pool.others)
-        for v in tp.vectors
-            if v === p
-                error("Safety Violation: The function returned a SubArray backed by the AdaptiveArrayPool. This is unsafe as the memory will be reclaimed. Please return a copy (collect) or a scalar.")
-            end
-        end
-    end
-end
-
-# Check if array memory overlaps with any pool vector (N-D case)
+# Check if array memory overlaps with any pool vector
 function _check_pointer_overlap(arr::Array, pool::AdaptiveArrayPool)
     arr_ptr = UInt(pointer(arr))
     arr_len = length(arr) * sizeof(eltype(arr))

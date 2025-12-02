@@ -287,6 +287,33 @@ end
     rewind!(pool)
 end
 
+@testset "_validate_pool_return with view(unsafe_acquire!)" begin
+    # Bug fix test: view() wrapped around unsafe_acquire! result
+    # The parent Vector/Array is created by unsafe_wrap, not the pool's internal vector
+    # This requires pointer overlap check, not identity check
+    pool = AdaptiveArrayPool()
+    checkpoint!(pool)
+
+    # 1D: view(unsafe_acquire!(...), :) should fail validation
+    v = unsafe_acquire!(pool, Float64, 100)
+    v_view = view(v, :)
+    @test v_view isa SubArray
+    @test parent(v_view) === v  # Parent is unsafe_wrap'd Vector, not pool's internal vector
+    @test_throws ErrorException _validate_pool_return(v_view, pool)
+
+    # Partial view should also fail
+    v_partial = view(v, 1:50)
+    @test_throws ErrorException _validate_pool_return(v_partial, pool)
+
+    # 2D: view(unsafe_acquire!(...), :, :) should fail validation
+    mat = unsafe_acquire!(pool, Float64, 10, 10)
+    mat_view = view(mat, :, :)
+    @test mat_view isa SubArray
+    @test_throws ErrorException _validate_pool_return(mat_view, pool)
+
+    rewind!(pool)
+end
+
 @testset "_validate_pool_return external arrays pass" begin
     pool = AdaptiveArrayPool()
     checkpoint!(pool)
