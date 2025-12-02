@@ -4,7 +4,8 @@
     # 2D matrix
     mat = acquire!(pool, Float64, 10, 10)
     @test size(mat) == (10, 10)
-    @test mat isa Base.ReshapedArray
+    @test mat isa SubArray{Float64, 2}
+    @test parent(mat) isa Matrix{Float64}
 
     @test pool.float64.n_active == 1
     mat .= 1.0
@@ -13,7 +14,8 @@
     # 3D tensor
     tensor = acquire!(pool, Float64, 5, 5, 5)
     @test size(tensor) == (5, 5, 5)
-    @test tensor isa Base.ReshapedArray
+    @test tensor isa SubArray{Float64, 3}
+    @test parent(tensor) isa Array{Float64, 3}
     @test pool.float64.n_active == 2
     tensor .= 2.0
     @test sum(tensor) == 250.0
@@ -43,12 +45,14 @@ end
     dims = size(ref_array)
     mat = acquire!(pool, Float64, dims)
     @test size(mat) == (3, 4)
-    @test mat isa Base.ReshapedArray
+    @test mat isa SubArray{Float64, 2}
+    @test parent(mat) isa Matrix{Float64}
 
     # 3D tuple
     dims3d = (2, 3, 4)
     tensor = acquire!(pool, Float64, dims3d)
     @test size(tensor) == (2, 3, 4)
+    @test tensor isa SubArray{Float64, 3}
 
     # Fallback with nothing
     mat_alloc = acquire!(nothing, Float64, dims)
@@ -96,4 +100,128 @@ end
     rewind!(mypool)
     @test result3 == 120.0
     @test mypool.float64.n_active == 0
+end
+
+@testset "unsafe_acquire! API" begin
+    pool = AdaptiveArrayPool()
+
+    # 1D returns Vector
+    v = unsafe_acquire!(pool, Float64, 100)
+    @test v isa Vector{Float64}
+    @test length(v) == 100
+    @test pool.float64.n_active == 1
+
+    # 2D returns Matrix
+    mat = unsafe_acquire!(pool, Float64, 10, 10)
+    @test mat isa Matrix{Float64}
+    @test size(mat) == (10, 10)
+    @test pool.float64.n_active == 2
+
+    # 3D returns 3D Array
+    tensor = unsafe_acquire!(pool, Float64, 5, 5, 5)
+    @test tensor isa Array{Float64, 3}
+    @test size(tensor) == (5, 5, 5)
+    @test pool.float64.n_active == 3
+
+    # Tuple support
+    dims = (4, 5, 6)
+    arr = unsafe_acquire!(pool, Float64, dims)
+    @test size(arr) == dims
+    @test arr isa Array{Float64, 3}
+
+    # Data access works
+    v .= 1.0
+    mat .= 2.0
+    tensor .= 3.0
+    @test sum(v) == 100.0
+    @test sum(mat) == 200.0
+    @test sum(tensor) == 375.0
+end
+
+@testset "unsafe_acquire! fallback (nothing)" begin
+    v = unsafe_acquire!(nothing, Float64, 10)
+    @test v isa Vector{Float64}
+    @test length(v) == 10
+
+    mat = unsafe_acquire!(nothing, Float64, 10, 10)
+    @test mat isa Matrix{Float64}
+    @test size(mat) == (10, 10)
+
+    # Tuple support
+    arr = unsafe_acquire!(nothing, Float64, (3, 4, 5))
+    @test arr isa Array{Float64, 3}
+    @test size(arr) == (3, 4, 5)
+end
+
+@testset "Memory sharing between acquire! and unsafe_acquire!" begin
+    pool = AdaptiveArrayPool()
+    checkpoint!(pool)
+
+    # Get a matrix via acquire!
+    mat = acquire!(pool, Float64, 10, 10)
+    mat .= 42.0
+
+    rewind!(pool)
+    checkpoint!(pool)
+
+    # Get the same memory via unsafe_acquire! (1D)
+    raw = unsafe_acquire!(pool, Float64, 100)
+    @test raw[1] == 42.0  # Memory was reused, data persists
+
+    rewind!(pool)
+end
+
+@testset "Similar-style acquire! and unsafe_acquire!" begin
+    pool = AdaptiveArrayPool()
+    checkpoint!(pool)
+
+    # Test with Matrix
+    ref_mat = rand(5, 6)
+    mat = acquire!(pool, ref_mat)
+    @test size(mat) == size(ref_mat)
+    @test eltype(mat) == eltype(ref_mat)
+    @test mat isa SubArray{Float64, 2}
+
+    # Test with Vector
+    ref_vec = rand(10)
+    vec = acquire!(pool, ref_vec)
+    @test size(vec) == size(ref_vec)
+    @test eltype(vec) == eltype(ref_vec)
+    @test vec isa SubArray{Float64, 1}
+
+    # Test with 3D Array
+    ref_tensor = rand(2, 3, 4)
+    tensor = acquire!(pool, ref_tensor)
+    @test size(tensor) == size(ref_tensor)
+    @test tensor isa SubArray{Float64, 3}
+
+    # Test with different element types
+    ref_int = rand(Int32, 4, 5)
+    int_mat = acquire!(pool, ref_int)
+    @test eltype(int_mat) == Int32
+    @test size(int_mat) == (4, 5)
+
+    rewind!(pool)
+
+    # Test unsafe_acquire! similar style
+    checkpoint!(pool)
+
+    unsafe_mat = unsafe_acquire!(pool, ref_mat)
+    @test size(unsafe_mat) == size(ref_mat)
+    @test unsafe_mat isa Matrix{Float64}
+
+    unsafe_vec = unsafe_acquire!(pool, ref_vec)
+    @test size(unsafe_vec) == size(ref_vec)
+    @test unsafe_vec isa Vector{Float64}
+
+    rewind!(pool)
+
+    # Test nothing fallback
+    nothing_mat = acquire!(nothing, ref_mat)
+    @test size(nothing_mat) == size(ref_mat)
+    @test nothing_mat isa Matrix{Float64}
+
+    nothing_unsafe = unsafe_acquire!(nothing, ref_mat)
+    @test size(nothing_unsafe) == size(ref_mat)
+    @test nothing_unsafe isa Matrix{Float64}
 end

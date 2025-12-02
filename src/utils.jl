@@ -13,16 +13,40 @@ Default: `false`
 const POOL_DEBUG = Ref(false)
 
 function _validate_pool_return(val, pool::AdaptiveArrayPool)
-    if !(val isa SubArray)
+    # 1. Check SubArray
+    if val isa SubArray
+        p = parent(val)
+        # Use pointer overlap check for ALL Array parents (Vector <: Array)
+        # This catches both:
+        # - acquire!() returns: SubArray backed by pool's internal Vector
+        # - view(unsafe_acquire!()): SubArray backed by unsafe_wrap'd Array
+        if p isa Array
+            _check_pointer_overlap(p, pool)
+        end
         return
     end
-    p = parent(val)
+
+    # 2. Check raw Array (from unsafe_acquire!)
+    if val isa Array
+        _check_pointer_overlap(val, pool)
+    end
+end
+
+# Check if array memory overlaps with any pool vector
+function _check_pointer_overlap(arr::Array, pool::AdaptiveArrayPool)
+    arr_ptr = UInt(pointer(arr))
+    arr_len = length(arr) * sizeof(eltype(arr))
+    arr_end = arr_ptr + arr_len
 
     # Check fixed slots
     for tp in (pool.float64, pool.float32, pool.int64, pool.int32, pool.complexf64, pool.bool)
         for v in tp.vectors
-            if v === p
-                error("Safety Violation: The function returned a SubArray backed by the AdaptiveArrayPool. This is unsafe as the memory will be reclaimed. Please return a copy (collect) or a scalar.")
+            v_ptr = UInt(pointer(v))
+            v_len = length(v) * sizeof(eltype(v))
+            v_end = v_ptr + v_len
+            # Check memory range overlap
+            if !(arr_end <= v_ptr || v_end <= arr_ptr)
+                error("Safety Violation: The function returned an Array backed by pool memory. This is unsafe as the memory will be reclaimed. Please return a copy (collect) or a scalar.")
             end
         end
     end
@@ -30,8 +54,11 @@ function _validate_pool_return(val, pool::AdaptiveArrayPool)
     # Check others
     for tp in values(pool.others)
         for v in tp.vectors
-            if v === p
-                error("Safety Violation: The function returned a SubArray backed by the AdaptiveArrayPool. This is unsafe as the memory will be reclaimed. Please return a copy (collect) or a scalar.")
+            v_ptr = UInt(pointer(v))
+            v_len = length(v) * sizeof(eltype(v))
+            v_end = v_ptr + v_len
+            if !(arr_end <= v_ptr || v_end <= arr_ptr)
+                error("Safety Violation: The function returned an Array backed by pool memory. This is unsafe as the memory will be reclaimed. Please return a copy (collect) or a scalar.")
             end
         end
     end

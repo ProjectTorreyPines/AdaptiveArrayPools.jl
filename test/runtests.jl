@@ -10,15 +10,13 @@ if !isempty(ARGS)
         include(testfile)
     end
 else
-    @testset "AdaptiveArrayPools" begin
-        include("test_basic.jl")
-        include("test_state.jl")
-        include("test_multidimensional.jl")
-        include("test_macros.jl")
-        include("test_task_local_pool.jl")
-        include("test_utils.jl")
-        include("test_macro_expansion.jl")
-        include("test_macro_internals.jl")
-        include("test_disabled_pooling.jl")
-    end
+    include("test_basic.jl")
+    include("test_state.jl")
+    include("test_multidimensional.jl")
+    include("test_macros.jl")
+    include("test_task_local_pool.jl")
+    include("test_utils.jl")
+    include("test_macro_expansion.jl")
+    include("test_macro_internals.jl")
+    include("test_disabled_pooling.jl")
 end
