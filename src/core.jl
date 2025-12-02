@@ -113,6 +113,27 @@ end
     Array{T, N}(undef, dims)
 end
 
+# Similar-style convenience methods
+"""
+    acquire!(pool, x::AbstractArray) -> SubArray
+
+Acquire an array with the same element type and size as `x` (similar to `similar(x)`).
+
+## Example
+```julia
+A = rand(10, 10)
+@with_pool pool begin
+    B = acquire!(pool, A)  # Same type and size as A
+    B .= A .* 2
+end
+```
+"""
+@inline function acquire!(pool::AdaptiveArrayPool, x::AbstractArray)
+    acquire!(pool, eltype(x), size(x))
+end
+
+@inline acquire!(::Nothing, x::AbstractArray) = similar(x)
+
 # ==============================================================================
 # Unsafe Acquisition API (Raw Arrays)
 # ==============================================================================
@@ -179,6 +200,27 @@ end
 @inline function unsafe_acquire!(::Nothing, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
     Array{T, N}(undef, dims)
 end
+
+# Similar-style convenience methods
+"""
+    unsafe_acquire!(pool, x::AbstractArray) -> Array
+
+Acquire a raw array with the same element type and size as `x` (similar to `similar(x)`).
+
+## Example
+```julia
+A = rand(10, 10)
+@with_pool pool begin
+    B = unsafe_acquire!(pool, A)  # Matrix{Float64}, same size as A
+    B .= A .* 2
+end
+```
+"""
+@inline function unsafe_acquire!(pool::AdaptiveArrayPool, x::AbstractArray)
+    unsafe_acquire!(pool, eltype(x), size(x))
+end
+
+@inline unsafe_acquire!(::Nothing, x::AbstractArray) = similar(x)
 
 # ==============================================================================
 # State Management (v2: Zero-Allocation checkpoint!/rewind!)
