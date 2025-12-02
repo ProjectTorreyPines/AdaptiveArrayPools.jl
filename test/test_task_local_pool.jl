@@ -204,3 +204,23 @@ end
 
     MAYBE_POOLING_ENABLED[] = old_state
 end
+
+@testset "Pool growth warning at 512 arrays" begin
+    # Use a fresh pool to ensure we start from 0
+    pool = AdaptiveArrayPool()
+
+    # Acquire 511 arrays without rewind - no warning yet
+    for i in 1:511
+        acquire!(pool, Float64, 10)
+    end
+    @test pool.float64.n_active == 511
+
+    # The 512th acquire should trigger a warning
+    @test_logs (:warn, r"TypedPool\{Float64\} growing large \(512 arrays.*Missing rewind") begin
+        acquire!(pool, Float64, 10)
+    end
+    @test pool.float64.n_active == 512
+
+    # Clean up
+    empty!(pool)
+end
