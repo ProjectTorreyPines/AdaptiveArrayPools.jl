@@ -19,52 +19,50 @@ Pkg.add("AdaptiveArrayPools")
 
 ## Quick Start
 
-The `@with_pool` macro automatically manages the pool's lifecycle. It checkpoints the pool state at the start of the block/function and rewinds it at the end, making all acquired arrays available for reuse.
-
 ```julia
-using AdaptiveArrayPools
-using LinearAlgebra
+using AdaptiveArrayPools, LinearAlgebra
 
-# 1. Define a function that needs temporary arrays
-@with_pool pool function heavy_computation(n)
-    # Acquire temporary arrays from the pool (returns Views)
-    # These are "borrowed" from pre-allocated, auto-managed memory pool
-    A_mat = acquire!(pool, Float64, n, n)
-    x_vec = acquire!(pool, Float64, n)
-    b_vec = acquire!(pool, Float64, n)
+# 1. Define the hot-loop function with automatic pooling for ZERO-ALLOCATION
+@with_pool pool function heavy_computation_step(n)
+    # Safe Default: Returns a SubArray (prevents resize!)
+    A = acquire!(pool, Float64, n, n)
+    B = acquire!(pool, Float64, n, n)
+    
+    # Power User: Returns a raw Matrix{Float64} (for BLAS/C-interop)
+    # ⚠️ Must NOT resize! or escape scope
+    C = unsafe_acquire!(pool, Float64, n, n)
 
-    # Use them exactly like normal Arrays
-    fill!(A_mat, 1.5)
-    fill!(x_vec, 2.0)
+    # Use them like normal arrays
+    fill!(A, 1.0); fill!(B, 2.0)
 
-    # Perform computation (A * x = b)
-    mul!(b_vec, A_mat, x_vec)
+    # Pass to inner functions as needed
+    complex_inner_logic!(C, A, B)
 
-    return sum(b_vec)  # ✅ Return scalar - safe
-    # Function exit: Pool automatically "rewinds".
-    # A, x, and b are now free to be reused by the next call.
+    return sum(C) 
+    # ⚠️ Arrays A, B, C must not escape this scope; they become invalid after this function returns!
 end
 
-# 2. Run it in a loop
-function run_simulation()
+# Standard Julia function (unaware of pooling)
+function complex_inner_logic!(C, A, B)
+    mul!(C, A, B)
+end
 
-    pool_stats()  # Before: pool is empty
-
+# 2. Main application entry point
+function main_simulation_loop()
+    # ... complex setup logic ...
+    
     total = 0.0
-
-    # First call: Pool allocates internal memory
-    total += heavy_computation(100)
-
-    # Subsequent calls: Zero allocations!
-    # The same memory slots are reused for each iteration.
+    # This loop would normally generate massive GC pressure
     for i in 1:1000
-        total += heavy_computation(100)
+        # ✅ Zero allocation here after the first iteration!
+        total += heavy_computation_step(100)
     end
-
-    pool_stats()  # After: pool is populated and ready for reuse
-
+    
     return total
 end
+
+# Run simulation
+main_simulation_loop()
 ```
 
 ## Why Use This?
