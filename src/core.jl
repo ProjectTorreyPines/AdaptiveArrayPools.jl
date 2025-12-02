@@ -56,33 +56,43 @@ end
 # ==============================================================================
 
 """
-    acquire!(pool, Type{T}, n) -> SubArray
-    acquire!(pool, Type{T}, dims...) -> ReshapedArray
+    acquire!(pool, Type{T}, n) -> SubArray{T,1,Vector{T},...}
+    acquire!(pool, Type{T}, dims...) -> SubArray{T,N,Array{T,N},...}
+    acquire!(pool, Type{T}, dims::NTuple{N,Int}) -> SubArray{T,N,Array{T,N},...}
 
 Acquire a view of an array of type `T` with size `n` or dimensions `dims`.
 
-Returns a `SubArray` (1D) or `ReshapedArray` (multi-dimensional) backed by the pool.
+Returns a `SubArray` backed by the pool. For 1D requests, the parent is `Vector{T}`.
+For N-D requests (N >= 2), the parent is `Array{T,N}` created via `unsafe_wrap`.
+
 After the enclosing `@with_pool` block ends, the memory is reclaimed for reuse.
 
 ## Example
 ```julia
 @with_pool pool begin
-    v = acquire!(pool, Float64, 100)
+    v = acquire!(pool, Float64, 100)      # SubArray{Float64,1,Vector{Float64},...}
+    m = acquire!(pool, Float64, 10, 10)   # SubArray{Float64,2,Matrix{Float64},...}
     v .= 1.0
-    sum(v)
+    m .= 2.0
+    sum(v) + sum(m)
 end
 ```
+
+See also: [`unsafe_acquire!`](@ref) for raw `Array` access.
 """
 @inline function acquire!(pool::AdaptiveArrayPool, ::Type{T}, n::Int) where {T}
     tp = get_typed_pool!(pool, T)
     return get_view!(tp, n)
 end
 
-# Multi-dimensional support (Flat Buffer + Reshape)
+# Multi-dimensional support (unsafe_wrap + view for concrete Array type)
 @inline function acquire!(pool::AdaptiveArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
     total_len = prod(dims)
     flat_view = acquire!(pool, T, total_len)
-    return reshape(flat_view, dims)
+    # Create concrete Array{T,N} backed by same memory
+    arr = unsafe_wrap(Array{T, N}, pointer(flat_view), dims)
+    # Return as SubArray for API consistency (prevents resize!)
+    return view(arr, ntuple(_ -> Colon(), Val(N))...)
 end
 
 # Tuple support: allows acquire!(pool, T, size(A)) where size(A) returns NTuple{N,Int}
@@ -100,6 +110,73 @@ end
 end
 
 @inline function acquire!(::Nothing, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
+    Array{T, N}(undef, dims)
+end
+
+# ==============================================================================
+# Unsafe Acquisition API (Raw Arrays)
+# ==============================================================================
+
+"""
+    unsafe_acquire!(pool, Type{T}, n) -> Vector{T}
+    unsafe_acquire!(pool, Type{T}, dims...) -> Array{T,N}
+    unsafe_acquire!(pool, Type{T}, dims::NTuple{N,Int}) -> Array{T,N}
+
+Acquire a raw `Array` backed by pool memory.
+
+## Safety Warning
+The returned array is only valid within the `@with_pool` scope. Using it after
+the scope ends leads to undefined behavior (use-after-free, data corruption).
+
+**Do NOT call `resize!`, `push!`, or `append!` on returned arrays** - this causes
+undefined behavior as the memory is owned by the pool.
+
+## Use Cases
+- BLAS operations requiring contiguous `Array` (not `SubArray`)
+- FFI calls expecting raw pointers
+- Performance-critical code where `SubArray` overhead matters
+
+## Example
+```julia
+@with_pool pool begin
+    A = unsafe_acquire!(pool, Float64, 100, 100)  # Matrix{Float64}
+    B = unsafe_acquire!(pool, Float64, 100, 100)  # Matrix{Float64}
+    C = similar(A)  # Regular allocation for result
+    mul!(C, A, B)   # BLAS uses A, B directly
+end
+# A and B are INVALID after this point!
+```
+
+See also: [`acquire!`](@ref) for safe `SubArray` access.
+"""
+@inline function unsafe_acquire!(pool::AdaptiveArrayPool, ::Type{T}, n::Int) where {T}
+    tp = get_typed_pool!(pool, T)
+    flat_view = get_view!(tp, n)
+    return unsafe_wrap(Vector{T}, pointer(flat_view), n)
+end
+
+@inline function unsafe_acquire!(pool::AdaptiveArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
+    total_len = prod(dims)
+    tp = get_typed_pool!(pool, T)
+    flat_view = get_view!(tp, total_len)
+    return unsafe_wrap(Array{T, N}, pointer(flat_view), dims)
+end
+
+# Tuple support
+@inline function unsafe_acquire!(pool::AdaptiveArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
+    unsafe_acquire!(pool, T, dims...)
+end
+
+# Fallback: When pool is `nothing`, allocate normally
+@inline function unsafe_acquire!(::Nothing, ::Type{T}, n::Int) where {T}
+    Vector{T}(undef, n)
+end
+
+@inline function unsafe_acquire!(::Nothing, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
+    Array{T, N}(undef, dims)
+end
+
+@inline function unsafe_acquire!(::Nothing, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
     Array{T, N}(undef, dims)
 end
 

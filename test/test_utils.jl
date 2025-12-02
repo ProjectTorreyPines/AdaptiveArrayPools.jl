@@ -247,3 +247,97 @@ end
     @test occursin("Float64", output)
     @test occursin("empty", output)
 end
+
+@testset "_validate_pool_return with N-D arrays" begin
+    pool = AdaptiveArrayPool()
+    checkpoint!(pool)
+
+    # N-D SubArray from pool should fail validation (pointer overlap check)
+    mat = acquire!(pool, Float64, 10, 10)
+    @test mat isa SubArray{Float64, 2}
+    @test_throws ErrorException _validate_pool_return(mat, pool)
+
+    # 3D SubArray should also fail
+    tensor = acquire!(pool, Float64, 5, 5, 5)
+    @test tensor isa SubArray{Float64, 3}
+    @test_throws ErrorException _validate_pool_return(tensor, pool)
+
+    rewind!(pool)
+end
+
+@testset "_validate_pool_return with unsafe_acquire!" begin
+    pool = AdaptiveArrayPool()
+    checkpoint!(pool)
+
+    # Raw Vector from unsafe_acquire! should fail validation
+    v = unsafe_acquire!(pool, Float64, 100)
+    @test v isa Vector{Float64}
+    @test_throws ErrorException _validate_pool_return(v, pool)
+
+    # Raw Matrix from unsafe_acquire! should fail validation
+    mat = unsafe_acquire!(pool, Float64, 10, 10)
+    @test mat isa Matrix{Float64}
+    @test_throws ErrorException _validate_pool_return(mat, pool)
+
+    # Raw 3D Array from unsafe_acquire! should fail validation
+    tensor = unsafe_acquire!(pool, Float64, 5, 5, 5)
+    @test tensor isa Array{Float64, 3}
+    @test_throws ErrorException _validate_pool_return(tensor, pool)
+
+    rewind!(pool)
+end
+
+@testset "_validate_pool_return external arrays pass" begin
+    pool = AdaptiveArrayPool()
+    checkpoint!(pool)
+
+    # Acquire some memory to populate the pool
+    _ = acquire!(pool, Float64, 100)
+
+    # External N-D arrays should pass validation
+    external_mat = zeros(Float64, 10, 10)
+    external_view = view(external_mat, :, :)
+    _validate_pool_return(external_view, pool)
+    _validate_pool_return(external_mat, pool)
+
+    # External 3D array should pass
+    external_tensor = zeros(Float64, 5, 5, 5)
+    _validate_pool_return(external_tensor, pool)
+
+    rewind!(pool)
+end
+
+@testset "POOL_DEBUG with N-D arrays" begin
+    old_debug = POOL_DEBUG[]
+    POOL_DEBUG[] = true
+
+    # N-D SubArray should throw error when returned
+    @test_throws ErrorException @with_pool pool begin
+        mat = acquire!(pool, Float64, 10, 10)
+        mat  # Unsafe: returning pool-backed N-D SubArray
+    end
+
+    # Raw Array from unsafe_acquire! should throw error when returned
+    @test_throws ErrorException @with_pool pool begin
+        mat = unsafe_acquire!(pool, Float64, 10, 10)
+        mat  # Unsafe: returning raw Array backed by pool
+    end
+
+    # Safe returns should work fine
+    result = @with_pool pool begin
+        mat = acquire!(pool, Float64, 10, 10)
+        mat .= 1.0
+        sum(mat)  # Safe: returning scalar
+    end
+    @test result == 100.0
+
+    # Returning a copy is also safe
+    result = @with_pool pool begin
+        mat = acquire!(pool, Float64, 3, 3)
+        mat .= 2.0
+        collect(mat)  # Safe: returning a copy
+    end
+    @test result == fill(2.0, 3, 3)
+
+    POOL_DEBUG[] = old_debug
+end
