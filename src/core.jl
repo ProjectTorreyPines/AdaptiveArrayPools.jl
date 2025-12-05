@@ -142,7 +142,7 @@ end
 Internal function to get an N-dimensional view from the typed pool.
 
 Returns a `ReshapedArray` wrapping a 1D view - zero creation cost (no `unsafe_wrap`).
-Compiler may optimize away heap allocation via SROA/escape analysis.
+`ReshapedArray` is a lightweight, stack-allocated wrapper with minimal overhead.
 
 ## Design Decision
 Uses `reshape(1D_view, dims)` instead of `SubArray{Array}` approach:
@@ -252,8 +252,10 @@ end
 
 Acquire a raw `Array` backed by pool memory.
 
-Since `Array` is already heap-allocated, cached instances can be reused without
-wrapper allocation overhead - ideal for type-unspecified paths.
+Since `Array` instances are mutable references, cached instances can be returned directly
+without creating new wrapper objects—ideal for type-unspecified paths. In contrast,
+`ReshapedArray` wraps a view and cannot be meaningfully cached, as each call to `reshape()`
+creates a new wrapper.
 
 ## Safety Warning
 The returned array is only valid within the `@with_pool` scope. Using it after
