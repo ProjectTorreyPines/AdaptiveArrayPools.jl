@@ -3,6 +3,7 @@ module AdaptiveArrayPools
 using Printf
 
 export AdaptiveArrayPool, acquire!, unsafe_acquire!, pool_stats, get_task_local_pool
+export acquire_view!, acquire_array!  # Explicit naming aliases
 export @with_pool, @maybe_with_pool
 export USE_POOLING, MAYBE_POOLING_ENABLED, POOL_DEBUG
 export checkpoint!, rewind!

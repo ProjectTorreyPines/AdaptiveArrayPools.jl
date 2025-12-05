@@ -560,3 +560,27 @@ function Base.empty!(pool::AdaptiveArrayPool)
 end
 
 Base.empty!(::Nothing) = nothing
+
+# ==============================================================================
+# API Aliases
+# ==============================================================================
+
+"""
+    acquire_view!(pool, Type{T}, dims...)
+
+Alias for [`acquire!`](@ref).
+
+Explicit name emphasizing the return type is a view (`SubArray`/`ReshapedArray`),
+not a raw `Array`. Use when you prefer symmetric naming with `acquire_array!`.
+"""
+const acquire_view! = acquire!
+
+"""
+    acquire_array!(pool, Type{T}, dims...)
+
+Alias for [`unsafe_acquire!`](@ref).
+
+Explicit name emphasizing the return type is a raw `Array`.
+Use when you prefer symmetric naming with `acquire_view!`.
+"""
+const acquire_array! = unsafe_acquire!
