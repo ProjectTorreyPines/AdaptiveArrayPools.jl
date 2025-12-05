@@ -137,35 +137,25 @@ Uses `::Array{T, N}` for type stability when retrieving from `Vector{Any}`.
 end
 
 """
-    get_nd_view!(tp::TypedPool{T}, dims::NTuple{N,Int}) -> SubArray{T,N,Array{T,N}}
+    get_nd_view!(tp::TypedPool{T}, dims::NTuple{N,Int}) -> ReshapedArray{T,N,...}
 
-Internal function to get an N-dimensional view from the typed pool with caching.
+Internal function to get an N-dimensional view from the typed pool.
 
-## Cache Hit Conditions
-1. Same dims tuple (safe check via `isa` + `==`)
-2. Same pointer (backing vector not resized)
+Returns a `ReshapedArray` wrapping a 1D view - zero creation cost (no `unsafe_wrap`).
+`ReshapedArray` is a lightweight, stack-allocated wrapper with minimal overhead.
 
-## Type Assertion
-Uses `::SubArray{T, N, Array{T, N}}` for type stability when retrieving from Vector{Any}.
+## Design Decision
+Uses `reshape(1D_view, dims)` instead of `SubArray{Array}` approach:
+- Zero `unsafe_wrap` cost (0 bytes vs 112 bytes on cache miss)
+- Works with any dimension pattern (no N-way cache limit)
+- Simpler implementation
+
+For type-unspecified paths, use `unsafe_acquire!` → `get_nd_array!` instead.
 """
 @inline function get_nd_view!(tp::TypedPool{T}, dims::NTuple{N, Int}) where {T, N}
-    # Delegate to get_nd_array! to handle array caching and n_active increment
-    arr = get_nd_array!(tp, dims)
-    idx = tp.n_active
-
-    # Check if view is already cached
-    @inbounds cached_view = tp.nd_views[idx]
-    
-    if cached_view !== nothing
-        # We can trust it's the right view because get_nd_array! clears it on miss
-        return cached_view::SubArray{T, N, Array{T, N}, Tuple{Vararg{Base.Slice{Base.OneTo{Int}}, N}}, true}
-    end
-
-    # Create new view
-    new_view = view(arr, ntuple(_ -> Colon(), Val(N))...)
-    @inbounds tp.nd_views[idx] = new_view
-    
-    return new_view
+    total_len = safe_prod(dims)
+    flat_view = get_view!(tp, total_len)  # 1D view (cached, 0 alloc)
+    return reshape(flat_view, dims)        # ReshapedArray (0 creation cost)
 end
 
 # ==============================================================================
@@ -174,21 +164,25 @@ end
 
 """
     acquire!(pool, Type{T}, n) -> SubArray{T,1,Vector{T},...}
-    acquire!(pool, Type{T}, dims...) -> SubArray{T,N,Array{T,N},...}
-    acquire!(pool, Type{T}, dims::NTuple{N,Int}) -> SubArray{T,N,Array{T,N},...}
+    acquire!(pool, Type{T}, dims...) -> ReshapedArray{T,N,...}
+    acquire!(pool, Type{T}, dims::NTuple{N,Int}) -> ReshapedArray{T,N,...}
 
 Acquire a view of an array of type `T` with size `n` or dimensions `dims`.
 
-Returns a `SubArray` backed by the pool. For 1D requests, the parent is `Vector{T}`.
-For N-D requests (N >= 2), the parent is `Array{T,N}` created via `unsafe_wrap`.
+Returns a view backed by the pool:
+- **1D**: `SubArray{T,1,Vector{T},...}` (parent is `Vector{T}`)
+- **N-D**: `ReshapedArray{T,N,...}` (zero creation cost, no `unsafe_wrap`)
 
-After the enclosing `@with_pool` block ends, the memory is reclaimed for reuse.
+Both types are `StridedArray`, compatible with BLAS and broadcasting.
+
+For type-unspecified paths (struct fields without concrete type parameters),
+use [`unsafe_acquire!`](@ref) instead - cached Array instances can be reused.
 
 ## Example
 ```julia
 @with_pool pool begin
-    v = acquire!(pool, Float64, 100)      # SubArray{Float64,1,Vector{Float64},...}
-    m = acquire!(pool, Float64, 10, 10)   # SubArray{Float64,2,Matrix{Float64},...}
+    v = acquire!(pool, Float64, 100)      # SubArray{Float64,1,...}
+    m = acquire!(pool, Float64, 10, 10)   # ReshapedArray{Float64,2,...}
     v .= 1.0
     m .= 2.0
     sum(v) + sum(m)
@@ -258,6 +252,11 @@ end
 
 Acquire a raw `Array` backed by pool memory.
 
+Since `Array` instances are mutable references, cached instances can be returned directly
+without creating new wrapper objects—ideal for type-unspecified paths. In contrast,
+`ReshapedArray` wraps a view and cannot be meaningfully cached, as each call to `reshape()`
+creates a new wrapper.
+
 ## Safety Warning
 The returned array is only valid within the `@with_pool` scope. Using it after
 the scope ends leads to undefined behavior (use-after-free, data corruption).
@@ -265,10 +264,15 @@ the scope ends leads to undefined behavior (use-after-free, data corruption).
 **Do NOT call `resize!`, `push!`, or `append!` on returned arrays** - this causes
 undefined behavior as the memory is owned by the pool.
 
-## Use Cases
-- BLAS operations requiring contiguous `Array` (not `SubArray`)
+## When to Use
+- **Type-unspecified paths**: Struct fields without concrete type parameters
+  (e.g., `_pooled_chain::PooledChain` instead of `_pooled_chain::PooledChain{M}`)
 - FFI calls expecting raw pointers
-- Performance-critical code where `SubArray` overhead matters
+- APIs that strictly require `Array` type
+
+## Allocation Behavior
+- Cache hit: 0 bytes (cached Array instance reused)
+- Cache miss: 112 bytes (Array header creation via `unsafe_wrap`)
 
 ## Example
 ```julia
@@ -281,7 +285,7 @@ end
 # A and B are INVALID after this point!
 ```
 
-See also: [`acquire!`](@ref) for safe `SubArray` access.
+See also: [`acquire!`](@ref) for `ReshapedArray` access.
 """
 @inline function unsafe_acquire!(pool::AdaptiveArrayPool, ::Type{T}, n::Int) where {T}
     tp = get_typed_pool!(pool, T)
@@ -558,3 +562,27 @@ function Base.empty!(pool::AdaptiveArrayPool)
 end
 
 Base.empty!(::Nothing) = nothing
+
+# ==============================================================================
+# API Aliases
+# ==============================================================================
+
+"""
+    acquire_view!(pool, Type{T}, dims...)
+
+Alias for [`acquire!`](@ref).
+
+Explicit name emphasizing the return type is a view (`SubArray`/`ReshapedArray`),
+not a raw `Array`. Use when you prefer symmetric naming with `acquire_array!`.
+"""
+const acquire_view! = acquire!
+
+"""
+    acquire_array!(pool, Type{T}, dims...)
+
+Alias for [`unsafe_acquire!`](@ref).
+
+Explicit name emphasizing the return type is a raw `Array`.
+Use when you prefer symmetric naming with `acquire_view!`.
+"""
+const acquire_array! = unsafe_acquire!

@@ -18,7 +18,7 @@ function _validate_pool_return(val, pool::AdaptiveArrayPool)
         p = parent(val)
         # Use pointer overlap check for ALL Array parents (Vector <: Array)
         # This catches both:
-        # - acquire!() returns: SubArray backed by pool's internal Vector
+        # - acquire!() 1D returns: SubArray backed by pool's internal Vector
         # - view(unsafe_acquire!()): SubArray backed by unsafe_wrap'd Array
         if p isa Array
             _check_pointer_overlap(p, pool)
@@ -26,7 +26,20 @@ function _validate_pool_return(val, pool::AdaptiveArrayPool)
         return
     end
 
-    # 2. Check raw Array (from unsafe_acquire!)
+    # 2. Check ReshapedArray (from acquire! N-D, wraps SubArray of pool Vector)
+    if val isa Base.ReshapedArray
+        p = parent(val)
+        # ReshapedArray wraps SubArray{T,1,Vector{T},...}
+        if p isa SubArray
+            pp = parent(p)
+            if pp isa Array
+                _check_pointer_overlap(pp, pool)
+            end
+        end
+        return
+    end
+
+    # 3. Check raw Array (from unsafe_acquire!)
     if val isa Array
         _check_pointer_overlap(val, pool)
     end

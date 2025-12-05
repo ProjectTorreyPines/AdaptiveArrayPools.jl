@@ -5,21 +5,21 @@ using AdaptiveArrayPools: checkpoint!, rewind!
     @testset "Multi-dimensional acquire!" begin
         pool = AdaptiveArrayPool()
 
-        # 2D matrix
+        # 2D matrix - returns ReshapedArray (zero creation cost)
         mat = acquire!(pool, Float64, 10, 10)
         @test size(mat) == (10, 10)
-        @test mat isa SubArray{Float64, 2}
-        @test parent(mat) isa Matrix{Float64}
+        @test mat isa Base.ReshapedArray{Float64, 2}
+        @test mat isa StridedArray  # BLAS compatible
 
         @test pool.float64.n_active == 1
         mat .= 1.0
         @test sum(mat) == 100.0
 
-        # 3D tensor
+        # 3D tensor - also ReshapedArray
         tensor = acquire!(pool, Float64, 5, 5, 5)
         @test size(tensor) == (5, 5, 5)
-        @test tensor isa SubArray{Float64, 3}
-        @test parent(tensor) isa Array{Float64, 3}
+        @test tensor isa Base.ReshapedArray{Float64, 3}
+        @test tensor isa StridedArray
         @test pool.float64.n_active == 2
         tensor .= 2.0
         @test sum(tensor) == 250.0
@@ -49,14 +49,14 @@ using AdaptiveArrayPools: checkpoint!, rewind!
         dims = size(ref_array)
         mat = acquire!(pool, Float64, dims)
         @test size(mat) == (3, 4)
-        @test mat isa SubArray{Float64, 2}
-        @test parent(mat) isa Matrix{Float64}
+        @test mat isa Base.ReshapedArray{Float64, 2}
+        @test mat isa StridedArray
 
         # 3D tuple
         dims3d = (2, 3, 4)
         tensor = acquire!(pool, Float64, dims3d)
         @test size(tensor) == (2, 3, 4)
-        @test tensor isa SubArray{Float64, 3}
+        @test tensor isa Base.ReshapedArray{Float64, 3}
 
         # Fallback with nothing
         mat_alloc = acquire!(nothing, Float64, dims)
@@ -179,25 +179,25 @@ using AdaptiveArrayPools: checkpoint!, rewind!
         pool = AdaptiveArrayPool()
         checkpoint!(pool)
 
-        # Test with Matrix
+        # Test with Matrix - returns ReshapedArray for N-D
         ref_mat = rand(5, 6)
         mat = acquire!(pool, ref_mat)
         @test size(mat) == size(ref_mat)
         @test eltype(mat) == eltype(ref_mat)
-        @test mat isa SubArray{Float64, 2}
+        @test mat isa Base.ReshapedArray{Float64, 2}
 
-        # Test with Vector
+        # Test with Vector - returns SubArray for 1D
         ref_vec = rand(10)
         vec = acquire!(pool, ref_vec)
         @test size(vec) == size(ref_vec)
         @test eltype(vec) == eltype(ref_vec)
         @test vec isa SubArray{Float64, 1}
 
-        # Test with 3D Array
+        # Test with 3D Array - returns ReshapedArray
         ref_tensor = rand(2, 3, 4)
         tensor = acquire!(pool, ref_tensor)
         @test size(tensor) == size(ref_tensor)
-        @test tensor isa SubArray{Float64, 3}
+        @test tensor isa Base.ReshapedArray{Float64, 3}
 
         # Test with different element types
         ref_int = rand(Int32, 4, 5)
