@@ -255,14 +255,14 @@ end
         pool = AdaptiveArrayPool()
         checkpoint!(pool)
 
-        # N-D SubArray from pool should fail validation (pointer overlap check)
+        # N-D ReshapedArray from pool should fail validation (pointer overlap check)
         mat = acquire!(pool, Float64, 10, 10)
-        @test mat isa SubArray{Float64, 2}
+        @test mat isa Base.ReshapedArray{Float64, 2}
         @test_throws ErrorException _validate_pool_return(mat, pool)
 
-        # 3D SubArray should also fail
+        # 3D ReshapedArray should also fail
         tensor = acquire!(pool, Float64, 5, 5, 5)
-        @test tensor isa SubArray{Float64, 3}
+        @test tensor isa Base.ReshapedArray{Float64, 3}
         @test_throws ErrorException _validate_pool_return(tensor, pool)
 
         rewind!(pool)
@@ -341,10 +341,10 @@ end
         old_debug = POOL_DEBUG[]
         POOL_DEBUG[] = true
 
-        # N-D SubArray should throw error when returned
+        # N-D ReshapedArray should throw error when returned
         @test_throws ErrorException @with_pool pool begin
             mat = acquire!(pool, Float64, 10, 10)
-            mat  # Unsafe: returning pool-backed N-D SubArray
+            mat  # Unsafe: returning pool-backed N-D ReshapedArray
         end
 
         # Raw Array from unsafe_acquire! should throw error when returned
