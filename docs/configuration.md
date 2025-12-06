@@ -82,7 +82,7 @@ set_cache_ways!(8)
 
 **When to increase**: If your code alternates between more than 4 dimension patterns per pool slot, increase `cache_ways` to avoid cache eviction (~100 bytes header per miss).
 
-> **Scope**: `cache_ways` only affects **N-D `unsafe_acquire!`**. 1D operations use simple 1:1 caching regardless of this setting.
+> **Scope**: `cache_ways` affects **all `unsafe_acquire!`** calls (including 1D). Only `acquire!` 1D uses simple 1:1 caching.
 
 ## Summary
 

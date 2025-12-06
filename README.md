@@ -187,10 +187,10 @@ end
 ## Key Features
 
 - **`acquire!` — True Zero Allocation**: Returns lightweight views (`SubArray` for 1D, `ReshapedArray` for N-D) that are created on the stack. **Always 0 bytes**, regardless of dimension patterns or cache state.
-- **`unsafe_acquire!` — Cached Allocation**: Returns concrete `Array` types for FFI/type constraints.
-  - **1D**: Simple 1:1 cache → always 0 bytes
-  - **N-D**: N-way set-associative cache (default: 4-way) → **0 bytes on cache hit**, ~100 bytes on cache miss. Increase `CACHE_WAYS` if you alternate between >4 dimension patterns.
-  - Even on cache miss, this is just the `Array` header (metadata)—**actual data memory is always reused from the pool**, making it far more efficient than fresh allocations.
+- **`unsafe_acquire!` — Cached Allocation**: Returns concrete `Array` types (`Vector{T}` for 1D, `Array{T,N}` for N-D) for FFI/type constraints.
+  - All dimensions use N-way set-associative cache (default: 4-way) → **0 bytes on cache hit**, ~100 bytes on cache miss.
+  - Increase `CACHE_WAYS` if you alternate between >4 dimension patterns per slot.
+  - Even on cache miss, this is just the `Array` header (metadata)—**actual data memory is always reused from the pool**.
 - **Low Overhead**: Optimized to have < 100 ns overhead for pool management, suitable for tight inner loops.
 - **Task-Local Isolation**: Each Task gets its own pool via `task_local_storage()`. Thread-safe when `@with_pool` is called within each task's scope (see [Multi-Threading Usage](#multi-threading-usage) below).
 - **Type Stable**: Optimized for `Float64`, `Int`, and other common types using fixed-slot caching.
@@ -252,9 +252,9 @@ end
 | Function | 1D Return | N-D Return | Allocation |
 |----------|-----------|------------|------------|
 | `acquire!` | `SubArray{T,1}` | `ReshapedArray{T,N}` | Always 0 bytes |
-| `unsafe_acquire!` | `SubArray{T,1}` | `Array{T,N}` | 0 bytes (hit) / ~100 bytes header (miss) |
+| `unsafe_acquire!` | `Vector{T}` | `Array{T,N}` | 0 bytes (hit) / ~100 bytes header (miss) |
 
-> **Note**: 1D always returns `SubArray` (both functions) with simple 1:1 caching. The N-way cache only applies to **N-D `unsafe_acquire!`**—up to `CACHE_WAYS` (default: 4) dimension patterns per slot; exceeding this causes header-only allocation per miss.
+> **Note**: `unsafe_acquire!` always returns concrete `Array` types (including `Vector` for 1D). The N-way cache applies to all dimensions—up to `CACHE_WAYS` (default: 4) dimension patterns per slot; exceeding this causes header-only allocation per miss.
 
 > **Warning**: Both functions return memory only valid within the `@with_pool` scope. Do NOT call `resize!`, `push!`, or `append!` on acquired arrays.
 
