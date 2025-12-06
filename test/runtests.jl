@@ -21,4 +21,5 @@ else
     include("test_zero_allocation.jl")
     include("test_disabled_pooling.jl")
     include("test_aliases.jl")
+    include("test_nway_cache.jl")
 end
