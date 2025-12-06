@@ -129,7 +129,6 @@ Uses `::Array{T, N}` for type stability when retrieving from `Vector{Any}`.
 
     # Linear Search across all ways (Cache hit = 0 bytes)
     for k in 1:CACHE_WAYS
-    # for k in 1:1
         cache_idx = base + k
         @inbounds cached_dims = tp.nd_dims[cache_idx]
         @inbounds cached_ptr = tp.nd_ptrs[cache_idx]
@@ -137,11 +136,6 @@ Uses `::Array{T, N}` for type stability when retrieving from `Vector{Any}`.
         if cached_dims isa NTuple{N, Int} && cached_dims == dims && cached_ptr == current_ptr
             return @inbounds tp.nd_arrays[cache_idx]::Array{T, N}
         end
-    end
-
-
-    if POOL_DEBUG[]
-        println("Cache miss for TypedPool{$T} N-D array with dims $dims at slot $slot")
     end
 
     # Cache Miss - Round-Robin Replacement
