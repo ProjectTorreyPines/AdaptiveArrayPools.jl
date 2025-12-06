@@ -3,6 +3,14 @@
 # ==============================================================================
 
 """
+N-way set associative cache size for N-D Array caching.
+
+Each slot can cache up to `CACHE_WAYS` different dimension patterns,
+preventing thrashing when alternating between different array shapes.
+"""
+const CACHE_WAYS = 4
+
+"""
     TypedPool{T}
 
 Internal structure managing pooled vectors for a specific element type `T`.
@@ -16,29 +24,33 @@ Internal structure managing pooled vectors for a specific element type `T`.
 - `views`: Cached `SubArray` views for zero-allocation 1D access
 - `view_lengths`: Cached lengths for fast Int comparison (SoA pattern)
 
-### N-D Cache (for `acquire!(pool, T, dims...)` and `unsafe_acquire!`)
-- `nd_views`: Cached N-D `SubArray` objects (returned by `acquire!`)
-- `nd_arrays`: Cached N-D `Array` objects (returned by `unsafe_acquire!`)
+### N-D Array Cache (for `unsafe_acquire!` only, N-way set associative)
+- `nd_arrays`: Cached N-D `Array` objects (length = slots × CACHE_WAYS)
 - `nd_dims`: Cached dimension tuples for cache hit validation
 - `nd_ptrs`: Cached pointer values to detect backing vector resize
+- `nd_next_way`: Round-robin counter per slot (length = slots)
 
 ### State Management
 - `n_active`: Count of currently active (checked-out) arrays
 - `saved_stack`: Stack for nested `checkpoint!/rewind!` (zero-alloc after warmup)
+
+## Note
+`acquire!` for N-D returns `ReshapedArray` (zero creation cost), so no caching needed.
+Only `unsafe_acquire!` benefits from N-D caching since `unsafe_wrap` allocates 112 bytes.
 """
 mutable struct TypedPool{T}
     # --- Storage ---
     vectors::Vector{Vector{T}}
 
-    # --- 1D Cache ---
+    # --- 1D Cache (1:1 mapping) ---
     views::Vector{SubArray{T, 1, Vector{T}, Tuple{UnitRange{Int64}}, true}}
     view_lengths::Vector{Int}
 
-    # --- N-D Cache ---
-    nd_views::Vector{Any}
-    nd_arrays::Vector{Any}
-    nd_dims::Vector{Any}
-    nd_ptrs::Vector{UInt}
+    # --- N-D Array Cache (N-way set associative) ---
+    nd_arrays::Vector{Any}      # length = slots × CACHE_WAYS
+    nd_dims::Vector{Any}        # dimension tuples
+    nd_ptrs::Vector{UInt}       # pointer validation
+    nd_next_way::Vector{Int}    # round-robin counter per slot
 
     # --- State Management ---
     n_active::Int
@@ -51,11 +63,11 @@ TypedPool{T}() where {T} = TypedPool{T}(
     # 1D Cache
     SubArray{T, 1, Vector{T}, Tuple{UnitRange{Int64}}, true}[],
     Int[],
-    # N-D Cache
-    Any[],
+    # N-D Array Cache (N-way)
     Any[],
     Any[],
     UInt[],
+    Int[],
     # State Management
     0,
     Int[]

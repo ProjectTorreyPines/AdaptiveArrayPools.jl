@@ -91,8 +91,12 @@ end
 """
     get_nd_array!(tp::TypedPool{T}, dims::NTuple{N,Int}) -> Array{T,N}
 
-Internal function to get an N-dimensional `Array` from the typed pool with caching.
-Used by `unsafe_acquire!` directly and as a backing store for `get_nd_view!`.
+Internal function to get an N-dimensional `Array` from the typed pool with N-way caching.
+Used by `unsafe_acquire!` to cache Array instances and avoid `unsafe_wrap` overhead.
+
+## N-way Set Associative Cache
+Each slot can cache up to `CACHE_WAYS` different dimension patterns.
+This prevents thrashing when alternating between different array shapes.
 
 ## Cache Hit Conditions
 1. Same dims tuple (`isa NTuple{N, Int} && cached_dims == dims`)
@@ -104,34 +108,54 @@ Uses `::Array{T, N}` for type stability when retrieving from `Vector{Any}`.
 @inline function get_nd_array!(tp::TypedPool{T}, dims::NTuple{N, Int}) where {T, N}
     total_len = safe_prod(dims)
     flat_view = get_view!(tp, total_len) # Increments n_active
-    idx = tp.n_active
+    slot = tp.n_active
 
-    @inbounds vec = tp.vectors[idx]
+    @inbounds vec = tp.vectors[slot]
     current_ptr = UInt(pointer(vec))
 
-    # Expand cache slots if needed
-    while idx > length(tp.nd_arrays)
-        push!(tp.nd_views, nothing)
-        push!(tp.nd_arrays, nothing)
-        push!(tp.nd_dims, nothing)
-        push!(tp.nd_ptrs, UInt(0))
+    # Expand cache slots if needed (CACHE_WAYS entries per slot)
+    n_slots_cached = length(tp.nd_next_way)
+    while slot > n_slots_cached
+        for _ in 1:CACHE_WAYS
+            push!(tp.nd_arrays, nothing)
+            push!(tp.nd_dims, nothing)
+            push!(tp.nd_ptrs, UInt(0))
+        end
+        push!(tp.nd_next_way, 0)
+        n_slots_cached += 1
     end
 
-    # Cache Hit Check
-    @inbounds cached_dims = tp.nd_dims[idx]
-    @inbounds cached_ptr = tp.nd_ptrs[idx]
+    base = (slot - 1) * CACHE_WAYS
 
-    if cached_dims isa NTuple{N, Int} && cached_dims == dims && cached_ptr == current_ptr
-        return @inbounds tp.nd_arrays[idx]::Array{T, N}
+    # Linear Search across all ways (Cache hit = 0 bytes)
+    for k in 1:CACHE_WAYS
+    # for k in 1:1
+        cache_idx = base + k
+        @inbounds cached_dims = tp.nd_dims[cache_idx]
+        @inbounds cached_ptr = tp.nd_ptrs[cache_idx]
+
+        if cached_dims isa NTuple{N, Int} && cached_dims == dims && cached_ptr == current_ptr
+            return @inbounds tp.nd_arrays[cache_idx]::Array{T, N}
+        end
     end
 
-    # Cache Miss
+
+    if POOL_DEBUG[]
+        println("Cache miss for TypedPool{$T} N-D array with dims $dims at slot $slot")
+    end
+
+    # Cache Miss - Round-Robin Replacement
+    @inbounds way_offset = tp.nd_next_way[slot]
+    target_idx = base + way_offset + 1
+
     arr = unsafe_wrap(Array{T, N}, pointer(flat_view), dims)
-    
-    @inbounds tp.nd_arrays[idx] = arr
-    @inbounds tp.nd_dims[idx] = dims
-    @inbounds tp.nd_ptrs[idx] = current_ptr
-    @inbounds tp.nd_views[idx] = nothing # Invalidate view cache
+
+    @inbounds tp.nd_arrays[target_idx] = arr
+    @inbounds tp.nd_dims[target_idx] = dims
+    @inbounds tp.nd_ptrs[target_idx] = current_ptr
+
+    # Update round-robin counter
+    @inbounds tp.nd_next_way[slot] = (way_offset + 1) % CACHE_WAYS
 
     return arr
 end
@@ -514,11 +538,11 @@ function Base.empty!(tp::TypedPool)
     empty!(tp.vectors)
     empty!(tp.views)
     empty!(tp.view_lengths)
-    # Clear N-D caches
-    empty!(tp.nd_views)
+    # Clear N-D Array cache (N-way)
     empty!(tp.nd_arrays)
     empty!(tp.nd_dims)
     empty!(tp.nd_ptrs)
+    empty!(tp.nd_next_way)
     tp.n_active = 0
     empty!(tp.saved_stack)
     return tp
