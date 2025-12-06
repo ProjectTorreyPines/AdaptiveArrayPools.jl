@@ -1,14 +1,69 @@
 # ==============================================================================
-# Core Data Structures
+# Constants (Configurable via Preferences)
 # ==============================================================================
 
-"""
-N-way set associative cache size for N-D Array caching.
+using Preferences
 
-Each slot can cache up to `CACHE_WAYS` different dimension patterns,
-preventing thrashing when alternating between different array shapes.
 """
-const CACHE_WAYS = 4
+Number of cache ways per slot for N-way set associative cache.
+Supports up to `CACHE_WAYS` different dimension patterns per slot without thrashing.
+
+Default: 4 (handles most use cases well)
+
+## Configuration
+```julia
+using AdaptiveArrayPools
+AdaptiveArrayPools.set_cache_ways!(8)  # Restart Julia to take effect
+```
+
+Or manually in `LocalPreferences.toml`:
+```toml
+[AdaptiveArrayPools]
+cache_ways = 8
+```
+
+Valid range: 1-16 (higher values increase memory but reduce eviction)
+"""
+const CACHE_WAYS = let
+    ways = @load_preference("cache_ways", 4)::Int
+    if ways < 1 || ways > 16
+        @warn "CACHE_WAYS=$ways out of range [1,16], using default 4"
+        4
+    else
+        ways
+    end
+end
+
+"""
+    set_cache_ways!(n::Int)
+
+Set the number of cache ways for N-D array caching.
+**Requires Julia restart to take effect.**
+
+Higher values reduce cache eviction but increase memory usage per slot.
+
+## Arguments
+- `n::Int`: Number of cache ways (valid range: 1-16)
+
+## Example
+```julia
+using AdaptiveArrayPools
+AdaptiveArrayPools.set_cache_ways!(8)  # Double the default
+# Restart Julia to apply the change
+```
+"""
+function set_cache_ways!(n::Int)
+    if n < 1 || n > 16
+        throw(ArgumentError("cache_ways must be in range [1, 16], got $n"))
+    end
+    @set_preferences!("cache_ways" => n)
+    @info "CACHE_WAYS set to $n. Restart Julia to apply."
+    return n
+end
+
+# ==============================================================================
+# Core Data Structures
+# ==============================================================================
 
 """
     TypedPool{T}
