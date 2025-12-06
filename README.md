@@ -24,11 +24,11 @@ using AdaptiveArrayPools, LinearAlgebra
 
 # 1. Define the hot-loop function with automatic pooling for ZERO-ALLOCATION
 @with_pool pool function heavy_computation_step(n)
-    # Safe Default: Returns a SubArray (prevents resize!)
+    # Safe Default: Returns ReshapedArray for N-D (always 0 bytes, prevents resize!)
     A = acquire!(pool, Float64, n, n)
     B = acquire!(pool, Float64, n, n)
-    
-    # Power User: Returns a raw Matrix{Float64} (for BLAS/C-interop)
+
+    # Power User: Returns raw Matrix{Float64} (only for FFI/type constraints)
     # ⚠️ Must NOT resize! or escape scope
     C = unsafe_acquire!(pool, Float64, n, n)
 
@@ -84,7 +84,7 @@ end
 
 # ✅ Pooled Approach: Zero allocations in steady state, clean syntax (no manual buffer passing)
 @with_pool pool function compute_pooled(n::Int)
-    # Get Views from auto-managed pool (No allocation)
+    # Get ReshapedArray views from auto-managed pool (0 bytes allocation)
     mat1 = acquire!(pool, Float64, n, n)
     mat2 = acquire!(pool, Float64, n, n)
     mat3 = acquire!(pool, Float64, n, n)
@@ -176,7 +176,7 @@ POOL_DEBUG[] = true  # Enable safety checks
 
 @with_pool pool begin
     v = acquire!(pool, Float64, 10)
-    v  # Throws ErrorException: "Returning SubArray backed by pool..."
+    v  # Throws ErrorException: "Returning pool-backed array..."
 end
 ```
 
@@ -186,12 +186,13 @@ end
 
 ## Key Features
 
-- **True Zero Allocation**: Not just array data, but the `SubArray` (View) wrappers are also cached.
+- **True Zero Allocation**: Array views (`SubArray`, `ReshapedArray`) and wrappers are cached—no allocation overhead.
+- **N-way Cache**: `unsafe_acquire!` uses a 4-way set-associative cache to handle alternating dimension patterns without thrashing.
 - **Low Overhead**: Optimized to have < 100 ns overhead for pool management, suitable for tight inner loops.
 - **Task-Local Isolation**: Each Task gets its own pool via `task_local_storage()`. Thread-safe when `@with_pool` is called within each task's scope (see [Multi-Threading Usage](#multi-threading-usage) below).
 - **Type Stable**: Optimized for `Float64`, `Int`, and other common types using fixed-slot caching.
 - **Non-Intrusive**: If you disable pooling via preferences, `acquire!` compiles down to a standard `Array` allocation.
-- **Flexible API**: Use `acquire!` for safe `SubArray` views, or `unsafe_acquire!` when raw `Array` is required.
+- **Flexible API**: Use `acquire!` for safe views (recommended), or `unsafe_acquire!` when concrete `Array` type is required (FFI, type constraints).
 
 ## Multi-Threading Usage
 
@@ -223,30 +224,46 @@ For detailed explanation including Julia's Task/Thread model and why thread-loca
 
 ## `acquire!` vs `unsafe_acquire!`
 
-By default, `acquire!` returns a **`SubArray`** (view) backed by pool memory. This is safe and prevents accidental `resize!` or `push!` operations.
+**In most cases, use `acquire!`**. It returns view types (`SubArray` for 1D, `ReshapedArray` for N-D) that are safe and always zero-allocation.
 
-For cases where a **concrete `Array` type** is required (e.g., BLAS operations, FFI calls, or hot-path dispatch optimization), use `unsafe_acquire!`:
+> **Performance Note**: BLAS/LAPACK functions (`mul!`, `lu!`, etc.) are fully optimized for `StridedArray`—there is **no performance difference** between views and raw arrays. Benchmarks show identical throughput.
+
+Use `unsafe_acquire!` **only** when you need a concrete `Array{T,N}` type:
+- **FFI/C interop**: External libraries requiring `Ptr{T}` from actual arrays
+- **Type signatures**: APIs that explicitly require `Matrix{T}` or `Vector{T}`
+- **Runtime dispatch**: Avoiding allocation from type-unstable code paths
 
 ```julia
 @with_pool pool begin
-    # acquire! returns SubArray (safe, prevents resize!)
-    v = acquire!(pool, Float64, 100)        # SubArray{Float64,1,Vector{Float64},...}
-    m = acquire!(pool, Float64, 10, 10)     # SubArray{Float64,2,Matrix{Float64},...}
+    # ✅ Recommended: acquire! for general use (always 0 bytes)
+    A = acquire!(pool, Float64, 100, 100)   # ReshapedArray
+    B = acquire!(pool, Float64, 100, 100)   # ReshapedArray
+    C = acquire!(pool, Float64, 100, 100)   # ReshapedArray
+    mul!(C, A, B)  # ✅ BLAS works perfectly with views!
 
-    # unsafe_acquire! returns raw Array (for BLAS, FFI, dispatch optimization)
-    A = unsafe_acquire!(pool, Float64, 100, 100)  # Matrix{Float64}
-    B = unsafe_acquire!(pool, Float64, 100, 100)  # Matrix{Float64}
-    C = similar(A)
-    mul!(C, A, B)  # BLAS can use A, B directly without SubArray overhead
+    # ⚠️ Only when concrete Array type is required:
+    M = unsafe_acquire!(pool, Float64, 100, 100)  # Matrix{Float64}
+    ccall(:some_c_function, Cvoid, (Ptr{Float64},), M)  # FFI needs Array
 end
 ```
 
-| Function | Return Type | Use Case |
-|----------|-------------|----------|
-| `acquire!(pool, T, dims...)` | `SubArray{T,N}` | General use, safe default |
-| `unsafe_acquire!(pool, T, dims...)` | `Array{T,N}` | BLAS, FFI, hot-path dispatch |
+| Function | 1D Return | N-D Return | Allocation |
+|----------|-----------|------------|------------|
+| `acquire!` | `SubArray{T,1}` | `ReshapedArray{T,N}` | Always 0 bytes |
+| `unsafe_acquire!` | `SubArray{T,1}` | `Array{T,N}` | 0 bytes (cache hit) / 112 bytes (miss) |
 
-> **Warning**: Both `acquire!` and `unsafe_acquire!` return memory that is only valid within the `@with_pool` scope. Do NOT call `resize!`, `push!`, or `append!` on arrays from `unsafe_acquire!`.
+> **Note**: `unsafe_acquire!` uses a **4-way cache** for N-D arrays. Up to 4 different dimension patterns per slot are cached; exceeding this causes cache eviction and 112-byte allocation per miss.
+
+> **Warning**: Both functions return memory only valid within the `@with_pool` scope. Do NOT call `resize!`, `push!`, or `append!` on acquired arrays.
+
+### API Aliases
+
+For explicit naming, you can use these aliases:
+
+```julia
+acquire_view!(pool, T, dims...)   # Same as acquire! → returns view types
+acquire_array!(pool, T, dims...)  # Same as unsafe_acquire! → returns Array
+```
 
 ## Documentation
 
@@ -257,12 +274,38 @@ end
 
 ## Configuration
 
-You can completely disable pooling at compile-time (removing all overhead) by setting a preference in `LocalPreferences.toml`:
+Configure AdaptiveArrayPools via `LocalPreferences.toml`:
 
 ```toml
 [AdaptiveArrayPools]
-use_pooling = false
+use_pooling = false  # ⭐ Primary: Disable pooling entirely
+cache_ways = 8       # Secondary: N-way cache size (default: 4)
 ```
+
+### Disabling Pooling (Primary Use Case)
+
+The most important configuration is **`use_pooling = false`**, which completely disables all pooling:
+
+```julia
+# With use_pooling = false, acquire! becomes equivalent to:
+acquire!(pool, Float64, n, n)  →  Matrix{Float64}(undef, n, n)
+```
+
+This is useful for:
+- **Debugging**: Isolate pooling-related issues by comparing behavior
+- **Benchmarking**: Measure pooling overhead vs direct allocation
+- **Gradual adoption**: Add `@with_pool` to code without changing behavior until ready
+
+When disabled, all macros generate `pool = nothing` and `acquire!` falls back to standard allocation with **zero overhead**.
+
+### N-way Cache Tuning (Advanced)
+
+```julia
+using AdaptiveArrayPools
+set_cache_ways!(8)  # Requires Julia restart
+```
+
+Increase `cache_ways` if alternating between >4 dimension patterns per slot.
 
 ## License
 
