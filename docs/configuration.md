@@ -80,7 +80,9 @@ set_cache_ways!(8)
 # Restart Julia for changes to take effect
 ```
 
-**When to increase**: If your code alternates between more than 4 dimension patterns per pool slot, increase `cache_ways` to avoid cache eviction (112 bytes per miss).
+**When to increase**: If your code alternates between more than 4 dimension patterns per pool slot, increase `cache_ways` to avoid cache eviction (~100 bytes header per miss).
+
+> **Scope**: `cache_ways` only affects **N-D `unsafe_acquire!`**. 1D operations use simple 1:1 caching regardless of this setting.
 
 ## Summary
 

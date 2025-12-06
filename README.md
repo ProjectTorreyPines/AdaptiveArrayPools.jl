@@ -186,8 +186,11 @@ end
 
 ## Key Features
 
-- **True Zero Allocation**: Array views (`SubArray`, `ReshapedArray`) and wrappers are cached—no allocation overhead.
-- **N-way Cache**: `unsafe_acquire!` uses a 4-way set-associative cache to handle alternating dimension patterns without thrashing.
+- **`acquire!` — True Zero Allocation**: Returns lightweight views (`SubArray` for 1D, `ReshapedArray` for N-D) that are created on the stack. **Always 0 bytes**, regardless of dimension patterns or cache state.
+- **`unsafe_acquire!` — Cached Allocation**: Returns concrete `Array` types for FFI/type constraints.
+  - **1D**: Simple 1:1 cache → always 0 bytes
+  - **N-D**: N-way set-associative cache (default: 4-way) → **0 bytes on cache hit**, ~100 bytes on cache miss. Increase `CACHE_WAYS` if you alternate between >4 dimension patterns.
+  - Even on cache miss, this is just the `Array` header (metadata)—**actual data memory is always reused from the pool**, making it far more efficient than fresh allocations.
 - **Low Overhead**: Optimized to have < 100 ns overhead for pool management, suitable for tight inner loops.
 - **Task-Local Isolation**: Each Task gets its own pool via `task_local_storage()`. Thread-safe when `@with_pool` is called within each task's scope (see [Multi-Threading Usage](#multi-threading-usage) below).
 - **Type Stable**: Optimized for `Float64`, `Int`, and other common types using fixed-slot caching.
@@ -228,10 +231,9 @@ For detailed explanation including Julia's Task/Thread model and why thread-loca
 
 > **Performance Note**: BLAS/LAPACK functions (`mul!`, `lu!`, etc.) are fully optimized for `StridedArray`—there is **no performance difference** between views and raw arrays. Benchmarks show identical throughput.
 
-Use `unsafe_acquire!` **only** when you need a concrete `Array{T,N}` type:
-- **FFI/C interop**: External libraries requiring `Ptr{T}` from actual arrays
-- **Type signatures**: APIs that explicitly require `Matrix{T}` or `Vector{T}`
-- **Runtime dispatch**: Avoiding allocation from type-unstable code paths
+Use `unsafe_acquire!` **only** when a concrete `Array{T,N}` type is required:
+- **FFI/C interop**: External libraries expecting `Ptr{T}` from `Array`
+- **Type constraints**: APIs that explicitly require `Matrix{T}` or `Vector{T}`, or type-unstable code where concrete types reduce dispatch overhead
 
 ```julia
 @with_pool pool begin
@@ -250,9 +252,9 @@ end
 | Function | 1D Return | N-D Return | Allocation |
 |----------|-----------|------------|------------|
 | `acquire!` | `SubArray{T,1}` | `ReshapedArray{T,N}` | Always 0 bytes |
-| `unsafe_acquire!` | `SubArray{T,1}` | `Array{T,N}` | 0 bytes (cache hit) / 112 bytes (miss) |
+| `unsafe_acquire!` | `SubArray{T,1}` | `Array{T,N}` | 0 bytes (hit) / ~100 bytes header (miss) |
 
-> **Note**: `unsafe_acquire!` uses a **4-way cache** for N-D arrays. Up to 4 different dimension patterns per slot are cached; exceeding this causes cache eviction and 112-byte allocation per miss.
+> **Note**: 1D always returns `SubArray` (both functions) with simple 1:1 caching. The N-way cache only applies to **N-D `unsafe_acquire!`**—up to `CACHE_WAYS` (default: 4) dimension patterns per slot; exceeding this causes header-only allocation per miss.
 
 > **Warning**: Both functions return memory only valid within the `@with_pool` scope. Do NOT call `resize!`, `push!`, or `append!` on acquired arrays.
 

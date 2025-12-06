@@ -62,11 +62,13 @@ Use `POOL_DEBUG[] = true` during development to catch direct returns of pool-bac
 
 | Function | 1D Return | N-D Return | Allocation |
 |----------|-----------|------------|------------|
-| `acquire!` | `SubArray{T,1}` | `ReshapedArray{T,N}` | Always 0 bytes |
-| `unsafe_acquire!` | `SubArray{T,1}` | `Array{T,N}` | 0 bytes (cache hit) / 112 bytes (miss) |
+| `acquire!` | `SubArray{T,1}` | `ReshapedArray{T,N}` | Always 0 bytes (stack-based views) |
+| `unsafe_acquire!` | `SubArray{T,1}` | `Array{T,N}` | 0 bytes (hit) / ~100 bytes header (miss) |
 
-Both share the same underlying pool memory. **Use `acquire!` by default**—BLAS/LAPACK are fully optimized for `StridedArray`, so there's no performance difference.
+Both share the same underlying pool memory. Even on cache miss, only the `Array` header is allocated—**data memory is always reused from the pool**. **Use `acquire!` by default**—BLAS/LAPACK are fully optimized for `StridedArray`, so there's no performance difference.
 
 Use `unsafe_acquire!` only when you need a concrete `Array{T,N}` type (FFI, type signatures, runtime dispatch).
 
-**N-way Cache**: `unsafe_acquire!` caches up to `CACHE_WAYS` (default: 4) different dimension patterns per slot. Exceeding this causes cache eviction.
+**Caching**: 1D always returns `SubArray` with simple 1:1 cache. N-D `unsafe_acquire!` uses N-way cache (up to `CACHE_WAYS`, default: 4) per slot; exceeding this causes eviction.
+
+> **Header size by dimensionality**: The `~100 bytes` is an average. Actual `Array` header allocation varies: 1D → 80 bytes, 2D-3D → 112 bytes, 4D-5D → 144 bytes. This is Julia's internal `Array` metadata; actual data memory is always reused from the pool.
