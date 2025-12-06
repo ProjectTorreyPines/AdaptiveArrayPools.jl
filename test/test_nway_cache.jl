@@ -26,7 +26,6 @@ using AdaptiveArrayPools
         # Verify CACHE_WAYS is exported and accessible
         @test CACHE_WAYS isa Int
         @test 1 <= CACHE_WAYS <= 16  # Valid range
-        @test CACHE_WAYS >= 1
 
         # Verify set_cache_ways! is exported
         @test isdefined(AdaptiveArrayPools, :set_cache_ways!)
@@ -108,7 +107,7 @@ end
 
         function test_nd_5way_unsafe!(p)
             dims_list = ((5, 10), (10, 5), (7, 7), (3, 16), (4, 12))
-            for _ in 1:1
+            for _ in 1:100
                 for dims in dims_list
                     @with_pool p begin
                         unsafe_acquire!(p, Float64, dims...)  # Array with cache
