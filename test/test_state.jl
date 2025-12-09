@@ -398,7 +398,7 @@
 
         # Acquire Int64 array OUTSIDE @with_pool - marks global _untracked_flags
         v_parent = acquire!(pool, Int64, 10)
-        v_parent .= 42.0  # Initialize
+        v_parent .= 42  # Initialize
         @test pool.int64.n_active == 1
         @test pool._untracked_flags[1] == true  # Global scope marked
 
@@ -412,7 +412,7 @@
 
         # After @with_pool: parent's array restored, helper's discarded
         @test pool.int64.n_active == 1  # Only parent's array
-        @test all(v_parent .== 42.0)    # Parent array still valid
+        @test all(v_parent .== 42)    # Parent array still valid
 
         empty!(pool)
     end
