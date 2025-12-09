@@ -185,11 +185,13 @@ end
 
 Mark that an untracked acquire has occurred at the current checkpoint depth.
 Called by `acquire!` wrapper; macro-transformed calls use `_acquire_impl!` directly.
+
+With 1-indexed check_depth (starting at 1 for global scope), this always marks
+the current scope's had_untracked flag.
 """
 @inline function _mark_untracked!(pool::AdaptiveArrayPool)
-    if pool.check_depth > 0
-        @inbounds pool.had_untracked[pool.check_depth] = true
-    end
+    # Always mark (check_depth >= 1 guaranteed)
+    @inbounds pool.had_untracked[pool.check_depth] = true
 end
 
 # ==============================================================================
@@ -525,8 +527,8 @@ end
         # Checkpointed at earlier depth → restore without pop
         tp.n_active = @inbounds tp.saved_stack[end]
     else
-        # No checkpoint exists for this type → reset to 0
-        # This happens when type was added after checkpoint
+        # saved_stack empty: new type acquired by helper, just reset (no error)
+        # This is safe because full checkpoint at scope entry protects parent arrays
         tp.n_active = 0
     end
     nothing
@@ -715,9 +717,10 @@ function Base.empty!(pool::AdaptiveArrayPool)
     end
     empty!(pool.others)
 
-    # Reset untracked detection state
-    pool.check_depth = 0
+    # Reset untracked detection state (1-indexed: check_depth=1 is global scope)
+    pool.check_depth = 1
     empty!(pool.had_untracked)
+    push!(pool.had_untracked, false)  # Global scope starts with false
 
     return pool
 end

@@ -143,7 +143,20 @@ function _generate_pool_code(pool_name, expr, force_enable)
     # Transform acquire! calls to _acquire_impl! (bypasses untracked marking)
     transformed_expr = _transform_acquire_calls(expr, pool_name)
 
-    checkpoint_call = use_typed ? _generate_typed_checkpoint_call(esc(pool_name), static_types) : :($checkpoint!($(esc(pool_name))))
+    # For typed checkpoint, add had_untracked check for fallback to full checkpoint
+    # This protects parent scope arrays when entering nested @with_pool
+    if use_typed
+        typed_checkpoint_call = _generate_typed_checkpoint_call(esc(pool_name), static_types)
+        checkpoint_call = quote
+            if @inbounds $(esc(pool_name)).had_untracked[$(esc(pool_name)).check_depth]
+                $checkpoint!($(esc(pool_name)))  # Full checkpoint (parent had untracked)
+            else
+                $typed_checkpoint_call  # Fast typed checkpoint
+            end
+        end
+    else
+        checkpoint_call = :($checkpoint!($(esc(pool_name))))
+    end
 
     # For typed checkpoint, add had_untracked check for fallback to full rewind
     if use_typed
@@ -218,7 +231,20 @@ function _generate_function_pool_code(pool_name, func_def, force_enable, disable
     # Transform acquire! calls to _acquire_impl! (bypasses untracked marking)
     transformed_body = _transform_acquire_calls(body, pool_name)
 
-    checkpoint_call = use_typed ? _generate_typed_checkpoint_call(esc(pool_name), static_types) : :($checkpoint!($(esc(pool_name))))
+    # For typed checkpoint, add had_untracked check for fallback to full checkpoint
+    # This protects parent scope arrays when entering nested @with_pool
+    if use_typed
+        typed_checkpoint_call = _generate_typed_checkpoint_call(esc(pool_name), static_types)
+        checkpoint_call = quote
+            if @inbounds $(esc(pool_name)).had_untracked[$(esc(pool_name)).check_depth]
+                $checkpoint!($(esc(pool_name)))  # Full checkpoint (parent had untracked)
+            else
+                $typed_checkpoint_call  # Fast typed checkpoint
+            end
+        end
+    else
+        checkpoint_call = :($checkpoint!($(esc(pool_name))))
+    end
 
     # For typed checkpoint, add had_untracked check for fallback to full rewind
     if use_typed

@@ -175,8 +175,8 @@ function AdaptiveArrayPool()
         TypedPool{ComplexF64}(),
         TypedPool{Bool}(),
         IdDict{DataType, Any}(),
-        0,              # check_depth
-        Bool[]          # had_untracked
+        1,              # check_depth: 1-indexed (1 = global scope)
+        [false]         # had_untracked: global scope starts with false
     )
 end
 
@@ -195,6 +195,13 @@ end
 # Slow Path: rare types via IdDict
 @inline function get_typed_pool!(p::AdaptiveArrayPool, ::Type{T}) where {T}
     get!(p.others, T) do
-        TypedPool{T}()
+        tp = TypedPool{T}()
+        # If inside a checkpoint scope (check_depth > 1 means inside @with_pool),
+        # auto-checkpoint the new pool to prevent issues on rewind
+        if p.check_depth > 1
+            push!(tp.saved_stack, 0)  # n_active starts at 0
+            push!(tp.saved_depths, p.check_depth)
+        end
+        tp
     end::TypedPool{T}
 end

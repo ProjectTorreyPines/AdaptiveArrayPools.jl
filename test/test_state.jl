@@ -383,4 +383,110 @@
         println("  Allocations after warm-up: $(allocs) bytes for 100 iterations")
     end
 
+    @testset "Parent scope protection via full checkpoint" begin
+        # Test: Parent scope arrays are protected by automatic full checkpoint
+        # when entering @with_pool with had_untracked[check_depth] = true
+
+        # Helper function that acquires Int64 (called from inside @with_pool)
+        # Since it's defined outside the macro, acquire! won't be transformed
+        function untracked_helper(p)
+            acquire!(p, Int64, 5)  # This will mark had_untracked = true
+        end
+
+        pool = get_task_local_pool()
+        empty!(pool)  # Start fresh
+
+        # Acquire Int64 array OUTSIDE @with_pool - marks global had_untracked
+        v_parent = acquire!(pool, Int64, 10)
+        v_parent .= 42.0  # Initialize
+        @test pool.int64.n_active == 1
+        @test pool.had_untracked[1] == true  # Global scope marked
+
+        # Enter @with_pool - should do FULL checkpoint (because had_untracked[1] = true)
+        # This protects the parent's Int64 arrays
+        @with_pool pool begin
+            v_float = acquire!(pool, Float64, 100)  # Tracked
+            untracked_helper(pool)                   # Untracked Int64 acquire!
+            @test pool.int64.n_active == 2          # Parent + helper
+        end
+
+        # After @with_pool: parent's array restored, helper's discarded
+        @test pool.int64.n_active == 1  # Only parent's array
+        @test all(v_parent .== 42.0)    # Parent array still valid
+
+        empty!(pool)
+    end
+
+    @testset "Helper acquires same type as parent - protected" begin
+        # Test that parent's arrays are protected when helper acquires same type
+
+        pool = get_task_local_pool()
+        empty!(pool)
+
+        # Acquire Int32 outside @with_pool
+        v_parent = acquire!(pool, Int32, 7)
+        v_parent .= Int32(123)
+        @test pool.int32.n_active == 1
+        @test pool.had_untracked[1] == true
+
+        # Helper for Int32
+        function int32_helper(p)
+            acquire!(p, Int32, 3)
+        end
+
+        # Should NOT error - full checkpoint protects parent
+        @with_pool pool begin
+            acquire!(pool, Float64, 10)
+            int32_helper(pool)
+            @test pool.int32.n_active == 2  # Parent + helper
+        end
+
+        # Parent's Int32 array still valid
+        @test pool.int32.n_active == 1
+        @test all(v_parent .== Int32(123))
+
+        empty!(pool)
+    end
+
+    @testset "Helper acquires new type - silently reset" begin
+        # Test: Helper that acquires a completely new type just gets reset to 0
+        # (no error, the arrays are simply discarded)
+
+        function new_type_helper(p)
+            acquire!(p, UInt16, 5)  # New type not used by macro body
+        end
+
+        pool = get_task_local_pool()
+        empty!(pool)
+
+        # Should NOT error - new type just gets n_active=0
+        @with_pool pool begin
+            acquire!(pool, Float64, 100)
+            new_type_helper(pool)
+            @test pool.others[UInt16].n_active == 1
+        end
+
+        # UInt16 was silently reset to 0
+        @test pool.others[UInt16].n_active == 0
+
+        empty!(pool)
+    end
+
+    @testset "No untracked in parent - typed checkpoint used" begin
+        # Edge case: When parent has no untracked acquires,
+        # typed checkpoint is still used for performance
+        pool = AdaptiveArrayPool()
+
+        # No global untracked acquire
+        @test pool.had_untracked[1] == false
+
+        # Checkpoint/rewind with typed - should work normally
+        checkpoint!(pool)
+        acquire!(pool, Float64, 100)
+        rewind!(pool)
+
+        @test pool.int64.n_active == 0
+        @test pool.float64.n_active == 0
+    end
+
 end # State Management
