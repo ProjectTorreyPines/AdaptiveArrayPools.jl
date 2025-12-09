@@ -65,6 +65,9 @@ end
 # Core Data Structures
 # ==============================================================================
 
+# 1-Based Sentinel Pattern: Arrays start with sentinel values to eliminate
+# isempty() checks in hot paths. See docstrings for details.
+
 """
     TypedPool{T}
 
@@ -85,10 +88,10 @@ Internal structure managing pooled vectors for a specific element type `T`.
 - `nd_ptrs`: Cached pointer values to detect backing vector resize
 - `nd_next_way`: Round-robin counter per slot (length = slots)
 
-### State Management
+### State Management (1-based sentinel pattern)
 - `n_active`: Count of currently active (checked-out) arrays
-- `saved_stack`: Stack for nested `checkpoint!/rewind!` (zero-alloc after warmup)
-- `saved_depths`: Stack tracking which checkpoint depth each saved_stack entry belongs to
+- `_checkpoint_n_active`: Saved n_active values at each checkpoint (sentinel: `[0]`)
+- `_checkpoint_depths`: Depth of each checkpoint entry (sentinel: `[0]`)
 
 ## Note
 `acquire!` for N-D returns `ReshapedArray` (zero creation cost), so no caching needed.
@@ -108,10 +111,10 @@ mutable struct TypedPool{T}
     nd_ptrs::Vector{UInt}       # pointer validation
     nd_next_way::Vector{Int}    # round-robin counter per slot
 
-    # --- State Management ---
+    # --- State Management (1-based sentinel pattern) ---
     n_active::Int
-    saved_stack::Vector{Int}
-    saved_depths::Vector{Int}
+    _checkpoint_n_active::Vector{Int}   # Saved n_active at each checkpoint
+    _checkpoint_depths::Vector{Int}     # Depth of each checkpoint
 end
 
 TypedPool{T}() where {T} = TypedPool{T}(
@@ -125,10 +128,10 @@ TypedPool{T}() where {T} = TypedPool{T}(
     Any[],
     UInt[],
     Int[],
-    # State Management
-    0,
-    Int[],
-    Int[]
+    # State Management (1-based sentinel pattern: guaranteed non-empty)
+    0,          # n_active
+    [0],        # _checkpoint_n_active: sentinel (n_active=0 at depth=0)
+    [0]         # _checkpoint_depths: sentinel (depth=0 = no checkpoint)
 )
 
 # ==============================================================================
@@ -144,7 +147,7 @@ A high-performance memory pool supporting multiple data types.
 - **Fixed Slots**: `Float64`, `Float32`, `Int64`, `Int32`, `ComplexF64`, `Bool` have dedicated fields (zero Dict lookup)
 - **Fallback**: Other types use `IdDict` (still fast, but with lookup overhead)
 - **Zero Allocation**: `checkpoint!/rewind!` use internal stacks, no allocation after warmup
-- **Untracked Detection**: `check_depth` and `had_untracked` track acquire calls from inner functions
+- **Untracked Detection**: `_current_depth` and `_untracked_flags` track acquire calls from inner functions
 
 ## Thread Safety
 This pool is **NOT thread-safe**. Use one pool per Task via `get_task_local_pool()`.
@@ -161,9 +164,9 @@ mutable struct AdaptiveArrayPool
     # Fallback: rare types
     others::IdDict{DataType, Any}
 
-    # Untracked acquire detection
-    check_depth::Int                # Current checkpoint nesting depth
-    had_untracked::Vector{Bool}     # Per-depth flag: true if untracked acquire occurred
+    # Untracked acquire detection (1-based sentinel pattern)
+    _current_depth::Int             # Current scope depth (1 = global scope)
+    _untracked_flags::Vector{Bool}  # Per-depth flag: true if untracked acquire occurred
 end
 
 function AdaptiveArrayPool()
@@ -175,8 +178,8 @@ function AdaptiveArrayPool()
         TypedPool{ComplexF64}(),
         TypedPool{Bool}(),
         IdDict{DataType, Any}(),
-        1,              # check_depth: 1-indexed (1 = global scope)
-        [false]         # had_untracked: global scope starts with false
+        1,              # _current_depth: 1 = global scope (sentinel)
+        [false]         # _untracked_flags: sentinel for global scope
     )
 end
 
@@ -196,11 +199,11 @@ end
 @inline function get_typed_pool!(p::AdaptiveArrayPool, ::Type{T}) where {T}
     get!(p.others, T) do
         tp = TypedPool{T}()
-        # If inside a checkpoint scope (check_depth > 1 means inside @with_pool),
+        # If inside a checkpoint scope (_current_depth > 1 means inside @with_pool),
         # auto-checkpoint the new pool to prevent issues on rewind
-        if p.check_depth > 1
-            push!(tp.saved_stack, 0)  # n_active starts at 0
-            push!(tp.saved_depths, p.check_depth)
+        if p._current_depth > 1
+            push!(tp._checkpoint_n_active, 0)  # n_active starts at 0
+            push!(tp._checkpoint_depths, p._current_depth)
         end
         tp
     end::TypedPool{T}

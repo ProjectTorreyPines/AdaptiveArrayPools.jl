@@ -143,12 +143,12 @@ function _generate_pool_code(pool_name, expr, force_enable)
     # Transform acquire! calls to _acquire_impl! (bypasses untracked marking)
     transformed_expr = _transform_acquire_calls(expr, pool_name)
 
-    # For typed checkpoint, add had_untracked check for fallback to full checkpoint
+    # For typed checkpoint, add _untracked_flags check for fallback to full checkpoint
     # This protects parent scope arrays when entering nested @with_pool
     if use_typed
         typed_checkpoint_call = _generate_typed_checkpoint_call(esc(pool_name), static_types)
         checkpoint_call = quote
-            if @inbounds $(esc(pool_name)).had_untracked[$(esc(pool_name)).check_depth]
+            if @inbounds $(esc(pool_name))._untracked_flags[$(esc(pool_name))._current_depth]
                 $checkpoint!($(esc(pool_name)))  # Full checkpoint (parent had untracked)
             else
                 $typed_checkpoint_call  # Fast typed checkpoint
@@ -158,11 +158,11 @@ function _generate_pool_code(pool_name, expr, force_enable)
         checkpoint_call = :($checkpoint!($(esc(pool_name))))
     end
 
-    # For typed checkpoint, add had_untracked check for fallback to full rewind
+    # For typed checkpoint, add _untracked_flags check for fallback to full rewind
     if use_typed
         typed_rewind_call = _generate_typed_rewind_call(esc(pool_name), static_types)
         rewind_call = quote
-            if @inbounds $(esc(pool_name)).had_untracked[$(esc(pool_name)).check_depth]
+            if @inbounds $(esc(pool_name))._untracked_flags[$(esc(pool_name))._current_depth]
                 $rewind!($(esc(pool_name)))  # Full rewind (untracked detected)
             else
                 $typed_rewind_call  # Fast typed rewind
@@ -231,12 +231,12 @@ function _generate_function_pool_code(pool_name, func_def, force_enable, disable
     # Transform acquire! calls to _acquire_impl! (bypasses untracked marking)
     transformed_body = _transform_acquire_calls(body, pool_name)
 
-    # For typed checkpoint, add had_untracked check for fallback to full checkpoint
+    # For typed checkpoint, add _untracked_flags check for fallback to full checkpoint
     # This protects parent scope arrays when entering nested @with_pool
     if use_typed
         typed_checkpoint_call = _generate_typed_checkpoint_call(esc(pool_name), static_types)
         checkpoint_call = quote
-            if @inbounds $(esc(pool_name)).had_untracked[$(esc(pool_name)).check_depth]
+            if @inbounds $(esc(pool_name))._untracked_flags[$(esc(pool_name))._current_depth]
                 $checkpoint!($(esc(pool_name)))  # Full checkpoint (parent had untracked)
             else
                 $typed_checkpoint_call  # Fast typed checkpoint
@@ -246,11 +246,11 @@ function _generate_function_pool_code(pool_name, func_def, force_enable, disable
         checkpoint_call = :($checkpoint!($(esc(pool_name))))
     end
 
-    # For typed checkpoint, add had_untracked check for fallback to full rewind
+    # For typed checkpoint, add _untracked_flags check for fallback to full rewind
     if use_typed
         typed_rewind_call = _generate_typed_rewind_call(esc(pool_name), static_types)
         rewind_call = quote
-            if @inbounds $(esc(pool_name)).had_untracked[$(esc(pool_name)).check_depth]
+            if @inbounds $(esc(pool_name))._untracked_flags[$(esc(pool_name))._current_depth]
                 $rewind!($(esc(pool_name)))  # Full rewind (untracked detected)
             else
                 $typed_rewind_call  # Fast typed rewind

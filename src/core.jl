@@ -186,12 +186,12 @@ end
 Mark that an untracked acquire has occurred at the current checkpoint depth.
 Called by `acquire!` wrapper; macro-transformed calls use `_acquire_impl!` directly.
 
-With 1-indexed check_depth (starting at 1 for global scope), this always marks
-the current scope's had_untracked flag.
+With 1-indexed _current_depth (starting at 1 for global scope), this always marks
+the current scope's _untracked_flags.
 """
 @inline function _mark_untracked!(pool::AdaptiveArrayPool)
-    # Always mark (check_depth >= 1 guaranteed)
-    @inbounds pool.had_untracked[pool.check_depth] = true
+    # Always mark (_current_depth >= 1 guaranteed by sentinel)
+    @inbounds pool._untracked_flags[pool._current_depth] = true
 end
 
 # ==============================================================================
@@ -455,9 +455,9 @@ See also: [`rewind!`](@ref), [`@with_pool`](@ref)
 """
 function checkpoint!(pool::AdaptiveArrayPool)
     # Increment depth and initialize untracked flag
-    pool.check_depth += 1
-    push!(pool.had_untracked, false)
-    depth = pool.check_depth
+    pool._current_depth += 1
+    push!(pool._untracked_flags, false)
+    depth = pool._current_depth
 
     # Fixed slots - direct field access, no Dict lookup
     _checkpoint_typed_pool!(pool.float64, depth)
@@ -477,8 +477,8 @@ end
 
 # Internal helper for full checkpoint
 @inline function _checkpoint_typed_pool!(tp::TypedPool, depth::Int)
-    push!(tp.saved_stack, tp.n_active)
-    push!(tp.saved_depths, depth)
+    push!(tp._checkpoint_n_active, tp.n_active)
+    push!(tp._checkpoint_depths, depth)
     nothing
 end
 
@@ -488,15 +488,15 @@ checkpoint!(::Nothing) = nothing
     rewind!(pool::AdaptiveArrayPool)
 
 Restore the pool state (n_active counters) from internal stacks.
-Uses saved_depths to accurately determine which entries to pop vs restore.
+Uses _checkpoint_depths to accurately determine which entries to pop vs restore.
 
 Only the counters are restored; allocated memory remains for reuse.
-Handles untracked acquires by checking saved_depths for accurate restoration.
+Handles untracked acquires by checking _checkpoint_depths for accurate restoration.
 
 See also: [`checkpoint!`](@ref), [`@with_pool`](@ref)
 """
 function rewind!(pool::AdaptiveArrayPool)
-    depth = pool.check_depth
+    depth = pool._current_depth
 
     # Process fixed slots directly (zero allocation)
     _rewind_typed_pool!(pool.float64, depth)
@@ -511,25 +511,22 @@ function rewind!(pool::AdaptiveArrayPool)
         _rewind_typed_pool!(tp, depth)
     end
 
-    pop!(pool.had_untracked)
-    pool.check_depth -= 1
+    pop!(pool._untracked_flags)
+    pool._current_depth -= 1
 
     return nothing
 end
 
-# Internal helper for full rewind with saved_depths
+# Internal helper for full rewind with _checkpoint_depths
+# Uses 1-based sentinel pattern: no isempty checks needed (sentinel [0] guarantees non-empty)
 @inline function _rewind_typed_pool!(tp::TypedPool, depth::Int)
-    if !isempty(tp.saved_depths) && @inbounds tp.saved_depths[end] == depth
+    if @inbounds tp._checkpoint_depths[end] == depth
         # Checkpointed at current depth → pop both stacks
-        pop!(tp.saved_depths)
-        tp.n_active = pop!(tp.saved_stack)
-    elseif !isempty(tp.saved_stack)
-        # Checkpointed at earlier depth → restore without pop
-        tp.n_active = @inbounds tp.saved_stack[end]
+        pop!(tp._checkpoint_depths)
+        tp.n_active = pop!(tp._checkpoint_n_active)
     else
-        # saved_stack empty: new type acquired by helper, just reset (no error)
-        # This is safe because full checkpoint at scope entry protects parent arrays
-        tp.n_active = 0
+        # Checkpointed at earlier depth → restore without pop
+        tp.n_active = @inbounds tp._checkpoint_n_active[end]
     end
     nothing
 end
@@ -555,8 +552,8 @@ Internal method for saving TypedPool state (legacy, uses depth=0).
 See also: [`checkpoint!(::AdaptiveArrayPool, ::Type)`](@ref), [`rewind!`](@ref)
 """
 @inline function checkpoint!(tp::TypedPool)
-    push!(tp.saved_stack, tp.n_active)
-    push!(tp.saved_depths, 0)  # Legacy depth
+    push!(tp._checkpoint_n_active, tp.n_active)
+    push!(tp._checkpoint_depths, 0)  # Legacy depth
     nothing
 end
 
@@ -566,15 +563,15 @@ end
 Internal method for saving TypedPool state with depth tracking.
 """
 @inline function checkpoint!(tp::TypedPool, depth::Int)
-    push!(tp.saved_stack, tp.n_active)
-    push!(tp.saved_depths, depth)
+    push!(tp._checkpoint_n_active, tp.n_active)
+    push!(tp._checkpoint_depths, depth)
     nothing
 end
 
 """
     rewind!(tp::TypedPool)
 
-Internal method for restoring TypedPool state (pops both saved_stack and saved_depths).
+Internal method for restoring TypedPool state (pops both stacks).
 
 !!! warning "Internal API"
     This is an internal implementation detail. For manual pool management,
@@ -586,8 +583,8 @@ Internal method for restoring TypedPool state (pops both saved_stack and saved_d
 See also: [`rewind!(::AdaptiveArrayPool, ::Type)`](@ref), [`checkpoint!`](@ref)
 """
 @inline function rewind!(tp::TypedPool)
-    pop!(tp.saved_depths)
-    tp.n_active = pop!(tp.saved_stack)
+    pop!(tp._checkpoint_depths)
+    tp.n_active = pop!(tp._checkpoint_n_active)
     nothing
 end
 
@@ -597,26 +594,26 @@ end
 Save state for a specific type only. Used by optimized macros that know
 which types will be used at compile time.
 
-Also updates check_depth and had_untracked for untracked acquire detection.
+Also updates _current_depth and _untracked_flags for untracked acquire detection.
 
 ~77% faster than full checkpoint! when only one type is used.
 """
 @inline function checkpoint!(pool::AdaptiveArrayPool, ::Type{T}) where T
-    pool.check_depth += 1
-    push!(pool.had_untracked, false)
-    checkpoint!(get_typed_pool!(pool, T), pool.check_depth)
+    pool._current_depth += 1
+    push!(pool._untracked_flags, false)
+    checkpoint!(get_typed_pool!(pool, T), pool._current_depth)
 end
 
 """
     rewind!(pool::AdaptiveArrayPool, ::Type{T})
 
 Restore state for a specific type only.
-Also updates check_depth and had_untracked.
+Also updates _current_depth and _untracked_flags.
 """
 @inline function rewind!(pool::AdaptiveArrayPool, ::Type{T}) where T
     rewind!(get_typed_pool!(pool, T))
-    pop!(pool.had_untracked)
-    pool.check_depth -= 1
+    pop!(pool._untracked_flags)
+    pool._current_depth -= 1
 end
 
 checkpoint!(::Nothing, ::Type) = nothing
@@ -626,14 +623,14 @@ rewind!(::Nothing, ::Type) = nothing
     checkpoint!(pool::AdaptiveArrayPool, types::Type...)
 
 Save state for multiple specific types. Uses @generated for zero-overhead
-compile-time unrolling. Increments check_depth once for all types.
+compile-time unrolling. Increments _current_depth once for all types.
 """
 @generated function checkpoint!(pool::AdaptiveArrayPool, types::Type...)
     # First increment depth, then checkpoint each type with that depth
-    checkpoint_exprs = [:(checkpoint!(get_typed_pool!(pool, types[$i]), pool.check_depth)) for i in 1:length(types)]
+    checkpoint_exprs = [:(checkpoint!(get_typed_pool!(pool, types[$i]), pool._current_depth)) for i in 1:length(types)]
     quote
-        pool.check_depth += 1
-        push!(pool.had_untracked, false)
+        pool._current_depth += 1
+        push!(pool._untracked_flags, false)
         $(checkpoint_exprs...)
         nothing
     end
@@ -643,15 +640,15 @@ end
     rewind!(pool::AdaptiveArrayPool, types::Type...)
 
 Restore state for multiple specific types in reverse order.
-Decrements check_depth once after all types are rewound.
+Decrements _current_depth once after all types are rewound.
 """
 @generated function rewind!(pool::AdaptiveArrayPool, types::Type...)
     # Reverse order for proper stack unwinding, rewind TypedPools directly
     rewind_exprs = [:(rewind!(get_typed_pool!(pool, types[$i]))) for i in length(types):-1:1]
     quote
         $(rewind_exprs...)
-        pop!(pool.had_untracked)
-        pool.check_depth -= 1
+        pop!(pool._untracked_flags)
+        pool._current_depth -= 1
         nothing
     end
 end
@@ -667,6 +664,7 @@ rewind!(::Nothing, types::Type...) = nothing
     empty!(tp::TypedPool)
 
 Clear all internal storage of a TypedPool, releasing all memory.
+Restores sentinel values for 1-based sentinel pattern.
 """
 function Base.empty!(tp::TypedPool)
     empty!(tp.vectors)
@@ -678,8 +676,11 @@ function Base.empty!(tp::TypedPool)
     empty!(tp.nd_ptrs)
     empty!(tp.nd_next_way)
     tp.n_active = 0
-    empty!(tp.saved_stack)
-    empty!(tp.saved_depths)
+    # Restore sentinel values (1-based sentinel pattern)
+    empty!(tp._checkpoint_n_active)
+    push!(tp._checkpoint_n_active, 0)   # Sentinel: n_active=0 at depth=0
+    empty!(tp._checkpoint_depths)
+    push!(tp._checkpoint_depths, 0)     # Sentinel: depth=0 = no checkpoint
     return tp
 end
 
@@ -717,10 +718,10 @@ function Base.empty!(pool::AdaptiveArrayPool)
     end
     empty!(pool.others)
 
-    # Reset untracked detection state (1-indexed: check_depth=1 is global scope)
-    pool.check_depth = 1
-    empty!(pool.had_untracked)
-    push!(pool.had_untracked, false)  # Global scope starts with false
+    # Reset untracked detection state (1-based sentinel pattern)
+    pool._current_depth = 1                   # 1 = global scope (sentinel)
+    empty!(pool._untracked_flags)
+    push!(pool._untracked_flags, false)       # Sentinel: global scope starts with false
 
     return pool
 end

@@ -222,7 +222,7 @@
         @test isempty(pool.float64.views)
         @test isempty(pool.float64.view_lengths)
         @test pool.float64.n_active == 0
-        @test isempty(pool.float64.saved_stack)
+        @test length(pool.float64._checkpoint_n_active) == 1  # Only sentinel remains
 
         @test isempty(pool.float32.vectors)
         @test isempty(pool.int64.vectors)
@@ -354,7 +354,7 @@
     @testset "Allocation test (Zero Alloc)" begin
         pool = AdaptiveArrayPool()
 
-        # Warm-up phase - allocates saved_stack capacity
+        # Warm-up phase - allocates _checkpoint_n_active capacity
         for _ in 1:5
             checkpoint!(pool)
             acquire!(pool, Float64, 101)
@@ -385,24 +385,24 @@
 
     @testset "Parent scope protection via full checkpoint" begin
         # Test: Parent scope arrays are protected by automatic full checkpoint
-        # when entering @with_pool with had_untracked[check_depth] = true
+        # when entering @with_pool with _untracked_flags[_current_depth] = true
 
         # Helper function that acquires Int64 (called from inside @with_pool)
         # Since it's defined outside the macro, acquire! won't be transformed
         function untracked_helper(p)
-            acquire!(p, Int64, 5)  # This will mark had_untracked = true
+            acquire!(p, Int64, 5)  # This will mark _untracked_flags = true
         end
 
         pool = get_task_local_pool()
         empty!(pool)  # Start fresh
 
-        # Acquire Int64 array OUTSIDE @with_pool - marks global had_untracked
+        # Acquire Int64 array OUTSIDE @with_pool - marks global _untracked_flags
         v_parent = acquire!(pool, Int64, 10)
         v_parent .= 42.0  # Initialize
         @test pool.int64.n_active == 1
-        @test pool.had_untracked[1] == true  # Global scope marked
+        @test pool._untracked_flags[1] == true  # Global scope marked
 
-        # Enter @with_pool - should do FULL checkpoint (because had_untracked[1] = true)
+        # Enter @with_pool - should do FULL checkpoint (because _untracked_flags[1] = true)
         # This protects the parent's Int64 arrays
         @with_pool pool begin
             v_float = acquire!(pool, Float64, 100)  # Tracked
@@ -427,7 +427,7 @@
         v_parent = acquire!(pool, Int32, 7)
         v_parent .= Int32(123)
         @test pool.int32.n_active == 1
-        @test pool.had_untracked[1] == true
+        @test pool._untracked_flags[1] == true
 
         # Helper for Int32
         function int32_helper(p)
@@ -478,7 +478,7 @@
         pool = AdaptiveArrayPool()
 
         # No global untracked acquire
-        @test pool.had_untracked[1] == false
+        @test pool._untracked_flags[1] == false
 
         # Checkpoint/rewind with typed - should work normally
         checkpoint!(pool)
