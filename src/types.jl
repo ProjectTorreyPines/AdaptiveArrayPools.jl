@@ -141,21 +141,10 @@ TypedPool{T}() where {T} = TypedPool{T}(
 """
     FIXED_SLOT_FIELDS
 
-Fixed slot field names for zero-overhead iteration via `foreach_fixed_slot`.
+Field names for fixed slot TypedPools. Single source of truth for `foreach_fixed_slot`.
 
-## Maintenance Note
-When adding/removing fixed slots, update:
-1. This tuple
-2. `AdaptiveArrayPool` struct definition
-3. `get_typed_pool!` dispatch methods
-4. `AdaptiveArrayPool()` constructor
-
+When modifying, also update: struct definition, `get_typed_pool!` dispatches, constructor.
 Tests verify synchronization automatically.
-
-## Design Decision
-Uses explicit tuple instead of `fieldtypes()` filtering.
-Rationale: Explicit is better than implicit - prevents accidental
-inclusion of future internal TypedPool fields.
 """
 const FIXED_SLOT_FIELDS = (:float64, :float32, :int64, :int32, :complexf64, :complexf32, :bool)
 
@@ -166,16 +155,8 @@ const FIXED_SLOT_FIELDS = (:float64, :float32, :int64, :int32, :complexf64, :com
 """
     AdaptiveArrayPool
 
-A high-performance memory pool supporting multiple data types.
-
-## Features
-- **Fixed Slots**: `Float64`, `Float32`, `Int64`, `Int32`, `ComplexF64`, `Bool` have dedicated fields (zero Dict lookup)
-- **Fallback**: Other types use `IdDict` (still fast, but with lookup overhead)
-- **Zero Allocation**: `checkpoint!/rewind!` use internal stacks, no allocation after warmup
-- **Untracked Detection**: `_current_depth` and `_untracked_flags` track acquire calls from inner functions
-
-## Thread Safety
-This pool is **NOT thread-safe**. Use one pool per Task via `get_task_local_pool()`.
+Multi-type memory pool with fixed slots for common types and IdDict fallback for others.
+Zero allocation after warmup. NOT thread-safe - use one pool per Task.
 """
 mutable struct AdaptiveArrayPool
     # Fixed Slots: common types with zero lookup overhead
@@ -244,26 +225,7 @@ end
 """
     foreach_fixed_slot(f, pool::AdaptiveArrayPool)
 
-Apply function `f` to each fixed slot `TypedPool` with zero allocation.
-Uses compile-time unrolling via `@generated` for optimal performance.
-
-## Example
-```julia
-foreach_fixed_slot(pool) do tp
-    _checkpoint_typed_pool!(tp, depth)
-end
-```
-
-## Performance
-- Zero allocation after first call (compile-time expansion)
-- Equivalent to manually unrolled code:
-  ```julia
-  f(pool.float64)
-  f(pool.float32)
-  # ... etc
-  ```
-
-See also: [`FIXED_SLOT_FIELDS`](@ref)
+Apply `f` to each fixed slot TypedPool. Zero allocation via compile-time unrolling.
 """
 @generated function foreach_fixed_slot(f::F, pool::AdaptiveArrayPool) where {F}
     exprs = [:(f(getfield(pool, $(QuoteNode(field))))) for field in FIXED_SLOT_FIELDS]
