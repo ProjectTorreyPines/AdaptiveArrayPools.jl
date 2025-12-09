@@ -146,6 +146,7 @@ end
         v_i64 = acquire!(pool, Int64, 5)
         v_i32 = acquire!(pool, Int32, 5)
         v_c64 = acquire!(pool, ComplexF64, 5)
+        v_c32 = acquire!(pool, ComplexF32, 5)
         v_bool = acquire!(pool, Bool, 5)
 
         @test_throws ErrorException _validate_pool_return(v_f64, pool)
@@ -153,6 +154,7 @@ end
         @test_throws ErrorException _validate_pool_return(v_i64, pool)
         @test_throws ErrorException _validate_pool_return(v_i32, pool)
         @test_throws ErrorException _validate_pool_return(v_c64, pool)
+        @test_throws ErrorException _validate_pool_return(v_c32, pool)
         @test_throws ErrorException _validate_pool_return(v_bool, pool)
 
         rewind!(pool)

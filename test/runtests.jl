@@ -22,4 +22,5 @@ else
     include("test_disabled_pooling.jl")
     include("test_aliases.jl")
     include("test_nway_cache.jl")
+    include("test_fixed_slots.jl")
 end

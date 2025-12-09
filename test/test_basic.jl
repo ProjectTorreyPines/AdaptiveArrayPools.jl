@@ -77,9 +77,14 @@
         @test pool.int32.n_active == 1
 
         # ComplexF64 - fixed slot
-        vc = acquire!(pool, ComplexF64, 5)
-        @test eltype(vc) == ComplexF64
+        vc64 = acquire!(pool, ComplexF64, 5)
+        @test eltype(vc64) == ComplexF64
         @test pool.complexf64.n_active == 1
+
+        # ComplexF32 - fixed slot
+        vc32 = acquire!(pool, ComplexF32, 5)
+        @test eltype(vc32) == ComplexF32
+        @test pool.complexf32.n_active == 1
 
         # Bool - fixed slot
         vb = acquire!(pool, Bool, 5)

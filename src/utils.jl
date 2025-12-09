@@ -51,29 +51,25 @@ function _check_pointer_overlap(arr::Array, pool::AdaptiveArrayPool)
     arr_len = length(arr) * sizeof(eltype(arr))
     arr_end = arr_ptr + arr_len
 
-    # Check fixed slots
-    for tp in (pool.float64, pool.float32, pool.int64, pool.int32, pool.complexf64, pool.bool)
+    check_overlap = function(tp)
         for v in tp.vectors
             v_ptr = UInt(pointer(v))
             v_len = length(v) * sizeof(eltype(v))
             v_end = v_ptr + v_len
-            # Check memory range overlap
             if !(arr_end <= v_ptr || v_end <= arr_ptr)
                 error("Safety Violation: The function returned an Array backed by pool memory. This is unsafe as the memory will be reclaimed. Please return a copy (collect) or a scalar.")
             end
         end
     end
 
+    # Check fixed slots
+    foreach_fixed_slot(pool) do tp
+        check_overlap(tp)
+    end
+
     # Check others
     for tp in values(pool.others)
-        for v in tp.vectors
-            v_ptr = UInt(pointer(v))
-            v_len = length(v) * sizeof(eltype(v))
-            v_end = v_ptr + v_len
-            if !(arr_end <= v_ptr || v_end <= arr_ptr)
-                error("Safety Violation: The function returned an Array backed by pool memory. This is unsafe as the memory will be reclaimed. Please return a copy (collect) or a scalar.")
-            end
-        end
+        check_overlap(tp)
     end
 end
 
@@ -154,22 +150,14 @@ function pool_stats(pool::AdaptiveArrayPool; io::IO=stdout)
     printstyled(io, "AdaptiveArrayPool", bold=true, color=:white)
     println(io)
 
-    fixed_slots = [
-        ("Float64", pool.float64),
-        ("Float32", pool.float32),
-        ("Int64", pool.int64),
-        ("Int32", pool.int32),
-        ("ComplexF64", pool.complexf64),
-        ("Bool", pool.bool)
-    ]
-
     has_content = false
 
-    # Fixed slots
-    for (name, tp) in fixed_slots
+    # Fixed slots - use foreach_fixed_slot for consistency
+    foreach_fixed_slot(pool) do tp
         if !isempty(tp.vectors)
             has_content = true
-            pool_stats(tp; io, indent=2, name="$name (fixed)")
+            T = typeof(tp).parameters[1]  # Extract T from TypedPool{T}
+            pool_stats(tp; io, indent=2, name="$T (fixed)")
         end
     end
 
@@ -221,13 +209,25 @@ end
 
 # Compact one-line show for AdaptiveArrayPool
 function Base.show(io::IO, pool::AdaptiveArrayPool)
-    fixed_slots = (pool.float64, pool.float32, pool.int64, pool.int32, pool.complexf64, pool.bool)
-    n_types = count(tp -> !isempty(tp.vectors), fixed_slots) + length(pool.others)
-    total_vectors = sum(length(tp.vectors) for tp in fixed_slots; init=0) +
-                    sum(length(tp.vectors) for tp in values(pool.others); init=0)
-    total_active = sum(tp.n_active for tp in fixed_slots; init=0) +
-                   sum(tp.n_active for tp in values(pool.others); init=0)
-    print(io, "AdaptiveArrayPool(types=$n_types, vectors=$total_vectors, active=$total_active)")
+    n_types = Ref(0)
+    total_vectors = Ref(0)
+    total_active = Ref(0)
+
+    foreach_fixed_slot(pool) do tp
+        if !isempty(tp.vectors)
+            n_types[] += 1
+        end
+        total_vectors[] += length(tp.vectors)
+        total_active[] += tp.n_active
+    end
+
+    n_types[] += length(pool.others)
+    for tp in values(pool.others)
+        total_vectors[] += length(tp.vectors)
+        total_active[] += tp.n_active
+    end
+
+    print(io, "AdaptiveArrayPool(types=$(n_types[]), vectors=$(total_vectors[]), active=$(total_active[]))")
 end
 
 # Multi-line show for AdaptiveArrayPool

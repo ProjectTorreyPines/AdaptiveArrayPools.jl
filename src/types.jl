@@ -135,22 +135,28 @@ TypedPool{T}() where {T} = TypedPool{T}(
 )
 
 # ==============================================================================
+# Fixed Slot Configuration
+# ==============================================================================
+
+"""
+    FIXED_SLOT_FIELDS
+
+Field names for fixed slot TypedPools. Single source of truth for `foreach_fixed_slot`.
+
+When modifying, also update: struct definition, `get_typed_pool!` dispatches, constructor.
+Tests verify synchronization automatically.
+"""
+const FIXED_SLOT_FIELDS = (:float64, :float32, :int64, :int32, :complexf64, :complexf32, :bool)
+
+# ==============================================================================
 # AdaptiveArrayPool
 # ==============================================================================
 
 """
     AdaptiveArrayPool
 
-A high-performance memory pool supporting multiple data types.
-
-## Features
-- **Fixed Slots**: `Float64`, `Float32`, `Int64`, `Int32`, `ComplexF64`, `Bool` have dedicated fields (zero Dict lookup)
-- **Fallback**: Other types use `IdDict` (still fast, but with lookup overhead)
-- **Zero Allocation**: `checkpoint!/rewind!` use internal stacks, no allocation after warmup
-- **Untracked Detection**: `_current_depth` and `_untracked_flags` track acquire calls from inner functions
-
-## Thread Safety
-This pool is **NOT thread-safe**. Use one pool per Task via `get_task_local_pool()`.
+Multi-type memory pool with fixed slots for common types and IdDict fallback for others.
+Zero allocation after warmup. NOT thread-safe - use one pool per Task.
 """
 mutable struct AdaptiveArrayPool
     # Fixed Slots: common types with zero lookup overhead
@@ -159,6 +165,7 @@ mutable struct AdaptiveArrayPool
     int64::TypedPool{Int64}
     int32::TypedPool{Int32}
     complexf64::TypedPool{ComplexF64}
+    complexf32::TypedPool{ComplexF32}
     bool::TypedPool{Bool}
 
     # Fallback: rare types
@@ -176,6 +183,7 @@ function AdaptiveArrayPool()
         TypedPool{Int64}(),
         TypedPool{Int32}(),
         TypedPool{ComplexF64}(),
+        TypedPool{ComplexF32}(),
         TypedPool{Bool}(),
         IdDict{DataType, Any}(),
         1,              # _current_depth: 1 = global scope (sentinel)
@@ -193,6 +201,7 @@ end
 @inline get_typed_pool!(p::AdaptiveArrayPool, ::Type{Int64}) = p.int64
 @inline get_typed_pool!(p::AdaptiveArrayPool, ::Type{Int32}) = p.int32
 @inline get_typed_pool!(p::AdaptiveArrayPool, ::Type{ComplexF64}) = p.complexf64
+@inline get_typed_pool!(p::AdaptiveArrayPool, ::Type{ComplexF32}) = p.complexf32
 @inline get_typed_pool!(p::AdaptiveArrayPool, ::Type{Bool}) = p.bool
 
 # Slow Path: rare types via IdDict
@@ -207,4 +216,22 @@ end
         end
         tp
     end::TypedPool{T}
+end
+
+# ==============================================================================
+# Zero-Allocation Iteration
+# ==============================================================================
+
+"""
+    foreach_fixed_slot(f, pool::AdaptiveArrayPool)
+
+Apply `f` to each fixed slot TypedPool. Zero allocation via compile-time unrolling.
+"""
+@generated function foreach_fixed_slot(f::F, pool::AdaptiveArrayPool) where {F}
+    exprs = [:(f(getfield(pool, $(QuoteNode(field))))) for field in FIXED_SLOT_FIELDS]
+    quote
+        Base.@_inline_meta
+        $(exprs...)
+        nothing
+    end
 end
