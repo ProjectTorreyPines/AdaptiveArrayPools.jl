@@ -88,6 +88,7 @@ Internal structure managing pooled vectors for a specific element type `T`.
 ### State Management
 - `n_active`: Count of currently active (checked-out) arrays
 - `saved_stack`: Stack for nested `checkpoint!/rewind!` (zero-alloc after warmup)
+- `saved_depths`: Stack tracking which checkpoint depth each saved_stack entry belongs to
 
 ## Note
 `acquire!` for N-D returns `ReshapedArray` (zero creation cost), so no caching needed.
@@ -110,6 +111,7 @@ mutable struct TypedPool{T}
     # --- State Management ---
     n_active::Int
     saved_stack::Vector{Int}
+    saved_depths::Vector{Int}
 end
 
 TypedPool{T}() where {T} = TypedPool{T}(
@@ -125,6 +127,7 @@ TypedPool{T}() where {T} = TypedPool{T}(
     Int[],
     # State Management
     0,
+    Int[],
     Int[]
 )
 
@@ -141,6 +144,7 @@ A high-performance memory pool supporting multiple data types.
 - **Fixed Slots**: `Float64`, `Float32`, `Int64`, `Int32`, `ComplexF64`, `Bool` have dedicated fields (zero Dict lookup)
 - **Fallback**: Other types use `IdDict` (still fast, but with lookup overhead)
 - **Zero Allocation**: `checkpoint!/rewind!` use internal stacks, no allocation after warmup
+- **Untracked Detection**: `check_depth` and `had_untracked` track acquire calls from inner functions
 
 ## Thread Safety
 This pool is **NOT thread-safe**. Use one pool per Task via `get_task_local_pool()`.
@@ -156,6 +160,10 @@ mutable struct AdaptiveArrayPool
 
     # Fallback: rare types
     others::IdDict{DataType, Any}
+
+    # Untracked acquire detection
+    check_depth::Int                # Current checkpoint nesting depth
+    had_untracked::Vector{Bool}     # Per-depth flag: true if untracked acquire occurred
 end
 
 function AdaptiveArrayPool()
@@ -166,7 +174,9 @@ function AdaptiveArrayPool()
         TypedPool{Int32}(),
         TypedPool{ComplexF64}(),
         TypedPool{Bool}(),
-        IdDict{DataType, Any}()
+        IdDict{DataType, Any}(),
+        0,              # check_depth
+        Bool[]          # had_untracked
     )
 end
 
@@ -187,4 +197,40 @@ end
     get!(p.others, T) do
         TypedPool{T}()
     end::TypedPool{T}
+end
+
+# ==============================================================================
+# TypedPool Iteration (for full rewind)
+# ==============================================================================
+
+"""
+    all_type_stacks(pool::AdaptiveArrayPool)
+
+Return an iterator over all TypedPools (6 fixed slots + others).
+Used by full rewind to iterate all types when untracked acquires are detected.
+"""
+function all_type_stacks(pool::AdaptiveArrayPool)
+    return Iterators.flatten((
+        (pool.float64, pool.float32, pool.int64, pool.int32, pool.complexf64, pool.bool),
+        values(pool.others)
+    ))
+end
+
+"""
+    foreach_type_stack(f, pool::AdaptiveArrayPool)
+
+Apply function `f` to each TypedPool. More efficient than `all_type_stacks`
+as it avoids iterator allocation overhead.
+"""
+@inline function foreach_type_stack(f, pool::AdaptiveArrayPool)
+    f(pool.float64)
+    f(pool.float32)
+    f(pool.int64)
+    f(pool.int32)
+    f(pool.complexf64)
+    f(pool.bool)
+    for tp in values(pool.others)
+        f(tp)
+    end
+    nothing
 end
