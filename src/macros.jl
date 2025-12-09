@@ -140,15 +140,44 @@ function _generate_pool_code(pool_name, expr, force_enable)
     # Use typed checkpoint/rewind if all types are static, otherwise fallback to full
     use_typed = !has_dynamic && !isempty(static_types)
 
-    checkpoint_call = use_typed ? _generate_typed_checkpoint_call(esc(pool_name), static_types) : :($checkpoint!($(esc(pool_name))))
-    rewind_call = use_typed ? _generate_typed_rewind_call(esc(pool_name), static_types) : :($rewind!($(esc(pool_name))))
+    # Transform acquire! calls to _acquire_impl! (bypasses untracked marking)
+    transformed_expr = _transform_acquire_calls(expr, pool_name)
+
+    # For typed checkpoint, add _untracked_flags check for fallback to full checkpoint
+    # This protects parent scope arrays when entering nested @with_pool
+    if use_typed
+        typed_checkpoint_call = _generate_typed_checkpoint_call(esc(pool_name), static_types)
+        checkpoint_call = quote
+            if @inbounds $(esc(pool_name))._untracked_flags[$(esc(pool_name))._current_depth]
+                $checkpoint!($(esc(pool_name)))  # Full checkpoint (parent had untracked)
+            else
+                $typed_checkpoint_call  # Fast typed checkpoint
+            end
+        end
+    else
+        checkpoint_call = :($checkpoint!($(esc(pool_name))))
+    end
+
+    # For typed checkpoint, add _untracked_flags check for fallback to full rewind
+    if use_typed
+        typed_rewind_call = _generate_typed_rewind_call(esc(pool_name), static_types)
+        rewind_call = quote
+            if @inbounds $(esc(pool_name))._untracked_flags[$(esc(pool_name))._current_depth]
+                $rewind!($(esc(pool_name)))  # Full rewind (untracked detected)
+            else
+                $typed_rewind_call  # Fast typed rewind
+            end
+        end
+    else
+        rewind_call = :($rewind!($(esc(pool_name))))
+    end
 
     if force_enable
         return quote
             local $(esc(pool_name)) = get_task_local_pool()
             $checkpoint_call
             try
-                local _result = $(esc(expr))
+                local _result = $(esc(transformed_expr))
                 if $POOL_DEBUG[]
                     $_validate_pool_return(_result, $(esc(pool_name)))
                 end
@@ -164,7 +193,7 @@ function _generate_pool_code(pool_name, expr, force_enable)
                 local $(esc(pool_name)) = get_task_local_pool()
                 $checkpoint_call
                 try
-                    local _result = $(esc(expr))
+                    local _result = $(esc(transformed_expr))
                     if $POOL_DEBUG[]
                         $_validate_pool_return(_result, $(esc(pool_name)))
                     end
@@ -199,15 +228,44 @@ function _generate_function_pool_code(pool_name, func_def, force_enable, disable
     static_types, has_dynamic = _filter_static_types(all_types, local_vars)
     use_typed = !has_dynamic && !isempty(static_types)
 
-    checkpoint_call = use_typed ? _generate_typed_checkpoint_call(esc(pool_name), static_types) : :($checkpoint!($(esc(pool_name))))
-    rewind_call = use_typed ? _generate_typed_rewind_call(esc(pool_name), static_types) : :($rewind!($(esc(pool_name))))
+    # Transform acquire! calls to _acquire_impl! (bypasses untracked marking)
+    transformed_body = _transform_acquire_calls(body, pool_name)
+
+    # For typed checkpoint, add _untracked_flags check for fallback to full checkpoint
+    # This protects parent scope arrays when entering nested @with_pool
+    if use_typed
+        typed_checkpoint_call = _generate_typed_checkpoint_call(esc(pool_name), static_types)
+        checkpoint_call = quote
+            if @inbounds $(esc(pool_name))._untracked_flags[$(esc(pool_name))._current_depth]
+                $checkpoint!($(esc(pool_name)))  # Full checkpoint (parent had untracked)
+            else
+                $typed_checkpoint_call  # Fast typed checkpoint
+            end
+        end
+    else
+        checkpoint_call = :($checkpoint!($(esc(pool_name))))
+    end
+
+    # For typed checkpoint, add _untracked_flags check for fallback to full rewind
+    if use_typed
+        typed_rewind_call = _generate_typed_rewind_call(esc(pool_name), static_types)
+        rewind_call = quote
+            if @inbounds $(esc(pool_name))._untracked_flags[$(esc(pool_name))._current_depth]
+                $rewind!($(esc(pool_name)))  # Full rewind (untracked detected)
+            else
+                $typed_rewind_call  # Fast typed rewind
+            end
+        end
+    else
+        rewind_call = :($rewind!($(esc(pool_name))))
+    end
 
     if force_enable
         new_body = quote
             local $(esc(pool_name)) = get_task_local_pool()
             $checkpoint_call
             try
-                $(esc(body))
+                $(esc(transformed_body))
             finally
                 $rewind_call
             end
@@ -218,7 +276,7 @@ function _generate_function_pool_code(pool_name, func_def, force_enable, disable
                 local $(esc(pool_name)) = get_task_local_pool()
                 $checkpoint_call
                 try
-                    $(esc(body))
+                    $(esc(transformed_body))
                 finally
                     $rewind_call
                 end
@@ -290,22 +348,47 @@ end
 """
     _extract_acquire_types(expr, target_pool) -> Set{Any}
 
-Extract type arguments from acquire!(target_pool, Type, ...) calls in an expression.
+Extract type arguments from acquire function calls in an expression.
 Only extracts types from calls where the first argument matches `target_pool`.
 This prevents AST pollution when multiple pools are used in the same block.
+
+Supported functions:
+- `acquire!` and its alias `acquire_view!`
+- `unsafe_acquire!` and its alias `acquire_array!`
+
+Handles two forms:
+- `[unsafe_]acquire!(pool, Type, dims...)` (3+ func args): extracts Type (2nd arg) directly
+- `acquire!(pool, x)` (2 func args): generates `eltype(x)` expression for the array
+  (Note: `unsafe_acquire!` / `acquire_array!` does not have the 2-arg form)
 """
 function _extract_acquire_types(expr, target_pool, types=Set{Any}())
     if expr isa Expr
-        # Match: acquire!(pool, Type, ...)
+        # Match: acquire!/acquire_view!/unsafe_acquire!/acquire_array!(pool, ...)
         if expr.head == :call && length(expr.args) >= 3
             fn = expr.args[1]
-            if fn == :acquire! || (fn isa Expr && fn.head == :. &&
-                                   length(fn.args) >= 2 && fn.args[end] == QuoteNode(:acquire!))
+            # All acquire function names (including aliases)
+            acquire_names = (:acquire!, :unsafe_acquire!, :acquire_view!, :acquire_array!)
+            acquire_quotenodes = (QuoteNode(:acquire!), QuoteNode(:unsafe_acquire!),
+                                  QuoteNode(:acquire_view!), QuoteNode(:acquire_array!))
+            is_acquire = fn in acquire_names ||
+                         (fn isa Expr && fn.head == :. && length(fn.args) >= 2 &&
+                          fn.args[end] in acquire_quotenodes)
+            if is_acquire
                 # Check if the pool argument matches our target pool
                 pool_arg = expr.args[2]
                 if pool_arg == target_pool
-                    type_arg = expr.args[3]
-                    push!(types, type_arg)
+                    nargs = length(expr.args)
+                    if nargs >= 4
+                        # acquire!(pool, Type, dims...) - traditional form
+                        type_arg = expr.args[3]
+                        push!(types, type_arg)
+                    elseif nargs == 3
+                        # acquire!(pool, x) - similar-style form
+                        # Type is eltype of the array argument
+                        array_arg = expr.args[3]
+                        type_expr = Expr(:call, :eltype, array_arg)
+                        push!(types, type_expr)
+                    end
                 end
             end
         end
@@ -325,6 +408,7 @@ Filter types for typed checkpoint/rewind generation.
 - Symbols NOT in local_vars are passed through (type parameters, global types)
 - Symbols IN local_vars trigger fallback (defined after checkpoint!)
 - Parametric types like Vector{T} trigger fallback
+- `eltype(x)` expressions: usable if `x` is NOT a local variable
 
 Type parameters (T, S from `where` clause) resolve to concrete types at runtime.
 Local variables (T = eltype(x)) are defined after checkpoint! and cannot be used.
@@ -343,9 +427,25 @@ function _filter_static_types(types, local_vars=Set{Symbol}())
                 # Type parameter or global type - safe to use
                 push!(static_types, t)
             end
-        elseif t isa Expr && t.head == :curly
-            # Parametric type like Vector{Float64} - can't use as Type argument
-            has_dynamic = true
+        elseif t isa Expr
+            if t.head == :curly
+                # Parametric type like Vector{Float64} - can't use as Type argument
+                has_dynamic = true
+            elseif t.head == :call && length(t.args) >= 2 && t.args[1] == :eltype
+                # eltype(x) expression from acquire!(pool, x) form
+                inner_arg = t.args[2]
+                if inner_arg isa Symbol && inner_arg in local_vars
+                    # x is defined locally - can't use at checkpoint time
+                    # (checkpoint runs before the block, x isn't defined yet)
+                    has_dynamic = true
+                else
+                    # x is external (function param, global, etc.) - safe to use
+                    push!(static_types, t)
+                end
+            else
+                # Other expressions - treat as dynamic
+                has_dynamic = true
+            end
         else
             # GlobalRef or other concrete type reference
             push!(static_types, t)
@@ -383,4 +483,62 @@ function _generate_typed_rewind_call(pool_expr, types)
         escaped_types = [esc(t) for t in types]
         return :($rewind!($pool_expr, $(escaped_types...)))
     end
+end
+
+# ==============================================================================
+# Internal: Acquire Call Transformation
+# ==============================================================================
+
+"""
+    _transform_acquire_calls(expr, pool_name) -> Expr
+
+Transform acquire!/unsafe_acquire! calls to their _impl! counterparts.
+Only transforms calls where the first argument matches `pool_name`.
+
+This allows macro-transformed code to bypass the untracked marking overhead,
+since the macro already knows about these calls at compile time.
+
+Transformation rules:
+- `acquire!(pool, ...)` → `_acquire_impl!(pool, ...)`
+- `acquire_view!(pool, ...)` → `_acquire_impl!(pool, ...)`
+- `unsafe_acquire!(pool, ...)` → `_unsafe_acquire_impl!(pool, ...)`
+- `acquire_array!(pool, ...)` → `_unsafe_acquire_impl!(pool, ...)`
+"""
+# Module-qualified references for transformed acquire calls
+# Using GlobalRef ensures the function is looked up in AdaptiveArrayPools, not the caller's module
+const _ACQUIRE_IMPL_REF = GlobalRef(@__MODULE__, :_acquire_impl!)
+const _UNSAFE_ACQUIRE_IMPL_REF = GlobalRef(@__MODULE__, :_unsafe_acquire_impl!)
+
+function _transform_acquire_calls(expr, pool_name)
+    if expr isa Expr
+        # Handle call expressions
+        if expr.head == :call && length(expr.args) >= 2
+            fn = expr.args[1]
+            pool_arg = expr.args[2]
+
+            # Only transform if pool argument matches
+            if pool_arg == pool_name
+                # Check for acquire functions (including qualified names)
+                if fn == :acquire! || fn == :acquire_view!
+                    expr = Expr(:call, _ACQUIRE_IMPL_REF, expr.args[2:end]...)
+                elseif fn == :unsafe_acquire! || fn == :acquire_array!
+                    expr = Expr(:call, _UNSAFE_ACQUIRE_IMPL_REF, expr.args[2:end]...)
+                elseif fn isa Expr && fn.head == :. && length(fn.args) >= 2
+                    # Qualified name: AdaptiveArrayPools.acquire! etc.
+                    qn = fn.args[end]
+                    if qn == QuoteNode(:acquire!) || qn == QuoteNode(:acquire_view!)
+                        expr = Expr(:call, _ACQUIRE_IMPL_REF, expr.args[2:end]...)
+                    elseif qn == QuoteNode(:unsafe_acquire!) || qn == QuoteNode(:acquire_array!)
+                        expr = Expr(:call, _UNSAFE_ACQUIRE_IMPL_REF, expr.args[2:end]...)
+                    end
+                end
+            end
+        end
+
+        # Recursively transform sub-expressions
+        # Create new args array to avoid mutating original
+        new_args = Any[_transform_acquire_calls(arg, pool_name) for arg in expr.args]
+        return Expr(expr.head, new_args...)
+    end
+    return expr
 end

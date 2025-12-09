@@ -15,8 +15,11 @@ include("types.jl")
 # Debugging & validation utilities (needed by macros)
 include("utils.jl")
 
-# Core operations: get_view!, acquire!, checkpoint!, rewind!, empty!
-include("core.jl")
+# Acquisition operations: get_view!, acquire!, unsafe_acquire!, aliases
+include("acquire.jl")
+
+# State management: checkpoint!, rewind!, empty!
+include("state.jl")
 
 # Task-local pool
 include("task_local_pool.jl")

@@ -177,7 +177,88 @@ For type-unspecified paths, use `unsafe_acquire!` → `get_nd_array!` instead.
 end
 
 # ==============================================================================
-# Acquisition API
+# Untracked Acquire Detection
+# ==============================================================================
+
+"""
+    _mark_untracked!(pool::AdaptiveArrayPool)
+
+Mark that an untracked acquire has occurred at the current checkpoint depth.
+Called by `acquire!` wrapper; macro-transformed calls use `_acquire_impl!` directly.
+
+With 1-indexed _current_depth (starting at 1 for global scope), this always marks
+the current scope's _untracked_flags.
+"""
+@inline function _mark_untracked!(pool::AdaptiveArrayPool)
+    # Always mark (_current_depth >= 1 guaranteed by sentinel)
+    @inbounds pool._untracked_flags[pool._current_depth] = true
+end
+
+# ==============================================================================
+# Internal Implementation Functions (called by macro-transformed code)
+# ==============================================================================
+
+"""
+    _acquire_impl!(pool, Type{T}, n) -> SubArray{T,1,Vector{T},...}
+    _acquire_impl!(pool, Type{T}, dims...) -> ReshapedArray{T,N,...}
+
+Internal implementation of acquire!. Called directly by macro-transformed code
+(no untracked marking). User code calls `acquire!` which adds marking.
+"""
+@inline function _acquire_impl!(pool::AdaptiveArrayPool, ::Type{T}, n::Int) where {T}
+    tp = get_typed_pool!(pool, T)
+    return get_view!(tp, n)
+end
+
+@inline function _acquire_impl!(pool::AdaptiveArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
+    tp = get_typed_pool!(pool, T)
+    return get_nd_view!(tp, dims)
+end
+
+@inline function _acquire_impl!(pool::AdaptiveArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
+    _acquire_impl!(pool, T, dims...)
+end
+
+# Fallback for nothing pool
+@inline _acquire_impl!(::Nothing, ::Type{T}, n::Int) where {T} = Vector{T}(undef, n)
+@inline _acquire_impl!(::Nothing, ::Type{T}, dims::Vararg{Int, N}) where {T, N} = Array{T, N}(undef, dims)
+@inline _acquire_impl!(::Nothing, ::Type{T}, dims::NTuple{N, Int}) where {T, N} = Array{T, N}(undef, dims)
+
+# Similar-style
+@inline _acquire_impl!(pool::AdaptiveArrayPool, x::AbstractArray) = _acquire_impl!(pool, eltype(x), size(x))
+@inline _acquire_impl!(::Nothing, x::AbstractArray) = similar(x)
+
+"""
+    _unsafe_acquire_impl!(pool, Type{T}, dims...) -> Array{T,N}
+
+Internal implementation of unsafe_acquire!. Called directly by macro-transformed code.
+"""
+@inline function _unsafe_acquire_impl!(pool::AdaptiveArrayPool, ::Type{T}, n::Int) where {T}
+    tp = get_typed_pool!(pool, T)
+    return get_nd_array!(tp, (n,))
+end
+
+@inline function _unsafe_acquire_impl!(pool::AdaptiveArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
+    tp = get_typed_pool!(pool, T)
+    return get_nd_array!(tp, dims)
+end
+
+@inline function _unsafe_acquire_impl!(pool::AdaptiveArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
+    tp = get_typed_pool!(pool, T)
+    return get_nd_array!(tp, dims)
+end
+
+# Fallback for nothing pool
+@inline _unsafe_acquire_impl!(::Nothing, ::Type{T}, n::Int) where {T} = Vector{T}(undef, n)
+@inline _unsafe_acquire_impl!(::Nothing, ::Type{T}, dims::Vararg{Int, N}) where {T, N} = Array{T, N}(undef, dims)
+@inline _unsafe_acquire_impl!(::Nothing, ::Type{T}, dims::NTuple{N, Int}) where {T, N} = Array{T, N}(undef, dims)
+
+# Similar-style
+@inline _unsafe_acquire_impl!(pool::AdaptiveArrayPool, x::AbstractArray) = _unsafe_acquire_impl!(pool, eltype(x), size(x))
+@inline _unsafe_acquire_impl!(::Nothing, x::AbstractArray) = similar(x)
+
+# ==============================================================================
+# Acquisition API (User-facing with untracked marking)
 # ==============================================================================
 
 """
@@ -210,19 +291,20 @@ end
 See also: [`unsafe_acquire!`](@ref) for raw `Array` access.
 """
 @inline function acquire!(pool::AdaptiveArrayPool, ::Type{T}, n::Int) where {T}
-    tp = get_typed_pool!(pool, T)
-    return get_view!(tp, n)
+    _mark_untracked!(pool)
+    _acquire_impl!(pool, T, n)
 end
 
 # Multi-dimensional support (zero-allocation with N-D cache)
 @inline function acquire!(pool::AdaptiveArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
-    tp = get_typed_pool!(pool, T)
-    return get_nd_view!(tp, dims)
+    _mark_untracked!(pool)
+    _acquire_impl!(pool, T, dims...)
 end
 
 # Tuple support: allows acquire!(pool, T, size(A)) where size(A) returns NTuple{N,Int}
 @inline function acquire!(pool::AdaptiveArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
-    acquire!(pool, T, dims...)
+    _mark_untracked!(pool)
+    _acquire_impl!(pool, T, dims...)
 end
 
 # Fallback: When pool is `nothing` (e.g. pooling disabled), allocate normally
@@ -254,7 +336,8 @@ end
 ```
 """
 @inline function acquire!(pool::AdaptiveArrayPool, x::AbstractArray)
-    acquire!(pool, eltype(x), size(x))
+    _mark_untracked!(pool)
+    _acquire_impl!(pool, eltype(x), size(x))
 end
 
 @inline acquire!(::Nothing, x::AbstractArray) = similar(x)
@@ -306,19 +389,19 @@ end
 See also: [`acquire!`](@ref) for `ReshapedArray` access.
 """
 @inline function unsafe_acquire!(pool::AdaptiveArrayPool, ::Type{T}, n::Int) where {T}
-    tp = get_typed_pool!(pool, T)
-    return get_nd_array!(tp, (n,))
+    _mark_untracked!(pool)
+    _unsafe_acquire_impl!(pool, T, n)
 end
 
 @inline function unsafe_acquire!(pool::AdaptiveArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
-    tp = get_typed_pool!(pool, T)
-    return get_nd_array!(tp, dims)
+    _mark_untracked!(pool)
+    _unsafe_acquire_impl!(pool, T, dims...)
 end
 
 # Tuple support
 @inline function unsafe_acquire!(pool::AdaptiveArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
-    tp = get_typed_pool!(pool, T)
-    return get_nd_array!(tp, dims)
+    _mark_untracked!(pool)
+    _unsafe_acquire_impl!(pool, T, dims)
 end
 
 # Fallback: When pool is `nothing`, allocate normally
@@ -350,236 +433,11 @@ end
 ```
 """
 @inline function unsafe_acquire!(pool::AdaptiveArrayPool, x::AbstractArray)
-    unsafe_acquire!(pool, eltype(x), size(x))
+    _mark_untracked!(pool)
+    _unsafe_acquire_impl!(pool, eltype(x), size(x))
 end
 
 @inline unsafe_acquire!(::Nothing, x::AbstractArray) = similar(x)
-
-# ==============================================================================
-# State Management
-# ==============================================================================
-
-"""
-    checkpoint!(pool::AdaptiveArrayPool)
-
-Save the current pool state (n_active counters) to internal stacks.
-
-This is called automatically by `@with_pool` and related macros.
-After warmup, this function has **zero allocation**.
-
-See also: [`rewind!`](@ref), [`@with_pool`](@ref)
-"""
-function checkpoint!(pool::AdaptiveArrayPool)
-    # Fixed slots - direct field access, no Dict lookup
-    push!(pool.float64.saved_stack, pool.float64.n_active)
-    push!(pool.float32.saved_stack, pool.float32.n_active)
-    push!(pool.int64.saved_stack, pool.int64.n_active)
-    push!(pool.int32.saved_stack, pool.int32.n_active)
-    push!(pool.complexf64.saved_stack, pool.complexf64.n_active)
-    push!(pool.bool.saved_stack, pool.bool.n_active)
-
-    # Others - iterate without allocation (values() returns iterator)
-    for p in values(pool.others)
-        push!(p.saved_stack, p.n_active)
-    end
-
-    return nothing
-end
-
-checkpoint!(::Nothing) = nothing
-
-"""
-    rewind!(pool::AdaptiveArrayPool)
-
-Restore the pool state (n_active counters) from internal stacks.
-
-Only the counters are restored; allocated memory remains for reuse.
-Handles edge case: types added after checkpoint! get their n_active set to 0.
-
-See also: [`checkpoint!`](@ref), [`@with_pool`](@ref)
-"""
-function rewind!(pool::AdaptiveArrayPool)
-    # Fixed slots
-    pool.float64.n_active = pop!(pool.float64.saved_stack)
-    pool.float32.n_active = pop!(pool.float32.saved_stack)
-    pool.int64.n_active = pop!(pool.int64.saved_stack)
-    pool.int32.n_active = pop!(pool.int32.saved_stack)
-    pool.complexf64.n_active = pop!(pool.complexf64.saved_stack)
-    pool.bool.n_active = pop!(pool.bool.saved_stack)
-
-    # Others - handle edge case: new types added after checkpoint!
-    for p in values(pool.others)
-        if isempty(p.saved_stack)
-            # Type was added after checkpoint! - reset to 0
-            p.n_active = 0
-        else
-            p.n_active = pop!(p.saved_stack)
-        end
-    end
-
-    return nothing
-end
-
-rewind!(::Nothing) = nothing
-
-# ==============================================================================
-# Type-Specific State Management (for optimized macros)
-# ==============================================================================
-
-"""
-    checkpoint!(tp::TypedPool)
-
-Internal method for saving TypedPool state.
-
-!!! warning "Internal API"
-    This is an internal implementation detail. For manual pool management,
-    use the public API instead:
-    ```julia
-    checkpoint!(pool, Float64)  # Type-specific checkpoint
-    ```
-
-See also: [`checkpoint!(::AdaptiveArrayPool, ::Type)`](@ref), [`rewind!`](@ref)
-"""
-@inline function checkpoint!(tp::TypedPool)
-    push!(tp.saved_stack, tp.n_active)
-    nothing
-end
-
-"""
-    rewind!(tp::TypedPool)
-
-Internal method for restoring TypedPool state.
-
-!!! warning "Internal API"
-    This is an internal implementation detail. For manual pool management,
-    use the public API instead:
-    ```julia
-    rewind!(pool, Float64)  # Type-specific rewind
-    ```
-
-See also: [`rewind!(::AdaptiveArrayPool, ::Type)`](@ref), [`checkpoint!`](@ref)
-"""
-@inline function rewind!(tp::TypedPool)
-    tp.n_active = pop!(tp.saved_stack)
-    nothing
-end
-
-"""
-    checkpoint!(pool::AdaptiveArrayPool, ::Type{T})
-
-Save state for a specific type only. Used by optimized macros that know
-which types will be used at compile time.
-
-~77% faster than full checkpoint! when only one type is used.
-"""
-@inline function checkpoint!(pool::AdaptiveArrayPool, ::Type{T}) where T
-    checkpoint!(get_typed_pool!(pool, T))
-end
-
-"""
-    rewind!(pool::AdaptiveArrayPool, ::Type{T})
-
-Restore state for a specific type only.
-"""
-@inline function rewind!(pool::AdaptiveArrayPool, ::Type{T}) where T
-    rewind!(get_typed_pool!(pool, T))
-end
-
-checkpoint!(::Nothing, ::Type) = nothing
-rewind!(::Nothing, ::Type) = nothing
-
-"""
-    checkpoint!(pool::AdaptiveArrayPool, types::Type...)
-
-Save state for multiple specific types. Uses @generated for zero-overhead
-compile-time unrolling.
-"""
-@generated function checkpoint!(pool::AdaptiveArrayPool, types::Type...)
-    exprs = [:(checkpoint!(pool, types[$i])) for i in 1:length(types)]
-    quote
-        $(exprs...)
-        nothing
-    end
-end
-
-"""
-    rewind!(pool::AdaptiveArrayPool, types::Type...)
-
-Restore state for multiple specific types in reverse order.
-"""
-@generated function rewind!(pool::AdaptiveArrayPool, types::Type...)
-    # Reverse order for proper stack unwinding
-    exprs = [:(rewind!(pool, types[$i])) for i in length(types):-1:1]
-    quote
-        $(exprs...)
-        nothing
-    end
-end
-
-checkpoint!(::Nothing, types::Type...) = nothing
-rewind!(::Nothing, types::Type...) = nothing
-
-# ==============================================================================
-# Pool Clearing
-# ==============================================================================
-
-"""
-    empty!(tp::TypedPool)
-
-Clear all internal storage of a TypedPool, releasing all memory.
-"""
-function Base.empty!(tp::TypedPool)
-    empty!(tp.vectors)
-    empty!(tp.views)
-    empty!(tp.view_lengths)
-    # Clear N-D Array cache (N-way)
-    empty!(tp.nd_arrays)
-    empty!(tp.nd_dims)
-    empty!(tp.nd_ptrs)
-    empty!(tp.nd_next_way)
-    tp.n_active = 0
-    empty!(tp.saved_stack)
-    return tp
-end
-
-"""
-    empty!(pool::AdaptiveArrayPool)
-
-Completely clear the pool, releasing all stored vectors and resetting all state.
-
-This is useful when you want to free memory or start fresh without creating
-a new pool instance.
-
-## Example
-```julia
-pool = AdaptiveArrayPool()
-v = acquire!(pool, Float64, 1000)
-# ... use v ...
-empty!(pool)  # Release all memory
-```
-
-## Warning
-Any SubArrays previously acquired from this pool become invalid after `empty!`.
-"""
-function Base.empty!(pool::AdaptiveArrayPool)
-    # Fixed slots
-    empty!(pool.float64)
-    empty!(pool.float32)
-    empty!(pool.int64)
-    empty!(pool.int32)
-    empty!(pool.complexf64)
-    empty!(pool.bool)
-
-    # Others - clear all TypedPools then the IdDict itself
-    for tp in values(pool.others)
-        empty!(tp)
-    end
-    empty!(pool.others)
-
-    return pool
-end
-
-Base.empty!(::Nothing) = nothing
 
 # ==============================================================================
 # API Aliases
@@ -604,3 +462,7 @@ Explicit name emphasizing the return type is a raw `Array`.
 Use when you prefer symmetric naming with `acquire_view!`.
 """
 const acquire_array! = unsafe_acquire!
+
+# Internal implementation aliases (for macro transformation)
+const _acquire_view_impl! = _acquire_impl!
+const _acquire_array_impl! = _unsafe_acquire_impl!
