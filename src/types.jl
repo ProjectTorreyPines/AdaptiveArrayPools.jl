@@ -198,39 +198,3 @@ end
         TypedPool{T}()
     end::TypedPool{T}
 end
-
-# ==============================================================================
-# TypedPool Iteration (for full rewind)
-# ==============================================================================
-
-"""
-    all_type_stacks(pool::AdaptiveArrayPool)
-
-Return an iterator over all TypedPools (6 fixed slots + others).
-Used by full rewind to iterate all types when untracked acquires are detected.
-"""
-function all_type_stacks(pool::AdaptiveArrayPool)
-    return Iterators.flatten((
-        (pool.float64, pool.float32, pool.int64, pool.int32, pool.complexf64, pool.bool),
-        values(pool.others)
-    ))
-end
-
-"""
-    foreach_type_stack(f, pool::AdaptiveArrayPool)
-
-Apply function `f` to each TypedPool. More efficient than `all_type_stacks`
-as it avoids iterator allocation overhead.
-"""
-@inline function foreach_type_stack(f, pool::AdaptiveArrayPool)
-    f(pool.float64)
-    f(pool.float32)
-    f(pool.int64)
-    f(pool.int32)
-    f(pool.complexf64)
-    f(pool.bool)
-    for tp in values(pool.others)
-        f(tp)
-    end
-    nothing
-end
