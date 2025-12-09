@@ -157,7 +157,7 @@ Uses explicit tuple instead of `fieldtypes()` filtering.
 Rationale: Explicit is better than implicit - prevents accidental
 inclusion of future internal TypedPool fields.
 """
-const FIXED_SLOT_FIELDS = (:float64, :float32, :int64, :int32, :complexf64, :bool)
+const FIXED_SLOT_FIELDS = (:float64, :float32, :int64, :int32, :complexf64, :complexf32, :bool)
 
 # ==============================================================================
 # AdaptiveArrayPool
@@ -184,6 +184,7 @@ mutable struct AdaptiveArrayPool
     int64::TypedPool{Int64}
     int32::TypedPool{Int32}
     complexf64::TypedPool{ComplexF64}
+    complexf32::TypedPool{ComplexF32}
     bool::TypedPool{Bool}
 
     # Fallback: rare types
@@ -201,6 +202,7 @@ function AdaptiveArrayPool()
         TypedPool{Int64}(),
         TypedPool{Int32}(),
         TypedPool{ComplexF64}(),
+        TypedPool{ComplexF32}(),
         TypedPool{Bool}(),
         IdDict{DataType, Any}(),
         1,              # _current_depth: 1 = global scope (sentinel)
@@ -218,6 +220,7 @@ end
 @inline get_typed_pool!(p::AdaptiveArrayPool, ::Type{Int64}) = p.int64
 @inline get_typed_pool!(p::AdaptiveArrayPool, ::Type{Int32}) = p.int32
 @inline get_typed_pool!(p::AdaptiveArrayPool, ::Type{ComplexF64}) = p.complexf64
+@inline get_typed_pool!(p::AdaptiveArrayPool, ::Type{ComplexF32}) = p.complexf32
 @inline get_typed_pool!(p::AdaptiveArrayPool, ::Type{Bool}) = p.bool
 
 # Slow Path: rare types via IdDict

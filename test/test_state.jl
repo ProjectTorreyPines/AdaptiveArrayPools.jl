@@ -196,7 +196,8 @@
         v3 = acquire!(pool, Int64, 25)
         v4 = acquire!(pool, Int32, 10)
         v5 = acquire!(pool, ComplexF64, 5)
-        v6 = acquire!(pool, Bool, 20)
+        v6 = acquire!(pool, ComplexF32, 5)
+        v7 = acquire!(pool, Bool, 20)
         rewind!(pool)
 
         # Add fallback type
@@ -210,6 +211,7 @@
         @test length(pool.int64.vectors) == 1
         @test length(pool.int32.vectors) == 1
         @test length(pool.complexf64.vectors) == 1
+        @test length(pool.complexf32.vectors) == 1
         @test length(pool.bool.vectors) == 1
         @test haskey(pool.others, UInt8)
 
@@ -275,25 +277,28 @@
         @test pool.float32.n_active == 0
 
         # All fixed types
-        checkpoint!(pool, Float64, Float32, Int64, Int32, ComplexF64, Bool)
+        checkpoint!(pool, Float64, Float32, Int64, Int32, ComplexF64, ComplexF32, Bool)
         acquire!(pool, Float64, 10)
         acquire!(pool, Float32, 10)
         acquire!(pool, Int64, 10)
         acquire!(pool, Int32, 10)
         acquire!(pool, ComplexF64, 10)
+        acquire!(pool, ComplexF32, 10)
         acquire!(pool, Bool, 10)
         @test pool.float64.n_active == 1
         @test pool.float32.n_active == 1
         @test pool.int64.n_active == 1
         @test pool.int32.n_active == 1
         @test pool.complexf64.n_active == 1
+        @test pool.complexf32.n_active == 1
         @test pool.bool.n_active == 1
-        rewind!(pool, Float64, Float32, Int64, Int32, ComplexF64, Bool)
+        rewind!(pool, Float64, Float32, Int64, Int32, ComplexF64, ComplexF32, Bool)
         @test pool.float64.n_active == 0
         @test pool.float32.n_active == 0
         @test pool.int64.n_active == 0
         @test pool.int32.n_active == 0
         @test pool.complexf64.n_active == 0
+        @test pool.complexf32.n_active == 0
         @test pool.bool.n_active == 0
 
         # nothing fallback with types

@@ -105,6 +105,7 @@
         acquire!(pool, Int64, 10)
         acquire!(pool, Int32, 10)
         acquire!(pool, ComplexF64, 10)
+        acquire!(pool, ComplexF32, 10)
         acquire!(pool, Bool, 10)
 
         # Verify all pools have active arrays
