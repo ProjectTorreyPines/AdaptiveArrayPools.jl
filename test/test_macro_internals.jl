@@ -877,4 +877,178 @@ import AdaptiveArrayPools: _extract_local_assignments, _filter_static_types, _ex
 
     end
 
+    # ==========================================================================
+    # _transform_acquire_calls Tests
+    # ==========================================================================
+
+    @testset "_transform_acquire_calls" begin
+        using AdaptiveArrayPools: _transform_acquire_calls, _ACQUIRE_IMPL_REF, _UNSAFE_ACQUIRE_IMPL_REF
+
+        @testset "basic transformation" begin
+            @testset "acquire! → _acquire_impl!" begin
+                expr = :(acquire!(pool, Float64, 10))
+                transformed = _transform_acquire_calls(expr, :pool)
+                @test transformed.args[1] == _ACQUIRE_IMPL_REF
+                @test transformed.args[2] == :pool
+                @test transformed.args[3] == :Float64
+                @test transformed.args[4] == 10
+            end
+
+            @testset "unsafe_acquire! → _unsafe_acquire_impl!" begin
+                expr = :(unsafe_acquire!(pool, Float64, 10, 10))
+                transformed = _transform_acquire_calls(expr, :pool)
+                @test transformed.args[1] == _UNSAFE_ACQUIRE_IMPL_REF
+                @test transformed.args[2] == :pool
+            end
+
+            @testset "acquire_view! → _acquire_impl!" begin
+                expr = :(acquire_view!(pool, Int32, 5))
+                transformed = _transform_acquire_calls(expr, :pool)
+                @test transformed.args[1] == _ACQUIRE_IMPL_REF
+            end
+
+            @testset "acquire_array! → _unsafe_acquire_impl!" begin
+                expr = :(acquire_array!(pool, Int64, 3, 4))
+                transformed = _transform_acquire_calls(expr, :pool)
+                @test transformed.args[1] == _UNSAFE_ACQUIRE_IMPL_REF
+            end
+        end
+
+        @testset "qualified names" begin
+            @testset "AdaptiveArrayPools.acquire!" begin
+                expr = :(AdaptiveArrayPools.acquire!(pool, Float64, 10))
+                transformed = _transform_acquire_calls(expr, :pool)
+                @test transformed.args[1] == _ACQUIRE_IMPL_REF
+                @test transformed.args[2] == :pool
+            end
+
+            @testset "user alias: AAP.acquire!" begin
+                # User might use: const AAP = AdaptiveArrayPools
+                # Then call: AAP.acquire!(pool, Float64, 10)
+                expr = :(AAP.acquire!(pool, Float64, 10))
+                transformed = _transform_acquire_calls(expr, :pool)
+                @test transformed.args[1] == _ACQUIRE_IMPL_REF
+                @test transformed.args[2] == :pool
+            end
+
+            @testset "deep nesting: A.B.acquire!" begin
+                expr = :(SomeModule.SubModule.acquire!(pool, Float64, 10))
+                transformed = _transform_acquire_calls(expr, :pool)
+                @test transformed.args[1] == _ACQUIRE_IMPL_REF
+            end
+
+            @testset "very deep nesting: A.B.C.D.acquire!" begin
+                expr = :(A.B.C.D.acquire!(pool, Int32, 5))
+                transformed = _transform_acquire_calls(expr, :pool)
+                @test transformed.args[1] == _ACQUIRE_IMPL_REF
+            end
+
+            @testset "qualified unsafe_acquire!" begin
+                expr = :(SomeAlias.unsafe_acquire!(pool, Float64, 10, 10))
+                transformed = _transform_acquire_calls(expr, :pool)
+                @test transformed.args[1] == _UNSAFE_ACQUIRE_IMPL_REF
+            end
+
+            @testset "qualified acquire_view!" begin
+                expr = :(Pkg.acquire_view!(pool, Int64, 5))
+                transformed = _transform_acquire_calls(expr, :pool)
+                @test transformed.args[1] == _ACQUIRE_IMPL_REF
+            end
+
+            @testset "qualified acquire_array!" begin
+                expr = :(MyModule.acquire_array!(pool, Float32, 3, 4, 5))
+                transformed = _transform_acquire_calls(expr, :pool)
+                @test transformed.args[1] == _UNSAFE_ACQUIRE_IMPL_REF
+            end
+        end
+
+        @testset "pool name matching" begin
+            @testset "different pool name - no transform" begin
+                expr = :(acquire!(other_pool, Float64, 10))
+                transformed = _transform_acquire_calls(expr, :pool)
+                # Should NOT be transformed because pool name doesn't match
+                @test transformed.args[1] == :acquire!
+            end
+
+            @testset "qualified with different pool - no transform" begin
+                expr = :(AAP.acquire!(other_pool, Float64, 10))
+                transformed = _transform_acquire_calls(expr, :pool)
+                # Should NOT be transformed
+                fn = transformed.args[1]
+                @test fn isa Expr && fn.head == :.
+            end
+        end
+
+        @testset "recursive transformation" begin
+            @testset "nested in block" begin
+                expr = quote
+                    v1 = acquire!(pool, Float64, 10)
+                    v2 = unsafe_acquire!(pool, Int64, 5)
+                end
+                transformed = _transform_acquire_calls(expr, :pool)
+                # Find the transformed calls in the block
+                calls = filter(x -> x isa Expr && x.head == :(=), transformed.args)
+                @test length(calls) >= 2
+            end
+
+            @testset "nested in function call" begin
+                expr = :(sum(acquire!(pool, Float64, 10)))
+                transformed = _transform_acquire_calls(expr, :pool)
+                # The inner acquire! should be transformed
+                inner_call = transformed.args[2]
+                @test inner_call.args[1] == _ACQUIRE_IMPL_REF
+            end
+
+            @testset "mixed transformed and untransformed" begin
+                expr = quote
+                    v1 = acquire!(pool, Float64, 10)  # Should transform
+                    v2 = acquire!(other, Int64, 5)    # Should NOT transform
+                end
+                transformed = _transform_acquire_calls(expr, :pool)
+                # One should be transformed, one should not
+                has_impl_ref = false
+                has_acquire = false
+                for arg in transformed.args
+                    if arg isa Expr
+                        str = string(arg)
+                        if occursin("_acquire_impl!", str)
+                            has_impl_ref = true
+                        end
+                        if occursin("acquire!(other", str)
+                            has_acquire = true
+                        end
+                    end
+                end
+                @test has_impl_ref
+                @test has_acquire
+            end
+        end
+
+        @testset "similar-style transformation" begin
+            @testset "acquire!(pool, x)" begin
+                expr = :(acquire!(pool, input_array))
+                transformed = _transform_acquire_calls(expr, :pool)
+                @test transformed.args[1] == _ACQUIRE_IMPL_REF
+                @test transformed.args[2] == :pool
+                @test transformed.args[3] == :input_array
+            end
+
+            @testset "qualified similar-style" begin
+                expr = :(AAP.acquire!(pool, some_matrix))
+                transformed = _transform_acquire_calls(expr, :pool)
+                @test transformed.args[1] == _ACQUIRE_IMPL_REF
+            end
+        end
+
+        @testset "GlobalRef verification" begin
+            # Verify that GlobalRef points to AdaptiveArrayPools module
+            @test _ACQUIRE_IMPL_REF isa GlobalRef
+            @test _UNSAFE_ACQUIRE_IMPL_REF isa GlobalRef
+            @test _ACQUIRE_IMPL_REF.mod == AdaptiveArrayPools
+            @test _UNSAFE_ACQUIRE_IMPL_REF.mod == AdaptiveArrayPools
+            @test _ACQUIRE_IMPL_REF.name == :_acquire_impl!
+            @test _UNSAFE_ACQUIRE_IMPL_REF.name == :_unsafe_acquire_impl!
+        end
+    end
+
 end # Macro Internals
