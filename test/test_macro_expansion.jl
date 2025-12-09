@@ -118,6 +118,87 @@
             @test occursin("nothing", expr_str)
         end
 
+        # ==================================================================
+        # New feature expansion tests
+        # ==================================================================
+
+        @testset "Similar-style acquire!(pool, x) expansion" begin
+            # Note: We test with a symbol that won't be in local_vars
+            # to verify eltype() is generated in checkpoint/rewind
+            expr = @macroexpand @with_pool pool begin
+                # Simulate external input_array (not assigned in block)
+                v = acquire!(pool, input_array)
+                sum(v)
+            end
+
+            expr_str = string(expr)
+
+            # Should contain eltype(input_array) in checkpoint/rewind
+            @test occursin("eltype", expr_str)
+            @test occursin("input_array", expr_str)
+        end
+
+        @testset "Similar-style with local array falls back" begin
+            expr = @macroexpand @with_pool pool begin
+                local_arr = rand(10)
+                v = acquire!(pool, local_arr)
+                sum(v)
+            end
+
+            expr_str = string(expr)
+
+            # Should use full checkpoint (no type argument)
+            # When local_arr is detected as local, it falls back
+            # The checkpoint call should NOT have eltype
+            # Check that checkpoint! is called (it will be full checkpoint)
+            @test occursin("checkpoint!", expr_str)
+            @test occursin("rewind!", expr_str)
+        end
+
+        @testset "unsafe_acquire! type extraction" begin
+            expr = @macroexpand @with_pool pool begin
+                v = unsafe_acquire!(pool, Float64, 100)
+                sum(v)
+            end
+
+            expr_str = string(expr)
+
+            # Should have typed checkpoint with Float64
+            @test occursin("checkpoint!", expr_str)
+            @test occursin("Float64", expr_str)
+        end
+
+        @testset "Mixed acquire! and unsafe_acquire!" begin
+            expr = @macroexpand @with_pool pool begin
+                v1 = acquire!(pool, Float64, 10)
+                v2 = unsafe_acquire!(pool, Int64, 20)
+                sum(v1) + sum(v2)
+            end
+
+            expr_str = string(expr)
+
+            # Should have both types
+            @test occursin("Float64", expr_str)
+            @test occursin("Int64", expr_str)
+        end
+
+        @testset "Similar-style + traditional + unsafe mixed" begin
+            expr = @macroexpand @with_pool pool begin
+                v1 = acquire!(pool, Float64, 10)
+                v2 = unsafe_acquire!(pool, Int32, 5)
+                v3 = acquire!(pool, external_data)  # similar-style
+                sum(v1) + sum(v2) + sum(v3)
+            end
+
+            expr_str = string(expr)
+
+            # Should have Float64, Int32, and eltype(external_data)
+            @test occursin("Float64", expr_str)
+            @test occursin("Int32", expr_str)
+            @test occursin("eltype", expr_str)
+            @test occursin("external_data", expr_str)
+        end
+
     end
 
 end # Macro Expansion Details

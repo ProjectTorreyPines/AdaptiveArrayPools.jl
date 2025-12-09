@@ -185,6 +185,64 @@ import AdaptiveArrayPools: _extract_local_assignments, _filter_static_types, _ex
                 @test isempty(static_types)
                 @test has_dynamic
             end
+
+            # ==================================================================
+            # eltype(x) expression handling
+            # ==================================================================
+
+            @testset "eltype(x) with external variable" begin
+                # eltype(input_array) where input_array is NOT a local variable
+                eltype_expr = Expr(:call, :eltype, :input_array)
+                types = Set{Any}([eltype_expr])
+                local_vars = Set{Symbol}()  # input_array is not local
+                static_types, has_dynamic = _filter_static_types(types, local_vars)
+                @test length(static_types) == 1
+                @test eltype_expr in static_types
+                @test !has_dynamic
+            end
+
+            @testset "eltype(x) with local variable" begin
+                # eltype(x) where x IS a local variable
+                eltype_expr = Expr(:call, :eltype, :x)
+                types = Set{Any}([eltype_expr])
+                local_vars = Set{Symbol}([:x])  # x is defined locally
+                static_types, has_dynamic = _filter_static_types(types, local_vars)
+                @test isempty(static_types)
+                @test has_dynamic  # Must fall back because x isn't defined at checkpoint time
+            end
+
+            @testset "eltype mixed with static types" begin
+                eltype_expr = Expr(:call, :eltype, :input)
+                types = Set{Any}([:Float64, eltype_expr])
+                local_vars = Set{Symbol}()  # input is external
+                static_types, has_dynamic = _filter_static_types(types, local_vars)
+                @test :Float64 in static_types
+                @test eltype_expr in static_types
+                @test length(static_types) == 2
+                @test !has_dynamic
+            end
+
+            @testset "eltype with local causes fallback but keeps static" begin
+                eltype_expr = Expr(:call, :eltype, :local_arr)
+                types = Set{Any}([:Float64, eltype_expr])
+                local_vars = Set{Symbol}([:local_arr])  # local_arr is defined locally
+                static_types, has_dynamic = _filter_static_types(types, local_vars)
+                @test :Float64 in static_types
+                @test eltype_expr ∉ static_types
+                @test has_dynamic
+            end
+
+            @testset "eltype with complex expression (not symbol)" begin
+                # eltype(some_func().result) - inner is not a Symbol
+                inner = Expr(:., Expr(:call, :some_func), QuoteNode(:result))
+                eltype_expr = Expr(:call, :eltype, inner)
+                types = Set{Any}([eltype_expr])
+                local_vars = Set{Symbol}()
+                static_types, has_dynamic = _filter_static_types(types, local_vars)
+                # Should be safe since inner is not a simple Symbol in local_vars
+                @test length(static_types) == 1
+                @test !has_dynamic
+            end
         end
 
         @testset "_extract_acquire_types" begin
@@ -287,6 +345,102 @@ import AdaptiveArrayPools: _extract_local_assignments, _filter_static_types, _ex
                 types = _extract_acquire_types(expr, :pool)
                 @test isempty(types)
             end
+
+            # ==================================================================
+            # Similar-style form: acquire!(pool, x)
+            # ==================================================================
+
+            @testset "similar-style acquire!(pool, x)" begin
+                expr = :(acquire!(pool, input_array))
+                types = _extract_acquire_types(expr, :pool)
+                @test length(types) == 1
+                # Should generate eltype(input_array) expression
+                type_expr = first(types)
+                @test type_expr isa Expr
+                @test type_expr.head == :call
+                @test type_expr.args[1] == :eltype
+                @test type_expr.args[2] == :input_array
+            end
+
+            @testset "similar-style with complex expression" begin
+                expr = :(acquire!(pool, some_func().result))
+                types = _extract_acquire_types(expr, :pool)
+                @test length(types) == 1
+                type_expr = first(types)
+                @test type_expr.head == :call
+                @test type_expr.args[1] == :eltype
+            end
+
+            @testset "mixed traditional and similar-style" begin
+                expr = quote
+                    v1 = acquire!(pool, Float64, 10)
+                    v2 = acquire!(pool, input_array)
+                end
+                types = _extract_acquire_types(expr, :pool)
+                @test length(types) == 2
+                # Should have Float64 and eltype(input_array)
+                has_float64 = any(t -> t == :Float64, types)
+                has_eltype = any(t -> t isa Expr && t.head == :call && t.args[1] == :eltype, types)
+                @test has_float64
+                @test has_eltype
+            end
+
+            # ==================================================================
+            # unsafe_acquire! support
+            # ==================================================================
+
+            @testset "unsafe_acquire! single call" begin
+                expr = :(unsafe_acquire!(pool, Float64, 100))
+                types = _extract_acquire_types(expr, :pool)
+                @test :Float64 in types
+                @test length(types) == 1
+            end
+
+            @testset "unsafe_acquire! multiple types" begin
+                expr = quote
+                    v1 = unsafe_acquire!(pool, Float64, 10, 10)
+                    v2 = unsafe_acquire!(pool, Int32, 5)
+                end
+                types = _extract_acquire_types(expr, :pool)
+                @test :Float64 in types
+                @test :Int32 in types
+                @test length(types) == 2
+            end
+
+            @testset "mixed acquire! and unsafe_acquire!" begin
+                expr = quote
+                    v1 = acquire!(pool, Float64, 10)
+                    v2 = unsafe_acquire!(pool, Int64, 20)
+                    v3 = acquire!(pool, input)  # similar-style
+                end
+                types = _extract_acquire_types(expr, :pool)
+                @test :Float64 in types
+                @test :Int64 in types
+                # Should have eltype(input)
+                has_eltype = any(t -> t isa Expr && t.head == :call && t.args[1] == :eltype, types)
+                @test has_eltype
+                @test length(types) == 3
+            end
+
+            @testset "qualified unsafe_acquire!" begin
+                expr = :(AdaptiveArrayPools.unsafe_acquire!(pool, Int16, 5))
+                types = _extract_acquire_types(expr, :pool)
+                @test :Int16 in types
+            end
+
+            @testset "unsafe_acquire! different pool (no pollution)" begin
+                expr = quote
+                    v1 = unsafe_acquire!(p1, Float64, 10)
+                    v2 = unsafe_acquire!(p2, Int, 10)
+                end
+                types_p1 = _extract_acquire_types(expr, :p1)
+                @test :Float64 in types_p1
+                @test :Int ∉ types_p1
+
+                types_p2 = _extract_acquire_types(expr, :p2)
+                @test :Int in types_p2
+                @test :Float64 ∉ types_p2
+            end
         end
 
         @testset "Integration: type extraction + filtering" begin
@@ -357,6 +511,72 @@ import AdaptiveArrayPools: _extract_local_assignments, _filter_static_types, _ex
                 static_p2, _ = _filter_static_types(types_p2, local_vars)
                 @test :Int in static_p2
                 @test :Float64 ∉ static_p2
+            end
+
+            # ==================================================================
+            # Integration tests for new features
+            # ==================================================================
+
+            @testset "similar-style with external array" begin
+                expr = quote
+                    v = acquire!(pool, input_array)  # input_array is function param
+                end
+                local_vars = _extract_local_assignments(expr)
+                types = _extract_acquire_types(expr, :pool)
+                static_types, has_dynamic = _filter_static_types(types, local_vars)
+
+                # Should have eltype(input_array) in static_types
+                @test length(static_types) == 1
+                @test !has_dynamic
+                type_expr = first(static_types)
+                @test type_expr isa Expr
+                @test type_expr.args[1] == :eltype
+            end
+
+            @testset "similar-style with local array (fallback)" begin
+                expr = quote
+                    local_arr = rand(10)
+                    v = acquire!(pool, local_arr)
+                end
+                local_vars = _extract_local_assignments(expr)
+                types = _extract_acquire_types(expr, :pool)
+                static_types, has_dynamic = _filter_static_types(types, local_vars)
+
+                # Should fall back because local_arr is defined locally
+                @test isempty(static_types)
+                @test has_dynamic
+            end
+
+            @testset "unsafe_acquire! integration" begin
+                expr = quote
+                    v1 = unsafe_acquire!(pool, Float64, 10, 10)
+                    v2 = acquire!(pool, Int64, 5)
+                end
+                local_vars = _extract_local_assignments(expr)
+                types = _extract_acquire_types(expr, :pool)
+                static_types, has_dynamic = _filter_static_types(types, local_vars)
+
+                @test :Float64 in static_types
+                @test :Int64 in static_types
+                @test !has_dynamic
+            end
+
+            @testset "mixed: acquire!, unsafe_acquire!, similar-style" begin
+                expr = quote
+                    v1 = acquire!(pool, Float64, 10)
+                    v2 = unsafe_acquire!(pool, Int32, 5)
+                    v3 = acquire!(pool, external_input)  # external
+                end
+                local_vars = _extract_local_assignments(expr)
+                types = _extract_acquire_types(expr, :pool)
+                static_types, has_dynamic = _filter_static_types(types, local_vars)
+
+                @test :Float64 in static_types
+                @test :Int32 in static_types
+                has_eltype = any(t -> t isa Expr && t.head == :call && t.args[1] == :eltype, static_types)
+                @test has_eltype
+                @test length(static_types) == 3
+                @test !has_dynamic
             end
         end
 
