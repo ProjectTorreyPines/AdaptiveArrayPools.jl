@@ -102,4 +102,69 @@ using AdaptiveArrayPools
         end
     end
 
+    @testset "Similar-style _impl! via macro (runtime coverage)" begin
+        # These tests exercise the _acquire_impl!(pool, x::AbstractArray) and
+        # _unsafe_acquire_impl!(pool, x::AbstractArray) methods which are only
+        # called through macro transformation (not public API).
+
+        ref_mat = rand(5, 6)
+        ref_vec = rand(10)
+        ref_int = rand(Int32, 3, 4)
+
+        @testset "acquire!(pool, x) via @with_pool" begin
+            pool = AdaptiveArrayPool()
+
+            result = @with_pool pool begin
+                # Similar-style acquire - macro transforms to _acquire_impl!(pool, ref_mat)
+                mat = acquire!(pool, ref_mat)
+                @test size(mat) == size(ref_mat)
+                @test eltype(mat) == eltype(ref_mat)
+                @test mat isa Base.ReshapedArray{Float64, 2}
+
+                vec = acquire!(pool, ref_vec)
+                @test size(vec) == size(ref_vec)
+                @test vec isa SubArray{Float64, 1}
+
+                int_mat = acquire!(pool, ref_int)
+                @test eltype(int_mat) == Int32
+                @test size(int_mat) == (3, 4)
+
+                sum(mat) + sum(vec) + sum(int_mat)
+            end
+            @test result isa Float64
+        end
+
+        @testset "unsafe_acquire!(pool, x) via @with_pool" begin
+            pool = AdaptiveArrayPool()
+
+            result = @with_pool pool begin
+                # Similar-style unsafe_acquire - macro transforms to _unsafe_acquire_impl!(pool, ref_mat)
+                mat = unsafe_acquire!(pool, ref_mat)
+                @test size(mat) == size(ref_mat)
+                @test mat isa Matrix{Float64}
+
+                vec = unsafe_acquire!(pool, ref_vec)
+                @test size(vec) == size(ref_vec)
+                @test vec isa Vector{Float64}
+
+                sum(mat) + sum(vec)
+            end
+            @test result isa Float64
+        end
+
+        @testset "acquire_view!/acquire_array! aliases via @with_pool" begin
+            pool = AdaptiveArrayPool()
+
+            @with_pool pool begin
+                # acquire_view! is alias for acquire!
+                v1 = acquire_view!(pool, ref_mat)
+                @test size(v1) == size(ref_mat)
+
+                # acquire_array! is alias for unsafe_acquire!
+                v2 = acquire_array!(pool, ref_vec)
+                @test size(v2) == size(ref_vec)
+            end
+        end
+    end
+
 end

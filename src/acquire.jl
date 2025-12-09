@@ -219,14 +219,8 @@ end
     _acquire_impl!(pool, T, dims...)
 end
 
-# Fallback for nothing pool
-@inline _acquire_impl!(::Nothing, ::Type{T}, n::Int) where {T} = Vector{T}(undef, n)
-@inline _acquire_impl!(::Nothing, ::Type{T}, dims::Vararg{Int, N}) where {T, N} = Array{T, N}(undef, dims)
-@inline _acquire_impl!(::Nothing, ::Type{T}, dims::NTuple{N, Int}) where {T, N} = Array{T, N}(undef, dims)
-
 # Similar-style
 @inline _acquire_impl!(pool::AdaptiveArrayPool, x::AbstractArray) = _acquire_impl!(pool, eltype(x), size(x))
-@inline _acquire_impl!(::Nothing, x::AbstractArray) = similar(x)
 
 """
     _unsafe_acquire_impl!(pool, Type{T}, dims...) -> Array{T,N}
@@ -248,14 +242,8 @@ end
     return get_nd_array!(tp, dims)
 end
 
-# Fallback for nothing pool
-@inline _unsafe_acquire_impl!(::Nothing, ::Type{T}, n::Int) where {T} = Vector{T}(undef, n)
-@inline _unsafe_acquire_impl!(::Nothing, ::Type{T}, dims::Vararg{Int, N}) where {T, N} = Array{T, N}(undef, dims)
-@inline _unsafe_acquire_impl!(::Nothing, ::Type{T}, dims::NTuple{N, Int}) where {T, N} = Array{T, N}(undef, dims)
-
 # Similar-style
 @inline _unsafe_acquire_impl!(pool::AdaptiveArrayPool, x::AbstractArray) = _unsafe_acquire_impl!(pool, eltype(x), size(x))
-@inline _unsafe_acquire_impl!(::Nothing, x::AbstractArray) = similar(x)
 
 # ==============================================================================
 # Acquisition API (User-facing with untracked marking)
