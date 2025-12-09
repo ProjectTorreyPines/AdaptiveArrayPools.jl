@@ -290,23 +290,31 @@ end
 """
     _extract_acquire_types(expr, target_pool) -> Set{Any}
 
-Extract type arguments from `acquire!` and `unsafe_acquire!` calls in an expression.
+Extract type arguments from acquire function calls in an expression.
 Only extracts types from calls where the first argument matches `target_pool`.
 This prevents AST pollution when multiple pools are used in the same block.
+
+Supported functions:
+- `acquire!` and its alias `acquire_view!`
+- `unsafe_acquire!` and its alias `acquire_array!`
 
 Handles two forms:
 - `[unsafe_]acquire!(pool, Type, dims...)` (3+ func args): extracts Type (2nd arg) directly
 - `acquire!(pool, x)` (2 func args): generates `eltype(x)` expression for the array
-  (Note: `unsafe_acquire!` does not have the 2-arg form)
+  (Note: `unsafe_acquire!` / `acquire_array!` does not have the 2-arg form)
 """
 function _extract_acquire_types(expr, target_pool, types=Set{Any}())
     if expr isa Expr
-        # Match: acquire!(pool, ...) or unsafe_acquire!(pool, ...)
+        # Match: acquire!/acquire_view!/unsafe_acquire!/acquire_array!(pool, ...)
         if expr.head == :call && length(expr.args) >= 3
             fn = expr.args[1]
-            is_acquire = fn == :acquire! || fn == :unsafe_acquire! ||
+            # All acquire function names (including aliases)
+            acquire_names = (:acquire!, :unsafe_acquire!, :acquire_view!, :acquire_array!)
+            acquire_quotenodes = (QuoteNode(:acquire!), QuoteNode(:unsafe_acquire!),
+                                  QuoteNode(:acquire_view!), QuoteNode(:acquire_array!))
+            is_acquire = fn in acquire_names ||
                          (fn isa Expr && fn.head == :. && length(fn.args) >= 2 &&
-                          (fn.args[end] == QuoteNode(:acquire!) || fn.args[end] == QuoteNode(:unsafe_acquire!)))
+                          fn.args[end] in acquire_quotenodes)
             if is_acquire
                 # Check if the pool argument matches our target pool
                 pool_arg = expr.args[2]

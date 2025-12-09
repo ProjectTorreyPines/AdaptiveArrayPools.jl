@@ -501,6 +501,110 @@ import AdaptiveArrayPools: _extract_local_assignments, _filter_static_types, _ex
                 @test :T in types
                 @test length(types) == 3
             end
+
+            # ==================================================================
+            # acquire_view! support (alias for acquire!)
+            # ==================================================================
+
+            @testset "acquire_view! single call" begin
+                expr = :(acquire_view!(pool, Float64, 100))
+                types = _extract_acquire_types(expr, :pool)
+                @test :Float64 in types
+                @test length(types) == 1
+            end
+
+            @testset "acquire_view! multiple types" begin
+                expr = quote
+                    v1 = acquire_view!(pool, Float64, 10)
+                    v2 = acquire_view!(pool, Int32, 5)
+                end
+                types = _extract_acquire_types(expr, :pool)
+                @test :Float64 in types
+                @test :Int32 in types
+                @test length(types) == 2
+            end
+
+            @testset "acquire_view! similar-style" begin
+                expr = :(acquire_view!(pool, input_array))
+                types = _extract_acquire_types(expr, :pool)
+                @test length(types) == 1
+                type_expr = first(types)
+                @test type_expr isa Expr
+                @test type_expr.head == :call
+                @test type_expr.args[1] == :eltype
+                @test type_expr.args[2] == :input_array
+            end
+
+            @testset "qualified acquire_view!" begin
+                expr = :(AdaptiveArrayPools.acquire_view!(pool, Int16, 5))
+                types = _extract_acquire_types(expr, :pool)
+                @test :Int16 in types
+            end
+
+            # ==================================================================
+            # acquire_array! support (alias for unsafe_acquire!)
+            # ==================================================================
+
+            @testset "acquire_array! single call" begin
+                expr = :(acquire_array!(pool, Float64, 100))
+                types = _extract_acquire_types(expr, :pool)
+                @test :Float64 in types
+                @test length(types) == 1
+            end
+
+            @testset "acquire_array! multiple types" begin
+                expr = quote
+                    v1 = acquire_array!(pool, Float64, 10, 10)
+                    v2 = acquire_array!(pool, Int32, 5)
+                end
+                types = _extract_acquire_types(expr, :pool)
+                @test :Float64 in types
+                @test :Int32 in types
+                @test length(types) == 2
+            end
+
+            @testset "qualified acquire_array!" begin
+                expr = :(AdaptiveArrayPools.acquire_array!(pool, Int16, 5))
+                types = _extract_acquire_types(expr, :pool)
+                @test :Int16 in types
+            end
+
+            # ==================================================================
+            # Mixed: all acquire functions together
+            # ==================================================================
+
+            @testset "all acquire functions mixed" begin
+                expr = quote
+                    v1 = acquire!(pool, Float64, 10)
+                    v2 = unsafe_acquire!(pool, Int64, 20)
+                    v3 = acquire_view!(pool, Float32, 5)
+                    v4 = acquire_array!(pool, Int32, 15)
+                    v5 = acquire_view!(pool, input)  # similar-style
+                end
+                types = _extract_acquire_types(expr, :pool)
+                @test :Float64 in types
+                @test :Int64 in types
+                @test :Float32 in types
+                @test :Int32 in types
+                # Should have eltype(input)
+                has_eltype = any(t -> t isa Expr && t.head == :call && t.args[1] == :eltype, types)
+                @test has_eltype
+                @test length(types) == 5
+            end
+
+            @testset "aliases different pool (no pollution)" begin
+                expr = quote
+                    v1 = acquire_view!(p1, Float64, 10)
+                    v2 = acquire_array!(p2, Int, 10)
+                end
+                types_p1 = _extract_acquire_types(expr, :p1)
+                @test :Float64 in types_p1
+                @test :Int ∉ types_p1
+
+                types_p2 = _extract_acquire_types(expr, :p2)
+                @test :Int in types_p2
+                @test :Float64 ∉ types_p2
+            end
         end
 
         @testset "Integration: type extraction + filtering" begin
@@ -698,6 +802,75 @@ import AdaptiveArrayPools: _extract_local_assignments, _filter_static_types, _ex
                 @test :MyData in static_types
                 @test :T in static_types
                 @test length(static_types) == 3
+                @test !has_dynamic
+            end
+
+            # ==================================================================
+            # Integration tests for alias functions
+            # ==================================================================
+
+            @testset "acquire_view! integration" begin
+                expr = quote
+                    v1 = acquire_view!(pool, Float64, 10)
+                    v2 = acquire_view!(pool, Int64, 5)
+                end
+                local_vars = _extract_local_assignments(expr)
+                types = _extract_acquire_types(expr, :pool)
+                static_types, has_dynamic = _filter_static_types(types, local_vars)
+
+                @test :Float64 in static_types
+                @test :Int64 in static_types
+                @test !has_dynamic
+            end
+
+            @testset "acquire_array! integration" begin
+                expr = quote
+                    v1 = acquire_array!(pool, Float64, 10, 10)
+                    v2 = acquire_array!(pool, Int64, 5)
+                end
+                local_vars = _extract_local_assignments(expr)
+                types = _extract_acquire_types(expr, :pool)
+                static_types, has_dynamic = _filter_static_types(types, local_vars)
+
+                @test :Float64 in static_types
+                @test :Int64 in static_types
+                @test !has_dynamic
+            end
+
+            @testset "acquire_view! similar-style with external array" begin
+                expr = quote
+                    v = acquire_view!(pool, input_array)  # input_array is function param
+                end
+                local_vars = _extract_local_assignments(expr)
+                types = _extract_acquire_types(expr, :pool)
+                static_types, has_dynamic = _filter_static_types(types, local_vars)
+
+                @test length(static_types) == 1
+                @test !has_dynamic
+                type_expr = first(static_types)
+                @test type_expr isa Expr
+                @test type_expr.args[1] == :eltype
+            end
+
+            @testset "all acquire functions integration" begin
+                expr = quote
+                    v1 = acquire!(pool, Float64, 10)
+                    v2 = unsafe_acquire!(pool, Int64, 20)
+                    v3 = acquire_view!(pool, Float32, 5)
+                    v4 = acquire_array!(pool, Int32, 15)
+                    v5 = acquire_view!(pool, external_input)
+                end
+                local_vars = _extract_local_assignments(expr)
+                types = _extract_acquire_types(expr, :pool)
+                static_types, has_dynamic = _filter_static_types(types, local_vars)
+
+                @test :Float64 in static_types
+                @test :Int64 in static_types
+                @test :Float32 in static_types
+                @test :Int32 in static_types
+                has_eltype = any(t -> t isa Expr && t.head == :call && t.args[1] == :eltype, static_types)
+                @test has_eltype
+                @test length(static_types) == 5
                 @test !has_dynamic
             end
         end
