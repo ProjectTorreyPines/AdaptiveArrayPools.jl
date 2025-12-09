@@ -199,6 +199,55 @@
             @test occursin("external_data", expr_str)
         end
 
+        # ==================================================================
+        # Custom types and type parameters
+        # ==================================================================
+
+        @testset "Custom struct type expansion" begin
+            # MyCustomType is treated as a symbol (user-defined type)
+            expr = @macroexpand @with_pool pool begin
+                v = acquire!(pool, MyCustomType, 10)
+                length(v)
+            end
+
+            expr_str = string(expr)
+
+            # Should have typed checkpoint with MyCustomType
+            @test occursin("checkpoint!", expr_str)
+            @test occursin("MyCustomType", expr_str)
+        end
+
+        @testset "Type parameter T expansion" begin
+            # T represents a type parameter from where clause
+            expr = @macroexpand @with_pool pool begin
+                v = acquire!(pool, T, 10)
+                length(v)
+            end
+
+            expr_str = string(expr)
+
+            # Should pass T to checkpoint/rewind
+            @test occursin("checkpoint!", expr_str)
+            # T should appear in the expanded code
+            @test occursin(r"\bT\b", expr_str)
+        end
+
+        @testset "Mixed: builtin, custom, type parameter" begin
+            expr = @macroexpand @with_pool pool begin
+                v1 = acquire!(pool, Float64, 10)
+                v2 = acquire!(pool, MyData, 5)
+                v3 = unsafe_acquire!(pool, T, 3)
+                length(v1) + length(v2) + length(v3)
+            end
+
+            expr_str = string(expr)
+
+            # All three types should be in checkpoint/rewind
+            @test occursin("Float64", expr_str)
+            @test occursin("MyData", expr_str)
+            @test occursin(r"\bT\b", expr_str)
+        end
+
     end
 
 end # Macro Expansion Details

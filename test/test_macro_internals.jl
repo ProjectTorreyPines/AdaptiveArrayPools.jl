@@ -441,6 +441,66 @@ import AdaptiveArrayPools: _extract_local_assignments, _filter_static_types, _ex
                 @test :Int in types_p2
                 @test :Float64 ∉ types_p2
             end
+
+            # ==================================================================
+            # Custom types and type parameters
+            # ==================================================================
+
+            @testset "custom struct type" begin
+                # MyCustomType is a user-defined type (just a symbol at macro time)
+                expr = :(acquire!(pool, MyCustomType, 10))
+                types = _extract_acquire_types(expr, :pool)
+                @test :MyCustomType in types
+                @test length(types) == 1
+            end
+
+            @testset "multiple custom types" begin
+                expr = quote
+                    v1 = acquire!(pool, MyData, 10)
+                    v2 = acquire!(pool, MyOtherType, 5)
+                    v3 = unsafe_acquire!(pool, UserStruct, 3)
+                end
+                types = _extract_acquire_types(expr, :pool)
+                @test :MyData in types
+                @test :MyOtherType in types
+                @test :UserStruct in types
+                @test length(types) == 3
+            end
+
+            @testset "type parameter T (from where clause)" begin
+                # In: function foo(::Type{T}) where T
+                #         @with_pool p begin
+                #             v = acquire!(p, T, 10)
+                #         end
+                #     end
+                # T is a type parameter, not a local variable
+                expr = :(acquire!(pool, T, 10))
+                types = _extract_acquire_types(expr, :pool)
+                @test :T in types
+            end
+
+            @testset "multiple type parameters" begin
+                expr = quote
+                    v1 = acquire!(pool, T, 10)
+                    v2 = acquire!(pool, S, 5)
+                end
+                types = _extract_acquire_types(expr, :pool)
+                @test :T in types
+                @test :S in types
+            end
+
+            @testset "mixed: builtin, custom, type parameter" begin
+                expr = quote
+                    v1 = acquire!(pool, Float64, 10)
+                    v2 = acquire!(pool, MyCustomType, 5)
+                    v3 = acquire!(pool, T, 3)
+                end
+                types = _extract_acquire_types(expr, :pool)
+                @test :Float64 in types
+                @test :MyCustomType in types
+                @test :T in types
+                @test length(types) == 3
+            end
         end
 
         @testset "Integration: type extraction + filtering" begin
@@ -575,6 +635,68 @@ import AdaptiveArrayPools: _extract_local_assignments, _filter_static_types, _ex
                 @test :Int32 in static_types
                 has_eltype = any(t -> t isa Expr && t.head == :call && t.args[1] == :eltype, static_types)
                 @test has_eltype
+                @test length(static_types) == 3
+                @test !has_dynamic
+            end
+
+            # ==================================================================
+            # Custom types and type parameters integration
+            # ==================================================================
+
+            @testset "custom type integration" begin
+                expr = quote
+                    v = acquire!(pool, MyCustomType, 10)
+                end
+                local_vars = _extract_local_assignments(expr)
+                types = _extract_acquire_types(expr, :pool)
+                static_types, has_dynamic = _filter_static_types(types, local_vars)
+
+                @test :MyCustomType in static_types
+                @test !has_dynamic
+            end
+
+            @testset "type parameter integration" begin
+                # T is a type parameter from where clause, not a local variable
+                expr = quote
+                    v = acquire!(pool, T, 10)
+                end
+                local_vars = _extract_local_assignments(expr)
+                types = _extract_acquire_types(expr, :pool)
+                static_types, has_dynamic = _filter_static_types(types, local_vars)
+
+                # T is not in local_vars (it's from where clause), so it's static
+                @test :T in static_types
+                @test !has_dynamic
+            end
+
+            @testset "type parameter vs local variable conflict" begin
+                # If someone shadows T with local assignment, it should trigger fallback
+                expr = quote
+                    T = eltype(x)  # T is now a local variable!
+                    v = acquire!(pool, T, 10)
+                end
+                local_vars = _extract_local_assignments(expr)
+                types = _extract_acquire_types(expr, :pool)
+                static_types, has_dynamic = _filter_static_types(types, local_vars)
+
+                @test :T in local_vars
+                @test :T ∉ static_types  # T is filtered out
+                @test has_dynamic  # Falls back to full checkpoint
+            end
+
+            @testset "mixed: builtin, custom, type parameter" begin
+                expr = quote
+                    v1 = acquire!(pool, Float64, 10)
+                    v2 = acquire!(pool, MyData, 5)
+                    v3 = unsafe_acquire!(pool, T, 3)
+                end
+                local_vars = _extract_local_assignments(expr)
+                types = _extract_acquire_types(expr, :pool)
+                static_types, has_dynamic = _filter_static_types(types, local_vars)
+
+                @test :Float64 in static_types
+                @test :MyData in static_types
+                @test :T in static_types
                 @test length(static_types) == 3
                 @test !has_dynamic
             end
