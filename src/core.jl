@@ -496,19 +496,19 @@ Handles untracked acquires by checking _checkpoint_depths for accurate restorati
 See also: [`checkpoint!`](@ref), [`@with_pool`](@ref)
 """
 function rewind!(pool::AdaptiveArrayPool)
-    depth = pool._current_depth
+    cur_depth = pool._current_depth
 
     # Process fixed slots directly (zero allocation)
-    _rewind_typed_pool!(pool.float64, depth)
-    _rewind_typed_pool!(pool.float32, depth)
-    _rewind_typed_pool!(pool.int64, depth)
-    _rewind_typed_pool!(pool.int32, depth)
-    _rewind_typed_pool!(pool.complexf64, depth)
-    _rewind_typed_pool!(pool.bool, depth)
+    _rewind_typed_pool!(pool.float64, cur_depth)
+    _rewind_typed_pool!(pool.float32, cur_depth)
+    _rewind_typed_pool!(pool.int64, cur_depth)
+    _rewind_typed_pool!(pool.int32, cur_depth)
+    _rewind_typed_pool!(pool.complexf64, cur_depth)
+    _rewind_typed_pool!(pool.bool, cur_depth)
 
     # Process fallback types
     for tp in values(pool.others)
-        _rewind_typed_pool!(tp, depth)
+        _rewind_typed_pool!(tp, cur_depth)
     end
 
     pop!(pool._untracked_flags)
@@ -519,13 +519,27 @@ end
 
 # Internal helper for full rewind with _checkpoint_depths
 # Uses 1-based sentinel pattern: no isempty checks needed (sentinel [0] guarantees non-empty)
-@inline function _rewind_typed_pool!(tp::TypedPool, depth::Int)
-    if @inbounds tp._checkpoint_depths[end] == depth
-        # Checkpointed at current depth → pop both stacks
+@inline function _rewind_typed_pool!(tp::TypedPool, current_depth::Int)
+    # 1. Orphaned Checkpoints Cleanup
+    # If there are checkpoints from deeper scopes (depth > current), pop them first.
+    # This happens when a nested scope did full checkpoint but typed rewind,
+    # leaving orphaned checkpoints that must be cleaned before finding current state.
+    while @inbounds tp._checkpoint_depths[end] > current_depth
+        pop!(tp._checkpoint_depths)
+        pop!(tp._checkpoint_n_active)
+    end
+
+    # 2. Normal Rewind Logic (Sentinel Pattern)
+    # Now the stack top is guaranteed to be at depth <= current depth.
+    if @inbounds tp._checkpoint_depths[end] == current_depth
+        # Checkpointed at current depth: pop and restore
         pop!(tp._checkpoint_depths)
         tp.n_active = pop!(tp._checkpoint_n_active)
     else
-        # Checkpointed at earlier depth → restore without pop
+        # No checkpoint at current depth (this type was excluded from typed checkpoint)
+        # MUST restore n_active from parent checkpoint value!
+        # - Untracked acquire may have modified n_active
+        # - If sentinel (_checkpoint_n_active=[0]), restores to n_active=0
         tp.n_active = @inbounds tp._checkpoint_n_active[end]
     end
     nothing

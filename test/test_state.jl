@@ -489,4 +489,173 @@
         @test pool.float64.n_active == 0
     end
 
+    @testset "Complex nested case (design doc 5.3) with functions" begin
+        # Test scenario from design/untracked_acquire_design.md section 5.3:
+        # L1: @with_pool function (Float64)
+        #   L2: regular function with get_task_local_pool() (Int64 + Float32 untracked)
+        #     L3: @with_pool function (Bool)
+        #
+        # This tests realistic usage with functions that use @with_pool
+        # and functions that don't (simulating untracked behavior)
+
+        pool = get_task_local_pool()
+        empty!(pool)
+
+        # Track results across scope boundaries
+        l3_results = Ref{NamedTuple}((;))
+        l2_results = Ref{NamedTuple}((;))
+
+        # L3: innermost function WITH @with_pool (function syntax)
+        @with_pool pool function level3_with_pool()
+            v_bool = acquire!(pool, Bool, 10)
+            v_bool .= true
+            l3_results[] = (
+                bool_n_active = pool.bool.n_active,
+                depth = pool._current_depth
+            )
+        end
+
+        # L2: middle function WITHOUT @with_pool (uses get_task_local_pool directly)
+        function level2_no_pool()
+            pool = get_task_local_pool()
+
+            # These are untracked acquires (no @with_pool wrapping)
+            v_i64 = acquire!(pool, Int64, 50)
+            v_i64 .= 64
+
+            # Also untracked Float32
+            v_f32 = acquire!(pool, Float32, 20)
+            v_f32 .= 32.0f0
+
+            # Call L3
+            level3_with_pool()
+
+            l2_results[] = (
+                int64_n_active = pool.int64.n_active,
+                float32_n_active = pool.float32.n_active,
+                l3_bool_after = pool.bool.n_active
+            )
+        end
+
+        # L1: outermost function WITH @with_pool (function syntax)
+        @with_pool pool function level1_with_pool()
+            v_f64 = acquire!(pool, Float64, 100)
+            v_f64 .= 64.0
+
+            # Call L2 (which doesn't use @with_pool)
+            level2_no_pool()
+
+            # After L2 returns - check state
+            @test pool.float64.n_active == 1  # Float64 still active in L1
+            @test all(v_f64 .== 64.0)  # Array still valid
+        end
+
+        # Execute the nested calls
+        level1_with_pool()
+
+        # Tests for L3 results (inside L3 @with_pool)
+        @test l3_results[].bool_n_active == 1
+        @test l3_results[].depth >= 3  # At least 3 levels deep
+
+        # Tests for L2 results (after L3 but still in L2)
+        @test l2_results[].int64_n_active >= 1  # Int64 still active in L2
+        @test l2_results[].float32_n_active >= 1  # Float32 still active in L2
+        @test l2_results[].l3_bool_after == 0  # Bool was released by L3 @with_pool
+
+        # After L1 @with_pool exits - everything should be cleaned up
+        @test pool.float64.n_active == 0
+        @test pool.int64.n_active == 0
+        @test pool.float32.n_active == 0
+        @test pool.bool.n_active == 0
+        @test pool._current_depth == 1
+
+        empty!(pool)
+    end
+
+    @testset "Nested @with_pool functions with untracked middle layer" begin
+        # Variation: L1 and L3 use @with_pool function syntax
+        # L2 is a plain function (untracked) that calls L3
+        # This tests the full checkpoint detection based on parent's untracked flag
+
+        pool = get_task_local_pool()
+        empty!(pool)
+
+        test_results = Ref{NamedTuple}((;))
+
+        # L3: innermost @with_pool function - acquires Bool and ComplexF64
+        @with_pool pool function inner_level()
+            v_bool = acquire!(pool, Bool, 10)       # Tracked
+            v_cf64 = acquire!(pool, ComplexF64, 5)  # Tracked
+            v_bool .= true
+            v_cf64 .= 1.0 + 2.0im
+            (pool.bool.n_active, pool.complexf64.n_active)
+        end
+
+        # L2: plain function (no @with_pool) - untracked acquires
+        function middle_layer()
+            p = get_task_local_pool()
+            # These are untracked acquires!
+            v_f32 = acquire!(p, Float32, 20)
+            v_i32 = acquire!(p, Int32, 15)
+            v_f32 .= 32.0f0
+            v_i32 .= 32
+
+            # Call L3 inside
+            l3_active = inner_level()
+
+            # After L3 returns, Bool and ComplexF64 should be cleaned
+            test_results[] = (
+                float32_active = p.float32.n_active,  # Still active (L2)
+                int32_active = p.int32.n_active,      # Still active (L2)
+                bool_after_l3 = p.bool.n_active,      # Cleaned by L3
+                complexf64_after_l3 = p.complexf64.n_active,  # Cleaned by L3
+                l3_bool_was = l3_active[1],
+                l3_cf64_was = l3_active[2]
+            )
+        end
+
+        # L1: outermost @with_pool function - acquires Float64 and Int64
+        @with_pool pool function outer_level()
+            v_f64 = acquire!(pool, Float64, 100)  # Tracked
+            v_i64 = acquire!(pool, Int64, 50)     # Tracked
+            v_f64 .= 64.0
+            v_i64 .= 64
+
+            @test pool.float64.n_active == 1
+            @test pool.int64.n_active == 1
+
+            # Call middle layer (which does untracked acquires and calls inner)
+            middle_layer()
+
+            # After middle_layer returns:
+            # - Float32 and Int32 were untracked in this scope's view
+            # - But they should be cleaned by full rewind detection
+            @test test_results[].float32_active == 1  # Was active during L2
+            @test test_results[].int32_active == 1    # Was active during L2
+            @test test_results[].bool_after_l3 == 0   # Cleaned by L3
+            @test test_results[].complexf64_after_l3 == 0  # Cleaned by L3
+
+            # L1's arrays still valid
+            @test pool.float64.n_active == 1
+            @test pool.int64.n_active == 1
+            @test all(v_f64 .== 64.0)
+            @test all(v_i64 .== 64)
+        end
+
+        # Execute
+        outer_level()
+
+        # After all exits
+        @test pool.float64.n_active == 0
+        @test pool.int64.n_active == 0
+        @test pool.float32.n_active == 0
+        @test pool.int32.n_active == 0
+        @test pool.bool.n_active == 0
+        @test pool.complexf64.n_active == 0
+        @test pool._current_depth == 1
+        @test pool._untracked_flags == [false]
+
+        empty!(pool)
+    end
+
 end # State Management
