@@ -140,15 +140,31 @@ function _generate_pool_code(pool_name, expr, force_enable)
     # Use typed checkpoint/rewind if all types are static, otherwise fallback to full
     use_typed = !has_dynamic && !isempty(static_types)
 
+    # Transform acquire! calls to _acquire_impl! (bypasses untracked marking)
+    transformed_expr = _transform_acquire_calls(expr, pool_name)
+
     checkpoint_call = use_typed ? _generate_typed_checkpoint_call(esc(pool_name), static_types) : :($checkpoint!($(esc(pool_name))))
-    rewind_call = use_typed ? _generate_typed_rewind_call(esc(pool_name), static_types) : :($rewind!($(esc(pool_name))))
+
+    # For typed checkpoint, add had_untracked check for fallback to full rewind
+    if use_typed
+        typed_rewind_call = _generate_typed_rewind_call(esc(pool_name), static_types)
+        rewind_call = quote
+            if @inbounds $(esc(pool_name)).had_untracked[$(esc(pool_name)).check_depth]
+                $rewind!($(esc(pool_name)))  # Full rewind (untracked detected)
+            else
+                $typed_rewind_call  # Fast typed rewind
+            end
+        end
+    else
+        rewind_call = :($rewind!($(esc(pool_name))))
+    end
 
     if force_enable
         return quote
             local $(esc(pool_name)) = get_task_local_pool()
             $checkpoint_call
             try
-                local _result = $(esc(expr))
+                local _result = $(esc(transformed_expr))
                 if $POOL_DEBUG[]
                     $_validate_pool_return(_result, $(esc(pool_name)))
                 end
@@ -164,7 +180,7 @@ function _generate_pool_code(pool_name, expr, force_enable)
                 local $(esc(pool_name)) = get_task_local_pool()
                 $checkpoint_call
                 try
-                    local _result = $(esc(expr))
+                    local _result = $(esc(transformed_expr))
                     if $POOL_DEBUG[]
                         $_validate_pool_return(_result, $(esc(pool_name)))
                     end
@@ -199,15 +215,31 @@ function _generate_function_pool_code(pool_name, func_def, force_enable, disable
     static_types, has_dynamic = _filter_static_types(all_types, local_vars)
     use_typed = !has_dynamic && !isempty(static_types)
 
+    # Transform acquire! calls to _acquire_impl! (bypasses untracked marking)
+    transformed_body = _transform_acquire_calls(body, pool_name)
+
     checkpoint_call = use_typed ? _generate_typed_checkpoint_call(esc(pool_name), static_types) : :($checkpoint!($(esc(pool_name))))
-    rewind_call = use_typed ? _generate_typed_rewind_call(esc(pool_name), static_types) : :($rewind!($(esc(pool_name))))
+
+    # For typed checkpoint, add had_untracked check for fallback to full rewind
+    if use_typed
+        typed_rewind_call = _generate_typed_rewind_call(esc(pool_name), static_types)
+        rewind_call = quote
+            if @inbounds $(esc(pool_name)).had_untracked[$(esc(pool_name)).check_depth]
+                $rewind!($(esc(pool_name)))  # Full rewind (untracked detected)
+            else
+                $typed_rewind_call  # Fast typed rewind
+            end
+        end
+    else
+        rewind_call = :($rewind!($(esc(pool_name))))
+    end
 
     if force_enable
         new_body = quote
             local $(esc(pool_name)) = get_task_local_pool()
             $checkpoint_call
             try
-                $(esc(body))
+                $(esc(transformed_body))
             finally
                 $rewind_call
             end
@@ -218,7 +250,7 @@ function _generate_function_pool_code(pool_name, func_def, force_enable, disable
                 local $(esc(pool_name)) = get_task_local_pool()
                 $checkpoint_call
                 try
-                    $(esc(body))
+                    $(esc(transformed_body))
                 finally
                     $rewind_call
                 end
@@ -425,4 +457,62 @@ function _generate_typed_rewind_call(pool_expr, types)
         escaped_types = [esc(t) for t in types]
         return :($rewind!($pool_expr, $(escaped_types...)))
     end
+end
+
+# ==============================================================================
+# Internal: Acquire Call Transformation
+# ==============================================================================
+
+"""
+    _transform_acquire_calls(expr, pool_name) -> Expr
+
+Transform acquire!/unsafe_acquire! calls to their _impl! counterparts.
+Only transforms calls where the first argument matches `pool_name`.
+
+This allows macro-transformed code to bypass the untracked marking overhead,
+since the macro already knows about these calls at compile time.
+
+Transformation rules:
+- `acquire!(pool, ...)` → `_acquire_impl!(pool, ...)`
+- `acquire_view!(pool, ...)` → `_acquire_impl!(pool, ...)`
+- `unsafe_acquire!(pool, ...)` → `_unsafe_acquire_impl!(pool, ...)`
+- `acquire_array!(pool, ...)` → `_unsafe_acquire_impl!(pool, ...)`
+"""
+# Module-qualified references for transformed acquire calls
+# Using GlobalRef ensures the function is looked up in AdaptiveArrayPools, not the caller's module
+const _ACQUIRE_IMPL_REF = GlobalRef(@__MODULE__, :_acquire_impl!)
+const _UNSAFE_ACQUIRE_IMPL_REF = GlobalRef(@__MODULE__, :_unsafe_acquire_impl!)
+
+function _transform_acquire_calls(expr, pool_name)
+    if expr isa Expr
+        # Handle call expressions
+        if expr.head == :call && length(expr.args) >= 2
+            fn = expr.args[1]
+            pool_arg = expr.args[2]
+
+            # Only transform if pool argument matches
+            if pool_arg == pool_name
+                # Check for acquire functions (including qualified names)
+                if fn == :acquire! || fn == :acquire_view!
+                    expr = Expr(:call, _ACQUIRE_IMPL_REF, expr.args[2:end]...)
+                elseif fn == :unsafe_acquire! || fn == :acquire_array!
+                    expr = Expr(:call, _UNSAFE_ACQUIRE_IMPL_REF, expr.args[2:end]...)
+                elseif fn isa Expr && fn.head == :. && length(fn.args) >= 2
+                    # Qualified name: AdaptiveArrayPools.acquire! etc.
+                    qn = fn.args[end]
+                    if qn == QuoteNode(:acquire!) || qn == QuoteNode(:acquire_view!)
+                        expr = Expr(:call, _ACQUIRE_IMPL_REF, expr.args[2:end]...)
+                    elseif qn == QuoteNode(:unsafe_acquire!) || qn == QuoteNode(:acquire_array!)
+                        expr = Expr(:call, _UNSAFE_ACQUIRE_IMPL_REF, expr.args[2:end]...)
+                    end
+                end
+            end
+        end
+
+        # Recursively transform sub-expressions
+        # Create new args array to avoid mutating original
+        new_args = Any[_transform_acquire_calls(arg, pool_name) for arg in expr.args]
+        return Expr(expr.head, new_args...)
+    end
+    return expr
 end
