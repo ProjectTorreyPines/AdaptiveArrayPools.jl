@@ -290,22 +290,39 @@ end
 """
     _extract_acquire_types(expr, target_pool) -> Set{Any}
 
-Extract type arguments from acquire!(target_pool, Type, ...) calls in an expression.
+Extract type arguments from `acquire!` and `unsafe_acquire!` calls in an expression.
 Only extracts types from calls where the first argument matches `target_pool`.
 This prevents AST pollution when multiple pools are used in the same block.
+
+Handles two forms:
+- `[unsafe_]acquire!(pool, Type, dims...)` (3+ func args): extracts Type (2nd arg) directly
+- `acquire!(pool, x)` (2 func args): generates `eltype(x)` expression for the array
+  (Note: `unsafe_acquire!` does not have the 2-arg form)
 """
 function _extract_acquire_types(expr, target_pool, types=Set{Any}())
     if expr isa Expr
-        # Match: acquire!(pool, Type, ...)
+        # Match: acquire!(pool, ...) or unsafe_acquire!(pool, ...)
         if expr.head == :call && length(expr.args) >= 3
             fn = expr.args[1]
-            if fn == :acquire! || (fn isa Expr && fn.head == :. &&
-                                   length(fn.args) >= 2 && fn.args[end] == QuoteNode(:acquire!))
+            is_acquire = fn == :acquire! || fn == :unsafe_acquire! ||
+                         (fn isa Expr && fn.head == :. && length(fn.args) >= 2 &&
+                          (fn.args[end] == QuoteNode(:acquire!) || fn.args[end] == QuoteNode(:unsafe_acquire!)))
+            if is_acquire
                 # Check if the pool argument matches our target pool
                 pool_arg = expr.args[2]
                 if pool_arg == target_pool
-                    type_arg = expr.args[3]
-                    push!(types, type_arg)
+                    nargs = length(expr.args)
+                    if nargs >= 4
+                        # acquire!(pool, Type, dims...) - traditional form
+                        type_arg = expr.args[3]
+                        push!(types, type_arg)
+                    elseif nargs == 3
+                        # acquire!(pool, x) - similar-style form
+                        # Type is eltype of the array argument
+                        array_arg = expr.args[3]
+                        type_expr = Expr(:call, :eltype, array_arg)
+                        push!(types, type_expr)
+                    end
                 end
             end
         end
@@ -325,6 +342,7 @@ Filter types for typed checkpoint/rewind generation.
 - Symbols NOT in local_vars are passed through (type parameters, global types)
 - Symbols IN local_vars trigger fallback (defined after checkpoint!)
 - Parametric types like Vector{T} trigger fallback
+- `eltype(x)` expressions: usable if `x` is NOT a local variable
 
 Type parameters (T, S from `where` clause) resolve to concrete types at runtime.
 Local variables (T = eltype(x)) are defined after checkpoint! and cannot be used.
@@ -343,9 +361,25 @@ function _filter_static_types(types, local_vars=Set{Symbol}())
                 # Type parameter or global type - safe to use
                 push!(static_types, t)
             end
-        elseif t isa Expr && t.head == :curly
-            # Parametric type like Vector{Float64} - can't use as Type argument
-            has_dynamic = true
+        elseif t isa Expr
+            if t.head == :curly
+                # Parametric type like Vector{Float64} - can't use as Type argument
+                has_dynamic = true
+            elseif t.head == :call && length(t.args) >= 2 && t.args[1] == :eltype
+                # eltype(x) expression from acquire!(pool, x) form
+                inner_arg = t.args[2]
+                if inner_arg isa Symbol && inner_arg in local_vars
+                    # x is defined locally - can't use at checkpoint time
+                    # (checkpoint runs before the block, x isn't defined yet)
+                    has_dynamic = true
+                else
+                    # x is external (function param, global, etc.) - safe to use
+                    push!(static_types, t)
+                end
+            else
+                # Other expressions - treat as dynamic
+                has_dynamic = true
+            end
         else
             # GlobalRef or other concrete type reference
             push!(static_types, t)
