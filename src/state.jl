@@ -18,13 +18,10 @@ function checkpoint!(pool::AdaptiveArrayPool)
     push!(pool._untracked_flags, false)
     depth = pool._current_depth
 
-    # Fixed slots - direct field access, no Dict lookup
-    _checkpoint_typed_pool!(pool.float64, depth)
-    _checkpoint_typed_pool!(pool.float32, depth)
-    _checkpoint_typed_pool!(pool.int64, depth)
-    _checkpoint_typed_pool!(pool.int32, depth)
-    _checkpoint_typed_pool!(pool.complexf64, depth)
-    _checkpoint_typed_pool!(pool.bool, depth)
+    # Fixed slots - zero allocation via @generated iteration
+    foreach_fixed_slot(pool) do tp
+        _checkpoint_typed_pool!(tp, depth)
+    end
 
     # Others - iterate without allocation (values() returns iterator)
     for p in values(pool.others)
@@ -57,13 +54,10 @@ See also: [`checkpoint!`](@ref), [`@with_pool`](@ref)
 function rewind!(pool::AdaptiveArrayPool)
     cur_depth = pool._current_depth
 
-    # Process fixed slots directly (zero allocation)
-    _rewind_typed_pool!(pool.float64, cur_depth)
-    _rewind_typed_pool!(pool.float32, cur_depth)
-    _rewind_typed_pool!(pool.int64, cur_depth)
-    _rewind_typed_pool!(pool.int32, cur_depth)
-    _rewind_typed_pool!(pool.complexf64, cur_depth)
-    _rewind_typed_pool!(pool.bool, cur_depth)
+    # Fixed slots - zero allocation via @generated iteration
+    foreach_fixed_slot(pool) do tp
+        _rewind_typed_pool!(tp, cur_depth)
+    end
 
     # Process fallback types
     for tp in values(pool.others)
@@ -277,13 +271,10 @@ empty!(pool)  # Release all memory
 Any SubArrays previously acquired from this pool become invalid after `empty!`.
 """
 function Base.empty!(pool::AdaptiveArrayPool)
-    # Fixed slots
-    empty!(pool.float64)
-    empty!(pool.float32)
-    empty!(pool.int64)
-    empty!(pool.int32)
-    empty!(pool.complexf64)
-    empty!(pool.bool)
+    # Fixed slots - zero allocation via @generated iteration
+    foreach_fixed_slot(pool) do tp
+        empty!(tp)
+    end
 
     # Others - clear all TypedPools then the IdDict itself
     for tp in values(pool.others)

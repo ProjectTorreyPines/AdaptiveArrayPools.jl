@@ -135,6 +135,31 @@ TypedPool{T}() where {T} = TypedPool{T}(
 )
 
 # ==============================================================================
+# Fixed Slot Configuration
+# ==============================================================================
+
+"""
+    FIXED_SLOT_FIELDS
+
+Fixed slot field names for zero-overhead iteration via `foreach_fixed_slot`.
+
+## Maintenance Note
+When adding/removing fixed slots, update:
+1. This tuple
+2. `AdaptiveArrayPool` struct definition
+3. `get_typed_pool!` dispatch methods
+4. `AdaptiveArrayPool()` constructor
+
+Tests verify synchronization automatically.
+
+## Design Decision
+Uses explicit tuple instead of `fieldtypes()` filtering.
+Rationale: Explicit is better than implicit - prevents accidental
+inclusion of future internal TypedPool fields.
+"""
+const FIXED_SLOT_FIELDS = (:float64, :float32, :int64, :int32, :complexf64, :bool)
+
+# ==============================================================================
 # AdaptiveArrayPool
 # ==============================================================================
 
@@ -207,4 +232,41 @@ end
         end
         tp
     end::TypedPool{T}
+end
+
+# ==============================================================================
+# Zero-Allocation Iteration
+# ==============================================================================
+
+"""
+    foreach_fixed_slot(f, pool::AdaptiveArrayPool)
+
+Apply function `f` to each fixed slot `TypedPool` with zero allocation.
+Uses compile-time unrolling via `@generated` for optimal performance.
+
+## Example
+```julia
+foreach_fixed_slot(pool) do tp
+    _checkpoint_typed_pool!(tp, depth)
+end
+```
+
+## Performance
+- Zero allocation after first call (compile-time expansion)
+- Equivalent to manually unrolled code:
+  ```julia
+  f(pool.float64)
+  f(pool.float32)
+  # ... etc
+  ```
+
+See also: [`FIXED_SLOT_FIELDS`](@ref)
+"""
+@generated function foreach_fixed_slot(f::F, pool::AdaptiveArrayPool) where {F}
+    exprs = [:(f(getfield(pool, $(QuoteNode(field))))) for field in FIXED_SLOT_FIELDS]
+    quote
+        Base.@_inline_meta
+        $(exprs...)
+        nothing
+    end
 end
