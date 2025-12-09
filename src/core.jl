@@ -177,7 +177,86 @@ For type-unspecified paths, use `unsafe_acquire!` → `get_nd_array!` instead.
 end
 
 # ==============================================================================
-# Acquisition API
+# Untracked Acquire Detection
+# ==============================================================================
+
+"""
+    _mark_untracked!(pool::AdaptiveArrayPool)
+
+Mark that an untracked acquire has occurred at the current checkpoint depth.
+Called by `acquire!` wrapper; macro-transformed calls use `_acquire_impl!` directly.
+"""
+@inline function _mark_untracked!(pool::AdaptiveArrayPool)
+    if pool.check_depth > 0
+        @inbounds pool.had_untracked[pool.check_depth] = true
+    end
+end
+
+# ==============================================================================
+# Internal Implementation Functions (called by macro-transformed code)
+# ==============================================================================
+
+"""
+    _acquire_impl!(pool, Type{T}, n) -> SubArray{T,1,Vector{T},...}
+    _acquire_impl!(pool, Type{T}, dims...) -> ReshapedArray{T,N,...}
+
+Internal implementation of acquire!. Called directly by macro-transformed code
+(no untracked marking). User code calls `acquire!` which adds marking.
+"""
+@inline function _acquire_impl!(pool::AdaptiveArrayPool, ::Type{T}, n::Int) where {T}
+    tp = get_typed_pool!(pool, T)
+    return get_view!(tp, n)
+end
+
+@inline function _acquire_impl!(pool::AdaptiveArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
+    tp = get_typed_pool!(pool, T)
+    return get_nd_view!(tp, dims)
+end
+
+@inline function _acquire_impl!(pool::AdaptiveArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
+    _acquire_impl!(pool, T, dims...)
+end
+
+# Fallback for nothing pool
+@inline _acquire_impl!(::Nothing, ::Type{T}, n::Int) where {T} = Vector{T}(undef, n)
+@inline _acquire_impl!(::Nothing, ::Type{T}, dims::Vararg{Int, N}) where {T, N} = Array{T, N}(undef, dims)
+@inline _acquire_impl!(::Nothing, ::Type{T}, dims::NTuple{N, Int}) where {T, N} = Array{T, N}(undef, dims)
+
+# Similar-style
+@inline _acquire_impl!(pool::AdaptiveArrayPool, x::AbstractArray) = _acquire_impl!(pool, eltype(x), size(x))
+@inline _acquire_impl!(::Nothing, x::AbstractArray) = similar(x)
+
+"""
+    _unsafe_acquire_impl!(pool, Type{T}, dims...) -> Array{T,N}
+
+Internal implementation of unsafe_acquire!. Called directly by macro-transformed code.
+"""
+@inline function _unsafe_acquire_impl!(pool::AdaptiveArrayPool, ::Type{T}, n::Int) where {T}
+    tp = get_typed_pool!(pool, T)
+    return get_nd_array!(tp, (n,))
+end
+
+@inline function _unsafe_acquire_impl!(pool::AdaptiveArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
+    tp = get_typed_pool!(pool, T)
+    return get_nd_array!(tp, dims)
+end
+
+@inline function _unsafe_acquire_impl!(pool::AdaptiveArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
+    tp = get_typed_pool!(pool, T)
+    return get_nd_array!(tp, dims)
+end
+
+# Fallback for nothing pool
+@inline _unsafe_acquire_impl!(::Nothing, ::Type{T}, n::Int) where {T} = Vector{T}(undef, n)
+@inline _unsafe_acquire_impl!(::Nothing, ::Type{T}, dims::Vararg{Int, N}) where {T, N} = Array{T, N}(undef, dims)
+@inline _unsafe_acquire_impl!(::Nothing, ::Type{T}, dims::NTuple{N, Int}) where {T, N} = Array{T, N}(undef, dims)
+
+# Similar-style
+@inline _unsafe_acquire_impl!(pool::AdaptiveArrayPool, x::AbstractArray) = _unsafe_acquire_impl!(pool, eltype(x), size(x))
+@inline _unsafe_acquire_impl!(::Nothing, x::AbstractArray) = similar(x)
+
+# ==============================================================================
+# Acquisition API (User-facing with untracked marking)
 # ==============================================================================
 
 """
@@ -210,19 +289,20 @@ end
 See also: [`unsafe_acquire!`](@ref) for raw `Array` access.
 """
 @inline function acquire!(pool::AdaptiveArrayPool, ::Type{T}, n::Int) where {T}
-    tp = get_typed_pool!(pool, T)
-    return get_view!(tp, n)
+    _mark_untracked!(pool)
+    _acquire_impl!(pool, T, n)
 end
 
 # Multi-dimensional support (zero-allocation with N-D cache)
 @inline function acquire!(pool::AdaptiveArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
-    tp = get_typed_pool!(pool, T)
-    return get_nd_view!(tp, dims)
+    _mark_untracked!(pool)
+    _acquire_impl!(pool, T, dims...)
 end
 
 # Tuple support: allows acquire!(pool, T, size(A)) where size(A) returns NTuple{N,Int}
 @inline function acquire!(pool::AdaptiveArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
-    acquire!(pool, T, dims...)
+    _mark_untracked!(pool)
+    _acquire_impl!(pool, T, dims...)
 end
 
 # Fallback: When pool is `nothing` (e.g. pooling disabled), allocate normally
@@ -254,7 +334,8 @@ end
 ```
 """
 @inline function acquire!(pool::AdaptiveArrayPool, x::AbstractArray)
-    acquire!(pool, eltype(x), size(x))
+    _mark_untracked!(pool)
+    _acquire_impl!(pool, eltype(x), size(x))
 end
 
 @inline acquire!(::Nothing, x::AbstractArray) = similar(x)
@@ -306,19 +387,19 @@ end
 See also: [`acquire!`](@ref) for `ReshapedArray` access.
 """
 @inline function unsafe_acquire!(pool::AdaptiveArrayPool, ::Type{T}, n::Int) where {T}
-    tp = get_typed_pool!(pool, T)
-    return get_nd_array!(tp, (n,))
+    _mark_untracked!(pool)
+    _unsafe_acquire_impl!(pool, T, n)
 end
 
 @inline function unsafe_acquire!(pool::AdaptiveArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
-    tp = get_typed_pool!(pool, T)
-    return get_nd_array!(tp, dims)
+    _mark_untracked!(pool)
+    _unsafe_acquire_impl!(pool, T, dims...)
 end
 
 # Tuple support
 @inline function unsafe_acquire!(pool::AdaptiveArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
-    tp = get_typed_pool!(pool, T)
-    return get_nd_array!(tp, dims)
+    _mark_untracked!(pool)
+    _unsafe_acquire_impl!(pool, T, dims)
 end
 
 # Fallback: When pool is `nothing`, allocate normally
@@ -350,7 +431,8 @@ end
 ```
 """
 @inline function unsafe_acquire!(pool::AdaptiveArrayPool, x::AbstractArray)
-    unsafe_acquire!(pool, eltype(x), size(x))
+    _mark_untracked!(pool)
+    _unsafe_acquire_impl!(pool, eltype(x), size(x))
 end
 
 @inline unsafe_acquire!(::Nothing, x::AbstractArray) = similar(x)
@@ -370,20 +452,32 @@ After warmup, this function has **zero allocation**.
 See also: [`rewind!`](@ref), [`@with_pool`](@ref)
 """
 function checkpoint!(pool::AdaptiveArrayPool)
+    # Increment depth and initialize untracked flag
+    pool.check_depth += 1
+    push!(pool.had_untracked, false)
+    depth = pool.check_depth
+
     # Fixed slots - direct field access, no Dict lookup
-    push!(pool.float64.saved_stack, pool.float64.n_active)
-    push!(pool.float32.saved_stack, pool.float32.n_active)
-    push!(pool.int64.saved_stack, pool.int64.n_active)
-    push!(pool.int32.saved_stack, pool.int32.n_active)
-    push!(pool.complexf64.saved_stack, pool.complexf64.n_active)
-    push!(pool.bool.saved_stack, pool.bool.n_active)
+    _checkpoint_typed_pool!(pool.float64, depth)
+    _checkpoint_typed_pool!(pool.float32, depth)
+    _checkpoint_typed_pool!(pool.int64, depth)
+    _checkpoint_typed_pool!(pool.int32, depth)
+    _checkpoint_typed_pool!(pool.complexf64, depth)
+    _checkpoint_typed_pool!(pool.bool, depth)
 
     # Others - iterate without allocation (values() returns iterator)
     for p in values(pool.others)
-        push!(p.saved_stack, p.n_active)
+        _checkpoint_typed_pool!(p, depth)
     end
 
     return nothing
+end
+
+# Internal helper for full checkpoint
+@inline function _checkpoint_typed_pool!(tp::TypedPool, depth::Int)
+    push!(tp.saved_stack, tp.n_active)
+    push!(tp.saved_depths, depth)
+    nothing
 end
 
 checkpoint!(::Nothing) = nothing
@@ -392,32 +486,50 @@ checkpoint!(::Nothing) = nothing
     rewind!(pool::AdaptiveArrayPool)
 
 Restore the pool state (n_active counters) from internal stacks.
+Uses saved_depths to accurately determine which entries to pop vs restore.
 
 Only the counters are restored; allocated memory remains for reuse.
-Handles edge case: types added after checkpoint! get their n_active set to 0.
+Handles untracked acquires by checking saved_depths for accurate restoration.
 
 See also: [`checkpoint!`](@ref), [`@with_pool`](@ref)
 """
 function rewind!(pool::AdaptiveArrayPool)
-    # Fixed slots
-    pool.float64.n_active = pop!(pool.float64.saved_stack)
-    pool.float32.n_active = pop!(pool.float32.saved_stack)
-    pool.int64.n_active = pop!(pool.int64.saved_stack)
-    pool.int32.n_active = pop!(pool.int32.saved_stack)
-    pool.complexf64.n_active = pop!(pool.complexf64.saved_stack)
-    pool.bool.n_active = pop!(pool.bool.saved_stack)
+    depth = pool.check_depth
 
-    # Others - handle edge case: new types added after checkpoint!
-    for p in values(pool.others)
-        if isempty(p.saved_stack)
-            # Type was added after checkpoint! - reset to 0
-            p.n_active = 0
-        else
-            p.n_active = pop!(p.saved_stack)
-        end
+    # Process fixed slots directly (zero allocation)
+    _rewind_typed_pool!(pool.float64, depth)
+    _rewind_typed_pool!(pool.float32, depth)
+    _rewind_typed_pool!(pool.int64, depth)
+    _rewind_typed_pool!(pool.int32, depth)
+    _rewind_typed_pool!(pool.complexf64, depth)
+    _rewind_typed_pool!(pool.bool, depth)
+
+    # Process fallback types
+    for tp in values(pool.others)
+        _rewind_typed_pool!(tp, depth)
     end
 
+    pop!(pool.had_untracked)
+    pool.check_depth -= 1
+
     return nothing
+end
+
+# Internal helper for full rewind with saved_depths
+@inline function _rewind_typed_pool!(tp::TypedPool, depth::Int)
+    if !isempty(tp.saved_depths) && @inbounds tp.saved_depths[end] == depth
+        # Checkpointed at current depth → pop both stacks
+        pop!(tp.saved_depths)
+        tp.n_active = pop!(tp.saved_stack)
+    elseif !isempty(tp.saved_stack)
+        # Checkpointed at earlier depth → restore without pop
+        tp.n_active = @inbounds tp.saved_stack[end]
+    else
+        # No checkpoint exists for this type → reset to 0
+        # This happens when type was added after checkpoint
+        tp.n_active = 0
+    end
+    nothing
 end
 
 rewind!(::Nothing) = nothing
@@ -429,7 +541,7 @@ rewind!(::Nothing) = nothing
 """
     checkpoint!(tp::TypedPool)
 
-Internal method for saving TypedPool state.
+Internal method for saving TypedPool state (legacy, uses depth=0).
 
 !!! warning "Internal API"
     This is an internal implementation detail. For manual pool management,
@@ -442,13 +554,25 @@ See also: [`checkpoint!(::AdaptiveArrayPool, ::Type)`](@ref), [`rewind!`](@ref)
 """
 @inline function checkpoint!(tp::TypedPool)
     push!(tp.saved_stack, tp.n_active)
+    push!(tp.saved_depths, 0)  # Legacy depth
+    nothing
+end
+
+"""
+    checkpoint!(tp::TypedPool, depth::Int)
+
+Internal method for saving TypedPool state with depth tracking.
+"""
+@inline function checkpoint!(tp::TypedPool, depth::Int)
+    push!(tp.saved_stack, tp.n_active)
+    push!(tp.saved_depths, depth)
     nothing
 end
 
 """
     rewind!(tp::TypedPool)
 
-Internal method for restoring TypedPool state.
+Internal method for restoring TypedPool state (pops both saved_stack and saved_depths).
 
 !!! warning "Internal API"
     This is an internal implementation detail. For manual pool management,
@@ -460,6 +584,7 @@ Internal method for restoring TypedPool state.
 See also: [`rewind!(::AdaptiveArrayPool, ::Type)`](@ref), [`checkpoint!`](@ref)
 """
 @inline function rewind!(tp::TypedPool)
+    pop!(tp.saved_depths)
     tp.n_active = pop!(tp.saved_stack)
     nothing
 end
@@ -470,19 +595,26 @@ end
 Save state for a specific type only. Used by optimized macros that know
 which types will be used at compile time.
 
+Also updates check_depth and had_untracked for untracked acquire detection.
+
 ~77% faster than full checkpoint! when only one type is used.
 """
 @inline function checkpoint!(pool::AdaptiveArrayPool, ::Type{T}) where T
-    checkpoint!(get_typed_pool!(pool, T))
+    pool.check_depth += 1
+    push!(pool.had_untracked, false)
+    checkpoint!(get_typed_pool!(pool, T), pool.check_depth)
 end
 
 """
     rewind!(pool::AdaptiveArrayPool, ::Type{T})
 
 Restore state for a specific type only.
+Also updates check_depth and had_untracked.
 """
 @inline function rewind!(pool::AdaptiveArrayPool, ::Type{T}) where T
     rewind!(get_typed_pool!(pool, T))
+    pop!(pool.had_untracked)
+    pool.check_depth -= 1
 end
 
 checkpoint!(::Nothing, ::Type) = nothing
@@ -492,12 +624,15 @@ rewind!(::Nothing, ::Type) = nothing
     checkpoint!(pool::AdaptiveArrayPool, types::Type...)
 
 Save state for multiple specific types. Uses @generated for zero-overhead
-compile-time unrolling.
+compile-time unrolling. Increments check_depth once for all types.
 """
 @generated function checkpoint!(pool::AdaptiveArrayPool, types::Type...)
-    exprs = [:(checkpoint!(pool, types[$i])) for i in 1:length(types)]
+    # First increment depth, then checkpoint each type with that depth
+    checkpoint_exprs = [:(checkpoint!(get_typed_pool!(pool, types[$i]), pool.check_depth)) for i in 1:length(types)]
     quote
-        $(exprs...)
+        pool.check_depth += 1
+        push!(pool.had_untracked, false)
+        $(checkpoint_exprs...)
         nothing
     end
 end
@@ -506,12 +641,15 @@ end
     rewind!(pool::AdaptiveArrayPool, types::Type...)
 
 Restore state for multiple specific types in reverse order.
+Decrements check_depth once after all types are rewound.
 """
 @generated function rewind!(pool::AdaptiveArrayPool, types::Type...)
-    # Reverse order for proper stack unwinding
-    exprs = [:(rewind!(pool, types[$i])) for i in length(types):-1:1]
+    # Reverse order for proper stack unwinding, rewind TypedPools directly
+    rewind_exprs = [:(rewind!(get_typed_pool!(pool, types[$i]))) for i in length(types):-1:1]
     quote
-        $(exprs...)
+        $(rewind_exprs...)
+        pop!(pool.had_untracked)
+        pool.check_depth -= 1
         nothing
     end
 end
@@ -539,6 +677,7 @@ function Base.empty!(tp::TypedPool)
     empty!(tp.nd_next_way)
     tp.n_active = 0
     empty!(tp.saved_stack)
+    empty!(tp.saved_depths)
     return tp
 end
 
@@ -576,6 +715,10 @@ function Base.empty!(pool::AdaptiveArrayPool)
     end
     empty!(pool.others)
 
+    # Reset untracked detection state
+    pool.check_depth = 0
+    empty!(pool.had_untracked)
+
     return pool
 end
 
@@ -604,3 +747,7 @@ Explicit name emphasizing the return type is a raw `Array`.
 Use when you prefer symmetric naming with `acquire_view!`.
 """
 const acquire_array! = unsafe_acquire!
+
+# Internal implementation aliases (for macro transformation)
+const _acquire_view_impl! = _acquire_impl!
+const _acquire_array_impl! = _unsafe_acquire_impl!
