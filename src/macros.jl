@@ -401,6 +401,34 @@ function _extract_acquire_types(expr, target_pool, types=Set{Any}())
 end
 
 """
+    _uses_local_var(expr, local_vars) -> Bool
+
+Check if an expression uses any local variable (recursively).
+Handles field access (x.y.z) and indexing (x[i]) by checking the base variable.
+
+This is used to detect cases like `acquire!(pool, cp1d.t_i_average)` where
+`cp1d` is defined locally - the eltype expression can't be evaluated at
+checkpoint time since cp1d doesn't exist yet.
+"""
+function _uses_local_var(expr, local_vars)
+    if expr isa Symbol
+        return expr in local_vars
+    elseif expr isa Expr
+        if expr.head == :. && !isempty(expr.args)
+            # Field access: cp1d.t_i_average → check if cp1d is local
+            return _uses_local_var(expr.args[1], local_vars)
+        elseif expr.head == :ref && !isempty(expr.args)
+            # Indexing: arr[i] → check if arr is local
+            return _uses_local_var(expr.args[1], local_vars)
+        else
+            # Other expressions - check all args recursively
+            return any(_uses_local_var(arg, local_vars) for arg in expr.args)
+        end
+    end
+    return false
+end
+
+"""
     _filter_static_types(types, local_vars=Set{Symbol}()) -> (static_types, has_dynamic)
 
 Filter types for typed checkpoint/rewind generation.
@@ -408,7 +436,7 @@ Filter types for typed checkpoint/rewind generation.
 - Symbols NOT in local_vars are passed through (type parameters, global types)
 - Symbols IN local_vars trigger fallback (defined after checkpoint!)
 - Parametric types like Vector{T} trigger fallback
-- `eltype(x)` expressions: usable if `x` is NOT a local variable
+- `eltype(x)` expressions: usable if `x` does NOT reference a local variable
 
 Type parameters (T, S from `where` clause) resolve to concrete types at runtime.
 Local variables (T = eltype(x)) are defined after checkpoint! and cannot be used.
@@ -434,9 +462,9 @@ function _filter_static_types(types, local_vars=Set{Symbol}())
             elseif t.head == :call && length(t.args) >= 2 && t.args[1] == :eltype
                 # eltype(x) expression from acquire!(pool, x) form
                 inner_arg = t.args[2]
-                if inner_arg isa Symbol && inner_arg in local_vars
-                    # x is defined locally - can't use at checkpoint time
-                    # (checkpoint runs before the block, x isn't defined yet)
+                if _uses_local_var(inner_arg, local_vars)
+                    # x (or its base in x.field) is defined locally
+                    # Can't use at checkpoint time (checkpoint runs before definition)
                     has_dynamic = true
                 else
                     # x is external (function param, global, etc.) - safe to use

@@ -5,7 +5,7 @@
 # Tests for _extract_local_assignments and _filter_static_types functions
 # to ensure correct type extraction and filtering for optimized checkpoint/rewind.
 
-import AdaptiveArrayPools: _extract_local_assignments, _filter_static_types, _extract_acquire_types
+import AdaptiveArrayPools: _extract_local_assignments, _filter_static_types, _extract_acquire_types, _uses_local_var
 
 @testset "Macro Internals" begin
 
@@ -105,6 +105,82 @@ import AdaptiveArrayPools: _extract_local_assignments, _filter_static_types, _ex
                 @test :A in locals
                 @test :B in locals
                 @test :C in locals
+            end
+        end
+
+        @testset "_uses_local_var" begin
+            @testset "simple symbol - local" begin
+                local_vars = Set{Symbol}([:x, :y])
+                @test _uses_local_var(:x, local_vars) == true
+                @test _uses_local_var(:y, local_vars) == true
+            end
+
+            @testset "simple symbol - not local" begin
+                local_vars = Set{Symbol}([:x])
+                @test _uses_local_var(:z, local_vars) == false
+            end
+
+            @testset "field access - base is local" begin
+                # cp1d.t_i_average where cp1d is local
+                local_vars = Set{Symbol}([:cp1d])
+                field_expr = Expr(:., :cp1d, QuoteNode(:t_i_average))
+                @test _uses_local_var(field_expr, local_vars) == true
+            end
+
+            @testset "field access - base is not local" begin
+                # actor.dd where actor is function parameter (not local)
+                local_vars = Set{Symbol}([:x])
+                field_expr = Expr(:., :actor, QuoteNode(:dd))
+                @test _uses_local_var(field_expr, local_vars) == false
+            end
+
+            @testset "nested field access - base is local" begin
+                # cp1d.grid.rho_tor_norm where cp1d is local
+                local_vars = Set{Symbol}([:cp1d])
+                inner = Expr(:., :cp1d, QuoteNode(:grid))
+                outer = Expr(:., inner, QuoteNode(:rho_tor_norm))
+                @test _uses_local_var(outer, local_vars) == true
+            end
+
+            @testset "nested field access - base is not local" begin
+                # actor.dd.core_profiles where actor is not local
+                local_vars = Set{Symbol}([:x])
+                inner = Expr(:., :actor, QuoteNode(:dd))
+                outer = Expr(:., inner, QuoteNode(:core_profiles))
+                @test _uses_local_var(outer, local_vars) == false
+            end
+
+            @testset "indexing - base is local" begin
+                # arr[i] where arr is local
+                local_vars = Set{Symbol}([:arr])
+                ref_expr = Expr(:ref, :arr, :i)
+                @test _uses_local_var(ref_expr, local_vars) == true
+            end
+
+            @testset "indexing - base is not local" begin
+                # data[i] where data is not local
+                local_vars = Set{Symbol}([:x])
+                ref_expr = Expr(:ref, :data, :i)
+                @test _uses_local_var(ref_expr, local_vars) == false
+            end
+
+            @testset "non-Expr input" begin
+                local_vars = Set{Symbol}([:x])
+                @test _uses_local_var(42, local_vars) == false
+                @test _uses_local_var("string", local_vars) == false
+            end
+
+            @testset "function call with local arg" begin
+                # foo(x) where x is local
+                local_vars = Set{Symbol}([:x])
+                call_expr = Expr(:call, :foo, :x)
+                @test _uses_local_var(call_expr, local_vars) == true
+            end
+
+            @testset "function call with non-local args" begin
+                local_vars = Set{Symbol}([:x])
+                call_expr = Expr(:call, :foo, :y, :z)
+                @test _uses_local_var(call_expr, local_vars) == false
             end
         end
 
@@ -242,6 +318,57 @@ import AdaptiveArrayPools: _extract_local_assignments, _filter_static_types, _ex
                 # Should be safe since inner is not a simple Symbol in local_vars
                 @test length(static_types) == 1
                 @test !has_dynamic
+            end
+
+            # ==================================================================
+            # Field access with local base variable
+            # ==================================================================
+
+            @testset "eltype(cp1d.field) where cp1d is local" begin
+                # This is the key case: acquire!(pool, cp1d.t_i_average)
+                # where cp1d = dd.core_profiles.profiles_1d[] is defined locally
+                field_expr = Expr(:., :cp1d, QuoteNode(:t_i_average))
+                eltype_expr = Expr(:call, :eltype, field_expr)
+                types = Set{Any}([eltype_expr])
+                local_vars = Set{Symbol}([:cp1d])  # cp1d is defined locally
+                static_types, has_dynamic = _filter_static_types(types, local_vars)
+                # Should fall back because cp1d is local
+                @test isempty(static_types)
+                @test has_dynamic
+            end
+
+            @testset "eltype(actor.dd.field) where actor is NOT local" begin
+                # actor is a function parameter, not local
+                inner = Expr(:., :actor, QuoteNode(:dd))
+                outer = Expr(:., inner, QuoteNode(:core_profiles))
+                eltype_expr = Expr(:call, :eltype, outer)
+                types = Set{Any}([eltype_expr])
+                local_vars = Set{Symbol}()  # actor is not local
+                static_types, has_dynamic = _filter_static_types(types, local_vars)
+                # Should be safe
+                @test length(static_types) == 1
+                @test !has_dynamic
+            end
+
+            @testset "eltype(arr[i]) where arr is local" begin
+                ref_expr = Expr(:ref, :arr, :i)
+                eltype_expr = Expr(:call, :eltype, ref_expr)
+                types = Set{Any}([eltype_expr])
+                local_vars = Set{Symbol}([:arr])
+                static_types, has_dynamic = _filter_static_types(types, local_vars)
+                @test isempty(static_types)
+                @test has_dynamic
+            end
+
+            @testset "mixed: local field access and static type" begin
+                field_expr = Expr(:., :local_var, QuoteNode(:data))
+                eltype_expr = Expr(:call, :eltype, field_expr)
+                types = Set{Any}([:Float64, eltype_expr])
+                local_vars = Set{Symbol}([:local_var])
+                static_types, has_dynamic = _filter_static_types(types, local_vars)
+                @test :Float64 in static_types
+                @test length(static_types) == 1  # only Float64, not eltype expr
+                @test has_dynamic
             end
         end
 
@@ -707,6 +834,59 @@ import AdaptiveArrayPools: _extract_local_assignments, _filter_static_types, _ex
                 static_types, has_dynamic = _filter_static_types(types, local_vars)
 
                 # Should fall back because local_arr is defined locally
+                @test isempty(static_types)
+                @test has_dynamic
+            end
+
+            @testset "similar-style with local.field (fallback)" begin
+                # Real-world case: cp1d = dd.core_profiles.profiles_1d[]
+                # then: acquire!(pool, cp1d.t_i_average)
+                expr = quote
+                    cp1d = dd.core_profiles.profiles_1d[]
+                    v = acquire!(pool, cp1d.t_i_average)
+                end
+                local_vars = _extract_local_assignments(expr)
+                types = _extract_acquire_types(expr, :pool)
+                static_types, has_dynamic = _filter_static_types(types, local_vars)
+
+                # Should fall back because cp1d is defined locally
+                @test :cp1d in local_vars
+                @test isempty(static_types)
+                @test has_dynamic
+            end
+
+            @testset "similar-style with param.field (no fallback)" begin
+                # actor.dd.field where actor is function parameter
+                expr = quote
+                    v = acquire!(pool, actor.dd.array_field)
+                end
+                local_vars = _extract_local_assignments(expr)
+                types = _extract_acquire_types(expr, :pool)
+                static_types, has_dynamic = _filter_static_types(types, local_vars)
+
+                # Should be static because actor is not local
+                @test :actor ∉ local_vars
+                @test length(static_types) == 1
+                @test !has_dynamic
+            end
+
+            @testset "chained local assignments (fallback)" begin
+                # tmp = A.b; tmp1 = tmp.c; tmp2 = tmp1.d; acquire!(pool, tmp2)
+                expr = quote
+                    tmp = A.b
+                    tmp1 = tmp.c
+                    tmp2 = tmp1.d
+                    v = acquire!(pool, tmp2)
+                end
+                local_vars = _extract_local_assignments(expr)
+                types = _extract_acquire_types(expr, :pool)
+                static_types, has_dynamic = _filter_static_types(types, local_vars)
+
+                # All intermediates should be detected as local
+                @test :tmp in local_vars
+                @test :tmp1 in local_vars
+                @test :tmp2 in local_vars
+                # Should fall back because tmp2 is local
                 @test isempty(static_types)
                 @test has_dynamic
             end
