@@ -320,12 +320,20 @@ Base.empty!(::Nothing) = nothing
 """
     reset!(tp::TypedPool)
 
-Reset TypedPool state without clearing allocated storage.
+Internal method for resetting TypedPool state without clearing storage.
 
 Sets `n_active = 0` and restores checkpoint stacks to sentinel state.
 All vectors, views, and N-D arrays are preserved for reuse.
 
-This is useful when you want to "start fresh" without reallocating memory.
+!!! warning "Internal API"
+    This is an internal implementation detail. For manual pool management,
+    use the public API instead:
+    ```julia
+    reset!(pool)          # Reset entire pool
+    reset!(pool, Float64) # Reset specific type
+    ```
+
+See also: [`reset!(::AdaptiveArrayPool)`](@ref), [`reset!(::AdaptiveArrayPool, ::Type)`](@ref)
 """
 function reset!(tp::TypedPool)
     tp.n_active = 0
