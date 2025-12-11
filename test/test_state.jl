@@ -437,6 +437,73 @@
         end
     end
 
+    @testset "Safe rewind! at depth=1" begin
+        @testset "rewind! without checkpoint (depth=1)" begin
+            pool = AdaptiveArrayPool()
+
+            # Acquire without checkpoint
+            v1 = acquire!(pool, Float64, 100)
+            v2 = acquire!(pool, Float64, 200)
+            @test pool.float64.n_active == 2
+            @test pool._current_depth == 1
+
+            # rewind! at depth=1 should be safe (delegates to reset!)
+            rewind!(pool)
+            @test pool.float64.n_active == 0
+            @test pool._current_depth == 1
+            @test pool._untracked_flags == [false]
+        end
+
+        @testset "rewind! after reset!" begin
+            pool = AdaptiveArrayPool()
+
+            checkpoint!(pool)
+            acquire!(pool, Float64, 100)
+            @test pool._current_depth == 2
+
+            # Reset clears everything
+            reset!(pool)
+            @test pool._current_depth == 1
+
+            # rewind! after reset should be safe
+            rewind!(pool)
+            @test pool._current_depth == 1  # Still at global scope
+        end
+
+        @testset "checkpoint/rewind cycle after reset!" begin
+            pool = AdaptiveArrayPool()
+
+            # Initial acquire and reset
+            acquire!(pool, Float64, 50)
+            reset!(pool)
+
+            # Normal checkpoint/rewind should work
+            checkpoint!(pool)
+            @test pool._current_depth == 2
+            acquire!(pool, Float64, 100)
+            @test pool.float64.n_active == 1
+
+            rewind!(pool)
+            @test pool.float64.n_active == 0
+            @test pool._current_depth == 1
+        end
+
+        @testset "multiple rewind! at depth=1 is safe" begin
+            pool = AdaptiveArrayPool()
+
+            acquire!(pool, Float64, 100)
+            @test pool.float64.n_active == 1
+
+            # Multiple rewind! calls should all be safe
+            rewind!(pool)
+            @test pool.float64.n_active == 0
+            rewind!(pool)
+            @test pool.float64.n_active == 0
+            rewind!(pool)
+            @test pool._current_depth == 1
+        end
+    end
+
     @testset "Typed checkpoint!/rewind! (generated functions)" begin
         pool = AdaptiveArrayPool()
 

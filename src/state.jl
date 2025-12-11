@@ -49,10 +49,20 @@ Uses _checkpoint_depths to accurately determine which entries to pop vs restore.
 Only the counters are restored; allocated memory remains for reuse.
 Handles untracked acquires by checking _checkpoint_depths for accurate restoration.
 
-See also: [`checkpoint!`](@ref), [`@with_pool`](@ref)
+**Safety**: If called at global scope (depth=1, no pending checkpoints),
+automatically delegates to `reset!` to safely clear all n_active counters.
+
+See also: [`checkpoint!`](@ref), [`reset!`](@ref), [`@with_pool`](@ref)
 """
 function rewind!(pool::AdaptiveArrayPool)
     cur_depth = pool._current_depth
+
+    # Safety guard: at global scope (depth=1), no checkpoint to rewind to
+    # Delegate to reset! which safely clears all n_active counters
+    if cur_depth == 1
+        reset!(pool)
+        return nothing
+    end
 
     # Fixed slots - zero allocation via @generated iteration
     foreach_fixed_slot(pool) do tp
