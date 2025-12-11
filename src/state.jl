@@ -45,6 +45,7 @@ Also updates _current_depth and _untracked_flags for untracked acquire detection
     pool._current_depth += 1
     push!(pool._untracked_flags, false)
     _checkpoint_typed_pool!(get_typed_pool!(pool, T), pool._current_depth)
+    nothing
 end
 
 """
@@ -133,6 +134,7 @@ Also updates _current_depth and _untracked_flags.
     _rewind_typed_pool!(get_typed_pool!(pool, T), pool._current_depth)
     pop!(pool._untracked_flags)
     pool._current_depth -= 1
+    nothing
 end
 
 """
@@ -351,6 +353,7 @@ See also: [`reset!(::AdaptiveArrayPool)`](@ref), [`rewind!`](@ref)
 """
 @inline function reset!(pool::AdaptiveArrayPool, ::Type{T}) where T
     reset!(get_typed_pool!(pool, T))
+    pool
 end
 
 """
@@ -365,7 +368,7 @@ See also: [`reset!(::AdaptiveArrayPool)`](@ref), [`rewind!`](@ref)
     reset_exprs = [:(reset!(get_typed_pool!(pool, types[$i]))) for i in 1:length(types)]
     quote
         $(reset_exprs...)
-        nothing
+        pool
     end
 end
 
