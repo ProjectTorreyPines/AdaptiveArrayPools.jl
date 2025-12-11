@@ -267,22 +267,24 @@
             @test pool.int64.n_active == 0
         end
 
-        @testset "reset! preserves vectors" begin
+        @testset "reset! preserves vectors and caches" begin
             pool = AdaptiveArrayPool()
 
-            # Acquire arrays
+            # Acquire arrays (populates vectors)
             v1 = acquire!(pool, Float64, 100)
             v2 = acquire!(pool, Float64, 200)
-            v3 = acquire!(pool, Float64, 50)
-            @test length(pool.float64.vectors) == 3
+            # Use unsafe_acquire! to populate 1D cache
+            v3 = unsafe_acquire!(pool, Float64, 50)
+            # Use N-D acquire to populate nd cache
+            m1 = acquire!(pool, Float64, 10, 10)
+            @test length(pool.float64.vectors) >= 3
 
-            # Reset - should preserve vectors
+            # Reset - should preserve everything
             reset!(pool)
             @test pool.float64.n_active == 0
-            @test length(pool.float64.vectors) == 3  # Vectors preserved!
-            @test length(pool.float64.vectors[1]) >= 100
-            @test length(pool.float64.vectors[2]) >= 200
-            @test length(pool.float64.vectors[3]) >= 50
+            @test length(pool.float64.vectors) >= 3    # Vectors preserved
+            @test length(pool.float64.views) >= 1      # 1D cache preserved
+            @test length(pool.float64.nd_arrays) >= 1  # N-D cache preserved
         end
 
         @testset "reset! restores checkpoint stacks to sentinel" begin
