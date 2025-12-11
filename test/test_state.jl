@@ -435,6 +435,46 @@
             @test tp._checkpoint_depths == [0]
             @test length(tp.vectors) == 2  # Vectors preserved
         end
+
+        @testset "type-specific reset!(pool, Type)" begin
+            pool = AdaptiveArrayPool()
+
+            # Acquire multiple types
+            acquire!(pool, Float64, 100)
+            acquire!(pool, Int64, 50)
+            @test pool.float64.n_active == 1
+            @test pool.int64.n_active == 1
+
+            # Reset only Float64
+            reset!(pool, Float64)
+            @test pool.float64.n_active == 0
+            @test pool.int64.n_active == 1  # Int64 unchanged
+            @test pool.float64._checkpoint_n_active == [0]
+            @test length(pool.float64.vectors) == 1  # Vector preserved
+        end
+
+        @testset "type-specific reset!(pool, Type...)" begin
+            pool = AdaptiveArrayPool()
+
+            # Acquire multiple types
+            acquire!(pool, Float64, 100)
+            acquire!(pool, Int64, 50)
+            acquire!(pool, Float32, 25)
+            @test pool.float64.n_active == 1
+            @test pool.int64.n_active == 1
+            @test pool.float32.n_active == 1
+
+            # Reset Float64 and Int64, but not Float32
+            reset!(pool, Float64, Int64)
+            @test pool.float64.n_active == 0
+            @test pool.int64.n_active == 0
+            @test pool.float32.n_active == 1  # Float32 unchanged
+        end
+
+        @testset "reset!(nothing, Type) compatibility" begin
+            @test reset!(nothing, Float64) === nothing
+            @test reset!(nothing, Float64, Int64) === nothing
+        end
     end
 
     @testset "Safe rewind! at depth=1" begin
@@ -500,6 +540,48 @@
             rewind!(pool)
             @test pool.float64.n_active == 0
             rewind!(pool)
+            @test pool._current_depth == 1
+        end
+
+        @testset "type-specific rewind!(pool, Type) at depth=1" begin
+            pool = AdaptiveArrayPool()
+
+            # Acquire without checkpoint
+            v1 = acquire!(pool, Float64, 100)
+            @test pool.float64.n_active == 1
+            @test pool._current_depth == 1
+
+            # Type-specific rewind! at depth=1 should be safe
+            rewind!(pool, Float64)
+            @test pool.float64.n_active == 0
+            @test pool._current_depth == 1  # Should not go to 0
+            @test pool.float64._checkpoint_n_active == [0]  # Sentinel preserved
+
+            # Multiple calls should be safe
+            rewind!(pool, Float64)
+            @test pool._current_depth == 1
+        end
+
+        @testset "type-specific rewind!(pool, Type...) at depth=1" begin
+            pool = AdaptiveArrayPool()
+
+            # Acquire multiple types without checkpoint
+            v1 = acquire!(pool, Float64, 100)
+            v2 = acquire!(pool, Int64, 50)
+            @test pool.float64.n_active == 1
+            @test pool.int64.n_active == 1
+            @test pool._current_depth == 1
+
+            # Multi-type rewind! at depth=1 should be safe
+            rewind!(pool, Float64, Int64)
+            @test pool.float64.n_active == 0
+            @test pool.int64.n_active == 0
+            @test pool._current_depth == 1  # Should not go to 0
+            @test pool.float64._checkpoint_n_active == [0]
+            @test pool.int64._checkpoint_n_active == [0]
+
+            # Multiple calls should be safe
+            rewind!(pool, Float64, Int64)
             @test pool._current_depth == 1
         end
     end

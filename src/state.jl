@@ -188,6 +188,11 @@ Restore state for a specific type only.
 Also updates _current_depth and _untracked_flags.
 """
 @inline function rewind!(pool::AdaptiveArrayPool, ::Type{T}) where T
+    # Safety guard: at global scope (depth=1), delegate to reset!
+    if pool._current_depth == 1
+        reset!(get_typed_pool!(pool, T))
+        return nothing
+    end
     rewind!(get_typed_pool!(pool, T))
     pop!(pool._untracked_flags)
     pool._current_depth -= 1
@@ -222,7 +227,13 @@ Decrements _current_depth once after all types are rewound.
 @generated function rewind!(pool::AdaptiveArrayPool, types::Type...)
     # Reverse order for proper stack unwinding, rewind TypedPools directly
     rewind_exprs = [:(rewind!(get_typed_pool!(pool, types[$i]))) for i in length(types):-1:1]
+    reset_exprs = [:(reset!(get_typed_pool!(pool, types[$i]))) for i in 1:length(types)]
     quote
+        # Safety guard: at global scope (depth=1), delegate to reset!
+        if pool._current_depth == 1
+            $(reset_exprs...)
+            return nothing
+        end
         $(rewind_exprs...)
         pop!(pool._untracked_flags)
         pool._current_depth -= 1
@@ -386,3 +397,34 @@ function reset!(pool::AdaptiveArrayPool)
 end
 
 reset!(::Nothing) = nothing
+
+"""
+    reset!(pool::AdaptiveArrayPool, ::Type{T})
+
+Reset state for a specific type only. Clears n_active and checkpoint stacks
+to sentinel state while preserving allocated vectors.
+
+See also: [`reset!(::AdaptiveArrayPool)`](@ref), [`rewind!`](@ref)
+"""
+@inline function reset!(pool::AdaptiveArrayPool, ::Type{T}) where T
+    reset!(get_typed_pool!(pool, T))
+end
+
+"""
+    reset!(pool::AdaptiveArrayPool, types::Type...)
+
+Reset state for multiple specific types. Uses @generated for zero-overhead
+compile-time unrolling.
+
+See also: [`reset!(::AdaptiveArrayPool)`](@ref), [`rewind!`](@ref)
+"""
+@generated function reset!(pool::AdaptiveArrayPool, types::Type...)
+    reset_exprs = [:(reset!(get_typed_pool!(pool, types[$i]))) for i in 1:length(types)]
+    quote
+        $(reset_exprs...)
+        nothing
+    end
+end
+
+reset!(::Nothing, ::Type) = nothing
+reset!(::Nothing, types::Type...) = nothing
