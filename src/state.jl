@@ -291,3 +291,88 @@ function Base.empty!(pool::AdaptiveArrayPool)
 end
 
 Base.empty!(::Nothing) = nothing
+
+# ==============================================================================
+# Pool Reset (preserve storage, reset state)
+# ==============================================================================
+
+"""
+    reset!(tp::TypedPool)
+
+Reset TypedPool state without clearing allocated storage.
+
+Sets `n_active = 0` and restores checkpoint stacks to sentinel state.
+All vectors, views, and N-D arrays are preserved for reuse.
+
+This is useful when you want to "start fresh" without reallocating memory.
+"""
+function reset!(tp::TypedPool)
+    tp.n_active = 0
+    # Restore sentinel values (1-based sentinel pattern)
+    empty!(tp._checkpoint_n_active)
+    push!(tp._checkpoint_n_active, 0)   # Sentinel: n_active=0 at depth=0
+    empty!(tp._checkpoint_depths)
+    push!(tp._checkpoint_depths, 0)     # Sentinel: depth=0 = no checkpoint
+    return tp
+end
+
+"""
+    reset!(pool::AdaptiveArrayPool)
+
+Reset pool state without clearing allocated storage.
+
+This function:
+- Resets all `n_active` counters to 0
+- Restores all checkpoint stacks to sentinel state
+- Resets `_current_depth` and `_untracked_flags`
+
+Unlike `empty!`, this **preserves** all allocated vectors, views, and N-D arrays
+for reuse, avoiding reallocation costs.
+
+## Use Case
+When functions that acquire from the pool are called without proper
+`checkpoint!/rewind!` management, `n_active` can grow indefinitely.
+Use `reset!` to cleanly restore the pool to its initial state while
+keeping allocated memory available.
+
+## Example
+```julia
+pool = AdaptiveArrayPool()
+
+# Some function that acquires without checkpoint management
+function compute!(pool)
+    v = acquire!(pool, Float64, 100)
+    # ... use v ...
+    # No rewind! called
+end
+
+for _ in 1:1000
+    compute!(pool)  # n_active grows each iteration
+end
+
+reset!(pool)  # Restore state, keep allocated memory
+# Now pool.n_active == 0, but vectors are still available for reuse
+```
+
+See also: [`empty!`](@ref), [`rewind!`](@ref)
+"""
+function reset!(pool::AdaptiveArrayPool)
+    # Fixed slots - zero allocation via @generated iteration
+    foreach_fixed_slot(pool) do tp
+        reset!(tp)
+    end
+
+    # Others - reset all TypedPools
+    for tp in values(pool.others)
+        reset!(tp)
+    end
+
+    # Reset untracked detection state (1-based sentinel pattern)
+    pool._current_depth = 1                   # 1 = global scope (sentinel)
+    empty!(pool._untracked_flags)
+    push!(pool._untracked_flags, false)       # Sentinel: global scope starts with false
+
+    return pool
+end
+
+reset!(::Nothing) = nothing

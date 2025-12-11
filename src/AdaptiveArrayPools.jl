@@ -6,7 +6,7 @@ export AdaptiveArrayPool, acquire!, unsafe_acquire!, pool_stats, get_task_local_
 export acquire_view!, acquire_array!  # Explicit naming aliases
 export @with_pool, @maybe_with_pool
 export USE_POOLING, MAYBE_POOLING_ENABLED, POOL_DEBUG
-export checkpoint!, rewind!
+export checkpoint!, rewind!, reset!
 export CACHE_WAYS, set_cache_ways!  # N-way cache configuration
 
 # Core data structures
@@ -18,7 +18,7 @@ include("utils.jl")
 # Acquisition operations: get_view!, acquire!, unsafe_acquire!, aliases
 include("acquire.jl")
 
-# State management: checkpoint!, rewind!, empty!
+# State management: checkpoint!, rewind!, reset!, empty!
 include("state.jl")
 
 # Task-local pool
