@@ -243,6 +243,200 @@
         rewind!(pool)
     end
 
+    @testset "reset! (state-only reset)" begin
+        import AdaptiveArrayPools: reset!
+
+        @testset "basic reset! - n_active to zero" begin
+            pool = AdaptiveArrayPool()
+
+            # Acquire some arrays
+            v1 = acquire!(pool, Float64, 100)
+            v2 = acquire!(pool, Float32, 50)
+            v3 = acquire!(pool, Int64, 30)
+            @test pool.float64.n_active == 1
+            @test pool.float32.n_active == 1
+            @test pool.int64.n_active == 1
+
+            # Reset
+            result = reset!(pool)
+            @test result === pool  # Returns self
+
+            # All n_active should be 0
+            @test pool.float64.n_active == 0
+            @test pool.float32.n_active == 0
+            @test pool.int64.n_active == 0
+        end
+
+        @testset "reset! preserves vectors" begin
+            pool = AdaptiveArrayPool()
+
+            # Acquire arrays
+            v1 = acquire!(pool, Float64, 100)
+            v2 = acquire!(pool, Float64, 200)
+            v3 = acquire!(pool, Float64, 50)
+            @test length(pool.float64.vectors) == 3
+
+            # Reset - should preserve vectors
+            reset!(pool)
+            @test pool.float64.n_active == 0
+            @test length(pool.float64.vectors) == 3  # Vectors preserved!
+            @test length(pool.float64.vectors[1]) >= 100
+            @test length(pool.float64.vectors[2]) >= 200
+            @test length(pool.float64.vectors[3]) >= 50
+        end
+
+        @testset "reset! restores checkpoint stacks to sentinel" begin
+            pool = AdaptiveArrayPool()
+
+            # Nested checkpoints
+            checkpoint!(pool)
+            acquire!(pool, Float64, 10)
+            checkpoint!(pool)
+            acquire!(pool, Float64, 20)
+            checkpoint!(pool)
+            acquire!(pool, Float64, 30)
+
+            @test pool._current_depth == 4
+            @test length(pool.float64._checkpoint_n_active) > 1
+            @test length(pool.float64._checkpoint_depths) > 1
+
+            # Reset - should restore sentinel state
+            reset!(pool)
+
+            @test pool._current_depth == 1
+            @test pool._untracked_flags == [false]
+            @test pool.float64._checkpoint_n_active == [0]  # Sentinel only
+            @test pool.float64._checkpoint_depths == [0]    # Sentinel only
+        end
+
+        @testset "reset! with fallback types" begin
+            pool = AdaptiveArrayPool()
+
+            # Use fallback type (not in fixed slots)
+            v1 = acquire!(pool, UInt8, 100)
+            v2 = acquire!(pool, UInt16, 50)
+            @test pool.others[UInt8].n_active == 1
+            @test pool.others[UInt16].n_active == 1
+            @test length(pool.others[UInt8].vectors) == 1
+
+            # Reset
+            reset!(pool)
+
+            # n_active reset but vectors preserved
+            @test pool.others[UInt8].n_active == 0
+            @test pool.others[UInt16].n_active == 0
+            @test length(pool.others[UInt8].vectors) == 1  # Preserved!
+            @test length(pool.others[UInt16].vectors) == 1
+        end
+
+        @testset "reset!(nothing) compatibility" begin
+            @test reset!(nothing) === nothing
+        end
+
+        @testset "pool usable after reset!" begin
+            pool = AdaptiveArrayPool()
+
+            # First use
+            v1 = acquire!(pool, Float64, 100)
+            v1 .= 42.0
+            backing1 = parent(v1)
+
+            # Reset
+            reset!(pool)
+
+            # Should be usable and reuse existing vector
+            checkpoint!(pool)
+            v2 = acquire!(pool, Float64, 100)
+            @test parent(v2) === backing1  # Same backing vector reused
+            @test pool.float64.n_active == 1
+            rewind!(pool)
+            @test pool.float64.n_active == 0
+        end
+
+        @testset "A/B scenario - unmanaged then reset" begin
+            # Simulates: inner function acquires without management,
+            # outer function calls reset! to clean up
+
+            pool = AdaptiveArrayPool()
+
+            # Function that acquires without checkpoint/rewind
+            function unmanaged_compute!(p)
+                v = acquire!(p, Float64, 100)
+                v .= 1.0
+                # No rewind!
+            end
+
+            # Call multiple times - n_active grows
+            for _ in 1:10
+                unmanaged_compute!(pool)
+            end
+            @test pool.float64.n_active == 10
+            @test length(pool.float64.vectors) == 10
+
+            # Reset - clean slate but vectors preserved
+            reset!(pool)
+            @test pool.float64.n_active == 0
+            @test length(pool.float64.vectors) == 10  # All preserved for reuse
+
+            # Next use reuses existing vectors
+            checkpoint!(pool)
+            for _ in 1:5
+                acquire!(pool, Float64, 100)
+            end
+            @test pool.float64.n_active == 5
+            @test length(pool.float64.vectors) == 10  # No new allocations
+            rewind!(pool)
+        end
+
+        @testset "reset! vs empty! comparison" begin
+            # Verify reset! preserves while empty! clears
+
+            pool1 = AdaptiveArrayPool()
+            pool2 = AdaptiveArrayPool()
+
+            # Both acquire same arrays
+            for _ in 1:5
+                acquire!(pool1, Float64, 100)
+                acquire!(pool2, Float64, 100)
+            end
+            @test length(pool1.float64.vectors) == 5
+            @test length(pool2.float64.vectors) == 5
+
+            # reset! preserves
+            reset!(pool1)
+            @test pool1.float64.n_active == 0
+            @test length(pool1.float64.vectors) == 5  # Preserved
+
+            # empty! clears
+            empty!(pool2)
+            @test pool2.float64.n_active == 0
+            @test length(pool2.float64.vectors) == 0  # Cleared
+        end
+
+        @testset "TypedPool reset!" begin
+            import AdaptiveArrayPools: get_typed_pool!
+
+            pool = AdaptiveArrayPool()
+            tp = get_typed_pool!(pool, Float64)
+
+            # Acquire and checkpoint
+            checkpoint!(tp)
+            acquire!(pool, Float64, 100)
+            checkpoint!(tp)
+            acquire!(pool, Float64, 200)
+            @test tp.n_active == 2
+            @test length(tp._checkpoint_n_active) > 1
+
+            # Reset TypedPool directly
+            result = reset!(tp)
+            @test result === tp
+            @test tp.n_active == 0
+            @test tp._checkpoint_n_active == [0]
+            @test tp._checkpoint_depths == [0]
+            @test length(tp.vectors) == 2  # Vectors preserved
+        end
+    end
+
     @testset "Typed checkpoint!/rewind! (generated functions)" begin
         pool = AdaptiveArrayPool()
 
