@@ -416,15 +416,15 @@
         end
 
         @testset "TypedPool reset!" begin
-            import AdaptiveArrayPools: get_typed_pool!
+            import AdaptiveArrayPools: get_typed_pool!, _checkpoint_typed_pool!
 
             pool = AdaptiveArrayPool()
             tp = get_typed_pool!(pool, Float64)
 
-            # Acquire and checkpoint
-            checkpoint!(tp)
+            # Acquire and checkpoint using internal helper
+            _checkpoint_typed_pool!(tp, 1)
             acquire!(pool, Float64, 100)
-            checkpoint!(tp)
+            _checkpoint_typed_pool!(tp, 2)
             acquire!(pool, Float64, 200)
             @test tp.n_active == 2
             @test length(tp._checkpoint_n_active) > 1
@@ -653,47 +653,46 @@
         @test rewind!(nothing, Float64, Int64) === nothing
     end
 
-    @testset "Direct TypedPool checkpoint!/rewind!" begin
-        import AdaptiveArrayPools: get_typed_pool!
+    @testset "Internal TypedPool helpers" begin
+        import AdaptiveArrayPools: get_typed_pool!, _checkpoint_typed_pool!, _rewind_typed_pool!
         pool = AdaptiveArrayPool()
 
         # Get TypedPool directly
         tp = get_typed_pool!(pool, Float64)
         @test tp.n_active == 0
 
-        # Direct TypedPool checkpoint and rewind
-        checkpoint!(tp)
+        # Direct TypedPool checkpoint and rewind using internal helpers
+        _checkpoint_typed_pool!(tp, 1)
         v1 = acquire!(pool, Float64, 100)
         @test tp.n_active == 1
         v2 = acquire!(pool, Float64, 200)
         @test tp.n_active == 2
-        rewind!(tp)
+        _rewind_typed_pool!(tp, 1)
         @test tp.n_active == 0
 
         # Nested checkpoint/rewind on TypedPool
-        checkpoint!(tp)
+        _checkpoint_typed_pool!(tp, 1)
         v1 = acquire!(pool, Float64, 10)
         @test tp.n_active == 1
 
-        checkpoint!(tp)
+        _checkpoint_typed_pool!(tp, 2)
         v2 = acquire!(pool, Float64, 20)
         @test tp.n_active == 2
 
-        checkpoint!(tp)
+        _checkpoint_typed_pool!(tp, 3)
         v3 = acquire!(pool, Float64, 30)
         @test tp.n_active == 3
 
-        rewind!(tp)
+        _rewind_typed_pool!(tp, 3)
         @test tp.n_active == 2
 
-        rewind!(tp)
+        _rewind_typed_pool!(tp, 2)
         @test tp.n_active == 1
 
-        rewind!(tp)
+        _rewind_typed_pool!(tp, 1)
         @test tp.n_active == 0
 
         # Verify type-specific checkpoint delegates to TypedPool
-        # (This tests the refactored implementation)
         checkpoint!(pool, Float64)
         v = acquire!(pool, Float64, 50)
         @test tp.n_active == 1
