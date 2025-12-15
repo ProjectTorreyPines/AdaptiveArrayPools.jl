@@ -24,18 +24,20 @@ else
     include("test_nway_cache.jl")
     include("test_fixed_slots.jl")
 
-    # CUDA extension tests (only when CUDA is available and functional)
-    if get(ENV, "TEST_CUDA", "false") == "true"
+    # CUDA extension tests (auto-detect, skip with TEST_CUDA=false)
+    if get(ENV, "TEST_CUDA", "true") != "false"
         try
             using CUDA
             if CUDA.functional()
                 @info "Running CUDA extension tests..."
                 include("test_cuda_extension.jl")
             else
-                @warn "CUDA not functional, skipping CUDA tests"
+                @info "CUDA not functional (no GPU), skipping CUDA tests"
             end
         catch e
-            @warn "CUDA not available, skipping CUDA tests" exception=e
+            @info "CUDA not available, skipping CUDA tests"
         end
+    else
+        @info "CUDA tests disabled via TEST_CUDA=false"
     end
 end
