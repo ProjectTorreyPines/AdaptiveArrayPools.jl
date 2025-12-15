@@ -273,7 +273,7 @@ end
 Generate pool code for a specific backend (e.g., :cuda, :cpu).
 Uses `_get_pool_for_backend(Val{backend}())` for zero-overhead dispatch.
 
-Note: Backend macros use full checkpoint/rewind (no typed optimization) for simplicity.
+Includes type-specific checkpoint/rewind optimization (same as regular @with_pool).
 """
 function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, ::Bool)
     # Compile-time check: if pooling disabled, just run expr with pool=nothing
@@ -284,15 +284,51 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, ::Bo
         end
     end
 
+    # Extract types from acquire! calls for optimized checkpoint/rewind
+    all_types = _extract_acquire_types(expr, pool_name)
+    local_vars = _extract_local_assignments(expr)
+    static_types, has_dynamic = _filter_static_types(all_types, local_vars)
+
+    # Use typed checkpoint/rewind if all types are static, otherwise fallback to full
+    use_typed = !has_dynamic && !isempty(static_types)
+
     # Transform acquire! calls to _acquire_impl! (bypasses untracked marking)
     transformed_expr = _transform_acquire_calls(expr, pool_name)
 
     # Use Val{backend}() for compile-time dispatch - fully inlinable
     pool_getter = :($_get_pool_for_backend($(Val{backend}())))
 
+    # Generate checkpoint call (typed or full)
+    if use_typed
+        typed_checkpoint_call = _generate_typed_checkpoint_call(esc(pool_name), static_types)
+        checkpoint_call = quote
+            if @inbounds $(esc(pool_name))._untracked_flags[$(esc(pool_name))._current_depth]
+                $checkpoint!($(esc(pool_name)))  # Full checkpoint (parent had untracked)
+            else
+                $typed_checkpoint_call  # Fast typed checkpoint
+            end
+        end
+    else
+        checkpoint_call = :($checkpoint!($(esc(pool_name))))
+    end
+
+    # Generate rewind call (typed or full)
+    if use_typed
+        typed_rewind_call = _generate_typed_rewind_call(esc(pool_name), static_types)
+        rewind_call = quote
+            if @inbounds $(esc(pool_name))._untracked_flags[$(esc(pool_name))._current_depth]
+                $rewind!($(esc(pool_name)))  # Full rewind (untracked detected)
+            else
+                $typed_rewind_call  # Fast typed rewind
+            end
+        end
+    else
+        rewind_call = :($rewind!($(esc(pool_name))))
+    end
+
     return quote
         local $(esc(pool_name)) = $pool_getter
-        $checkpoint!($(esc(pool_name)))
+        $checkpoint_call
         try
             local _result = $(esc(transformed_expr))
             if $POOL_DEBUG[]
@@ -300,7 +336,7 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, ::Bo
             end
             _result
         finally
-            $rewind!($(esc(pool_name)))
+            $rewind_call
         end
     end
 end
