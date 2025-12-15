@@ -29,13 +29,12 @@ include("task_local_pool.jl")
 # State management (checkpoint!, rewind!, reset!, empty!)
 include("state.jl")
 
-# Macro support (@with_pool :cuda, @with_cuda_pool)
+# Macro support (@with_pool :cuda)
 include("macros.jl")
 
 # Exports
 export CuTypedPool, CuAdaptiveArrayPool
 export GPU_FIXED_SLOT_FIELDS
 export get_task_local_cuda_pool, get_task_local_cuda_pools
-export @with_cuda_pool
 
 end # module

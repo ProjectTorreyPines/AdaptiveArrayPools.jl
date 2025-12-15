@@ -129,6 +129,18 @@ const GPU_FIXED_SLOT_FIELDS = ext.GPU_FIXED_SLOT_FIELDS
             @test haskey(pools_dict, pool.device_id)
         end
 
+        @testset "get_task_local_cuda_pools before pool creation" begin
+            # Test in a fresh task where no pool exists yet
+            result = fetch(Threads.@spawn begin
+                # Call get_task_local_cuda_pools() FIRST (before get_task_local_cuda_pool)
+                pools = get_task_local_cuda_pools()
+                @test pools isa Dict{Int, CuAdaptiveArrayPool}
+                @test isempty(pools)  # No pools created yet
+                true
+            end)
+            @test result == true
+        end
+
         @testset "Multi-device safety (single device verification)" begin
             # 1. Verify device_id is captured correctly at pool creation
             pool = get_task_local_cuda_pool()
@@ -258,6 +270,112 @@ const GPU_FIXED_SLOT_FIELDS = ext.GPU_FIXED_SLOT_FIELDS
             rewind!(pool, Float32)
             @test pool.float32.n_active == 0
         end
+
+        @testset "Multi-type checkpoint/rewind" begin
+            pool = get_task_local_cuda_pool()
+            reset!(pool)
+
+            # Multi-type checkpoint
+            checkpoint!(pool, Float32, Float64)
+            @test pool._current_depth == 2
+
+            get_view!(pool.float32, 100)
+            get_view!(pool.float64, 200)
+            @test pool.float32.n_active == 1
+            @test pool.float64.n_active == 1
+
+            # Multi-type rewind
+            rewind!(pool, Float32, Float64)
+            @test pool._current_depth == 1
+            @test pool.float32.n_active == 0
+            @test pool.float64.n_active == 0
+        end
+
+        @testset "Type-specific reset" begin
+            pool = get_task_local_cuda_pool()
+            reset!(pool)
+
+            get_view!(pool.float32, 100)
+            get_view!(pool.float64, 200)
+            @test pool.float32.n_active == 1
+            @test pool.float64.n_active == 1
+
+            reset!(pool, Float32)
+            @test pool.float32.n_active == 0
+            @test pool.float64.n_active == 1  # Not affected
+        end
+
+        @testset "Rewind at depth=1 (edge case)" begin
+            pool = get_task_local_cuda_pool()
+            reset!(pool)
+
+            @test pool._current_depth == 1
+            get_view!(pool.float32, 100)
+            @test pool.float32.n_active == 1
+
+            # Rewind at depth=1 should delegate to reset!
+            rewind!(pool)
+            @test pool._current_depth == 1
+            @test pool.float32.n_active == 0
+        end
+
+        @testset "Type-specific rewind at depth=1" begin
+            pool = get_task_local_cuda_pool()
+            reset!(pool)
+
+            @test pool._current_depth == 1
+            get_view!(pool.float32, 100)
+            @test pool.float32.n_active == 1
+
+            # Type-specific rewind at depth=1 should reset that type
+            rewind!(pool, Float32)
+            @test pool.float32.n_active == 0
+        end
+
+        @testset "Multi-type rewind at depth=1" begin
+            pool = get_task_local_cuda_pool()
+            reset!(pool)
+
+            @test pool._current_depth == 1
+            get_view!(pool.float32, 100)
+            get_view!(pool.float64, 200)
+
+            # Multi-type rewind at depth=1 should reset those types
+            rewind!(pool, Float32, Float64)
+            @test pool.float32.n_active == 0
+            @test pool.float64.n_active == 0
+        end
+
+        @testset "State operations with rare types (pool.others)" begin
+            pool = get_task_local_cuda_pool()
+            reset!(pool)
+
+            # Use a rare type that goes into pool.others
+            tp_uint8 = get_typed_pool!(pool, UInt8)
+            @test haskey(pool.others, UInt8)
+
+            # checkpoint! with rare type in others
+            checkpoint!(pool)
+            get_view!(tp_uint8, 50)
+            @test tp_uint8.n_active == 1
+
+            # rewind! should also rewind rare types
+            rewind!(pool)
+            @test tp_uint8.n_active == 0
+
+            # reset! with rare type
+            get_view!(tp_uint8, 100)
+            @test tp_uint8.n_active == 1
+            reset!(pool)
+            @test tp_uint8.n_active == 0
+
+            # empty! with rare type
+            get_view!(tp_uint8, 100)
+            @test length(tp_uint8.vectors) >= 1
+            empty!(pool)
+            @test tp_uint8.n_active == 0
+            @test length(tp_uint8.vectors) == 0
+        end
     end
 
     @testset "Macro Integration (Phase 2d)" begin
@@ -280,15 +398,6 @@ const GPU_FIXED_SLOT_FIELDS = ext.GPU_FIXED_SLOT_FIELDS
                 sum(v)
             end
             @test result == 100.0
-        end
-
-        @testset "@with_cuda_pool macro" begin
-            result = ext.@with_cuda_pool pool begin
-                A = acquire!(pool, Float32, 200)
-                A .= 0.5f0
-                sum(A)
-            end
-            @test result == 100.0f0
         end
 
         @testset "Nested CPU/GPU pools" begin

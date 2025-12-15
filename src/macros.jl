@@ -24,7 +24,7 @@ achieving zero overhead compared to Dict-based registry.
 
 # Fallback with helpful error message (marked @noinline to keep hot path fast)
 @noinline function _get_pool_for_backend(::Val{B}) where B
-    error("Pool backend :$B not available. Did you forget to load the extension (e.g., `using CUDA`)?")
+    error("Pool backend :$B is not available. Load the extension first (e.g., `using CUDA` for :cuda).")
 end
 
 # ==============================================================================
