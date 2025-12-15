@@ -34,12 +34,27 @@ end
 """
     @with_pool pool_name expr
     @with_pool expr
+    @with_pool :backend pool_name expr
+    @with_pool :backend expr
 
 Executes code within a pooling scope with automatic lifecycle management.
 Calls `checkpoint!` on entry and `rewind!` on exit (even if errors occur).
 
 If `pool_name` is omitted, a hidden variable is used (useful when you don't
 need to reference the pool directly).
+
+## Backend Selection
+Use a symbol to specify the pool backend:
+- `:cpu` - CPU pools (default)
+- `:cuda` - GPU pools (requires `using CUDA`)
+
+```julia
+# CPU (default)
+@with_pool pool begin ... end
+
+# GPU via CUDA
+@with_pool :cuda pool begin ... end
+```
 
 ## Function Definition
 Wrap function definitions to inject pool lifecycle into the body:
@@ -97,6 +112,16 @@ end
 macro with_pool(expr)
     pool_name = gensym(:pool)
     _generate_pool_code(pool_name, expr, true)
+end
+
+# Backend-specific variants: @with_pool :cuda pool begin ... end
+macro with_pool(backend::QuoteNode, pool_name, expr)
+    _generate_pool_code_with_backend(backend.value, pool_name, expr, true)
+end
+
+macro with_pool(backend::QuoteNode, expr)
+    pool_name = gensym(:pool)
+    _generate_pool_code_with_backend(backend.value, pool_name, expr, true)
 end
 
 """
@@ -234,6 +259,48 @@ function _generate_pool_code(pool_name, expr, force_enable)
                 local $(esc(pool_name)) = $(nothing)
                 $(esc(expr))
             end
+        end
+    end
+end
+
+# ==============================================================================
+# Internal: Backend-Specific Code Generation
+# ==============================================================================
+
+"""
+    _generate_pool_code_with_backend(backend, pool_name, expr, force_enable)
+
+Generate pool code for a specific backend (e.g., :cuda, :cpu).
+Uses `_get_pool_for_backend(Val{backend}())` for zero-overhead dispatch.
+
+Note: Backend macros use full checkpoint/rewind (no typed optimization) for simplicity.
+"""
+function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, ::Bool)
+    # Compile-time check: if pooling disabled, just run expr with pool=nothing
+    if !USE_POOLING
+        return quote
+            local $(esc(pool_name)) = $(nothing)
+            $(esc(expr))
+        end
+    end
+
+    # Transform acquire! calls to _acquire_impl! (bypasses untracked marking)
+    transformed_expr = _transform_acquire_calls(expr, pool_name)
+
+    # Use Val{backend}() for compile-time dispatch - fully inlinable
+    pool_getter = :($_get_pool_for_backend($(Val{backend}())))
+
+    return quote
+        local $(esc(pool_name)) = $pool_getter
+        $checkpoint!($(esc(pool_name)))
+        try
+            local _result = $(esc(transformed_expr))
+            if $POOL_DEBUG[]
+                $_validate_pool_return(_result, $(esc(pool_name)))
+            end
+            _result
+        finally
+            $rewind!($(esc(pool_name)))
         end
     end
 end
