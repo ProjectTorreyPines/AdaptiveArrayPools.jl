@@ -1,7 +1,7 @@
 using Test
 using AdaptiveArrayPools
 using AdaptiveArrayPools: get_typed_pool!
-import AdaptiveArrayPools: checkpoint!, rewind!  # v2 API (not exported)
+import AdaptiveArrayPools: checkpoint!, rewind!  
 
 # Check if specific test files are requested via ARGS
 if !isempty(ARGS)
