@@ -3,32 +3,38 @@
 # ==============================================================================
 
 # Note: Unlike CPU, view(CuVector, 1:n) returns CuVector (via GPUArrays derive()),
-# NOT SubArray. Therefore, we don't cache view objects - just create fresh views
-# each time (O(1) metadata operation, no GPU allocation).
+# NOT SubArray. However, we still cache view objects to avoid CPU heap allocation
+# (~96 bytes per call) for the CuVector metadata wrapper.
 
 """
     CuTypedPool{T} <: AbstractTypedPool{T, CuVector{T}}
 
-GPU memory pool for element type `T`. Similar to `TypedPool` but without
-view caching since `view(CuVector, 1:n)` returns a `CuVector`, not `SubArray`.
+GPU memory pool for element type `T`. Uses unified 1-way view caching for all dimensions.
 
 ## Fields
 - `vectors`: Backing `CuVector{T}` storage
-- `view_lengths`: Cached lengths for resize decision (no view object cache)
-- `nd_*`: N-D array cache (same structure as CPU)
+- `views`: Unified cache storing CuArray of any dimension (1-way cache)
+- `view_dims`: Cached dims - Int for 1D, NTuple{N,Int} for N-D
+- `nd_*`: N-Way array cache (for `unsafe_acquire!` via `get_nd_array!`)
 - State management fields (same as CPU)
 
 ## Design Note
-View creation on GPU is O(1) metadata operation, so caching provides no benefit.
+Unlike CPU where view() returns SubArray and reshape() returns ReshapedArray,
+CUDA returns CuArray for both operations. This allows a unified cache that
+stores CuArray{T,N} for any N, eliminating the need for separate 1D/N-D caches.
+
+GPU view/reshape creation allocates ~80-96 bytes on CPU heap for the CuArray
+wrapper object. Caching eliminates this CPU allocation on cache hit.
 """
 mutable struct CuTypedPool{T} <: AbstractTypedPool{T, CuVector{T}}
     # --- Storage ---
     vectors::Vector{CuVector{T}}
 
-    # --- Length tracking (no view cache!) ---
-    view_lengths::Vector{Int}
+    # --- Unified 1-Way View Cache (for both 1D and N-D) ---
+    views::Vector{Any}       # CuArray{T,N} for any N
+    view_dims::Vector{Any}   # Int for 1D, NTuple{N,Int} for N-D
 
-    # --- N-D Array Cache (N-way set associative, same as CPU) ---
+    # --- N-Way Array Cache (for unsafe_acquire! via get_nd_array!) ---
     nd_arrays::Vector{Any}
     nd_dims::Vector{Any}
     nd_ptrs::Vector{UInt}
@@ -43,8 +49,9 @@ end
 function CuTypedPool{T}() where {T}
     CuTypedPool{T}(
         CuVector{T}[],      # vectors
-        Int[],              # view_lengths (no views vector!)
-        Any[], Any[], UInt[], Int[],  # N-D cache
+        Any[],              # views (unified 1-way cache)
+        Any[],              # view_dims
+        Any[], Any[], UInt[], Int[],  # N-D cache (for get_nd_array!)
         0, [0], [0]         # State (1-based sentinel)
     )
 end
