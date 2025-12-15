@@ -2,6 +2,35 @@
 # Macros for AdaptiveArrayPools
 # ==============================================================================
 
+# ==============================================================================
+# Backend Dispatch (for extensibility)
+# ==============================================================================
+
+"""
+    _get_pool_for_backend(::Val{:cpu}) -> AdaptiveArrayPool
+
+Get task-local pool for the specified backend.
+
+Extensions add methods for their backends (e.g., `Val{:cuda}`).
+Using `Val{Symbol}` enables compile-time dispatch and full inlining,
+achieving zero overhead compared to Dict-based registry.
+
+## Example (in CUDA extension)
+```julia
+@inline AdaptiveArrayPools._get_pool_for_backend(::Val{:cuda}) = get_task_local_cuda_pool()
+```
+"""
+@inline _get_pool_for_backend(::Val{:cpu}) = get_task_local_pool()
+
+# Fallback with helpful error message (marked @noinline to keep hot path fast)
+@noinline function _get_pool_for_backend(::Val{B}) where B
+    error("Pool backend :$B not available. Did you forget to load the extension (e.g., `using CUDA`)?")
+end
+
+# ==============================================================================
+# @with_pool Macro
+# ==============================================================================
+
 """
     @with_pool pool_name expr
     @with_pool expr

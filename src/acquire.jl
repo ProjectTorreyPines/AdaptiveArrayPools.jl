@@ -1,4 +1,18 @@
 # ==============================================================================
+# Allocation Dispatch Points (for extensibility)
+# ==============================================================================
+
+# Allocate a new vector (dispatch point for extensions)
+@inline allocate_vector(::AbstractTypedPool{T,Vector{T}}, n::Int) where {T} =
+    Vector{T}(undef, n)
+
+# Wrap flat view into N-D array (dispatch point for extensions)
+@inline function wrap_array(::AbstractTypedPool{T,Vector{T}},
+                            flat_view, dims::NTuple{N,Int}) where {T,N}
+    unsafe_wrap(Array{T,N}, pointer(flat_view), dims)
+end
+
+# ==============================================================================
 # Helper: Overflow-Safe Product
 # ==============================================================================
 
@@ -32,26 +46,18 @@ end
 # ==============================================================================
 
 """
-    get_view!(tp::TypedPool{T}, n::Int) -> SubArray{T,1,Vector{T},...}
+    get_view!(tp::AbstractTypedPool{T}, n::Int)
 
-Internal function to get a 1D vector view of size `n` from the typed pool.
-
-## Cache Hit Conditions
-1. Same length requested (`view_lengths[idx] == n`)
-2. Slot already exists (`idx <= length(vectors)`)
-
-## Behavior
-- **Cache hit**: Returns cached `SubArray` (zero allocation)
-- **Cache miss**: Creates new view, updates cache
-- **Pool expansion**: Allocates new vector if needed, warns at powers of 2
+Get a 1D vector view of size `n` from the typed pool.
+Returns cached view on hit (zero allocation), creates new on miss.
 """
-function get_view!(tp::TypedPool{T}, n::Int) where {T}
+function get_view!(tp::AbstractTypedPool{T}, n::Int) where {T}
     tp.n_active += 1
     idx = tp.n_active
 
     # 1. Need to expand pool (new slot)
     if idx > length(tp.vectors)
-        push!(tp.vectors, Vector{T}(undef, n))
+        push!(tp.vectors, allocate_vector(tp, n))
         new_view = view(tp.vectors[idx], 1:n)
         push!(tp.views, new_view)
         push!(tp.view_lengths, n)
@@ -59,7 +65,7 @@ function get_view!(tp::TypedPool{T}, n::Int) where {T}
         # Warn at powers of 2 (512, 1024, 2048, ...) - possible missing rewind!()
         if idx >= 512 && (idx & (idx - 1)) == 0
             total_bytes = sum(length, tp.vectors) * sizeof(T)
-            @warn "TypedPool{$T} growing large ($idx arrays, ~$(Base.format_bytes(total_bytes))). Missing rewind!()?"
+            @warn "$(nameof(typeof(tp))){$T} growing large ($idx arrays, ~$(Base.format_bytes(total_bytes))). Missing rewind!()?"
         end
 
         return new_view
@@ -89,23 +95,11 @@ end
 # ==============================================================================
 
 """
-    get_nd_array!(tp::TypedPool{T}, dims::NTuple{N,Int}) -> Array{T,N}
+    get_nd_array!(tp::AbstractTypedPool{T}, dims::NTuple{N,Int}) -> Array{T,N}
 
-Internal function to get an N-dimensional `Array` from the typed pool with N-way caching.
-Used by `unsafe_acquire!` to cache Array instances and avoid `unsafe_wrap` overhead.
-
-## N-way Set Associative Cache
-Each slot can cache up to `CACHE_WAYS` different dimension patterns.
-This prevents thrashing when alternating between different array shapes.
-
-## Cache Hit Conditions
-1. Same dims tuple (`isa NTuple{N, Int} && cached_dims == dims`)
-2. Same pointer (backing vector not resized)
-
-## Type Assertion
-Uses `::Array{T, N}` for type stability when retrieving from `Vector{Any}`.
+Get an N-dimensional `Array` from the pool with N-way caching.
 """
-@inline function get_nd_array!(tp::TypedPool{T}, dims::NTuple{N, Int}) where {T, N}
+@inline function get_nd_array!(tp::AbstractTypedPool{T}, dims::NTuple{N, Int}) where {T, N}
     total_len = safe_prod(dims)
     flat_view = get_view!(tp, total_len) # Increments n_active
     slot = tp.n_active
@@ -142,7 +136,7 @@ Uses `::Array{T, N}` for type stability when retrieving from `Vector{Any}`.
     @inbounds way_offset = tp.nd_next_way[slot]
     target_idx = base + way_offset + 1
 
-    arr = unsafe_wrap(Array{T, N}, pointer(flat_view), dims)
+    arr = wrap_array(tp, flat_view, dims)
 
     @inbounds tp.nd_arrays[target_idx] = arr
     @inbounds tp.nd_dims[target_idx] = dims
@@ -155,22 +149,11 @@ Uses `::Array{T, N}` for type stability when retrieving from `Vector{Any}`.
 end
 
 """
-    get_nd_view!(tp::TypedPool{T}, dims::NTuple{N,Int}) -> ReshapedArray{T,N,...}
+    get_nd_view!(tp::AbstractTypedPool{T}, dims::NTuple{N,Int})
 
-Internal function to get an N-dimensional view from the typed pool.
-
-Returns a `ReshapedArray` wrapping a 1D view - zero creation cost (no `unsafe_wrap`).
-`ReshapedArray` is a lightweight, stack-allocated wrapper with minimal overhead.
-
-## Design Decision
-Uses `reshape(1D_view, dims)` instead of `SubArray{Array}` approach:
-- Zero `unsafe_wrap` cost (0 bytes vs 112 bytes on cache miss)
-- Works with any dimension pattern (no N-way cache limit)
-- Simpler implementation
-
-For type-unspecified paths, use `unsafe_acquire!` → `get_nd_array!` instead.
+Get an N-dimensional view via `reshape` (zero creation cost).
 """
-@inline function get_nd_view!(tp::TypedPool{T}, dims::NTuple{N, Int}) where {T, N}
+@inline function get_nd_view!(tp::AbstractTypedPool{T}, dims::NTuple{N, Int}) where {T, N}
     total_len = safe_prod(dims)
     flat_view = get_view!(tp, total_len)  # 1D view (cached, 0 alloc)
     return reshape(flat_view, dims)        # ReshapedArray (0 creation cost)
