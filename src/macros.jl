@@ -275,16 +275,25 @@ Uses `_get_pool_for_backend(Val{backend}())` for zero-overhead dispatch.
 
 Includes type-specific checkpoint/rewind optimization (same as regular @with_pool).
 """
-function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, ::Bool)
+function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, force_enable::Bool)
     # Compile-time check: if pooling disabled, just run expr with pool=nothing
     if !USE_POOLING
-        return quote
-            local $(esc(pool_name)) = $(nothing)
-            $(esc(expr))
+        if Meta.isexpr(expr, [:function, :(=)]) && _is_function_def(expr)
+            return _generate_function_pool_code_with_backend(backend, pool_name, expr, true)
+        else
+            return quote
+                local $(esc(pool_name)) = $(nothing)
+                $(esc(expr))
+            end
         end
     end
 
-    # Extract types from acquire! calls for optimized checkpoint/rewind
+    # Check if function definition
+    if Meta.isexpr(expr, [:function, :(=)]) && _is_function_def(expr)
+        return _generate_function_pool_code_with_backend(backend, pool_name, expr, false)
+    end
+
+    # Block logic: Extract types from acquire! calls for optimized checkpoint/rewind
     all_types = _extract_acquire_types(expr, pool_name)
     local_vars = _extract_local_assignments(expr)
     static_types, has_dynamic = _filter_static_types(all_types, local_vars)
@@ -339,6 +348,78 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, ::Bo
             $rewind_call
         end
     end
+end
+
+"""
+    _generate_function_pool_code_with_backend(backend, pool_name, func_def, disable_pooling)
+
+Generate function code for a specific backend (e.g., :cuda).
+Wraps the function body with pool getter, checkpoint, try-finally, rewind.
+"""
+function _generate_function_pool_code_with_backend(backend::Symbol, pool_name, func_def, disable_pooling::Bool)
+    def_head = func_def.head
+    call_expr = func_def.args[1]
+    body = func_def.args[2]
+
+    if disable_pooling
+        new_body = quote
+            local $(esc(pool_name)) = $(nothing)
+            $(esc(body))
+        end
+        return Expr(def_head, esc(call_expr), new_body)
+    end
+
+    # Analyze body for types
+    all_types = _extract_acquire_types(body, pool_name)
+    local_vars = _extract_local_assignments(body)
+    static_types, has_dynamic = _filter_static_types(all_types, local_vars)
+    use_typed = !has_dynamic && !isempty(static_types)
+
+    # Transform acquire! calls to _acquire_impl! (bypasses untracked marking)
+    transformed_body = _transform_acquire_calls(body, pool_name)
+
+    # Use Val{backend}() for compile-time dispatch
+    pool_getter = :($_get_pool_for_backend($(Val{backend}())))
+
+    # Generate checkpoint call (typed or full)
+    if use_typed
+        typed_checkpoint_call = _generate_typed_checkpoint_call(esc(pool_name), static_types)
+        checkpoint_call = quote
+            if @inbounds $(esc(pool_name))._untracked_flags[$(esc(pool_name))._current_depth]
+                $checkpoint!($(esc(pool_name)))
+            else
+                $typed_checkpoint_call
+            end
+        end
+    else
+        checkpoint_call = :($checkpoint!($(esc(pool_name))))
+    end
+
+    # Generate rewind call (typed or full)
+    if use_typed
+        typed_rewind_call = _generate_typed_rewind_call(esc(pool_name), static_types)
+        rewind_call = quote
+            if @inbounds $(esc(pool_name))._untracked_flags[$(esc(pool_name))._current_depth]
+                $rewind!($(esc(pool_name)))
+            else
+                $typed_rewind_call
+            end
+        end
+    else
+        rewind_call = :($rewind!($(esc(pool_name))))
+    end
+
+    new_body = quote
+        local $(esc(pool_name)) = $pool_getter
+        $checkpoint_call
+        try
+            $(esc(transformed_body))
+        finally
+            $rewind_call
+        end
+    end
+
+    return Expr(def_head, esc(call_expr), new_body)
 end
 
 function _generate_function_pool_code(pool_name, func_def, force_enable, disable_pooling)
