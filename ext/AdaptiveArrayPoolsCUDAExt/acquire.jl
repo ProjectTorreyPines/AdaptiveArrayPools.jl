@@ -5,7 +5,7 @@
 # NOT SubArray. Similarly, reshape() returns CuArray, not ReshapedArray.
 # This allows a single unified implementation for all dimensions.
 
-using AdaptiveArrayPools: get_view!, get_nd_view!, allocate_vector, safe_prod
+using AdaptiveArrayPools: get_view!, get_nd_view!, get_nd_array!, allocate_vector, safe_prod
 
 """
     get_view!(tp::CuTypedPool{T}, n::Int) -> CuVector{T}
@@ -85,3 +85,16 @@ This override exists for API compatibility with the base package.
     return get_view!(tp, dims)
 end
 
+# ==============================================================================
+# CUDA-Specific get_nd_array! - Delegates to unified get_view!
+# ==============================================================================
+
+"""
+    get_nd_array!(tp::CuTypedPool{T}, dims::NTuple{N,Int}) -> CuArray{T,N}
+
+Delegates to `get_view!(tp, dims)` for unified caching.
+Used by `unsafe_acquire!` - same zero-allocation behavior as `acquire!`.
+"""
+@inline function AdaptiveArrayPools.get_nd_array!(tp::CuTypedPool{T}, dims::NTuple{N, Int}) where {T, N}
+    return get_view!(tp, dims)
+end
