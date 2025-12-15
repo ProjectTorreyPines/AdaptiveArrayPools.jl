@@ -5,7 +5,7 @@
 # NOT SubArray. Similarly, reshape() returns CuArray, not ReshapedArray.
 # This allows a single unified implementation for all dimensions.
 
-using AdaptiveArrayPools: get_view!, get_nd_view!, get_nd_array!, allocate_vector, safe_prod, wrap_array, CACHE_WAYS
+using AdaptiveArrayPools: get_view!, get_nd_view!, allocate_vector, safe_prod
 
 """
     get_view!(tp::CuTypedPool{T}, n::Int) -> CuVector{T}
@@ -85,62 +85,3 @@ This override exists for API compatibility with the base package.
     return get_view!(tp, dims)
 end
 
-# ==============================================================================
-# CUDA-Specific get_nd_array! Implementation (N-way cache)
-# ==============================================================================
-# Full override needed for type-stability: cache hit returns CuArray{T,N},
-# not Array{T,N}. This mirrors the get_view! override pattern.
-
-"""
-    get_nd_array!(tp::CuTypedPool{T}, dims::NTuple{N,Int}) -> CuArray{T,N}
-
-Get an N-dimensional `CuArray` from the pool with N-way caching.
-"""
-@inline function AdaptiveArrayPools.get_nd_array!(tp::CuTypedPool{T}, dims::NTuple{N, Int}) where {T, N}
-    total_len = safe_prod(dims)
-    flat_view = get_view!(tp, total_len) # Increments n_active
-    slot = tp.n_active
-
-    @inbounds vec = tp.vectors[slot]
-    current_ptr = UInt(pointer(vec))
-
-    # Expand cache slots if needed (CACHE_WAYS entries per slot)
-    n_slots_cached = length(tp.nd_next_way)
-    while slot > n_slots_cached
-        for _ in 1:CACHE_WAYS
-            push!(tp.nd_arrays, nothing)
-            push!(tp.nd_dims, nothing)
-            push!(tp.nd_ptrs, UInt(0))
-        end
-        push!(tp.nd_next_way, 0)
-        n_slots_cached += 1
-    end
-
-    base = (slot - 1) * CACHE_WAYS
-
-    # Linear Search across all ways (Cache hit = 0 bytes)
-    for k in 1:CACHE_WAYS
-        cache_idx = base + k
-        @inbounds cached_dims = tp.nd_dims[cache_idx]
-        @inbounds cached_ptr = tp.nd_ptrs[cache_idx]
-
-        if cached_dims isa NTuple{N, Int} && cached_dims == dims && cached_ptr == current_ptr
-            return @inbounds tp.nd_arrays[cache_idx]::CuArray{T,N}
-        end
-    end
-
-    # Cache Miss - Round-Robin Replacement
-    @inbounds way_offset = tp.nd_next_way[slot]
-    target_idx = base + way_offset + 1
-
-    arr = wrap_array(tp, flat_view, dims)
-
-    @inbounds tp.nd_arrays[target_idx] = arr
-    @inbounds tp.nd_dims[target_idx] = dims
-    @inbounds tp.nd_ptrs[target_idx] = current_ptr
-
-    # Update round-robin counter
-    @inbounds tp.nd_next_way[slot] = (way_offset + 1) % CACHE_WAYS
-
-    return arr
-end

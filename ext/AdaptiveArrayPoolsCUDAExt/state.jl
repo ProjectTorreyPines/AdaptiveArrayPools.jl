@@ -173,13 +173,8 @@ CUDA.reclaim()
 """
 function Base.empty!(tp::CuTypedPool)
     empty!(tp.vectors)
-    # Note: CuTypedPool has no 'views' field (GPU views are CuVectors)
-    empty!(tp.view_lengths)
-    # Clear N-D Array cache
-    empty!(tp.nd_arrays)
-    empty!(tp.nd_dims)
-    empty!(tp.nd_ptrs)
-    empty!(tp.nd_next_way)
+    empty!(tp.views)
+    empty!(tp.view_dims)
     tp.n_active = 0
     # Restore sentinel values
     empty!(tp._checkpoint_n_active)

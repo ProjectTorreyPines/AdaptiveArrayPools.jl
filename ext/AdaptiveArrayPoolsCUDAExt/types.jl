@@ -14,8 +14,7 @@ GPU memory pool for element type `T`. Uses unified 1-way view caching for all di
 ## Fields
 - `vectors`: Backing `CuVector{T}` storage
 - `views`: Unified cache storing CuArray of any dimension (1-way cache)
-- `view_dims`: Cached dims - Int for 1D, NTuple{N,Int} for N-D
-- `nd_*`: N-Way array cache (for `unsafe_acquire!` via `get_nd_array!`)
+- `view_dims`: Cached dims - NTuple{N,Int} for N-D
 - State management fields (same as CPU)
 
 ## Design Note
@@ -30,15 +29,9 @@ mutable struct CuTypedPool{T} <: AbstractTypedPool{T, CuVector{T}}
     # --- Storage ---
     vectors::Vector{CuVector{T}}
 
-    # --- Unified 1-Way View Cache (for both 1D and N-D) ---
+    # --- Unified 1-Way View Cache (for all dimensions) ---
     views::Vector{Any}       # CuArray{T,N} for any N
-    view_dims::Vector{Any}   # Int for 1D, NTuple{N,Int} for N-D
-
-    # --- N-Way Array Cache (for unsafe_acquire! via get_nd_array!) ---
-    nd_arrays::Vector{Any}
-    nd_dims::Vector{Any}
-    nd_ptrs::Vector{UInt}
-    nd_next_way::Vector{Int}
+    view_dims::Vector{Any}   # NTuple{N,Int}
 
     # --- State Management (1-based sentinel pattern) ---
     n_active::Int
@@ -51,7 +44,6 @@ function CuTypedPool{T}() where {T}
         CuVector{T}[],      # vectors
         Any[],              # views (unified 1-way cache)
         Any[],              # view_dims
-        Any[], Any[], UInt[], Int[],  # N-D cache (for get_nd_array!)
         0, [0], [0]         # State (1-based sentinel)
     )
 end
