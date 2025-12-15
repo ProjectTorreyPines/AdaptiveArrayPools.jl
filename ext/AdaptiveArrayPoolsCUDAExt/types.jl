@@ -4,17 +4,29 @@
 
 # Note: Unlike CPU, view(CuVector, 1:n) returns CuVector (via GPUArrays derive()),
 # NOT SubArray. However, we still cache view objects to avoid CPU heap allocation
-# (~96 bytes per call) for the CuVector metadata wrapper.
+# (~80 bytes per call) for the CuVector metadata wrapper.
+
+# ==============================================================================
+# N-Way Cache Configuration
+# ==============================================================================
+
+"""
+Number of cache ways per slot. Allows caching multiple dimension patterns
+per backing vector. 4 ways is a good balance for typical usage patterns.
+"""
+const CUDA_CACHE_WAYS = 4
 
 """
     CuTypedPool{T} <: AbstractTypedPool{T, CuVector{T}}
 
-GPU memory pool for element type `T`. Uses unified 1-way view caching for all dimensions.
+GPU memory pool for element type `T`. Uses unified N-way view caching for all dimensions.
 
 ## Fields
-- `vectors`: Backing `CuVector{T}` storage
-- `views`: Unified cache storing CuArray of any dimension (1-way cache)
-- `view_dims`: Cached dims - NTuple{N,Int} for N-D
+- `vectors`: Backing `CuVector{T}` storage (one per slot)
+- `views`: Flat N-way cache storing CuArray of any dimension
+  - Layout: `views[(slot-1)*CUDA_CACHE_WAYS + way]` for way ∈ 1:CUDA_CACHE_WAYS
+- `view_dims`: Cached dims corresponding to views
+- `next_way`: Round-robin counter per slot for cache replacement
 - State management fields (same as CPU)
 
 ## Design Note
@@ -22,16 +34,21 @@ Unlike CPU where view() returns SubArray and reshape() returns ReshapedArray,
 CUDA returns CuArray for both operations. This allows a unified cache that
 stores CuArray{T,N} for any N, eliminating the need for separate 1D/N-D caches.
 
-GPU view/reshape creation allocates ~80-96 bytes on CPU heap for the CuArray
-wrapper object. Caching eliminates this CPU allocation on cache hit.
+GPU view/reshape creation allocates ~80 bytes on CPU heap for the CuArray
+wrapper object. N-way caching with for-loop lookup eliminates this allocation
+when the same dimensions pattern is requested again.
 """
 mutable struct CuTypedPool{T} <: AbstractTypedPool{T, CuVector{T}}
     # --- Storage ---
     vectors::Vector{CuVector{T}}
 
-    # --- Unified 1-Way View Cache (for all dimensions) ---
+    # --- Unified N-Way View Cache (flat layout) ---
+    # Length = n_slots * CUDA_CACHE_WAYS
     views::Vector{Any}       # CuArray{T,N} for any N
-    view_dims::Vector{Any}   # NTuple{N,Int}
+    view_dims::Vector{Any}   # NTuple{N,Int} or nothing
+
+    # --- Cache Replacement (round-robin per slot) ---
+    next_way::Vector{Int}    # next_way[slot] ∈ 1:CUDA_CACHE_WAYS
 
     # --- State Management (1-based sentinel pattern) ---
     n_active::Int
@@ -42,8 +59,9 @@ end
 function CuTypedPool{T}() where {T}
     CuTypedPool{T}(
         CuVector{T}[],      # vectors
-        Any[],              # views (unified 1-way cache)
+        Any[],              # views (N-way flat cache)
         Any[],              # view_dims
+        Int[],              # next_way (round-robin counters)
         0, [0], [0]         # State (1-based sentinel)
     )
 end

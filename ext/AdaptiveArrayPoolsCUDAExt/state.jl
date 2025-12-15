@@ -175,6 +175,7 @@ function Base.empty!(tp::CuTypedPool)
     empty!(tp.vectors)
     empty!(tp.views)
     empty!(tp.view_dims)
+    empty!(tp.next_way)
     tp.n_active = 0
     # Restore sentinel values
     empty!(tp._checkpoint_n_active)
