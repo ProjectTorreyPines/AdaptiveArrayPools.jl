@@ -9,9 +9,7 @@ Loaded automatically when `using CUDA` with AdaptiveArrayPools.
 module AdaptiveArrayPoolsCUDAExt
 
 using AdaptiveArrayPools
-using AdaptiveArrayPools: AbstractTypedPool, AbstractArrayPool, CACHE_WAYS,
-                          allocate_vector, wrap_array, get_typed_pool!, get_view!,
-                          foreach_fixed_slot, _get_pool_for_backend
+using AdaptiveArrayPools: AbstractTypedPool, AbstractArrayPool, CACHE_WAYS
 using CUDA
 
 # Type definitions
@@ -34,6 +32,9 @@ include("utils.jl")
 
 # Macro support (@with_pool :cuda)
 include("macros.jl")
+
+# Convenience functions (Float32 default for zeros!/ones!)
+include("convenience.jl")
 
 # Exports (types only - functions are exported from main module)
 export CuTypedPool, CuAdaptiveArrayPool
