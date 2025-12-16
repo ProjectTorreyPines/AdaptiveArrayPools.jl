@@ -1377,4 +1377,33 @@ import AdaptiveArrayPools: _extract_local_assignments, _filter_static_types, _ex
         end
     end
 
+    # ==========================================================================
+    # _get_pool_for_backend Tests
+    # ==========================================================================
+
+    @testset "_get_pool_for_backend" begin
+        using AdaptiveArrayPools: _get_pool_for_backend
+
+        @testset "CPU backend returns task-local pool" begin
+            pool = _get_pool_for_backend(Val(:cpu))
+            @test pool isa AdaptiveArrayPool
+            # Should return same instance (task-local)
+            pool2 = _get_pool_for_backend(Val(:cpu))
+            @test pool === pool2
+        end
+
+        @testset "Unknown backend throws error" begin
+            @test_throws ErrorException _get_pool_for_backend(Val(:unknown_backend))
+            @test_throws ErrorException _get_pool_for_backend(Val(:rocm))
+
+            # Check error message contains backend name
+            try
+                _get_pool_for_backend(Val(:foo))
+            catch e
+                @test occursin("foo", e.msg)
+                @test occursin("not available", e.msg)
+            end
+        end
+    end
+
 end # Macro Internals
