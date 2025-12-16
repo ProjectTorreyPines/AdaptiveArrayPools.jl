@@ -29,6 +29,9 @@ include("task_local_pool.jl")
 # State management (checkpoint!, rewind!, reset!, empty!)
 include("state.jl")
 
+# Display & statistics (pool_stats, show)
+include("utils.jl")
+
 # Macro support (@with_pool :cuda)
 include("macros.jl")
 

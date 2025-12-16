@@ -96,39 +96,24 @@ function pool_stats(tp::TypedPool{T}; io::IO=stdout, indent::Int=0, name::String
     end
 
     total_elements = sum(length(v) for v in tp.vectors)
-    total_bytes = total_elements * sizeof(T)
+    bytes = total_elements * sizeof(T)
+    bytes_str = Base.format_bytes(bytes)
 
-    # Type name header
-    printstyled(io, prefix, type_name, "\n", bold=true, color=:cyan)
+    # Header
+    printstyled(io, prefix, type_name, color=:cyan)
+    println(io)
 
-    # Details with arrow prefix
-    detail_prefix = prefix * "  "
+    # Stats
+    printstyled(io, prefix, "  slots: ", color=:dark_gray)
+    printstyled(io, n_arrays, color=:blue)
+    printstyled(io, " (active: ", color=:dark_gray)
+    printstyled(io, tp.n_active, color=:blue)
+    printstyled(io, ")\n", color=:dark_gray)
 
-    print(io, detail_prefix, "├─ arrays: ")
-    printstyled(io, n_arrays, "\n", color=:yellow)
-
-    print(io, detail_prefix, "├─ active: ")
-    active_color = tp.n_active == 0 ? :green : :magenta
-    printstyled(io, tp.n_active, "\n", color=active_color)
-
-    print(io, detail_prefix, "├─ elements: ")
-    printstyled(io, total_elements, "\n", color=:blue)
-
-    print(io, detail_prefix, "└─ memory: ")
-    printstyled(io, _format_bytes(total_bytes), "\n", color=:blue)
-end
-
-# Format bytes to human-readable string (matches @time output style)
-function _format_bytes(bytes::Integer)
-    if bytes < 1024
-        return "$(bytes) bytes"
-    elseif bytes < 1024^2
-        return @sprintf("%.3f KiB", bytes / 1024)
-    elseif bytes < 1024^3
-        return @sprintf("%.3f MiB", bytes / 1024^2)
-    else
-        return @sprintf("%.3f GiB", bytes / 1024^3)
-    end
+    printstyled(io, prefix, "  elements: ", color=:dark_gray)
+    printstyled(io, total_elements, color=:blue)
+    printstyled(io, " ($bytes_str)\n", color=:dark_gray)
+    return nothing
 end
 
 """
@@ -170,22 +155,58 @@ function pool_stats(pool::AdaptiveArrayPool; io::IO=stdout)
     if !has_content
         printstyled(io, "  (empty)\n", color=:dark_gray)
     end
+    return nothing
 end
 
 """
     pool_stats(; io::IO=stdout)
 
-Print statistics for the task-local pool.
+Print statistics for all task-local pools (CPU and CUDA if loaded).
 
 # Example
 ```julia
 @with_pool begin
     v = acquire!(pool, Float64, 100)
-    pool_stats()  # Shows task-local pool stats
+    pool_stats()  # Shows all pool stats
 end
 ```
 """
-pool_stats(; io::IO=stdout) = pool_stats(get_task_local_pool(); io)
+function pool_stats(; io::IO=stdout)
+    pool_stats(:cpu; io)
+    # Show CUDA pools if extension is loaded and pools exist
+    try
+        pools = get_task_local_cuda_pools()
+        for pool in values(pools)
+            pool_stats(pool; io)
+        end
+    catch e
+        e isa MethodError || rethrow()
+        # CUDA extension not loaded - silently skip
+    end
+    return nothing
+end
+
+"""
+    pool_stats(:cpu; io::IO=stdout)
+
+Print statistics for the CPU task-local pool only.
+"""
+pool_stats(::Val{:cpu}; io::IO=stdout) = pool_stats(get_task_local_pool(); io)
+pool_stats(s::Symbol; io::IO=stdout) = pool_stats(Val(s); io)
+
+"""
+    pool_stats(:cuda; io::IO=stdout)
+
+Print statistics for CUDA task-local pools.
+Requires CUDA.jl to be loaded.
+"""
+function pool_stats(::Val{:cuda}; io::IO=stdout)
+    pools = get_task_local_cuda_pools()  # Throws MethodError if extension not loaded
+    for pool in values(pools)
+        pool_stats(pool; io)
+    end
+    return nothing
+end
 
 # ==============================================================================
 # Base.show (delegates to pool_stats)
@@ -198,7 +219,7 @@ function Base.show(io::IO, tp::TypedPool{T}) where {T}
         print(io, "TypedPool{$T}(empty)")
     else
         total = sum(length(v) for v in tp.vectors)
-        print(io, "TypedPool{$T}(vectors=$n_vectors, active=$(tp.n_active), elements=$total)")
+        print(io, "TypedPool{$T}(slots=$n_vectors, active=$(tp.n_active), elements=$total)")
     end
 end
 
@@ -227,7 +248,7 @@ function Base.show(io::IO, pool::AdaptiveArrayPool)
         total_active[] += tp.n_active
     end
 
-    print(io, "AdaptiveArrayPool(types=$(n_types[]), vectors=$(total_vectors[]), active=$(total_active[]))")
+    print(io, "AdaptiveArrayPool(types=$(n_types[]), slots=$(total_vectors[]), active=$(total_active[]))")
 end
 
 # Multi-line show for AdaptiveArrayPool
