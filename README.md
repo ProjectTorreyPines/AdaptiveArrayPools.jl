@@ -24,23 +24,28 @@ function compute_naive(n)
 end
 
 for i in 1:10_000
-    compute_naive(100)  # 91 MiB total, 17% GC time
+    compute_naive(100)  # ⚠️ 90k allocations, 2.75 GiB, 31% GC time
 end
 ```
 
-The traditional fix—passing pre-allocated buffers through your call stack—works but requires invasive refactoring and clutters your APIs.
+The traditional fix—passing pre-allocated buffers—works for simple cases but quickly becomes impractical:
+
+- **API pollution**: Every function needs extra buffer arguments, breaking clean interfaces
+- **Nested calls**: Buffers must be threaded through entire call stacks, even third-party code
+- **Dynamic shapes**: Hard to pre-allocate when array sizes depend on runtime values
+- **Package boundaries**: You can't easily pass buffers into library functions you don't control
 
 ## The Solution
 
-Wrap your function with `@with_pool` and use `acquire!` instead of allocation:
+Wrap your function with `@with_pool` and replace allocations with `acquire!` or convenience functions:
 
 ```julia
 using AdaptiveArrayPools, LinearAlgebra, Random
 
 @with_pool pool function compute_pooled(n)
     A = acquire!(pool, Float64, n, n)  # reuses memory from pool
-    B = acquire!(pool, Float64, n, n)
-    C = acquire!(pool, Float64, n, n)
+    B = similar!(pool, A)
+    C = similar!(pool, A)
 
     rand!(A); rand!(B)
     mul!(C, A, B)
@@ -49,15 +54,15 @@ end
 
 compute_pooled(100)  # warmup
 for i in 1:10_000
-    compute_pooled(100)  # 0 bytes, 0% GC
+    compute_pooled(100) # ✅ Zero allocations, 0% GC
 end
 ```
 
-| Approach | Memory | GC Time | Code Complexity |
-|----------|--------|---------|-----------------|
-| Naive allocation | 91 MiB | 17% | Simple |
-| Manual buffer passing | 0 | 0% | Complex, invasive refactor |
-| **AdaptiveArrayPools** | **0** | **0%** | **Minimal change** |
+| | Naive | AdaptiveArrayPools |
+|-------------|-------|---------------------|
+| **Time** | 787 ms | 525 ms |
+| **Allocations** | 90k (2.75 GiB) | 0 |
+| **GC Time** | 31% | 0% |
 
 > **CUDA support**: Same API—just use `@with_pool :cuda pool`. See [CUDA Backend](docs/cuda.md).
 
