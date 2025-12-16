@@ -73,10 +73,6 @@ compile-time unrolling. Increments _current_depth once for all types.
     end
 end
 
-checkpoint!(::Nothing) = nothing
-checkpoint!(::Nothing, ::Type) = nothing
-checkpoint!(::Nothing, types::Type...) = nothing
-
 # Internal helper for checkpoint (works for any AbstractTypedPool)
 @inline function _checkpoint_typed_pool!(tp::AbstractTypedPool, depth::Int)
     push!(tp._checkpoint_n_active, tp.n_active)
@@ -177,10 +173,6 @@ Decrements _current_depth once after all types are rewound.
     end
 end
 
-rewind!(::Nothing) = nothing
-rewind!(::Nothing, ::Type) = nothing
-rewind!(::Nothing, types::Type...) = nothing
-
 # Internal helper for rewind with orphan cleanup (works for any AbstractTypedPool)
 # Uses 1-based sentinel pattern: no isempty checks needed (sentinel [0] guarantees non-empty)
 @inline function _rewind_typed_pool!(tp::AbstractTypedPool, current_depth::Int)
@@ -275,8 +267,6 @@ function Base.empty!(pool::AdaptiveArrayPool)
 
     return pool
 end
-
-Base.empty!(::Nothing) = nothing
 
 # ==============================================================================
 # State Management - reset!
@@ -385,10 +375,6 @@ See also: [`reset!(::AdaptiveArrayPool)`](@ref), [`rewind!`](@ref)
         pool
     end
 end
-
-reset!(::Nothing) = nothing
-reset!(::Nothing, ::Type) = nothing
-reset!(::Nothing, types::Type...) = nothing
 
 # ==============================================================================
 # DisabledPool State Management (no-ops)

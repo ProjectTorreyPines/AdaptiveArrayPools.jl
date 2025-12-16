@@ -279,19 +279,6 @@ end
     _acquire_impl!(pool, T, dims...)
 end
 
-# Fallback: When pool is `nothing` (e.g. pooling disabled), allocate normally
-@inline function acquire!(::Nothing, ::Type{T}, n::Int) where {T}
-    Vector{T}(undef, n)
-end
-
-@inline function acquire!(::Nothing, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
-    Array{T, N}(undef, dims)
-end
-
-@inline function acquire!(::Nothing, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
-    Array{T, N}(undef, dims)
-end
-
 # Similar-style convenience methods
 """
     acquire!(pool, x::AbstractArray) -> SubArray
@@ -311,8 +298,6 @@ end
     _mark_untracked!(pool)
     _acquire_impl!(pool, eltype(x), size(x))
 end
-
-@inline acquire!(::Nothing, x::AbstractArray) = similar(x)
 
 # ==============================================================================
 # Unsafe Acquisition API (Raw Arrays)
@@ -379,19 +364,6 @@ end
     _unsafe_acquire_impl!(pool, T, dims)
 end
 
-# Fallback: When pool is `nothing`, allocate normally
-@inline function unsafe_acquire!(::Nothing, ::Type{T}, n::Int) where {T}
-    Vector{T}(undef, n)
-end
-
-@inline function unsafe_acquire!(::Nothing, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
-    Array{T, N}(undef, dims)
-end
-
-@inline function unsafe_acquire!(::Nothing, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
-    Array{T, N}(undef, dims)
-end
-
 # Similar-style convenience methods
 """
     unsafe_acquire!(pool, x::AbstractArray) -> Array
@@ -411,8 +383,6 @@ end
     _mark_untracked!(pool)
     _unsafe_acquire_impl!(pool, eltype(x), size(x))
 end
-
-@inline unsafe_acquire!(::Nothing, x::AbstractArray) = similar(x)
 
 # ==============================================================================
 # API Aliases

@@ -167,9 +167,9 @@ end
         @test_throws ErrorException _validate_pool_return(pool_view_uint8, pool)
         rewind!(pool)
 
-        # Nothing pool always passes
-        _validate_pool_return(pool_view, nothing)
-        _validate_pool_return(42, nothing)
+        # DisabledPool always passes
+        _validate_pool_return(pool_view, DISABLED_CPU)
+        _validate_pool_return(42, DISABLED_CPU)
     end
 
     @testset "_validate_pool_return with all fixed slots" begin

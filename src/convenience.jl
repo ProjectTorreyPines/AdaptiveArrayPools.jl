@@ -74,12 +74,6 @@ end
     _zeros_impl!(pool, default_eltype(pool), dims...)
 end
 
-# Nothing fallback (pooling disabled - uses Julia's default Float64)
-@inline zeros!(::Nothing, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = zeros(T, dims...)
-@inline zeros!(::Nothing, dims::Vararg{Int,N}) where {N} = zeros(dims...)
-@inline zeros!(::Nothing, ::Type{T}, dims::NTuple{N,Int}) where {T,N} = zeros(T, dims...)
-@inline zeros!(::Nothing, dims::NTuple{N,Int}) where {N} = zeros(dims...)
-
 # ==============================================================================
 # ones! - Acquire one-initialized arrays from pool
 # ==============================================================================
@@ -137,12 +131,6 @@ end
 @inline function _ones_impl!(pool::AbstractArrayPool, dims::Vararg{Int,N}) where {N}
     _ones_impl!(pool, default_eltype(pool), dims...)
 end
-
-# Nothing fallback (pooling disabled - uses Julia's default Float64)
-@inline ones!(::Nothing, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = ones(T, dims...)
-@inline ones!(::Nothing, dims::Vararg{Int,N}) where {N} = ones(dims...)
-@inline ones!(::Nothing, ::Type{T}, dims::NTuple{N,Int}) where {T,N} = ones(T, dims...)
-@inline ones!(::Nothing, dims::NTuple{N,Int}) where {N} = ones(dims...)
 
 # ==============================================================================
 # similar! - Acquire arrays with same type/size as template
@@ -211,12 +199,6 @@ end
     _acquire_impl!(pool, T, dims...)
 end
 
-# Nothing fallback (pooling disabled)
-@inline similar!(::Nothing, x::AbstractArray) = similar(x)
-@inline similar!(::Nothing, x::AbstractArray, ::Type{T}) where {T} = similar(x, T)
-@inline similar!(::Nothing, x::AbstractArray, dims::Vararg{Int,N}) where {N} = similar(x, dims...)
-@inline similar!(::Nothing, x::AbstractArray, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = similar(x, T, dims...)
-
 # ==============================================================================
 # unsafe_zeros! - Acquire zero-initialized raw arrays from pool
 # ==============================================================================
@@ -275,12 +257,6 @@ end
     _unsafe_zeros_impl!(pool, default_eltype(pool), dims...)
 end
 
-# Nothing fallback (pooling disabled - uses Julia's default Float64)
-@inline unsafe_zeros!(::Nothing, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = zeros(T, dims...)
-@inline unsafe_zeros!(::Nothing, dims::Vararg{Int,N}) where {N} = zeros(dims...)
-@inline unsafe_zeros!(::Nothing, ::Type{T}, dims::NTuple{N,Int}) where {T,N} = zeros(T, dims...)
-@inline unsafe_zeros!(::Nothing, dims::NTuple{N,Int}) where {N} = zeros(dims...)
-
 # ==============================================================================
 # unsafe_ones! - Acquire one-initialized raw arrays from pool
 # ==============================================================================
@@ -338,12 +314,6 @@ end
 @inline function _unsafe_ones_impl!(pool::AbstractArrayPool, dims::Vararg{Int,N}) where {N}
     _unsafe_ones_impl!(pool, default_eltype(pool), dims...)
 end
-
-# Nothing fallback (pooling disabled - uses Julia's default Float64)
-@inline unsafe_ones!(::Nothing, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = ones(T, dims...)
-@inline unsafe_ones!(::Nothing, dims::Vararg{Int,N}) where {N} = ones(dims...)
-@inline unsafe_ones!(::Nothing, ::Type{T}, dims::NTuple{N,Int}) where {T,N} = ones(T, dims...)
-@inline unsafe_ones!(::Nothing, dims::NTuple{N,Int}) where {N} = ones(dims...)
 
 # ==============================================================================
 # unsafe_similar! - Acquire raw arrays with same type/size as template
@@ -410,12 +380,6 @@ end
 @inline function _unsafe_similar_impl!(pool::AbstractArrayPool, x::AbstractArray, ::Type{T}, dims::Vararg{Int,N}) where {T,N}
     _unsafe_acquire_impl!(pool, T, dims...)
 end
-
-# Nothing fallback (pooling disabled)
-@inline unsafe_similar!(::Nothing, x::AbstractArray) = similar(x)
-@inline unsafe_similar!(::Nothing, x::AbstractArray, ::Type{T}) where {T} = similar(x, T)
-@inline unsafe_similar!(::Nothing, x::AbstractArray, dims::Vararg{Int,N}) where {N} = similar(x, dims...)
-@inline unsafe_similar!(::Nothing, x::AbstractArray, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = similar(x, T, dims...)
 
 # ==============================================================================
 # BackendNotLoadedError - Error for unknown backends

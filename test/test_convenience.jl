@@ -50,23 +50,23 @@
             @test eltype(m32) == Float32
         end
 
-        @testset "Nothing fallback" begin
-            v = zeros!(nothing, Float64, 10)
+        @testset "DisabledPool fallback" begin
+            v = zeros!(DISABLED_CPU, Float64, 10)
             @test v isa Array{Float64}
             @test length(v) == 10
             @test all(v .== 0.0)
 
-            v2 = zeros!(nothing, 5, 5)
+            v2 = zeros!(DISABLED_CPU, 5, 5)
             @test v2 isa Matrix{Float64}
             @test size(v2) == (5, 5)
 
             # NTuple fallbacks
             dims = (3, 4)
-            v3 = zeros!(nothing, Float32, dims)
+            v3 = zeros!(DISABLED_CPU, Float32, dims)
             @test v3 isa Array{Float32}
             @test size(v3) == dims
 
-            v4 = zeros!(nothing, dims)
+            v4 = zeros!(DISABLED_CPU, dims)
             @test v4 isa Array{Float64}
             @test size(v4) == dims
         end
@@ -120,24 +120,24 @@
             @test all(m32 .== 1.0f0)
         end
 
-        @testset "Nothing fallback" begin
-            v = ones!(nothing, Float64, 10)
+        @testset "DisabledPool fallback" begin
+            v = ones!(DISABLED_CPU, Float64, 10)
             @test v isa Array{Float64}
             @test length(v) == 10
             @test all(v .== 1.0)
 
             # Vararg without type
-            v2 = ones!(nothing, 5, 5)
+            v2 = ones!(DISABLED_CPU, 5, 5)
             @test v2 isa Matrix{Float64}
             @test size(v2) == (5, 5)
 
             # NTuple fallbacks
             dims = (3, 4)
-            v3 = ones!(nothing, Float32, dims)
+            v3 = ones!(DISABLED_CPU, Float32, dims)
             @test v3 isa Array{Float32}
             @test size(v3) == dims
 
-            v4 = ones!(nothing, dims)
+            v4 = ones!(DISABLED_CPU, dims)
             @test v4 isa Array{Float64}
             @test size(v4) == dims
         end
@@ -178,22 +178,22 @@
             @test eltype(v) == Float64
         end
 
-        @testset "Nothing fallback" begin
-            v = similar!(nothing, template)
+        @testset "DisabledPool fallback" begin
+            v = similar!(DISABLED_CPU, template)
             @test v isa Array{Float64}
             @test size(v) == size(template)
 
-            v2 = similar!(nothing, template, Int64)
+            v2 = similar!(DISABLED_CPU, template, Int64)
             @test v2 isa Array{Int64}
             @test size(v2) == size(template)
 
             # Vararg with different size (same type)
-            v3 = similar!(nothing, template, 5, 5)
+            v3 = similar!(DISABLED_CPU, template, 5, 5)
             @test v3 isa Array{Float64}
             @test size(v3) == (5, 5)
 
             # Vararg with different type and size
-            v4 = similar!(nothing, template, Int32, 3, 4)
+            v4 = similar!(DISABLED_CPU, template, Int32, 3, 4)
             @test v4 isa Array{Int32}
             @test size(v4) == (3, 4)
         end
@@ -289,8 +289,8 @@
             @test eltype(m32) == Float32
         end
 
-        @testset "Nothing fallback" begin
-            v = unsafe_zeros!(nothing, Float64, 10)
+        @testset "DisabledPool fallback" begin
+            v = unsafe_zeros!(DISABLED_CPU, Float64, 10)
             @test v isa Array{Float64}
             @test all(v .== 0.0)
         end
@@ -335,8 +335,8 @@
             @test all(m32 .== 1.0f0)
         end
 
-        @testset "Nothing fallback" begin
-            v = unsafe_ones!(nothing, Float64, 10)
+        @testset "DisabledPool fallback" begin
+            v = unsafe_ones!(DISABLED_CPU, Float64, 10)
             @test v isa Array{Float64}
             @test all(v .== 1.0)
         end
@@ -374,12 +374,12 @@
             @test size(v) == (3, 4)
         end
 
-        @testset "Nothing fallback" begin
-            v = unsafe_similar!(nothing, template)
+        @testset "DisabledPool fallback" begin
+            v = unsafe_similar!(DISABLED_CPU, template)
             @test v isa Array{Float64}
             @test size(v) == size(template)
 
-            v2 = unsafe_similar!(nothing, template, Int64)
+            v2 = unsafe_similar!(DISABLED_CPU, template, Int64)
             @test v2 isa Array{Int64}
         end
     end

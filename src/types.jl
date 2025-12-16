@@ -136,7 +136,6 @@ See also: [`DisabledPool`](@ref)
 """
 pooling_enabled(::AbstractArrayPool) = true
 pooling_enabled(::DisabledPool) = false
-pooling_enabled(::Nothing) = false  # Backward compatibility
 
 # ==============================================================================
 # Core Data Structures

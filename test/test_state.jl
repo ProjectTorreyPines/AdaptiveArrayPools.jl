@@ -64,9 +64,9 @@
         @test all(v1 .== 1.0)
         @test all(v2 .== 2.0)
 
-        # nothing compatibility
-        @test checkpoint!(nothing) === nothing
-        @test rewind!(nothing) === nothing
+        # DISABLED_POOL compatibility
+        @test checkpoint!(DISABLED_CPU) === nothing
+        @test rewind!(DISABLED_CPU) === nothing
     end
 
     @testset "Nested checkpoint/rewind" begin
@@ -165,23 +165,23 @@
         @test pool.others[UInt8].n_active == 0
     end
 
-    @testset "Nothing fallback methods" begin
-        # acquire! with nothing pool
-        v1 = acquire!(nothing, Float64, 100)
+    @testset "DisabledPool fallback methods" begin
+        # acquire! with DisabledPool
+        v1 = acquire!(DISABLED_CPU, Float64, 100)
         @test v1 isa Vector{Float64}
         @test length(v1) == 100
 
-        # Multi-dimensional acquire! with nothing
-        mat = acquire!(nothing, Float64, 10, 20)
+        # Multi-dimensional acquire! with DisabledPool
+        mat = acquire!(DISABLED_CPU, Float64, 10, 20)
         @test mat isa Array{Float64, 2}
         @test size(mat) == (10, 20)
 
-        tensor = acquire!(nothing, Int32, 3, 4, 5)
+        tensor = acquire!(DISABLED_CPU, Int32, 3, 4, 5)
         @test tensor isa Array{Int32, 3}
         @test size(tensor) == (3, 4, 5)
 
-        # empty! with nothing
-        @test empty!(nothing) === nothing
+        # empty! with DisabledPool
+        @test empty!(DISABLED_CPU) === nothing
     end
 
     @testset "empty! pool clearing" begin
@@ -331,8 +331,8 @@
             @test length(pool.others[UInt16].vectors) == 1
         end
 
-        @testset "reset!(nothing) compatibility" begin
-            @test reset!(nothing) === nothing
+        @testset "reset!(DISABLED_CPU) compatibility" begin
+            @test reset!(DISABLED_CPU) === nothing
         end
 
         @testset "pool usable after reset!" begin
@@ -473,9 +473,9 @@
             @test pool.float32.n_active == 1  # Float32 unchanged
         end
 
-        @testset "reset!(nothing, Type) compatibility" begin
-            @test reset!(nothing, Float64) === nothing
-            @test reset!(nothing, Float64, Int64) === nothing
+        @testset "reset!(DISABLED_CPU, Type) compatibility" begin
+            @test reset!(DISABLED_CPU, Float64) === nothing
+            @test reset!(DISABLED_CPU, Float64, Int64) === nothing
         end
     end
 
@@ -646,11 +646,11 @@
         @test pool.complexf32.n_active == 0
         @test pool.bool.n_active == 0
 
-        # nothing fallback with types
-        @test checkpoint!(nothing, Float64) === nothing
-        @test checkpoint!(nothing, Float64, Int64) === nothing
-        @test rewind!(nothing, Float64) === nothing
-        @test rewind!(nothing, Float64, Int64) === nothing
+        # DisabledPool fallback with types
+        @test checkpoint!(DISABLED_CPU, Float64) === nothing
+        @test checkpoint!(DISABLED_CPU, Float64, Int64) === nothing
+        @test rewind!(DISABLED_CPU, Float64) === nothing
+        @test rewind!(DISABLED_CPU, Float64, Int64) === nothing
     end
 
     @testset "Internal TypedPool helpers" begin

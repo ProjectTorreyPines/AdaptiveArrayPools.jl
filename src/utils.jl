@@ -73,7 +73,7 @@ function _check_pointer_overlap(arr::Array, pool::AdaptiveArrayPool)
     end
 end
 
-_validate_pool_return(val, ::Nothing) = nothing
+_validate_pool_return(val, ::DisabledPool) = nothing
 
 # ==============================================================================
 # Statistics & Pretty Printing

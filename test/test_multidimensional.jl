@@ -36,7 +36,7 @@ using AdaptiveArrayPools: checkpoint!, rewind!
         @test size(mat3) == (10, 10)
 
         # Without pool (fallback)
-        mat_alloc = acquire!(nothing, Float64, 10, 10)
+        mat_alloc = acquire!(DISABLED_CPU, Float64, 10, 10)
         @test mat_alloc isa Array{Float64,2}
         @test size(mat_alloc) == (10, 10)
     end
@@ -59,7 +59,7 @@ using AdaptiveArrayPools: checkpoint!, rewind!
         @test tensor isa Base.ReshapedArray{Float64, 3}
 
         # Fallback with nothing
-        mat_alloc = acquire!(nothing, Float64, dims)
+        mat_alloc = acquire!(DISABLED_CPU, Float64, dims)
         @test mat_alloc isa Array{Float64, 2}
         @test size(mat_alloc) == (3, 4)
     end
@@ -143,16 +143,16 @@ using AdaptiveArrayPools: checkpoint!, rewind!
     end
 
     @testset "unsafe_acquire! fallback (nothing)" begin
-        v = unsafe_acquire!(nothing, Float64, 10)
+        v = unsafe_acquire!(DISABLED_CPU, Float64, 10)
         @test v isa Vector{Float64}
         @test length(v) == 10
 
-        mat = unsafe_acquire!(nothing, Float64, 10, 10)
+        mat = unsafe_acquire!(DISABLED_CPU, Float64, 10, 10)
         @test mat isa Matrix{Float64}
         @test size(mat) == (10, 10)
 
         # Tuple support
-        arr = unsafe_acquire!(nothing, Float64, (3, 4, 5))
+        arr = unsafe_acquire!(DISABLED_CPU, Float64, (3, 4, 5))
         @test arr isa Array{Float64, 3}
         @test size(arr) == (3, 4, 5)
     end
@@ -220,12 +220,12 @@ using AdaptiveArrayPools: checkpoint!, rewind!
 
         rewind!(pool)
 
-        # Test nothing fallback
-        nothing_mat = acquire!(nothing, ref_mat)
+        # Test DisabledPool fallback
+        nothing_mat = acquire!(DISABLED_CPU, ref_mat)
         @test size(nothing_mat) == size(ref_mat)
         @test nothing_mat isa Matrix{Float64}
 
-        nothing_unsafe = unsafe_acquire!(nothing, ref_mat)
+        nothing_unsafe = unsafe_acquire!(DISABLED_CPU, ref_mat)
         @test size(nothing_unsafe) == size(ref_mat)
         @test nothing_unsafe isa Matrix{Float64}
     end

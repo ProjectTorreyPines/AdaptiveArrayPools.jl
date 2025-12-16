@@ -33,11 +33,11 @@ using AdaptiveArrayPools
 
         rewind!(pool)
 
-        # nothing fallback
-        v_nothing = acquire_view!(nothing, Float64, 10)
+        # DisabledPool fallback
+        v_nothing = acquire_view!(DISABLED_CPU, Float64, 10)
         @test v_nothing isa Vector{Float64}
 
-        m_nothing = acquire_view!(nothing, Float64, 5, 5)
+        m_nothing = acquire_view!(DISABLED_CPU, Float64, 5, 5)
         @test m_nothing isa Matrix{Float64}
     end
 
@@ -76,11 +76,11 @@ using AdaptiveArrayPools
 
         rewind!(pool)
 
-        # nothing fallback
-        v_nothing = acquire_array!(nothing, Float64, 10)
+        # DisabledPool fallback
+        v_nothing = acquire_array!(DISABLED_CPU, Float64, 10)
         @test v_nothing isa Vector{Float64}
 
-        m_nothing = acquire_array!(nothing, Float64, 5, 5)
+        m_nothing = acquire_array!(DISABLED_CPU, Float64, 5, 5)
         @test m_nothing isa Matrix{Float64}
     end
 
