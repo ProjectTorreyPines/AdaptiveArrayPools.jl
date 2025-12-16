@@ -233,33 +233,34 @@ end
 # ==============================================================================
 
 """
-    acquire!(pool, Type{T}, n) -> SubArray{T,1,Vector{T},...}
-    acquire!(pool, Type{T}, dims...) -> ReshapedArray{T,N,...}
-    acquire!(pool, Type{T}, dims::NTuple{N,Int}) -> ReshapedArray{T,N,...}
+    acquire!(pool, Type{T}, n) -> view type
+    acquire!(pool, Type{T}, dims...) -> view type
+    acquire!(pool, Type{T}, dims::NTuple{N,Int}) -> view type
 
 Acquire a view of an array of type `T` with size `n` or dimensions `dims`.
 
-Returns a view backed by the pool:
-- **1D**: `SubArray{T,1,Vector{T},...}` (parent is `Vector{T}`)
-- **N-D**: `ReshapedArray{T,N,...}` (zero creation cost, no `unsafe_wrap`)
+Returns a view backed by the pool (backend-dependent type):
+- **CPU 1D**: `SubArray{T,1,Vector{T},...}` (parent is `Vector{T}`)
+- **CPU N-D**: `ReshapedArray{T,N,...}` (zero creation cost)
+- **CUDA**: `CuArray{T,N}` (unified N-way cache)
 
-Both types are `StridedArray`, compatible with BLAS and broadcasting.
+All return types are `StridedArray`, compatible with BLAS and broadcasting.
 
 For type-unspecified paths (struct fields without concrete type parameters),
-use [`unsafe_acquire!`](@ref) instead - cached Array instances can be reused.
+use [`unsafe_acquire!`](@ref) instead - cached native array instances can be reused.
 
 ## Example
 ```julia
 @with_pool pool begin
-    v = acquire!(pool, Float64, 100)      # SubArray{Float64,1,...}
-    m = acquire!(pool, Float64, 10, 10)   # ReshapedArray{Float64,2,...}
+    v = acquire!(pool, Float64, 100)      # 1D view
+    m = acquire!(pool, Float64, 10, 10)   # 2D view
     v .= 1.0
     m .= 2.0
     sum(v) + sum(m)
 end
 ```
 
-See also: [`unsafe_acquire!`](@ref) for raw `Array` access.
+See also: [`unsafe_acquire!`](@ref) for native array access.
 """
 @inline function acquire!(pool::AbstractArrayPool, ::Type{T}, n::Int) where {T}
     _mark_untracked!(pool)
@@ -318,16 +319,19 @@ end
 # ==============================================================================
 
 """
-    unsafe_acquire!(pool, Type{T}, n) -> Vector{T}
-    unsafe_acquire!(pool, Type{T}, dims...) -> Array{T,N}
-    unsafe_acquire!(pool, Type{T}, dims::NTuple{N,Int}) -> Array{T,N}
+    unsafe_acquire!(pool, Type{T}, n) -> backend's native array type
+    unsafe_acquire!(pool, Type{T}, dims...) -> backend's native array type
+    unsafe_acquire!(pool, Type{T}, dims::NTuple{N,Int}) -> backend's native array type
 
-Acquire a raw `Array` backed by pool memory.
+Acquire a native array backed by pool memory.
 
-Since `Array` instances are mutable references, cached instances can be returned directly
-without creating new wrapper objects—ideal for type-unspecified paths. In contrast,
-`ReshapedArray` wraps a view and cannot be meaningfully cached, as each call to `reshape()`
-creates a new wrapper.
+Returns the backend's native array type:
+- **CPU**: `Array{T,N}` (via `unsafe_wrap`)
+- **CUDA**: `CuArray{T,N}` (via unified view cache)
+
+For CPU pools, since `Array` instances are mutable references, cached instances can be
+returned directly without creating new wrapper objects—ideal for type-unspecified paths.
+For CUDA pools, this delegates to the same unified N-way cache as `acquire!`.
 
 ## Safety Warning
 The returned array is only valid within the `@with_pool` scope. Using it after
@@ -340,24 +344,24 @@ undefined behavior as the memory is owned by the pool.
 - **Type-unspecified paths**: Struct fields without concrete type parameters
   (e.g., `_pooled_chain::PooledChain` instead of `_pooled_chain::PooledChain{M}`)
 - FFI calls expecting raw pointers
-- APIs that strictly require `Array` type
+- APIs that strictly require native array types
 
 ## Allocation Behavior
-- Cache hit: 0 bytes (cached Array instance reused)
-- Cache miss: 112 bytes (Array header creation via `unsafe_wrap`)
+- **CPU**: Cache hit 0 bytes, cache miss ~112 bytes (Array header via `unsafe_wrap`)
+- **CUDA**: Cache hit ~0 bytes, cache miss ~80 bytes (CuArray wrapper creation)
 
 ## Example
 ```julia
 @with_pool pool begin
-    A = unsafe_acquire!(pool, Float64, 100, 100)  # Matrix{Float64}
-    B = unsafe_acquire!(pool, Float64, 100, 100)  # Matrix{Float64}
+    A = unsafe_acquire!(pool, Float64, 100, 100)  # Matrix{Float64} (CPU) or CuMatrix{Float64} (CUDA)
+    B = unsafe_acquire!(pool, Float64, 100, 100)
     C = similar(A)  # Regular allocation for result
     mul!(C, A, B)   # BLAS uses A, B directly
 end
 # A and B are INVALID after this point!
 ```
 
-See also: [`acquire!`](@ref) for `ReshapedArray` access.
+See also: [`acquire!`](@ref) for view-based access.
 """
 @inline function unsafe_acquire!(pool::AbstractArrayPool, ::Type{T}, n::Int) where {T}
     _mark_untracked!(pool)

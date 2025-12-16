@@ -19,7 +19,7 @@ a dictionary of pools (one per device) in task-local storage, ensuring that:
 ## Implementation
 Uses `Dict{Int, CuAdaptiveArrayPool}` in task-local storage, keyed by device ID.
 """
-@inline function get_task_local_cuda_pool()
+@inline function AdaptiveArrayPools.get_task_local_cuda_pool()
     # 1. Get or create the pools dictionary
     pools = get(task_local_storage(), _CU_POOL_KEY, nothing)
     if pools === nothing
@@ -46,7 +46,7 @@ end
 Returns the dictionary of all CUDA pools for the current task (one per device).
 Useful for diagnostics or bulk operations across all devices.
 """
-@inline function get_task_local_cuda_pools()
+@inline function AdaptiveArrayPools.get_task_local_cuda_pools()
     pools = get(task_local_storage(), _CU_POOL_KEY, nothing)
     if pools === nothing
         pools = Dict{Int, CuAdaptiveArrayPool}()

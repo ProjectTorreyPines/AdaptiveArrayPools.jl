@@ -23,17 +23,16 @@ if !CUDA_AVAILABLE
 else
     @info "Running CUDA extension tests on device: $(CUDA.name(CUDA.device()))"
 
-    # Load dependencies
+    # Load dependencies - functions work via dispatch, no need to access extension directly
     using AdaptiveArrayPools
     using AdaptiveArrayPools: checkpoint!, rewind!, get_typed_pool!, get_view!, foreach_fixed_slot
 
-    # Get extension module
+    # Extension types (only needed for type checks in tests)
     const ext = Base.get_extension(AdaptiveArrayPools, :AdaptiveArrayPoolsCUDAExt)
     const CuTypedPool = ext.CuTypedPool
     const CuAdaptiveArrayPool = ext.CuAdaptiveArrayPool
-    const get_task_local_cuda_pool = ext.get_task_local_cuda_pool
-    const get_task_local_cuda_pools = ext.get_task_local_cuda_pools
     const GPU_FIXED_SLOT_FIELDS = ext.GPU_FIXED_SLOT_FIELDS
+    # get_task_local_cuda_pool, get_task_local_cuda_pools are exported from AdaptiveArrayPools
 
     # Include all CUDA test files
     @testset "CUDA Extension Tests" begin

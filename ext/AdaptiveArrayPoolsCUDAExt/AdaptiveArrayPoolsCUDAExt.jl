@@ -32,9 +32,9 @@ include("state.jl")
 # Macro support (@with_pool :cuda)
 include("macros.jl")
 
-# Exports
+# Exports (types only - functions are exported from main module)
 export CuTypedPool, CuAdaptiveArrayPool
 export GPU_FIXED_SLOT_FIELDS
-export get_task_local_cuda_pool, get_task_local_cuda_pools
+# get_task_local_cuda_pool, get_task_local_cuda_pools are exported from AdaptiveArrayPools
 
 end # module

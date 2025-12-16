@@ -9,6 +9,7 @@ export @with_pool, @maybe_with_pool
 export USE_POOLING, MAYBE_POOLING_ENABLED, POOL_DEBUG
 export checkpoint!, rewind!, reset!
 export CACHE_WAYS, set_cache_ways!  # N-way cache configuration
+export get_task_local_cuda_pool, get_task_local_cuda_pools  # CUDA (stubs, overridden by extension)
 
 # Extension API (for GPU backends)
 export AbstractTypedPool, AbstractArrayPool  # For subtyping
