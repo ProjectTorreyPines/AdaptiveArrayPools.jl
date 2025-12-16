@@ -35,11 +35,8 @@ else
     # get_task_local_cuda_pool, get_task_local_cuda_pools are exported from AdaptiveArrayPools
 
     # Include all CUDA test files
-    @testset "CUDA Extension Tests" begin
-        include("test_extension.jl")
-        # Future CUDA tests can be added here:
-        # include("test_nway_cache.jl")
-        # include("test_performance.jl")
-        # include("test_multi_gpu.jl")
-    end
+    include("test_extension.jl")
+    include("test_allocation.jl")
+    include("test_nway_cache.jl")
+    include("test_display.jl")
 end
