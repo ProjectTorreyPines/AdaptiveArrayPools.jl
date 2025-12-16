@@ -1304,14 +1304,76 @@ import AdaptiveArrayPools: _extract_local_assignments, _filter_static_types, _ex
             end
         end
 
+        @testset "convenience function transformation" begin
+            using AdaptiveArrayPools: _ZEROS_IMPL_REF, _ONES_IMPL_REF, _SIMILAR_IMPL_REF
+
+            @testset "zeros! → _zeros_impl!" begin
+                expr = :(zeros!(pool, Float64, 10))
+                transformed = _transform_acquire_calls(expr, :pool)
+                @test transformed.args[1] == _ZEROS_IMPL_REF
+                @test transformed.args[2] == :pool
+                @test transformed.args[3] == :Float64
+            end
+
+            @testset "ones! → _ones_impl!" begin
+                expr = :(ones!(pool, Int64, 5, 5))
+                transformed = _transform_acquire_calls(expr, :pool)
+                @test transformed.args[1] == _ONES_IMPL_REF
+                @test transformed.args[2] == :pool
+                @test transformed.args[3] == :Int64
+            end
+
+            @testset "similar! → _similar_impl!" begin
+                expr = :(similar!(pool, template))
+                transformed = _transform_acquire_calls(expr, :pool)
+                @test transformed.args[1] == _SIMILAR_IMPL_REF
+                @test transformed.args[2] == :pool
+                @test transformed.args[3] == :template
+            end
+
+            @testset "qualified zeros! → _zeros_impl!" begin
+                expr = :(AAP.zeros!(pool, Float32, 10))
+                transformed = _transform_acquire_calls(expr, :pool)
+                @test transformed.args[1] == _ZEROS_IMPL_REF
+                @test transformed.args[2] == :pool
+            end
+
+            @testset "qualified ones! → _ones_impl!" begin
+                expr = :(AAP.ones!(pool, Int32, 5))
+                transformed = _transform_acquire_calls(expr, :pool)
+                @test transformed.args[1] == _ONES_IMPL_REF
+                @test transformed.args[2] == :pool
+            end
+
+            @testset "qualified similar! → _similar_impl!" begin
+                expr = :(AAP.similar!(pool, arr, Float64))
+                transformed = _transform_acquire_calls(expr, :pool)
+                @test transformed.args[1] == _SIMILAR_IMPL_REF
+                @test transformed.args[2] == :pool
+            end
+        end
+
         @testset "GlobalRef verification" begin
+            using AdaptiveArrayPools: _ZEROS_IMPL_REF, _ONES_IMPL_REF, _SIMILAR_IMPL_REF
+
             # Verify that GlobalRef points to AdaptiveArrayPools module
             @test _ACQUIRE_IMPL_REF isa GlobalRef
             @test _UNSAFE_ACQUIRE_IMPL_REF isa GlobalRef
+            @test _ZEROS_IMPL_REF isa GlobalRef
+            @test _ONES_IMPL_REF isa GlobalRef
+            @test _SIMILAR_IMPL_REF isa GlobalRef
+
             @test _ACQUIRE_IMPL_REF.mod == AdaptiveArrayPools
             @test _UNSAFE_ACQUIRE_IMPL_REF.mod == AdaptiveArrayPools
+            @test _ZEROS_IMPL_REF.mod == AdaptiveArrayPools
+            @test _ONES_IMPL_REF.mod == AdaptiveArrayPools
+            @test _SIMILAR_IMPL_REF.mod == AdaptiveArrayPools
+
             @test _ACQUIRE_IMPL_REF.name == :_acquire_impl!
             @test _UNSAFE_ACQUIRE_IMPL_REF.name == :_unsafe_acquire_impl!
+            @test _ZEROS_IMPL_REF.name == :_zeros_impl!
+            @test _ONES_IMPL_REF.name == :_ones_impl!
+            @test _SIMILAR_IMPL_REF.name == :_similar_impl!
         end
     end
 
