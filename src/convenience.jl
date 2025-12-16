@@ -54,16 +54,8 @@ end
     arr
 end
 
-@inline function _zeros_impl!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N,Int}) where {T,N}
-    _zeros_impl!(pool, T, dims...)
-end
-
-# Default type (Float64) overloads for macro transformation
+# Default type (Float64) overload for macro transformation
 @inline function _zeros_impl!(pool::AbstractArrayPool, dims::Vararg{Int,N}) where {N}
-    _zeros_impl!(pool, Float64, dims...)
-end
-
-@inline function _zeros_impl!(pool::AbstractArrayPool, dims::NTuple{N,Int}) where {N}
     _zeros_impl!(pool, Float64, dims...)
 end
 
@@ -125,16 +117,8 @@ end
     arr
 end
 
-@inline function _ones_impl!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N,Int}) where {T,N}
-    _ones_impl!(pool, T, dims...)
-end
-
-# Default type (Float64) overloads for macro transformation
+# Default type (Float64) overload for macro transformation
 @inline function _ones_impl!(pool::AbstractArrayPool, dims::Vararg{Int,N}) where {N}
-    _ones_impl!(pool, Float64, dims...)
-end
-
-@inline function _ones_impl!(pool::AbstractArrayPool, dims::NTuple{N,Int}) where {N}
     _ones_impl!(pool, Float64, dims...)
 end
 
