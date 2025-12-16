@@ -40,4 +40,5 @@ else
     include("test_nway_cache.jl")
     include("test_display.jl")
     include("test_convenience.jl")
+    include("test_disabled_pool.jl")
 end
