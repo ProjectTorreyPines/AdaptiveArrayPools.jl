@@ -75,16 +75,19 @@ This automatic checkpoint/rewind cycle is what enables zero allocation on repeat
 
 > **Note**: Keeping acquired arrays inside the scope is your responsibility. Return computed values (scalars, copies), not the arrays themselves. See [Safety Guide](docs/safety.md).
 
-**Thread-safe by design**: Each Julia Task gets its own independent pool, so `@with_pool` inside threaded code is automatically safe:
+**Thread-safe by design**: Each Julia Task gets its own independent pool—no locks needed. See [Multi-Threading](docs/multi-threading.md) for patterns.
 
-```julia
-Threads.@threads for i in 1:N
-    @with_pool pool begin
-        a = acquire!(pool, Float64, 100)
-        # each thread has its own pool — no race conditions
-    end
-end
-```
+### Convenience Functions
+
+Common initialization patterns have convenience functions:
+
+| Function | Equivalent to |
+|----------|---------------|
+| `zeros!(pool, 10)` | `acquire!` + `fill!(0)` |
+| `ones!(pool, Float32, 3, 3)` | `acquire!` + `fill!(1)` |
+| `similar!(pool, A)` | `acquire!` matching `eltype(A)`, `size(A)` |
+
+These return views like `acquire!`. For raw `Array` types, use `unsafe_acquire!` or its convenience variants (`unsafe_zeros!`, `unsafe_ones!`, `unsafe_similar!`). See [API Reference](docs/api.md#convenience-functions).
 
 ## Installation
 
