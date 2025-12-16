@@ -1,69 +1,14 @@
 # ==============================================================================
-# CUDA Convenience Functions (Float32 default)
+# CUDA Default Element Type
 # ==============================================================================
-# Override default-type versions only; explicit type versions use base AbstractArrayPool methods.
-# This matches CUDA.zeros() behavior which defaults to Float32.
+# CUDA pools default to Float32 (matching CUDA.zeros() behavior).
+# All convenience functions (zeros!, ones!, etc.) dispatch through _*_impl!
+# which calls default_eltype(pool) for the default type.
 
-using AdaptiveArrayPools: _mark_untracked!, _zeros_impl!, _ones_impl!, _unsafe_zeros_impl!, _unsafe_ones_impl!
+"""
+    default_eltype(::CuAdaptiveArrayPool) -> Type
 
-# ==============================================================================
-# zeros! - Float32 default for CUDA (instead of Float64)
-# ==============================================================================
-
-@inline function AdaptiveArrayPools.zeros!(pool::CuAdaptiveArrayPool, dims::Vararg{Int})
-    _mark_untracked!(pool)
-    _zeros_impl!(pool, Float32, dims...)
-end
-
-@inline function AdaptiveArrayPools.zeros!(pool::CuAdaptiveArrayPool, dims::Tuple{Vararg{Int}})
-    _mark_untracked!(pool)
-    _zeros_impl!(pool, Float32, dims...)
-end
-
-# ==============================================================================
-# ones! - Float32 default for CUDA (instead of Float64)
-# ==============================================================================
-
-@inline function AdaptiveArrayPools.ones!(pool::CuAdaptiveArrayPool, dims::Vararg{Int})
-    _mark_untracked!(pool)
-    _ones_impl!(pool, Float32, dims...)
-end
-
-@inline function AdaptiveArrayPools.ones!(pool::CuAdaptiveArrayPool, dims::Tuple{Vararg{Int}})
-    _mark_untracked!(pool)
-    _ones_impl!(pool, Float32, dims...)
-end
-
-# ==============================================================================
-# unsafe_zeros! - Float32 default for CUDA (instead of Float64)
-# ==============================================================================
-
-@inline function AdaptiveArrayPools.unsafe_zeros!(pool::CuAdaptiveArrayPool, dims::Vararg{Int})
-    _mark_untracked!(pool)
-    _unsafe_zeros_impl!(pool, Float32, dims...)
-end
-
-@inline function AdaptiveArrayPools.unsafe_zeros!(pool::CuAdaptiveArrayPool, dims::Tuple{Vararg{Int}})
-    _mark_untracked!(pool)
-    _unsafe_zeros_impl!(pool, Float32, dims...)
-end
-
-# ==============================================================================
-# unsafe_ones! - Float32 default for CUDA (instead of Float64)
-# ==============================================================================
-
-@inline function AdaptiveArrayPools.unsafe_ones!(pool::CuAdaptiveArrayPool, dims::Vararg{Int})
-    _mark_untracked!(pool)
-    _unsafe_ones_impl!(pool, Float32, dims...)
-end
-
-@inline function AdaptiveArrayPools.unsafe_ones!(pool::CuAdaptiveArrayPool, dims::Tuple{Vararg{Int}})
-    _mark_untracked!(pool)
-    _unsafe_ones_impl!(pool, Float32, dims...)
-end
-
-# ==============================================================================
-# similar! / unsafe_similar! - No override needed
-# ==============================================================================
-# These functions use eltype(template_array) as default, which is backend-agnostic.
-# The base AbstractArrayPool methods work correctly for CUDA pools.
+Returns `Float32` as the default element type for CUDA pools.
+This matches `CUDA.zeros()` behavior.
+"""
+AdaptiveArrayPools.default_eltype(::CuAdaptiveArrayPool) = Float32

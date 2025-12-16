@@ -5,7 +5,7 @@ using Printf
 # Public API
 export AdaptiveArrayPool, acquire!, unsafe_acquire!, pool_stats, get_task_local_pool
 export acquire_view!, acquire_array!  # Explicit naming aliases
-export zeros!, ones!, similar!  # Convenience functions
+export zeros!, ones!, similar!, default_eltype  # Convenience functions
 export unsafe_zeros!, unsafe_ones!, unsafe_similar!  # Unsafe convenience functions
 export @with_pool, @maybe_with_pool
 export USE_POOLING, MAYBE_POOLING_ENABLED, POOL_DEBUG

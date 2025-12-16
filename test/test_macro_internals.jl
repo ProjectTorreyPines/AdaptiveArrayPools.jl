@@ -1058,11 +1058,16 @@ import AdaptiveArrayPools: _extract_local_assignments, _filter_static_types, _ex
             # Convenience functions (zeros!, ones!, similar!)
             # ==================================================================
 
-            @testset "zeros! default type (Float64)" begin
+            @testset "zeros! default type (default_eltype dispatch)" begin
                 expr = :(v = zeros!(pool, 10))
                 types = _extract_acquire_types(expr, :pool)
-                @test :Float64 in types
                 @test length(types) == 1
+                type_expr = first(types)
+                # Should be default_eltype(pool) expression for backend flexibility
+                @test type_expr isa Expr
+                @test type_expr.head == :call
+                @test type_expr.args[1] == :default_eltype
+                @test type_expr.args[2] == :pool
             end
 
             @testset "zeros! explicit type" begin
@@ -1072,11 +1077,16 @@ import AdaptiveArrayPools: _extract_local_assignments, _filter_static_types, _ex
                 @test length(types) == 1
             end
 
-            @testset "ones! default type (Float64)" begin
+            @testset "ones! default type (default_eltype dispatch)" begin
                 expr = :(v = ones!(pool, 10))
                 types = _extract_acquire_types(expr, :pool)
-                @test :Float64 in types
                 @test length(types) == 1
+                type_expr = first(types)
+                # Should be default_eltype(pool) expression for backend flexibility
+                @test type_expr isa Expr
+                @test type_expr.head == :call
+                @test type_expr.args[1] == :default_eltype
+                @test type_expr.args[2] == :pool
             end
 
             @testset "ones! explicit type" begin

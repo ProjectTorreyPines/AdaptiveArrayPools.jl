@@ -250,4 +250,77 @@
 
     end
 
+    @testset "Convenience functions expansion" begin
+
+        @testset "zeros! default type uses default_eltype(pool)" begin
+            expr = @macroexpand @with_pool pool begin
+                v = zeros!(pool, 10)
+            end
+
+            expr_str = string(expr)
+
+            # Should contain default_eltype(pool) for backend-flexible type detection
+            @test occursin("default_eltype", expr_str)
+            @test occursin("pool", expr_str)
+        end
+
+        @testset "zeros! explicit type uses that type" begin
+            expr = @macroexpand @with_pool pool begin
+                v = zeros!(pool, Float32, 10)
+            end
+
+            expr_str = string(expr)
+
+            # Should contain Float32 directly (not default_eltype)
+            @test occursin("Float32", expr_str)
+        end
+
+        @testset "ones! default type uses default_eltype(pool)" begin
+            expr = @macroexpand @with_pool pool begin
+                v = ones!(pool, 10)
+            end
+
+            expr_str = string(expr)
+
+            @test occursin("default_eltype", expr_str)
+        end
+
+        @testset "unsafe_zeros! default type uses default_eltype(pool)" begin
+            expr = @macroexpand @with_pool pool begin
+                v = unsafe_zeros!(pool, 10)
+            end
+
+            expr_str = string(expr)
+
+            @test occursin("default_eltype", expr_str)
+        end
+
+        @testset "unsafe_ones! default type uses default_eltype(pool)" begin
+            expr = @macroexpand @with_pool pool begin
+                v = unsafe_ones!(pool, 10)
+            end
+
+            expr_str = string(expr)
+
+            @test occursin("default_eltype", expr_str)
+        end
+
+        @testset "mixed convenience with explicit and default types" begin
+            expr = @macroexpand @with_pool pool begin
+                v1 = zeros!(pool, Float64, 10)  # explicit
+                v2 = ones!(pool, 5)              # default
+                v3 = zeros!(pool, Float32, 3)   # explicit
+            end
+
+            expr_str = string(expr)
+
+            # Explicit types present
+            @test occursin("Float64", expr_str)
+            @test occursin("Float32", expr_str)
+            # default_eltype for untyped ones!
+            @test occursin("default_eltype", expr_str)
+        end
+
+    end
+
 end # Macro Expansion Details

@@ -619,8 +619,9 @@ function _extract_acquire_types(expr, target_pool, types=Set{Any}())
                         if _looks_like_type(third_arg)
                             push!(types, third_arg)
                         else
-                            # No type specified, default is Float64
-                            push!(types, :Float64)
+                            # No type specified, use default_eltype(pool) - resolved at compile time
+                            # CPU: Float64, CUDA: Float32 (via default_eltype dispatch)
+                            push!(types, Expr(:call, :default_eltype, target_pool))
                         end
                     end
                 # similar!/unsafe_similar!
@@ -735,6 +736,16 @@ function _filter_static_types(types, local_vars=Set{Symbol}())
                     has_dynamic = true
                 else
                     # x is external (function param, global, etc.) - safe to use
+                    push!(static_types, t)
+                end
+            elseif t.head == :call && length(t.args) >= 2 && t.args[1] == :default_eltype
+                # default_eltype(pool) expression from zeros!(pool, 10) etc.
+                # This is a compile-time constant (Float64 for CPU, Float32 for CUDA)
+                # Safe to use - pool type is known at compile time
+                inner_arg = t.args[2]
+                if _uses_local_var(inner_arg, local_vars)
+                    has_dynamic = true
+                else
                     push!(static_types, t)
                 end
             else

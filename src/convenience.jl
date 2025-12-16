@@ -3,6 +3,20 @@
 # ==============================================================================
 
 # ==============================================================================
+# Default Element Type
+# ==============================================================================
+
+"""
+    default_eltype(pool) -> Type
+
+Default element type for convenience functions when type is not specified.
+CPU pools default to `Float64`, CUDA pools to `Float32`.
+
+Backends can override this to provide appropriate defaults.
+"""
+default_eltype(::AbstractArrayPool) = Float64
+
+# ==============================================================================
 # zeros! - Acquire zero-initialized arrays from pool
 # ==============================================================================
 
@@ -54,9 +68,9 @@ end
     arr
 end
 
-# Default type (Float64) overload for macro transformation
+# Default type overload for macro transformation (uses default_eltype for backend flexibility)
 @inline function _zeros_impl!(pool::AbstractArrayPool, dims::Vararg{Int,N}) where {N}
-    _zeros_impl!(pool, Float64, dims...)
+    _zeros_impl!(pool, default_eltype(pool), dims...)
 end
 
 # Nothing fallback (pooling disabled)
@@ -117,9 +131,9 @@ end
     arr
 end
 
-# Default type (Float64) overload for macro transformation
+# Default type overload for macro transformation (uses default_eltype for backend flexibility)
 @inline function _ones_impl!(pool::AbstractArrayPool, dims::Vararg{Int,N}) where {N}
-    _ones_impl!(pool, Float64, dims...)
+    _ones_impl!(pool, default_eltype(pool), dims...)
 end
 
 # Nothing fallback (pooling disabled)
@@ -253,9 +267,9 @@ end
     arr
 end
 
-# Default type (Float64) overload for macro transformation
+# Default type overload for macro transformation (uses default_eltype for backend flexibility)
 @inline function _unsafe_zeros_impl!(pool::AbstractArrayPool, dims::Vararg{Int,N}) where {N}
-    _unsafe_zeros_impl!(pool, Float64, dims...)
+    _unsafe_zeros_impl!(pool, default_eltype(pool), dims...)
 end
 
 # Nothing fallback (pooling disabled)
@@ -316,9 +330,9 @@ end
     arr
 end
 
-# Default type (Float64) overload for macro transformation
+# Default type overload for macro transformation (uses default_eltype for backend flexibility)
 @inline function _unsafe_ones_impl!(pool::AbstractArrayPool, dims::Vararg{Int,N}) where {N}
-    _unsafe_ones_impl!(pool, Float64, dims...)
+    _unsafe_ones_impl!(pool, default_eltype(pool), dims...)
 end
 
 # Nothing fallback (pooling disabled)
