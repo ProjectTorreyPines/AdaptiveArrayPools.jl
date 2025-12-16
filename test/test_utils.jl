@@ -43,7 +43,7 @@ end
         @test occursin("Float64 (fixed)", output)
         @test occursin("Float32 (fixed)", output)
         @test occursin("Int64 (fixed)", output)
-        @test occursin("arrays: 1", output)
+        @test occursin("slots: 1", output)
         @test occursin("active: 1", output)
 
         rewind!(pool)
@@ -55,6 +55,42 @@ end
         output = @capture_out pool_stats(pool)
         @test occursin("UInt8 (fallback)", output)
         @test occursin("elements: 200", output)
+
+        rewind!(pool)
+    end
+
+    @testset "pool_stats with backend symbol" begin
+        # pool_stats(:cpu) should work
+        output = @capture_out pool_stats(:cpu)
+        @test occursin("AdaptiveArrayPool", output)
+
+        # pool_stats(:cuda) should throw MethodError (extension not loaded)
+        @test_throws MethodError pool_stats(:cuda)
+
+        # pool_stats() without args should work (shows all pools)
+        pool = get_task_local_pool()
+        checkpoint!(pool)
+        acquire!(pool, Float64, 100)
+
+        output = @capture_out pool_stats()
+        @test occursin("AdaptiveArrayPool", output)
+        @test occursin("Float64", output)
+
+        rewind!(pool)
+    end
+
+    @testset "pool_stats output format" begin
+        pool = AdaptiveArrayPool()
+        checkpoint!(pool)
+
+        # Use acquire! to populate pool
+        v = acquire!(pool, Float64, 100)
+
+        output = @capture_out pool_stats(pool)
+
+        # Check format
+        @test occursin("slots:", output)
+        @test occursin("elements:", output)
 
         rewind!(pool)
     end
@@ -160,29 +196,6 @@ end
         rewind!(pool)
     end
 
-    @testset "_format_bytes" begin
-        import AdaptiveArrayPools: _format_bytes
-
-        # Bytes (< 1024)
-        @test _format_bytes(0) == "0 bytes"
-        @test _format_bytes(100) == "100 bytes"
-        @test _format_bytes(1023) == "1023 bytes"
-
-        # KiB (1024 <= bytes < 1024^2)
-        @test _format_bytes(1024) == "1.000 KiB"
-        @test _format_bytes(2048) == "2.000 KiB"
-        @test _format_bytes(1536) == "1.500 KiB"  # 1.5 KiB
-
-        # MiB (1024^2 <= bytes < 1024^3)
-        @test _format_bytes(1024^2) == "1.000 MiB"
-        @test _format_bytes(2 * 1024^2) == "2.000 MiB"
-        @test _format_bytes(Int(1.5 * 1024^2)) == "1.500 MiB"
-
-        # GiB (bytes >= 1024^3)
-        @test _format_bytes(1024^3) == "1.000 GiB"
-        @test _format_bytes(2 * 1024^3) == "2.000 GiB"
-    end
-
     @testset "Base.show for TypedPool" begin
         import AdaptiveArrayPools: TypedPool
 
@@ -199,14 +212,14 @@ end
 
         output = sprint(show, pool.float64)
         @test occursin("TypedPool{Float64}", output)
-        @test occursin("vectors=2", output)
+        @test occursin("slots=2", output)
         @test occursin("active=2", output)
         @test occursin("elements=150", output)
 
         # Multi-line show (MIME"text/plain")
         output = sprint(show, MIME("text/plain"), pool.float64)
         @test occursin("TypedPool{Float64}", output)
-        @test occursin("arrays:", output)
+        @test occursin("slots:", output)
         @test occursin("active:", output)
 
         rewind!(pool)
@@ -218,7 +231,7 @@ end
         output = sprint(show, pool_empty)
         @test occursin("AdaptiveArrayPool", output)
         @test occursin("types=0", output)
-        @test occursin("vectors=0", output)
+        @test occursin("slots=0", output)
         @test occursin("active=0", output)
 
         # Non-empty pool - compact show
@@ -231,7 +244,7 @@ end
         output = sprint(show, pool)
         @test occursin("AdaptiveArrayPool", output)
         @test occursin("types=3", output)
-        @test occursin("vectors=3", output)
+        @test occursin("slots=3", output)
         @test occursin("active=3", output)
 
         # Multi-line show (MIME"text/plain")

@@ -73,3 +73,27 @@ ensuring thread safety without locks.
     
     return pool::AdaptiveArrayPool
 end
+
+# ==============================================================================
+# CUDA Pool Stubs (overridden by extension when CUDA is loaded)
+# ==============================================================================
+
+"""
+    get_task_local_cuda_pool() -> CuAdaptiveArrayPool
+
+Retrieves (or creates) the CUDA pool for the current Task and current GPU device.
+
+Requires CUDA.jl to be loaded. Throws an error if CUDA extension is not available.
+
+See also: [`get_task_local_pool`](@ref) for CPU pools.
+"""
+function get_task_local_cuda_pool end
+
+"""
+    get_task_local_cuda_pools() -> Dict{Int, CuAdaptiveArrayPool}
+
+Returns the dictionary of all CUDA pools for the current task (one per device).
+
+Requires CUDA.jl to be loaded. Throws an error if CUDA extension is not available.
+"""
+function get_task_local_cuda_pools end

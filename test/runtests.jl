@@ -1,7 +1,7 @@
 using Test
 using AdaptiveArrayPools
 using AdaptiveArrayPools: get_typed_pool!
-import AdaptiveArrayPools: checkpoint!, rewind!  # v2 API (not exported)
+import AdaptiveArrayPools: checkpoint!, rewind!  
 
 # Check if specific test files are requested via ARGS
 if !isempty(ARGS)
@@ -23,4 +23,12 @@ else
     include("test_aliases.jl")
     include("test_nway_cache.jl")
     include("test_fixed_slots.jl")
+    include("test_backend_macro_expansion.jl")
+
+    # CUDA extension tests (auto-detect, skip with TEST_CUDA=false)
+    if get(ENV, "TEST_CUDA", "true") != "false"
+        include("cuda/runtests.jl")
+    else
+        @info "CUDA tests disabled via TEST_CUDA=false"
+    end
 end

@@ -1,4 +1,18 @@
 # ==============================================================================
+# Allocation Dispatch Points (for extensibility)
+# ==============================================================================
+
+# Allocate a new vector (dispatch point for extensions)
+@inline allocate_vector(::AbstractTypedPool{T,Vector{T}}, n::Int) where {T} =
+    Vector{T}(undef, n)
+
+# Wrap flat view into N-D array (dispatch point for extensions)
+@inline function wrap_array(::AbstractTypedPool{T,Vector{T}},
+                            flat_view, dims::NTuple{N,Int}) where {T,N}
+    unsafe_wrap(Array{T,N}, pointer(flat_view), dims)
+end
+
+# ==============================================================================
 # Helper: Overflow-Safe Product
 # ==============================================================================
 
@@ -32,26 +46,18 @@ end
 # ==============================================================================
 
 """
-    get_view!(tp::TypedPool{T}, n::Int) -> SubArray{T,1,Vector{T},...}
+    get_view!(tp::AbstractTypedPool{T}, n::Int)
 
-Internal function to get a 1D vector view of size `n` from the typed pool.
-
-## Cache Hit Conditions
-1. Same length requested (`view_lengths[idx] == n`)
-2. Slot already exists (`idx <= length(vectors)`)
-
-## Behavior
-- **Cache hit**: Returns cached `SubArray` (zero allocation)
-- **Cache miss**: Creates new view, updates cache
-- **Pool expansion**: Allocates new vector if needed, warns at powers of 2
+Get a 1D vector view of size `n` from the typed pool.
+Returns cached view on hit (zero allocation), creates new on miss.
 """
-function get_view!(tp::TypedPool{T}, n::Int) where {T}
+function get_view!(tp::AbstractTypedPool{T}, n::Int) where {T}
     tp.n_active += 1
     idx = tp.n_active
 
     # 1. Need to expand pool (new slot)
     if idx > length(tp.vectors)
-        push!(tp.vectors, Vector{T}(undef, n))
+        push!(tp.vectors, allocate_vector(tp, n))
         new_view = view(tp.vectors[idx], 1:n)
         push!(tp.views, new_view)
         push!(tp.view_lengths, n)
@@ -59,7 +65,7 @@ function get_view!(tp::TypedPool{T}, n::Int) where {T}
         # Warn at powers of 2 (512, 1024, 2048, ...) - possible missing rewind!()
         if idx >= 512 && (idx & (idx - 1)) == 0
             total_bytes = sum(length, tp.vectors) * sizeof(T)
-            @warn "TypedPool{$T} growing large ($idx arrays, ~$(Base.format_bytes(total_bytes))). Missing rewind!()?"
+            @warn "$(nameof(typeof(tp))){$T} growing large ($idx arrays, ~$(Base.format_bytes(total_bytes))). Missing rewind!()?"
         end
 
         return new_view
@@ -89,23 +95,11 @@ end
 # ==============================================================================
 
 """
-    get_nd_array!(tp::TypedPool{T}, dims::NTuple{N,Int}) -> Array{T,N}
+    get_nd_array!(tp::AbstractTypedPool{T}, dims::NTuple{N,Int}) -> Array{T,N}
 
-Internal function to get an N-dimensional `Array` from the typed pool with N-way caching.
-Used by `unsafe_acquire!` to cache Array instances and avoid `unsafe_wrap` overhead.
-
-## N-way Set Associative Cache
-Each slot can cache up to `CACHE_WAYS` different dimension patterns.
-This prevents thrashing when alternating between different array shapes.
-
-## Cache Hit Conditions
-1. Same dims tuple (`isa NTuple{N, Int} && cached_dims == dims`)
-2. Same pointer (backing vector not resized)
-
-## Type Assertion
-Uses `::Array{T, N}` for type stability when retrieving from `Vector{Any}`.
+Get an N-dimensional `Array` from the pool with N-way caching.
 """
-@inline function get_nd_array!(tp::TypedPool{T}, dims::NTuple{N, Int}) where {T, N}
+@inline function get_nd_array!(tp::AbstractTypedPool{T}, dims::NTuple{N, Int}) where {T, N}
     total_len = safe_prod(dims)
     flat_view = get_view!(tp, total_len) # Increments n_active
     slot = tp.n_active
@@ -142,7 +136,7 @@ Uses `::Array{T, N}` for type stability when retrieving from `Vector{Any}`.
     @inbounds way_offset = tp.nd_next_way[slot]
     target_idx = base + way_offset + 1
 
-    arr = unsafe_wrap(Array{T, N}, pointer(flat_view), dims)
+    arr = wrap_array(tp, flat_view, dims)
 
     @inbounds tp.nd_arrays[target_idx] = arr
     @inbounds tp.nd_dims[target_idx] = dims
@@ -155,22 +149,11 @@ Uses `::Array{T, N}` for type stability when retrieving from `Vector{Any}`.
 end
 
 """
-    get_nd_view!(tp::TypedPool{T}, dims::NTuple{N,Int}) -> ReshapedArray{T,N,...}
+    get_nd_view!(tp::AbstractTypedPool{T}, dims::NTuple{N,Int})
 
-Internal function to get an N-dimensional view from the typed pool.
-
-Returns a `ReshapedArray` wrapping a 1D view - zero creation cost (no `unsafe_wrap`).
-`ReshapedArray` is a lightweight, stack-allocated wrapper with minimal overhead.
-
-## Design Decision
-Uses `reshape(1D_view, dims)` instead of `SubArray{Array}` approach:
-- Zero `unsafe_wrap` cost (0 bytes vs 112 bytes on cache miss)
-- Works with any dimension pattern (no N-way cache limit)
-- Simpler implementation
-
-For type-unspecified paths, use `unsafe_acquire!` → `get_nd_array!` instead.
+Get an N-dimensional view via `reshape` (zero creation cost).
 """
-@inline function get_nd_view!(tp::TypedPool{T}, dims::NTuple{N, Int}) where {T, N}
+@inline function get_nd_view!(tp::AbstractTypedPool{T}, dims::NTuple{N, Int}) where {T, N}
     total_len = safe_prod(dims)
     flat_view = get_view!(tp, total_len)  # 1D view (cached, 0 alloc)
     return reshape(flat_view, dims)        # ReshapedArray (0 creation cost)
@@ -181,7 +164,7 @@ end
 # ==============================================================================
 
 """
-    _mark_untracked!(pool::AdaptiveArrayPool)
+    _mark_untracked!(pool::AbstractArrayPool)
 
 Mark that an untracked acquire has occurred at the current checkpoint depth.
 Called by `acquire!` wrapper; macro-transformed calls use `_acquire_impl!` directly.
@@ -189,7 +172,7 @@ Called by `acquire!` wrapper; macro-transformed calls use `_acquire_impl!` direc
 With 1-indexed _current_depth (starting at 1 for global scope), this always marks
 the current scope's _untracked_flags.
 """
-@inline function _mark_untracked!(pool::AdaptiveArrayPool)
+@inline function _mark_untracked!(pool::AbstractArrayPool)
     # Always mark (_current_depth >= 1 guaranteed by sentinel)
     @inbounds pool._untracked_flags[pool._current_depth] = true
 end
@@ -205,92 +188,93 @@ end
 Internal implementation of acquire!. Called directly by macro-transformed code
 (no untracked marking). User code calls `acquire!` which adds marking.
 """
-@inline function _acquire_impl!(pool::AdaptiveArrayPool, ::Type{T}, n::Int) where {T}
+@inline function _acquire_impl!(pool::AbstractArrayPool, ::Type{T}, n::Int) where {T}
     tp = get_typed_pool!(pool, T)
     return get_view!(tp, n)
 end
 
-@inline function _acquire_impl!(pool::AdaptiveArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
+@inline function _acquire_impl!(pool::AbstractArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
     tp = get_typed_pool!(pool, T)
     return get_nd_view!(tp, dims)
 end
 
-@inline function _acquire_impl!(pool::AdaptiveArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
+@inline function _acquire_impl!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
     _acquire_impl!(pool, T, dims...)
 end
 
 # Similar-style
-@inline _acquire_impl!(pool::AdaptiveArrayPool, x::AbstractArray) = _acquire_impl!(pool, eltype(x), size(x))
+@inline _acquire_impl!(pool::AbstractArrayPool, x::AbstractArray) = _acquire_impl!(pool, eltype(x), size(x))
 
 """
     _unsafe_acquire_impl!(pool, Type{T}, dims...) -> Array{T,N}
 
 Internal implementation of unsafe_acquire!. Called directly by macro-transformed code.
 """
-@inline function _unsafe_acquire_impl!(pool::AdaptiveArrayPool, ::Type{T}, n::Int) where {T}
+@inline function _unsafe_acquire_impl!(pool::AbstractArrayPool, ::Type{T}, n::Int) where {T}
     tp = get_typed_pool!(pool, T)
     return get_nd_array!(tp, (n,))
 end
 
-@inline function _unsafe_acquire_impl!(pool::AdaptiveArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
+@inline function _unsafe_acquire_impl!(pool::AbstractArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
     tp = get_typed_pool!(pool, T)
     return get_nd_array!(tp, dims)
 end
 
-@inline function _unsafe_acquire_impl!(pool::AdaptiveArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
+@inline function _unsafe_acquire_impl!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
     tp = get_typed_pool!(pool, T)
     return get_nd_array!(tp, dims)
 end
 
 # Similar-style
-@inline _unsafe_acquire_impl!(pool::AdaptiveArrayPool, x::AbstractArray) = _unsafe_acquire_impl!(pool, eltype(x), size(x))
+@inline _unsafe_acquire_impl!(pool::AbstractArrayPool, x::AbstractArray) = _unsafe_acquire_impl!(pool, eltype(x), size(x))
 
 # ==============================================================================
 # Acquisition API (User-facing with untracked marking)
 # ==============================================================================
 
 """
-    acquire!(pool, Type{T}, n) -> SubArray{T,1,Vector{T},...}
-    acquire!(pool, Type{T}, dims...) -> ReshapedArray{T,N,...}
-    acquire!(pool, Type{T}, dims::NTuple{N,Int}) -> ReshapedArray{T,N,...}
+    acquire!(pool, Type{T}, n) -> view type
+    acquire!(pool, Type{T}, dims...) -> view type
+    acquire!(pool, Type{T}, dims::NTuple{N,Int}) -> view type
 
 Acquire a view of an array of type `T` with size `n` or dimensions `dims`.
 
-Returns a view backed by the pool:
-- **1D**: `SubArray{T,1,Vector{T},...}` (parent is `Vector{T}`)
-- **N-D**: `ReshapedArray{T,N,...}` (zero creation cost, no `unsafe_wrap`)
+Returns a view backed by the pool (backend-dependent type):
+- **CPU 1D**: `SubArray{T,1,Vector{T},...}` (parent is `Vector{T}`)
+- **CPU N-D**: `ReshapedArray{T,N,...}` (zero creation cost)
+- **CUDA**: `CuArray{T,N}` (unified N-way cache)
 
-Both types are `StridedArray`, compatible with BLAS and broadcasting.
+All return types are `StridedArray`, compatible with BLAS and broadcasting.
 
 For type-unspecified paths (struct fields without concrete type parameters),
-use [`unsafe_acquire!`](@ref) instead - cached Array instances can be reused.
+use [`unsafe_acquire!`](@ref) instead - cached native array instances can be reused.
 
 ## Example
 ```julia
 @with_pool pool begin
-    v = acquire!(pool, Float64, 100)      # SubArray{Float64,1,...}
-    m = acquire!(pool, Float64, 10, 10)   # ReshapedArray{Float64,2,...}
+    v = acquire!(pool, Float64, 100)      # 1D view
+    m = acquire!(pool, Float64, 10, 10)   # 2D view
     v .= 1.0
     m .= 2.0
     sum(v) + sum(m)
 end
 ```
 
-See also: [`unsafe_acquire!`](@ref) for raw `Array` access.
+See also: [`unsafe_acquire!`](@ref) for native array access.
 """
-@inline function acquire!(pool::AdaptiveArrayPool, ::Type{T}, n::Int) where {T}
+@inline function acquire!(pool::AbstractArrayPool, ::Type{T}, n::Int) where {T}
     _mark_untracked!(pool)
     _acquire_impl!(pool, T, n)
 end
 
 # Multi-dimensional support (zero-allocation with N-D cache)
-@inline function acquire!(pool::AdaptiveArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
+@inline function acquire!(pool::AbstractArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
     _mark_untracked!(pool)
     _acquire_impl!(pool, T, dims...)
 end
 
 # Tuple support: allows acquire!(pool, T, size(A)) where size(A) returns NTuple{N,Int}
-@inline function acquire!(pool::AdaptiveArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
+@inline function acquire!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
     _mark_untracked!(pool)
     _acquire_impl!(pool, T, dims...)
 end
@@ -323,7 +307,7 @@ A = rand(10, 10)
 end
 ```
 """
-@inline function acquire!(pool::AdaptiveArrayPool, x::AbstractArray)
+@inline function acquire!(pool::AbstractArrayPool, x::AbstractArray)
     _mark_untracked!(pool)
     _acquire_impl!(pool, eltype(x), size(x))
 end
@@ -335,16 +319,19 @@ end
 # ==============================================================================
 
 """
-    unsafe_acquire!(pool, Type{T}, n) -> Vector{T}
-    unsafe_acquire!(pool, Type{T}, dims...) -> Array{T,N}
-    unsafe_acquire!(pool, Type{T}, dims::NTuple{N,Int}) -> Array{T,N}
+    unsafe_acquire!(pool, Type{T}, n) -> backend's native array type
+    unsafe_acquire!(pool, Type{T}, dims...) -> backend's native array type
+    unsafe_acquire!(pool, Type{T}, dims::NTuple{N,Int}) -> backend's native array type
 
-Acquire a raw `Array` backed by pool memory.
+Acquire a native array backed by pool memory.
 
-Since `Array` instances are mutable references, cached instances can be returned directly
-without creating new wrapper objects—ideal for type-unspecified paths. In contrast,
-`ReshapedArray` wraps a view and cannot be meaningfully cached, as each call to `reshape()`
-creates a new wrapper.
+Returns the backend's native array type:
+- **CPU**: `Array{T,N}` (via `unsafe_wrap`)
+- **CUDA**: `CuArray{T,N}` (via unified view cache)
+
+For CPU pools, since `Array` instances are mutable references, cached instances can be
+returned directly without creating new wrapper objects—ideal for type-unspecified paths.
+For CUDA pools, this delegates to the same unified N-way cache as `acquire!`.
 
 ## Safety Warning
 The returned array is only valid within the `@with_pool` scope. Using it after
@@ -357,37 +344,37 @@ undefined behavior as the memory is owned by the pool.
 - **Type-unspecified paths**: Struct fields without concrete type parameters
   (e.g., `_pooled_chain::PooledChain` instead of `_pooled_chain::PooledChain{M}`)
 - FFI calls expecting raw pointers
-- APIs that strictly require `Array` type
+- APIs that strictly require native array types
 
 ## Allocation Behavior
-- Cache hit: 0 bytes (cached Array instance reused)
-- Cache miss: 112 bytes (Array header creation via `unsafe_wrap`)
+- **CPU**: Cache hit 0 bytes, cache miss ~112 bytes (Array header via `unsafe_wrap`)
+- **CUDA**: Cache hit ~0 bytes, cache miss ~80 bytes (CuArray wrapper creation)
 
 ## Example
 ```julia
 @with_pool pool begin
-    A = unsafe_acquire!(pool, Float64, 100, 100)  # Matrix{Float64}
-    B = unsafe_acquire!(pool, Float64, 100, 100)  # Matrix{Float64}
+    A = unsafe_acquire!(pool, Float64, 100, 100)  # Matrix{Float64} (CPU) or CuMatrix{Float64} (CUDA)
+    B = unsafe_acquire!(pool, Float64, 100, 100)
     C = similar(A)  # Regular allocation for result
     mul!(C, A, B)   # BLAS uses A, B directly
 end
 # A and B are INVALID after this point!
 ```
 
-See also: [`acquire!`](@ref) for `ReshapedArray` access.
+See also: [`acquire!`](@ref) for view-based access.
 """
-@inline function unsafe_acquire!(pool::AdaptiveArrayPool, ::Type{T}, n::Int) where {T}
+@inline function unsafe_acquire!(pool::AbstractArrayPool, ::Type{T}, n::Int) where {T}
     _mark_untracked!(pool)
     _unsafe_acquire_impl!(pool, T, n)
 end
 
-@inline function unsafe_acquire!(pool::AdaptiveArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
+@inline function unsafe_acquire!(pool::AbstractArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
     _mark_untracked!(pool)
     _unsafe_acquire_impl!(pool, T, dims...)
 end
 
 # Tuple support
-@inline function unsafe_acquire!(pool::AdaptiveArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
+@inline function unsafe_acquire!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
     _mark_untracked!(pool)
     _unsafe_acquire_impl!(pool, T, dims)
 end
@@ -420,7 +407,7 @@ A = rand(10, 10)
 end
 ```
 """
-@inline function unsafe_acquire!(pool::AdaptiveArrayPool, x::AbstractArray)
+@inline function unsafe_acquire!(pool::AbstractArrayPool, x::AbstractArray)
     _mark_untracked!(pool)
     _unsafe_acquire_impl!(pool, eltype(x), size(x))
 end

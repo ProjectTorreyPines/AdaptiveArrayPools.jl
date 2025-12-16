@@ -2,12 +2,18 @@ module AdaptiveArrayPools
 
 using Printf
 
+# Public API
 export AdaptiveArrayPool, acquire!, unsafe_acquire!, pool_stats, get_task_local_pool
 export acquire_view!, acquire_array!  # Explicit naming aliases
 export @with_pool, @maybe_with_pool
 export USE_POOLING, MAYBE_POOLING_ENABLED, POOL_DEBUG
 export checkpoint!, rewind!, reset!
 export CACHE_WAYS, set_cache_ways!  # N-way cache configuration
+export get_task_local_cuda_pool, get_task_local_cuda_pools  # CUDA (stubs, overridden by extension)
+
+# Extension API (for GPU backends)
+export AbstractTypedPool, AbstractArrayPool  # For subtyping
+# Note: Extensions add methods to _get_pool_for_backend(::Val{:backend}) directly
 
 # Core data structures
 include("types.jl")

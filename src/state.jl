@@ -68,8 +68,8 @@ checkpoint!(::Nothing) = nothing
 checkpoint!(::Nothing, ::Type) = nothing
 checkpoint!(::Nothing, types::Type...) = nothing
 
-# Internal helper for checkpoint
-@inline function _checkpoint_typed_pool!(tp::TypedPool, depth::Int)
+# Internal helper for checkpoint (works for any AbstractTypedPool)
+@inline function _checkpoint_typed_pool!(tp::AbstractTypedPool, depth::Int)
     push!(tp._checkpoint_n_active, tp.n_active)
     push!(tp._checkpoint_depths, depth)
     nothing
@@ -163,9 +163,9 @@ rewind!(::Nothing) = nothing
 rewind!(::Nothing, ::Type) = nothing
 rewind!(::Nothing, types::Type...) = nothing
 
-# Internal helper for rewind with orphan cleanup
+# Internal helper for rewind with orphan cleanup (works for any AbstractTypedPool)
 # Uses 1-based sentinel pattern: no isempty checks needed (sentinel [0] guarantees non-empty)
-@inline function _rewind_typed_pool!(tp::TypedPool, current_depth::Int)
+@inline function _rewind_typed_pool!(tp::AbstractTypedPool, current_depth::Int)
     # 1. Orphaned Checkpoints Cleanup
     # If there are checkpoints from deeper scopes (depth > current), pop them first.
     # This happens when a nested scope did full checkpoint but typed rewind,
@@ -196,12 +196,12 @@ end
 # ==============================================================================
 
 """
-    empty!(tp::TypedPool)
+    empty!(tp::AbstractTypedPool)
 
-Clear all internal storage of a TypedPool, releasing all memory.
+Clear all internal storage, releasing all memory.
 Restores sentinel values for 1-based sentinel pattern.
 """
-function Base.empty!(tp::TypedPool)
+function Base.empty!(tp::AbstractTypedPool)
     empty!(tp.vectors)
     empty!(tp.views)
     empty!(tp.view_lengths)
@@ -265,16 +265,12 @@ Base.empty!(::Nothing) = nothing
 # ==============================================================================
 
 """
-    reset!(tp::TypedPool)
+    reset!(tp::AbstractTypedPool)
 
-Reset TypedPool state without clearing allocated storage.
-
+Reset state without clearing allocated storage.
 Sets `n_active = 0` and restores checkpoint stacks to sentinel state.
-All vectors, views, and N-D arrays are preserved for reuse.
-
-This is useful when you want to "start fresh" without reallocating memory.
 """
-function reset!(tp::TypedPool)
+function reset!(tp::AbstractTypedPool)
     tp.n_active = 0
     # Restore sentinel values (1-based sentinel pattern)
     empty!(tp._checkpoint_n_active)

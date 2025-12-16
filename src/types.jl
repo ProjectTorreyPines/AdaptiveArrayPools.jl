@@ -62,6 +62,28 @@ function set_cache_ways!(n::Int)
 end
 
 # ==============================================================================
+# Abstract Type Hierarchy (for extensibility)
+# ==============================================================================
+
+"""
+    AbstractTypedPool{T, V<:AbstractVector{T}}
+
+Abstract base for type-specific memory pools.
+"""
+abstract type AbstractTypedPool{T, V<:AbstractVector{T}} end
+
+"""
+    AbstractArrayPool
+
+Abstract base for multi-type array pools.
+"""
+abstract type AbstractArrayPool end
+
+# Storage type accessor
+storage_type(::AbstractTypedPool{T,V}) where {T,V} = V
+storage_type(::Type{<:AbstractTypedPool{T,V}}) where {T,V} = V
+
+# ==============================================================================
 # Core Data Structures
 # ==============================================================================
 
@@ -69,7 +91,7 @@ end
 # isempty() checks in hot paths. See docstrings for details.
 
 """
-    TypedPool{T}
+    TypedPool{T} <: AbstractTypedPool{T, Vector{T}}
 
 Internal structure managing pooled vectors for a specific element type `T`.
 
@@ -97,7 +119,7 @@ Internal structure managing pooled vectors for a specific element type `T`.
 `acquire!` for N-D returns `ReshapedArray` (zero creation cost), so no caching needed.
 Only `unsafe_acquire!` benefits from N-D caching since `unsafe_wrap` allocates 112 bytes.
 """
-mutable struct TypedPool{T}
+mutable struct TypedPool{T} <: AbstractTypedPool{T, Vector{T}}
     # --- Storage ---
     vectors::Vector{Vector{T}}
 
@@ -158,7 +180,7 @@ const FIXED_SLOT_FIELDS = (:float64, :float32, :int64, :int32, :complexf64, :com
 Multi-type memory pool with fixed slots for common types and IdDict fallback for others.
 Zero allocation after warmup. NOT thread-safe - use one pool per Task.
 """
-mutable struct AdaptiveArrayPool
+mutable struct AdaptiveArrayPool <: AbstractArrayPool
     # Fixed Slots: common types with zero lookup overhead
     float64::TypedPool{Float64}
     float32::TypedPool{Float32}
