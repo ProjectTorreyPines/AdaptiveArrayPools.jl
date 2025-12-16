@@ -1053,6 +1053,90 @@ import AdaptiveArrayPools: _extract_local_assignments, _filter_static_types, _ex
                 @test length(static_types) == 5
                 @test !has_dynamic
             end
+
+            # ==================================================================
+            # Convenience functions (zeros!, ones!, similar!)
+            # ==================================================================
+
+            @testset "zeros! default type (Float64)" begin
+                expr = :(v = zeros!(pool, 10))
+                types = _extract_acquire_types(expr, :pool)
+                @test :Float64 in types
+                @test length(types) == 1
+            end
+
+            @testset "zeros! explicit type" begin
+                expr = :(v = zeros!(pool, Float32, 10, 10))
+                types = _extract_acquire_types(expr, :pool)
+                @test :Float32 in types
+                @test length(types) == 1
+            end
+
+            @testset "ones! default type (Float64)" begin
+                expr = :(v = ones!(pool, 10))
+                types = _extract_acquire_types(expr, :pool)
+                @test :Float64 in types
+                @test length(types) == 1
+            end
+
+            @testset "ones! explicit type" begin
+                expr = :(v = ones!(pool, Int64, 5, 5))
+                types = _extract_acquire_types(expr, :pool)
+                @test :Int64 in types
+                @test length(types) == 1
+            end
+
+            @testset "similar! same type as template (nargs == 3)" begin
+                expr = :(v = similar!(pool, template))
+                types = _extract_acquire_types(expr, :pool)
+                @test length(types) == 1
+                type_expr = first(types)
+                @test type_expr isa Expr
+                @test type_expr.head == :call
+                @test type_expr.args[1] == :eltype
+                @test type_expr.args[2] == :template
+            end
+
+            @testset "similar! explicit type (nargs >= 4, type arg)" begin
+                expr = :(v = similar!(pool, template, Float32))
+                types = _extract_acquire_types(expr, :pool)
+                @test :Float32 in types
+                @test length(types) == 1
+            end
+
+            @testset "similar! explicit type with dims (nargs >= 4, type + dims)" begin
+                expr = :(v = similar!(pool, template, Int64, 10, 10))
+                types = _extract_acquire_types(expr, :pool)
+                @test :Int64 in types
+                @test length(types) == 1
+            end
+
+            @testset "similar! same type with different dims (nargs >= 4, dims only)" begin
+                expr = :(v = similar!(pool, template, 5, 5))
+                types = _extract_acquire_types(expr, :pool)
+                @test length(types) == 1
+                type_expr = first(types)
+                @test type_expr isa Expr
+                @test type_expr.head == :call
+                @test type_expr.args[1] == :eltype
+                @test type_expr.args[2] == :template
+            end
+
+            @testset "mixed convenience functions" begin
+                expr = quote
+                    v1 = zeros!(pool, Float64, 10)
+                    v2 = ones!(pool, Float32, 5)
+                    v3 = similar!(pool, template)
+                    v4 = similar!(pool, template, Int64)
+                end
+                types = _extract_acquire_types(expr, :pool)
+                @test :Float64 in types
+                @test :Float32 in types
+                @test :Int64 in types
+                has_eltype = any(t -> t isa Expr && t.head == :call && t.args[1] == :eltype, types)
+                @test has_eltype
+                @test length(types) == 4
+            end
         end
 
     end
