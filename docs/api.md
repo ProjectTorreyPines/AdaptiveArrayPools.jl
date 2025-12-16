@@ -14,7 +14,7 @@
 | `acquire!(pool, T, dims...)` | Returns a view: `SubArray{T,1}` for 1D, `ReshapedArray{T,N}` for N-D. Always 0 bytes. |
 | `acquire!(pool, T, dims::Tuple)` | Tuple overload for `acquire!` (e.g., `acquire!(pool, T, size(x))`). |
 | `acquire!(pool, x::AbstractArray)` | Similar-style: acquires array matching `eltype(x)` and `size(x)`. |
-| `unsafe_acquire!(pool, T, dims...)` | Returns `SubArray{T,1}` for 1D, raw `Array{T,N}` for N-D. Only for FFI/type constraints. |
+| `unsafe_acquire!(pool, T, dims...)` | Returns native `Array`/`CuArray` (CPU: `Vector{T}` for 1D, `Array{T,N}` for N-D). Only for FFI/type constraints. |
 | `unsafe_acquire!(pool, T, dims::Tuple)` | Tuple overload for `unsafe_acquire!`. |
 | `unsafe_acquire!(pool, x::AbstractArray)` | Similar-style: acquires raw array matching `eltype(x)` and `size(x)`. |
 | `acquire_view!(pool, T, dims...)` | Alias for `acquire!`. Returns view types. |
