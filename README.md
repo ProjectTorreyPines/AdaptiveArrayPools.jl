@@ -71,6 +71,8 @@ end
 
 This automatic checkpoint/rewind cycle is what enables zero allocation on repeated calls. You just write normal-looking code with `acquire!` instead of constructors.
 
+`acquire!` returns lightweight views (`SubArray`, `ReshapedArray`) that work seamlessly with BLAS/LAPACK. If you need native `Array` types (FFI, type constraints), use `unsafe_acquire!`—see [API Reference](docs/api.md).
+
 > **Note**: Keeping acquired arrays inside the scope is your responsibility. Return computed values (scalars, copies), not the arrays themselves. See [Safety Guide](docs/safety.md).
 
 **Thread-safe by design**: Each Julia Task gets its own independent pool, so `@with_pool` inside threaded code is automatically safe:
