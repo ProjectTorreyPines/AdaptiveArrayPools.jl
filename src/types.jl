@@ -79,10 +79,6 @@ Abstract base for multi-type array pools.
 """
 abstract type AbstractArrayPool end
 
-# Storage type accessor
-storage_type(::AbstractTypedPool{T,V}) where {T,V} = V
-storage_type(::Type{<:AbstractTypedPool{T,V}}) where {T,V} = V
-
 # ==============================================================================
 # Core Data Structures
 # ==============================================================================
