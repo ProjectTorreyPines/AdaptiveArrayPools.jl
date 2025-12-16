@@ -15,6 +15,7 @@ export get_task_local_cuda_pool, get_task_local_cuda_pools  # CUDA (stubs, overr
 
 # Extension API (for GPU backends)
 export AbstractTypedPool, AbstractArrayPool  # For subtyping
+export DisabledPool, DISABLED_CPU, pooling_enabled  # Disabled pool support
 # Note: Extensions add methods to _get_pool_for_backend(::Val{:backend}) directly
 
 # Core data structures

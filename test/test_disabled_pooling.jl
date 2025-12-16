@@ -21,9 +21,10 @@
     @test USE_POOLING == false
     println("USE_POOLING = ", USE_POOLING)
 
-    # Test @with_pool block mode - should set pool=nothing
+    # Test @with_pool block mode - should set pool=DisabledPool{:cpu}
     result1 = @with_pool pool begin
-        @test pool === nothing
+        @test pool isa DisabledPool{:cpu}
+        @test !pooling_enabled(pool)
         v = acquire!(pool, Float64, 10)  # fallback to normal allocation
         @test v isa Vector{Float64}
         @test length(v) == 10
@@ -33,9 +34,10 @@
     @test result1 == 10.0
     println("@with_pool block mode: PASS")
 
-    # Test @maybe_with_pool block mode - should also set pool=nothing
+    # Test @maybe_with_pool block mode - should also set pool=DisabledPool{:cpu}
     result2 = @maybe_with_pool pool begin
-        @test pool === nothing
+        @test pool isa DisabledPool{:cpu}
+        @test !pooling_enabled(pool)
         v = acquire!(pool, Float64, 5)
         @test v isa Vector{Float64}
         v .= 4.0

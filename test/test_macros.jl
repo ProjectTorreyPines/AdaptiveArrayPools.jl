@@ -130,7 +130,8 @@ import AdaptiveArrayPools: checkpoint!, rewind!
         MAYBE_POOLING_ENABLED[] = false
 
         result = @maybe_with_pool pool begin
-            @test pool === nothing
+            @test pool isa DisabledPool{:cpu}
+            @test !pooling_enabled(pool)
             v = acquire!(pool, Float64, 10)  # Falls back to normal allocation
             @test v isa Vector{Float64}
             v .= 4.0
@@ -242,7 +243,8 @@ import AdaptiveArrayPools: checkpoint!, rewind!
         MAYBE_POOLING_ENABLED[] = false
 
         @maybe_with_pool p2 maybe_short_disabled(n) = begin
-            @test p2 === nothing
+            @test p2 isa DisabledPool{:cpu}
+            @test !pooling_enabled(p2)
             v = acquire!(p2, Float64, n)  # Falls back to allocation
             v .= 1.0
             sum(v)

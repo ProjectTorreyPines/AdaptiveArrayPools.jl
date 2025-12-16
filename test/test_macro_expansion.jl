@@ -43,9 +43,9 @@
             # Should contain conditional check (MAYBE_POOLING_ENABLED is inlined as RefValue)
             @test occursin("RefValue", expr_str) || occursin("if", expr_str)
 
-            # Should have both branches (pool and nothing)
+            # Should have both branches (pool getter and DisabledPool fallback)
             @test occursin("get_task_local_pool", expr_str)
-            @test occursin("nothing", expr_str)
+            @test occursin("DisabledPool", expr_str)
         end
 
         # Test typed checkpoint optimization

@@ -80,6 +80,65 @@ Abstract base for multi-type array pools.
 abstract type AbstractArrayPool end
 
 # ==============================================================================
+# Disabled Pool Sentinel Types
+# ==============================================================================
+
+"""
+    DisabledPool{Backend}
+
+Sentinel type for disabled pooling that preserves backend context.
+When `USE_POOLING=false` (compile-time) or `MAYBE_POOLING_ENABLED[]=false` (runtime),
+macros return `DisabledPool{backend}()` instead of `nothing`.
+
+Backend symbols:
+- `:cpu` - Standard Julia arrays
+- `:cuda` - CUDA.jl CuArrays (defined in extension)
+
+This enables `@with_pool :cuda` to return correct array types even when pooling is off.
+
+## Example
+```julia
+# When USE_POOLING=false:
+@with_pool :cuda pool begin
+    v = zeros!(pool, 10)  # Returns CuArray{Float32}, not Array{Float64}!
+end
+```
+
+See also: [`pooling_enabled`](@ref), [`DISABLED_CPU`](@ref)
+"""
+struct DisabledPool{Backend} end
+
+"""
+    DISABLED_CPU
+
+Singleton instance for disabled CPU pooling.
+Used by macros when `USE_POOLING=false` without backend specification.
+"""
+const DISABLED_CPU = DisabledPool{:cpu}()
+
+"""
+    pooling_enabled(pool) -> Bool
+
+Returns `true` if `pool` is an active pool, `false` if pooling is disabled.
+
+## Examples
+```julia
+@maybe_with_pool pool begin
+    if pooling_enabled(pool)
+        # Using pooled memory
+    else
+        # Using standard allocation
+    end
+end
+```
+
+See also: [`DisabledPool`](@ref)
+"""
+pooling_enabled(::AbstractArrayPool) = true
+pooling_enabled(::DisabledPool) = false
+pooling_enabled(::Nothing) = false  # Backward compatibility
+
+# ==============================================================================
 # Core Data Structures
 # ==============================================================================
 

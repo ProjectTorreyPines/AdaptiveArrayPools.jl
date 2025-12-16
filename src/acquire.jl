@@ -441,3 +441,27 @@ const acquire_array! = unsafe_acquire!
 # Internal implementation aliases (for macro transformation)
 const _acquire_view_impl! = _acquire_impl!
 const _acquire_array_impl! = _unsafe_acquire_impl!
+
+# ==============================================================================
+# DisabledPool Acquire Fallbacks (pooling disabled with backend context)
+# ==============================================================================
+
+# --- acquire! for DisabledPool{:cpu} ---
+@inline acquire!(::DisabledPool{:cpu}, ::Type{T}, n::Int) where {T} = Vector{T}(undef, n)
+@inline acquire!(::DisabledPool{:cpu}, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = Array{T,N}(undef, dims)
+@inline acquire!(::DisabledPool{:cpu}, ::Type{T}, dims::NTuple{N,Int}) where {T,N} = Array{T,N}(undef, dims)
+@inline acquire!(::DisabledPool{:cpu}, x::AbstractArray) = similar(x)
+
+# --- unsafe_acquire! for DisabledPool{:cpu} ---
+@inline unsafe_acquire!(::DisabledPool{:cpu}, ::Type{T}, n::Int) where {T} = Vector{T}(undef, n)
+@inline unsafe_acquire!(::DisabledPool{:cpu}, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = Array{T,N}(undef, dims)
+@inline unsafe_acquire!(::DisabledPool{:cpu}, ::Type{T}, dims::NTuple{N,Int}) where {T,N} = Array{T,N}(undef, dims)
+@inline unsafe_acquire!(::DisabledPool{:cpu}, x::AbstractArray) = similar(x)
+
+# --- Generic DisabledPool fallbacks (unknown backend → error) ---
+@inline acquire!(p::DisabledPool{B}, args...) where {B} = _throw_backend_not_loaded(B)
+@inline unsafe_acquire!(p::DisabledPool{B}, args...) where {B} = _throw_backend_not_loaded(B)
+
+# --- _impl! delegators for DisabledPool (macro transformation support) ---
+@inline _acquire_impl!(p::DisabledPool, args...) = acquire!(p, args...)
+@inline _unsafe_acquire_impl!(p::DisabledPool, args...) = unsafe_acquire!(p, args...)

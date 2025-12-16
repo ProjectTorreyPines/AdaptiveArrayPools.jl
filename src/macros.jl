@@ -161,19 +161,48 @@ macro maybe_with_pool(expr)
     _generate_pool_code(pool_name, expr, false)
 end
 
+# Backend-specific variants: @maybe_with_pool :cuda pool begin ... end
+macro maybe_with_pool(backend::QuoteNode, pool_name, expr)
+    _generate_pool_code_with_backend(backend.value, pool_name, expr, false)
+end
+
+macro maybe_with_pool(backend::QuoteNode, expr)
+    pool_name = gensym(:pool)
+    _generate_pool_code_with_backend(backend.value, pool_name, expr, false)
+end
+
+# ==============================================================================
+# Internal: DisabledPool Expression Generator
+# ==============================================================================
+
+"""
+    _disabled_pool_expr(backend::Symbol) -> Expr
+
+Generate expression for DisabledPool singleton based on backend.
+Used when pooling is disabled to preserve backend context.
+"""
+function _disabled_pool_expr(backend::Symbol)
+    if backend == :cpu
+        :($DISABLED_CPU)
+    else
+        :($(DisabledPool{backend}()))
+    end
+end
+
 # ==============================================================================
 # Internal: Code Generation
 # ==============================================================================
 
 function _generate_pool_code(pool_name, expr, force_enable)
-    # Compile-time check: if pooling disabled, just run expr with pool=nothing
+    # Compile-time check: if pooling disabled, use DisabledPool to preserve backend context
     if !USE_POOLING
+        disabled_pool = _disabled_pool_expr(:cpu)
         if Meta.isexpr(expr, [:function, :(=)]) && _is_function_def(expr)
-            # Function definition: inject local pool = nothing at start of body
-            return _generate_function_pool_code(pool_name, expr, force_enable, true)
+            # Function definition: inject local pool = DisabledPool at start of body
+            return _generate_function_pool_code(pool_name, expr, force_enable, true, :cpu)
         else
             return quote
-                local $(esc(pool_name)) = $(nothing)
+                local $(esc(pool_name)) = $disabled_pool
                 $(esc(expr))
             end
         end
@@ -256,7 +285,7 @@ function _generate_pool_code(pool_name, expr, force_enable)
                     $rewind_call
                 end
             else
-                local $(esc(pool_name)) = $(nothing)
+                local $(esc(pool_name)) = $DISABLED_CPU
                 $(esc(expr))
             end
         end
@@ -276,13 +305,72 @@ Uses `_get_pool_for_backend(Val{backend}())` for zero-overhead dispatch.
 Includes type-specific checkpoint/rewind optimization (same as regular @with_pool).
 """
 function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, force_enable::Bool)
-    # Compile-time check: if pooling disabled, just run expr with pool=nothing
+    # Compile-time check: if pooling disabled, use DisabledPool to preserve backend context
     if !USE_POOLING
+        disabled_pool = _disabled_pool_expr(backend)
         if Meta.isexpr(expr, [:function, :(=)]) && _is_function_def(expr)
             return _generate_function_pool_code_with_backend(backend, pool_name, expr, true)
         else
             return quote
-                local $(esc(pool_name)) = $(nothing)
+                local $(esc(pool_name)) = $disabled_pool
+                $(esc(expr))
+            end
+        end
+    end
+
+    # Runtime check for @maybe_with_pool :backend (force_enable=false)
+    if !force_enable
+        disabled_pool = _disabled_pool_expr(backend)
+        # Check if function definition
+        if Meta.isexpr(expr, [:function, :(=)]) && _is_function_def(expr)
+            return _generate_function_pool_code_with_backend(backend, pool_name, expr, false)
+        end
+
+        # Block logic with runtime check
+        all_types = _extract_acquire_types(expr, pool_name)
+        local_vars = _extract_local_assignments(expr)
+        static_types, has_dynamic = _filter_static_types(all_types, local_vars)
+        use_typed = !has_dynamic && !isempty(static_types)
+        transformed_expr = _transform_acquire_calls(expr, pool_name)
+        pool_getter = :($_get_pool_for_backend($(Val{backend}())))
+
+        if use_typed
+            typed_checkpoint_call = _generate_typed_checkpoint_call(esc(pool_name), static_types)
+            checkpoint_call = quote
+                if @inbounds $(esc(pool_name))._untracked_flags[$(esc(pool_name))._current_depth]
+                    $checkpoint!($(esc(pool_name)))
+                else
+                    $typed_checkpoint_call
+                end
+            end
+            typed_rewind_call = _generate_typed_rewind_call(esc(pool_name), static_types)
+            rewind_call = quote
+                if @inbounds $(esc(pool_name))._untracked_flags[$(esc(pool_name))._current_depth]
+                    $rewind!($(esc(pool_name)))
+                else
+                    $typed_rewind_call
+                end
+            end
+        else
+            checkpoint_call = :($checkpoint!($(esc(pool_name))))
+            rewind_call = :($rewind!($(esc(pool_name))))
+        end
+
+        return quote
+            if $MAYBE_POOLING_ENABLED[]
+                local $(esc(pool_name)) = $pool_getter
+                $checkpoint_call
+                try
+                    local _result = $(esc(transformed_expr))
+                    if $POOL_DEBUG[]
+                        $_validate_pool_return(_result, $(esc(pool_name)))
+                    end
+                    _result
+                finally
+                    $rewind_call
+                end
+            else
+                local $(esc(pool_name)) = $disabled_pool
                 $(esc(expr))
             end
         end
@@ -362,8 +450,9 @@ function _generate_function_pool_code_with_backend(backend::Symbol, pool_name, f
     body = func_def.args[2]
 
     if disable_pooling
+        disabled_pool = _disabled_pool_expr(backend)
         new_body = quote
-            local $(esc(pool_name)) = $(nothing)
+            local $(esc(pool_name)) = $disabled_pool
             $(esc(body))
         end
         return Expr(def_head, esc(call_expr), new_body)
@@ -422,14 +511,15 @@ function _generate_function_pool_code_with_backend(backend::Symbol, pool_name, f
     return Expr(def_head, esc(call_expr), new_body)
 end
 
-function _generate_function_pool_code(pool_name, func_def, force_enable, disable_pooling)
+function _generate_function_pool_code(pool_name, func_def, force_enable, disable_pooling, backend::Symbol=:cpu)
     def_head = func_def.head
     call_expr = func_def.args[1]
     body = func_def.args[2]
 
     if disable_pooling
+        disabled_pool = _disabled_pool_expr(backend)
         new_body = quote
-            local $(esc(pool_name)) = $(nothing)
+            local $(esc(pool_name)) = $disabled_pool
             $(esc(body))
         end
         return Expr(def_head, esc(call_expr), new_body)
@@ -484,6 +574,7 @@ function _generate_function_pool_code(pool_name, func_def, force_enable, disable
             end
         end
     else
+        disabled_pool = _disabled_pool_expr(backend)
         new_body = quote
             if $MAYBE_POOLING_ENABLED[]
                 local $(esc(pool_name)) = get_task_local_pool()
@@ -494,7 +585,7 @@ function _generate_function_pool_code(pool_name, func_def, force_enable, disable
                     $rewind_call
                 end
             else
-                local $(esc(pool_name)) = $(nothing)
+                local $(esc(pool_name)) = $disabled_pool
                 $(esc(body))
             end
         end

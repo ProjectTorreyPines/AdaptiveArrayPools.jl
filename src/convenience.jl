@@ -29,12 +29,13 @@ default_eltype(::AbstractArrayPool) = Float64
 Acquire a zero-initialized array from the pool.
 
 Equivalent to `acquire!(pool, T, dims...)` followed by `fill!(arr, zero(T))`.
-Default element type is `Float64` when not specified.
+Default element type depends on pool backend (CPU: `Float64`, CUDA: `Float32`).
+See [`default_eltype`](@ref).
 
 ## Example
 ```julia
 @with_pool pool begin
-    v = zeros!(pool, 100)              # Vector{Float64} view, all zeros
+    v = zeros!(pool, 100)              # Uses default_eltype(pool)
     m = zeros!(pool, Float32, 10, 10)  # Matrix{Float32} view, all zeros
 end
 ```
@@ -48,7 +49,7 @@ end
 
 @inline function zeros!(pool::AbstractArrayPool, dims::Vararg{Int,N}) where {N}
     _mark_untracked!(pool)
-    _zeros_impl!(pool, Float64, dims...)
+    _zeros_impl!(pool, default_eltype(pool), dims...)
 end
 
 @inline function zeros!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N,Int}) where {T,N}
@@ -58,7 +59,7 @@ end
 
 @inline function zeros!(pool::AbstractArrayPool, dims::NTuple{N,Int}) where {N}
     _mark_untracked!(pool)
-    _zeros_impl!(pool, Float64, dims...)
+    _zeros_impl!(pool, default_eltype(pool), dims...)
 end
 
 # Internal implementation (for macro transformation)
@@ -73,11 +74,11 @@ end
     _zeros_impl!(pool, default_eltype(pool), dims...)
 end
 
-# Nothing fallback (pooling disabled)
+# Nothing fallback (pooling disabled - uses Julia's default Float64)
 @inline zeros!(::Nothing, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = zeros(T, dims...)
-@inline zeros!(::Nothing, dims::Vararg{Int,N}) where {N} = zeros(Float64, dims...)
+@inline zeros!(::Nothing, dims::Vararg{Int,N}) where {N} = zeros(dims...)
 @inline zeros!(::Nothing, ::Type{T}, dims::NTuple{N,Int}) where {T,N} = zeros(T, dims...)
-@inline zeros!(::Nothing, dims::NTuple{N,Int}) where {N} = zeros(Float64, dims...)
+@inline zeros!(::Nothing, dims::NTuple{N,Int}) where {N} = zeros(dims...)
 
 # ==============================================================================
 # ones! - Acquire one-initialized arrays from pool
@@ -92,12 +93,13 @@ end
 Acquire a one-initialized array from the pool.
 
 Equivalent to `acquire!(pool, T, dims...)` followed by `fill!(arr, one(T))`.
-Default element type is `Float64` when not specified.
+Default element type depends on pool backend (CPU: `Float64`, CUDA: `Float32`).
+See [`default_eltype`](@ref).
 
 ## Example
 ```julia
 @with_pool pool begin
-    v = ones!(pool, 100)              # Vector{Float64} view, all ones
+    v = ones!(pool, 100)              # Uses default_eltype(pool)
     m = ones!(pool, Float32, 10, 10)  # Matrix{Float32} view, all ones
 end
 ```
@@ -111,7 +113,7 @@ end
 
 @inline function ones!(pool::AbstractArrayPool, dims::Vararg{Int,N}) where {N}
     _mark_untracked!(pool)
-    _ones_impl!(pool, Float64, dims...)
+    _ones_impl!(pool, default_eltype(pool), dims...)
 end
 
 @inline function ones!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N,Int}) where {T,N}
@@ -121,7 +123,7 @@ end
 
 @inline function ones!(pool::AbstractArrayPool, dims::NTuple{N,Int}) where {N}
     _mark_untracked!(pool)
-    _ones_impl!(pool, Float64, dims...)
+    _ones_impl!(pool, default_eltype(pool), dims...)
 end
 
 # Internal implementation (for macro transformation)
@@ -136,11 +138,11 @@ end
     _ones_impl!(pool, default_eltype(pool), dims...)
 end
 
-# Nothing fallback (pooling disabled)
+# Nothing fallback (pooling disabled - uses Julia's default Float64)
 @inline ones!(::Nothing, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = ones(T, dims...)
-@inline ones!(::Nothing, dims::Vararg{Int,N}) where {N} = ones(Float64, dims...)
+@inline ones!(::Nothing, dims::Vararg{Int,N}) where {N} = ones(dims...)
 @inline ones!(::Nothing, ::Type{T}, dims::NTuple{N,Int}) where {T,N} = ones(T, dims...)
-@inline ones!(::Nothing, dims::NTuple{N,Int}) where {N} = ones(Float64, dims...)
+@inline ones!(::Nothing, dims::NTuple{N,Int}) where {N} = ones(dims...)
 
 # ==============================================================================
 # similar! - Acquire arrays with same type/size as template
@@ -228,12 +230,13 @@ end
 Acquire a zero-initialized raw array (not a view) from the pool.
 
 Equivalent to `unsafe_acquire!(pool, T, dims...)` followed by `fill!(arr, zero(T))`.
-Default element type is `Float64` when not specified.
+Default element type depends on pool backend (CPU: `Float64`, CUDA: `Float32`).
+See [`default_eltype`](@ref).
 
 ## Example
 ```julia
 @with_pool pool begin
-    v = unsafe_zeros!(pool, 100)              # Array{Float64}, all zeros
+    v = unsafe_zeros!(pool, 100)              # Uses default_eltype(pool)
     m = unsafe_zeros!(pool, Float32, 10, 10)  # Array{Float32}, all zeros
 end
 ```
@@ -247,7 +250,7 @@ end
 
 @inline function unsafe_zeros!(pool::AbstractArrayPool, dims::Vararg{Int,N}) where {N}
     _mark_untracked!(pool)
-    _unsafe_zeros_impl!(pool, Float64, dims...)
+    _unsafe_zeros_impl!(pool, default_eltype(pool), dims...)
 end
 
 @inline function unsafe_zeros!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N,Int}) where {T,N}
@@ -257,7 +260,7 @@ end
 
 @inline function unsafe_zeros!(pool::AbstractArrayPool, dims::NTuple{N,Int}) where {N}
     _mark_untracked!(pool)
-    _unsafe_zeros_impl!(pool, Float64, dims...)
+    _unsafe_zeros_impl!(pool, default_eltype(pool), dims...)
 end
 
 # Internal implementation (for macro transformation)
@@ -272,11 +275,11 @@ end
     _unsafe_zeros_impl!(pool, default_eltype(pool), dims...)
 end
 
-# Nothing fallback (pooling disabled)
+# Nothing fallback (pooling disabled - uses Julia's default Float64)
 @inline unsafe_zeros!(::Nothing, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = zeros(T, dims...)
-@inline unsafe_zeros!(::Nothing, dims::Vararg{Int,N}) where {N} = zeros(Float64, dims...)
+@inline unsafe_zeros!(::Nothing, dims::Vararg{Int,N}) where {N} = zeros(dims...)
 @inline unsafe_zeros!(::Nothing, ::Type{T}, dims::NTuple{N,Int}) where {T,N} = zeros(T, dims...)
-@inline unsafe_zeros!(::Nothing, dims::NTuple{N,Int}) where {N} = zeros(Float64, dims...)
+@inline unsafe_zeros!(::Nothing, dims::NTuple{N,Int}) where {N} = zeros(dims...)
 
 # ==============================================================================
 # unsafe_ones! - Acquire one-initialized raw arrays from pool
@@ -291,12 +294,13 @@ end
 Acquire a one-initialized raw array (not a view) from the pool.
 
 Equivalent to `unsafe_acquire!(pool, T, dims...)` followed by `fill!(arr, one(T))`.
-Default element type is `Float64` when not specified.
+Default element type depends on pool backend (CPU: `Float64`, CUDA: `Float32`).
+See [`default_eltype`](@ref).
 
 ## Example
 ```julia
 @with_pool pool begin
-    v = unsafe_ones!(pool, 100)              # Array{Float64}, all ones
+    v = unsafe_ones!(pool, 100)              # Uses default_eltype(pool)
     m = unsafe_ones!(pool, Float32, 10, 10)  # Array{Float32}, all ones
 end
 ```
@@ -310,7 +314,7 @@ end
 
 @inline function unsafe_ones!(pool::AbstractArrayPool, dims::Vararg{Int,N}) where {N}
     _mark_untracked!(pool)
-    _unsafe_ones_impl!(pool, Float64, dims...)
+    _unsafe_ones_impl!(pool, default_eltype(pool), dims...)
 end
 
 @inline function unsafe_ones!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N,Int}) where {T,N}
@@ -320,7 +324,7 @@ end
 
 @inline function unsafe_ones!(pool::AbstractArrayPool, dims::NTuple{N,Int}) where {N}
     _mark_untracked!(pool)
-    _unsafe_ones_impl!(pool, Float64, dims...)
+    _unsafe_ones_impl!(pool, default_eltype(pool), dims...)
 end
 
 # Internal implementation (for macro transformation)
@@ -335,11 +339,11 @@ end
     _unsafe_ones_impl!(pool, default_eltype(pool), dims...)
 end
 
-# Nothing fallback (pooling disabled)
+# Nothing fallback (pooling disabled - uses Julia's default Float64)
 @inline unsafe_ones!(::Nothing, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = ones(T, dims...)
-@inline unsafe_ones!(::Nothing, dims::Vararg{Int,N}) where {N} = ones(Float64, dims...)
+@inline unsafe_ones!(::Nothing, dims::Vararg{Int,N}) where {N} = ones(dims...)
 @inline unsafe_ones!(::Nothing, ::Type{T}, dims::NTuple{N,Int}) where {T,N} = ones(T, dims...)
-@inline unsafe_ones!(::Nothing, dims::NTuple{N,Int}) where {N} = ones(Float64, dims...)
+@inline unsafe_ones!(::Nothing, dims::NTuple{N,Int}) where {N} = ones(dims...)
 
 # ==============================================================================
 # unsafe_similar! - Acquire raw arrays with same type/size as template
@@ -412,3 +416,108 @@ end
 @inline unsafe_similar!(::Nothing, x::AbstractArray, ::Type{T}) where {T} = similar(x, T)
 @inline unsafe_similar!(::Nothing, x::AbstractArray, dims::Vararg{Int,N}) where {N} = similar(x, dims...)
 @inline unsafe_similar!(::Nothing, x::AbstractArray, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = similar(x, T, dims...)
+
+# ==============================================================================
+# BackendNotLoadedError - Error for unknown backends
+# ==============================================================================
+
+"""
+    BackendNotLoadedError <: Exception
+
+Error thrown when a backend-specific operation is attempted but the backend
+package is not loaded.
+
+## Example
+```julia
+@maybe_with_pool :cuda pool begin
+    zeros!(pool, 10)  # Throws if CUDA.jl not loaded
+end
+```
+"""
+struct BackendNotLoadedError <: Exception
+    backend::Symbol
+end
+
+function Base.showerror(io::IO, e::BackendNotLoadedError)
+    print(io, "Backend :$(e.backend) is not available. ")
+    if e.backend == :cuda
+        print(io, "Make sure CUDA.jl is loaded: `using CUDA`")
+    else
+        print(io, "Make sure the appropriate backend package is loaded.")
+    end
+end
+
+# ==============================================================================
+# DisabledPool Fallbacks (pooling disabled with backend context)
+# ==============================================================================
+
+# --- Default Element Type ---
+"""
+    default_eltype(::DisabledPool{:cpu}) -> Float64
+
+Default element type for disabled CPU pools (matches Julia's `zeros()` default).
+"""
+default_eltype(::DisabledPool{:cpu}) = Float64
+
+# --- Generic Backend Fallback (throws error) ---
+# Catches DisabledPool{:unknown_backend} and similar unhandled backends
+@noinline function _throw_backend_not_loaded(backend::Symbol)
+    throw(BackendNotLoadedError(backend))
+end
+
+# --- zeros! for DisabledPool{:cpu} ---
+@inline zeros!(::DisabledPool{:cpu}, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = zeros(T, dims...)
+@inline zeros!(p::DisabledPool{:cpu}, dims::Vararg{Int,N}) where {N} = zeros(default_eltype(p), dims...)
+@inline zeros!(::DisabledPool{:cpu}, ::Type{T}, dims::NTuple{N,Int}) where {T,N} = zeros(T, dims...)
+@inline zeros!(p::DisabledPool{:cpu}, dims::NTuple{N,Int}) where {N} = zeros(default_eltype(p), dims...)
+
+# --- ones! for DisabledPool{:cpu} ---
+@inline ones!(::DisabledPool{:cpu}, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = ones(T, dims...)
+@inline ones!(p::DisabledPool{:cpu}, dims::Vararg{Int,N}) where {N} = ones(default_eltype(p), dims...)
+@inline ones!(::DisabledPool{:cpu}, ::Type{T}, dims::NTuple{N,Int}) where {T,N} = ones(T, dims...)
+@inline ones!(p::DisabledPool{:cpu}, dims::NTuple{N,Int}) where {N} = ones(default_eltype(p), dims...)
+
+# --- similar! for DisabledPool{:cpu} ---
+@inline similar!(::DisabledPool{:cpu}, x::AbstractArray) = similar(x)
+@inline similar!(::DisabledPool{:cpu}, x::AbstractArray, ::Type{T}) where {T} = similar(x, T)
+@inline similar!(::DisabledPool{:cpu}, x::AbstractArray, dims::Vararg{Int,N}) where {N} = similar(x, dims...)
+@inline similar!(::DisabledPool{:cpu}, x::AbstractArray, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = similar(x, T, dims...)
+
+# --- unsafe_zeros! for DisabledPool{:cpu} ---
+@inline unsafe_zeros!(::DisabledPool{:cpu}, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = zeros(T, dims...)
+@inline unsafe_zeros!(p::DisabledPool{:cpu}, dims::Vararg{Int,N}) where {N} = zeros(default_eltype(p), dims...)
+@inline unsafe_zeros!(::DisabledPool{:cpu}, ::Type{T}, dims::NTuple{N,Int}) where {T,N} = zeros(T, dims...)
+@inline unsafe_zeros!(p::DisabledPool{:cpu}, dims::NTuple{N,Int}) where {N} = zeros(default_eltype(p), dims...)
+
+# --- unsafe_ones! for DisabledPool{:cpu} ---
+@inline unsafe_ones!(::DisabledPool{:cpu}, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = ones(T, dims...)
+@inline unsafe_ones!(p::DisabledPool{:cpu}, dims::Vararg{Int,N}) where {N} = ones(default_eltype(p), dims...)
+@inline unsafe_ones!(::DisabledPool{:cpu}, ::Type{T}, dims::NTuple{N,Int}) where {T,N} = ones(T, dims...)
+@inline unsafe_ones!(p::DisabledPool{:cpu}, dims::NTuple{N,Int}) where {N} = ones(default_eltype(p), dims...)
+
+# --- unsafe_similar! for DisabledPool{:cpu} ---
+@inline unsafe_similar!(::DisabledPool{:cpu}, x::AbstractArray) = similar(x)
+@inline unsafe_similar!(::DisabledPool{:cpu}, x::AbstractArray, ::Type{T}) where {T} = similar(x, T)
+@inline unsafe_similar!(::DisabledPool{:cpu}, x::AbstractArray, dims::Vararg{Int,N}) where {N} = similar(x, dims...)
+@inline unsafe_similar!(::DisabledPool{:cpu}, x::AbstractArray, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = similar(x, T, dims...)
+
+# --- Generic DisabledPool fallbacks (unknown backend → error) ---
+@inline zeros!(p::DisabledPool{B}, args...) where {B} = _throw_backend_not_loaded(B)
+@inline ones!(p::DisabledPool{B}, args...) where {B} = _throw_backend_not_loaded(B)
+@inline similar!(p::DisabledPool{B}, args...) where {B} = _throw_backend_not_loaded(B)
+@inline unsafe_zeros!(p::DisabledPool{B}, args...) where {B} = _throw_backend_not_loaded(B)
+@inline unsafe_ones!(p::DisabledPool{B}, args...) where {B} = _throw_backend_not_loaded(B)
+@inline unsafe_similar!(p::DisabledPool{B}, args...) where {B} = _throw_backend_not_loaded(B)
+
+# ==============================================================================
+# _impl! Delegators for DisabledPool
+# ==============================================================================
+# When macros transform zeros!(pool, ...) → _zeros_impl!(pool, ...),
+# DisabledPool needs to delegate back to the public API.
+
+@inline _zeros_impl!(p::DisabledPool, args...) = zeros!(p, args...)
+@inline _ones_impl!(p::DisabledPool, args...) = ones!(p, args...)
+@inline _similar_impl!(p::DisabledPool, args...) = similar!(p, args...)
+@inline _unsafe_zeros_impl!(p::DisabledPool, args...) = unsafe_zeros!(p, args...)
+@inline _unsafe_ones_impl!(p::DisabledPool, args...) = unsafe_ones!(p, args...)
+@inline _unsafe_similar_impl!(p::DisabledPool, args...) = unsafe_similar!(p, args...)

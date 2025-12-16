@@ -389,3 +389,22 @@ end
 reset!(::Nothing) = nothing
 reset!(::Nothing, ::Type) = nothing
 reset!(::Nothing, types::Type...) = nothing
+
+# ==============================================================================
+# DisabledPool State Management (no-ops)
+# ==============================================================================
+# DisabledPool doesn't track state, so all operations are no-ops.
+
+checkpoint!(::DisabledPool) = nothing
+checkpoint!(::DisabledPool, ::Type) = nothing
+checkpoint!(::DisabledPool, types::Type...) = nothing
+
+rewind!(::DisabledPool) = nothing
+rewind!(::DisabledPool, ::Type) = nothing
+rewind!(::DisabledPool, types::Type...) = nothing
+
+reset!(::DisabledPool) = nothing
+reset!(::DisabledPool, ::Type) = nothing
+reset!(::DisabledPool, types::Type...) = nothing
+
+Base.empty!(::DisabledPool) = nothing
