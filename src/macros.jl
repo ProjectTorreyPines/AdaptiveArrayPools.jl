@@ -561,46 +561,81 @@ end
 """
     _extract_acquire_types(expr, target_pool) -> Set{Any}
 
-Extract type arguments from acquire function calls in an expression.
+Extract type arguments from acquire/convenience function calls in an expression.
 Only extracts types from calls where the first argument matches `target_pool`.
 This prevents AST pollution when multiple pools are used in the same block.
 
 Supported functions:
 - `acquire!` and its alias `acquire_view!`
 - `unsafe_acquire!` and its alias `acquire_array!`
+- `zeros!`, `ones!`, `similar!`
 
-Handles two forms:
-- `[unsafe_]acquire!(pool, Type, dims...)` (3+ func args): extracts Type (2nd arg) directly
-- `acquire!(pool, x)` (2 func args): generates `eltype(x)` expression for the array
-  (Note: `unsafe_acquire!` / `acquire_array!` does not have the 2-arg form)
+Handles various forms:
+- `[unsafe_]acquire!(pool, Type, dims...)`: extracts Type directly
+- `acquire!(pool, x)`: generates `eltype(x)` expression
+- `zeros!(pool, dims...)` / `ones!(pool, dims...)`: Float64 (default)
+- `zeros!(pool, Type, dims...)` / `ones!(pool, Type, dims...)`: extracts Type
+- `similar!(pool, x)`: generates `eltype(x)` expression
+- `similar!(pool, x, Type, ...)`: extracts Type
 """
 function _extract_acquire_types(expr, target_pool, types=Set{Any}())
     if expr isa Expr
-        # Match: acquire!/acquire_view!/unsafe_acquire!/acquire_array!(pool, ...)
+        # Match: function calls with pool argument
         if expr.head == :call && length(expr.args) >= 3
             fn = expr.args[1]
-            # All acquire function names (including aliases)
-            acquire_names = (:acquire!, :unsafe_acquire!, :acquire_view!, :acquire_array!)
-            acquire_quotenodes = (QuoteNode(:acquire!), QuoteNode(:unsafe_acquire!),
-                                  QuoteNode(:acquire_view!), QuoteNode(:acquire_array!))
-            is_acquire = fn in acquire_names ||
-                         (fn isa Expr && fn.head == :. && length(fn.args) >= 2 &&
-                          fn.args[end] in acquire_quotenodes)
-            if is_acquire
-                # Check if the pool argument matches our target pool
-                pool_arg = expr.args[2]
-                if pool_arg == target_pool
-                    nargs = length(expr.args)
+            pool_arg = expr.args[2]
+
+            # Only process if pool argument matches our target pool
+            if pool_arg == target_pool
+                # All acquire function names (including aliases)
+                acquire_names = (:acquire!, :unsafe_acquire!, :acquire_view!, :acquire_array!)
+
+                # Get function name (handle qualified names)
+                fn_name = fn
+                if fn isa Expr && fn.head == :. && length(fn.args) >= 2
+                    qn = fn.args[end]
+                    if qn isa QuoteNode
+                        fn_name = qn.value
+                    end
+                end
+
+                nargs = length(expr.args)
+
+                # acquire!/unsafe_acquire!/acquire_view!/acquire_array!
+                if fn in acquire_names || fn_name in acquire_names
                     if nargs >= 4
                         # acquire!(pool, Type, dims...) - traditional form
-                        type_arg = expr.args[3]
-                        push!(types, type_arg)
+                        push!(types, expr.args[3])
                     elseif nargs == 3
                         # acquire!(pool, x) - similar-style form
-                        # Type is eltype of the array argument
-                        array_arg = expr.args[3]
-                        type_expr = Expr(:call, :eltype, array_arg)
-                        push!(types, type_expr)
+                        push!(types, Expr(:call, :eltype, expr.args[3]))
+                    end
+                # zeros!/ones!
+                elseif fn == :zeros! || fn == :ones! || fn_name == :zeros! || fn_name == :ones!
+                    if nargs >= 3
+                        third_arg = expr.args[3]
+                        # Check if third arg looks like a type (Symbol starting with uppercase or curly)
+                        if _looks_like_type(third_arg)
+                            push!(types, third_arg)
+                        else
+                            # No type specified, default is Float64
+                            push!(types, :Float64)
+                        end
+                    end
+                # similar!
+                elseif fn == :similar! || fn_name == :similar!
+                    if nargs == 3
+                        # similar!(pool, x) - same type as x
+                        push!(types, Expr(:call, :eltype, expr.args[3]))
+                    elseif nargs >= 4
+                        fourth_arg = expr.args[4]
+                        if _looks_like_type(fourth_arg)
+                            # similar!(pool, x, Type, ...) - explicit type
+                            push!(types, fourth_arg)
+                        else
+                            # similar!(pool, x, dims...) - same type as x
+                            push!(types, Expr(:call, :eltype, expr.args[3]))
+                        end
                     end
                 end
             end
@@ -611,6 +646,24 @@ function _extract_acquire_types(expr, target_pool, types=Set{Any}())
         end
     end
     return types
+end
+
+"""
+    _looks_like_type(expr) -> Bool
+
+Heuristic to check if an expression looks like a type.
+Returns true for: uppercase Symbols (Float64, Int), curly expressions (Vector{T}), GlobalRef to types.
+"""
+function _looks_like_type(expr)
+    if expr isa Symbol
+        s = string(expr)
+        return !isempty(s) && isuppercase(first(s))
+    elseif expr isa Expr && expr.head == :curly
+        return true
+    elseif expr isa GlobalRef
+        return true
+    end
+    return false
 end
 
 """
@@ -733,7 +786,7 @@ end
 """
     _transform_acquire_calls(expr, pool_name) -> Expr
 
-Transform acquire!/unsafe_acquire! calls to their _impl! counterparts.
+Transform acquire!/unsafe_acquire!/convenience function calls to their _impl! counterparts.
 Only transforms calls where the first argument matches `pool_name`.
 
 This allows macro-transformed code to bypass the untracked marking overhead,
@@ -744,11 +797,17 @@ Transformation rules:
 - `acquire_view!(pool, ...)` → `_acquire_impl!(pool, ...)`
 - `unsafe_acquire!(pool, ...)` → `_unsafe_acquire_impl!(pool, ...)`
 - `acquire_array!(pool, ...)` → `_unsafe_acquire_impl!(pool, ...)`
+- `zeros!(pool, ...)` → `_zeros_impl!(pool, ...)`
+- `ones!(pool, ...)` → `_ones_impl!(pool, ...)`
+- `similar!(pool, ...)` → `_similar_impl!(pool, ...)`
 """
 # Module-qualified references for transformed acquire calls
 # Using GlobalRef ensures the function is looked up in AdaptiveArrayPools, not the caller's module
 const _ACQUIRE_IMPL_REF = GlobalRef(@__MODULE__, :_acquire_impl!)
 const _UNSAFE_ACQUIRE_IMPL_REF = GlobalRef(@__MODULE__, :_unsafe_acquire_impl!)
+const _ZEROS_IMPL_REF = GlobalRef(@__MODULE__, :_zeros_impl!)
+const _ONES_IMPL_REF = GlobalRef(@__MODULE__, :_ones_impl!)
+const _SIMILAR_IMPL_REF = GlobalRef(@__MODULE__, :_similar_impl!)
 
 function _transform_acquire_calls(expr, pool_name)
     if expr isa Expr
@@ -764,6 +823,12 @@ function _transform_acquire_calls(expr, pool_name)
                     expr = Expr(:call, _ACQUIRE_IMPL_REF, expr.args[2:end]...)
                 elseif fn == :unsafe_acquire! || fn == :acquire_array!
                     expr = Expr(:call, _UNSAFE_ACQUIRE_IMPL_REF, expr.args[2:end]...)
+                elseif fn == :zeros!
+                    expr = Expr(:call, _ZEROS_IMPL_REF, expr.args[2:end]...)
+                elseif fn == :ones!
+                    expr = Expr(:call, _ONES_IMPL_REF, expr.args[2:end]...)
+                elseif fn == :similar!
+                    expr = Expr(:call, _SIMILAR_IMPL_REF, expr.args[2:end]...)
                 elseif fn isa Expr && fn.head == :. && length(fn.args) >= 2
                     # Qualified name: AdaptiveArrayPools.acquire! etc.
                     qn = fn.args[end]
@@ -771,6 +836,12 @@ function _transform_acquire_calls(expr, pool_name)
                         expr = Expr(:call, _ACQUIRE_IMPL_REF, expr.args[2:end]...)
                     elseif qn == QuoteNode(:unsafe_acquire!) || qn == QuoteNode(:acquire_array!)
                         expr = Expr(:call, _UNSAFE_ACQUIRE_IMPL_REF, expr.args[2:end]...)
+                    elseif qn == QuoteNode(:zeros!)
+                        expr = Expr(:call, _ZEROS_IMPL_REF, expr.args[2:end]...)
+                    elseif qn == QuoteNode(:ones!)
+                        expr = Expr(:call, _ONES_IMPL_REF, expr.args[2:end]...)
+                    elseif qn == QuoteNode(:similar!)
+                        expr = Expr(:call, _SIMILAR_IMPL_REF, expr.args[2:end]...)
                     end
                 end
             end
