@@ -6,15 +6,7 @@
 # NOT SubArray. However, we still cache view objects to avoid CPU heap allocation
 # (~80 bytes per call) for the CuVector metadata wrapper.
 
-# ==============================================================================
-# N-Way Cache Configuration
-# ==============================================================================
-
-"""
-Number of cache ways per slot. Allows caching multiple dimension patterns
-per backing vector. 4 ways is a good balance for typical usage patterns.
-"""
-const CUDA_CACHE_WAYS = 4
+# Note: Uses shared CACHE_WAYS constant from main module for consistency.
 
 """
     CuTypedPool{T} <: AbstractTypedPool{T, CuVector{T}}
@@ -24,7 +16,7 @@ GPU memory pool for element type `T`. Uses unified N-way view caching for all di
 ## Fields
 - `vectors`: Backing `CuVector{T}` storage (one per slot)
 - `views`: Flat N-way cache storing CuArray of any dimension
-  - Layout: `views[(slot-1)*CUDA_CACHE_WAYS + way]` for way ∈ 1:CUDA_CACHE_WAYS
+  - Layout: `views[(slot-1)*CACHE_WAYS + way]` for way ∈ 1:CACHE_WAYS
 - `view_dims`: Cached dims corresponding to views
 - `next_way`: Round-robin counter per slot for cache replacement
 - State management fields (same as CPU)
@@ -43,12 +35,12 @@ mutable struct CuTypedPool{T} <: AbstractTypedPool{T, CuVector{T}}
     vectors::Vector{CuVector{T}}
 
     # --- Unified N-Way View Cache (flat layout) ---
-    # Length = n_slots * CUDA_CACHE_WAYS
+    # Length = n_slots * CACHE_WAYS
     views::Vector{Any}       # CuArray{T,N} for any N
     view_dims::Vector{Any}   # NTuple{N,Int} or nothing
 
     # --- Cache Replacement (round-robin per slot) ---
-    next_way::Vector{Int}    # next_way[slot] ∈ 1:CUDA_CACHE_WAYS
+    next_way::Vector{Int}    # next_way[slot] ∈ 1:CACHE_WAYS
 
     # --- State Management (1-based sentinel pattern) ---
     n_active::Int

@@ -73,8 +73,8 @@ Optimized types with pre-allocated slots (same as CPU):
 | `Float16` | `.float16` |
 | `Int64` | `.int64` |
 | `Int32` | `.int32` |
-| `ComplexF64` | `.complex64` |
-| `ComplexF32` | `.complex32` |
+| `ComplexF64` | `.complexf64` |
+| `ComplexF32` | `.complexf32` |
 | `Bool` | `.bool` |
 
 Other types use the fallback dictionary (`.others`).

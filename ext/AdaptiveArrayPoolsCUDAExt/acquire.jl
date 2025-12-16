@@ -6,7 +6,7 @@
 # This allows a single unified implementation for all dimensions.
 #
 # N-way cache layout (flat vector):
-#   views[(slot-1)*CUDA_CACHE_WAYS + way] for way ∈ 1:CUDA_CACHE_WAYS
+#   views[(slot-1)*CACHE_WAYS + way] for way ∈ 1:CACHE_WAYS
 #
 # Cache lookup uses simple for loop - measured overhead ~16 bytes (acceptable).
 #
@@ -46,7 +46,7 @@ Get an N-dimensional view from the pool with unified N-way caching.
 Returns cached view on hit (near-zero CPU allocation), creates new on miss.
 
 ## N-Way Cache Behavior
-- Each slot has CUDA_CACHE_WAYS (4) cache entries for different dimension patterns
+- Each slot has CACHE_WAYS (4) cache entries for different dimension patterns
 - Cache lookup uses simple for loop (~16 bytes overhead)
 - Cache replacement uses round-robin when all ways are occupied
 
@@ -73,14 +73,14 @@ See module header for "lazy shrink" optimization notes.
         nd_view = N == 1 ? new_view : reshape(new_view, dims)
 
         # Initialize N-way cache entries for this slot
-        for _ in 1:CUDA_CACHE_WAYS
+        for _ in 1:CACHE_WAYS
             push!(tp.views, nothing)
             push!(tp.view_dims, nothing)
         end
         push!(tp.next_way, 1)
 
         # Store in first way
-        base = (idx - 1) * CUDA_CACHE_WAYS
+        base = (idx - 1) * CACHE_WAYS
         @inbounds tp.views[base + 1] = nd_view
         @inbounds tp.view_dims[base + 1] = dims
 
@@ -94,8 +94,8 @@ See module header for "lazy shrink" optimization notes.
     end
 
     # 2. N-way cache lookup with for loop
-    base = (idx - 1) * CUDA_CACHE_WAYS
-    for k in 1:CUDA_CACHE_WAYS
+    base = (idx - 1) * CACHE_WAYS
+    for k in 1:CACHE_WAYS
         cache_idx = base + k
         @inbounds cached_dims = tp.view_dims[cache_idx]
         if cached_dims isa NTuple{N, Int} && cached_dims == dims
@@ -115,7 +115,7 @@ See module header for "lazy shrink" optimization notes.
         # CRITICAL: resize! may reallocate the GPU buffer (pointer change).
         # All cached views for this slot now reference the OLD buffer.
         # Must invalidate ALL ways to prevent returning stale/dangling views.
-        for k in 1:CUDA_CACHE_WAYS
+        for k in 1:CACHE_WAYS
             @inbounds tp.views[base + k] = nothing
             @inbounds tp.view_dims[base + k] = nothing
         end
@@ -130,7 +130,7 @@ See module header for "lazy shrink" optimization notes.
     cache_idx = base + way
     @inbounds tp.views[cache_idx] = nd_view
     @inbounds tp.view_dims[cache_idx] = dims
-    @inbounds tp.next_way[idx] = (way % CUDA_CACHE_WAYS) + 1
+    @inbounds tp.next_way[idx] = (way % CACHE_WAYS) + 1
 
     return nd_view
 end
