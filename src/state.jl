@@ -55,7 +55,16 @@ Save state for multiple specific types. Uses @generated for zero-overhead
 compile-time unrolling. Increments _current_depth once for all types.
 """
 @generated function checkpoint!(pool::AdaptiveArrayPool, types::Type...)
-    checkpoint_exprs = [:(_checkpoint_typed_pool!(get_typed_pool!(pool, types[$i]), pool._current_depth)) for i in 1:length(types)]
+    # Deduplicate types at compile time (e.g., Float64, Float64 → Float64)
+    seen = Set{Any}()
+    unique_indices = Int[]
+    for i in eachindex(types)
+        if !(types[i] in seen)
+            push!(seen, types[i])
+            push!(unique_indices, i)
+        end
+    end
+    checkpoint_exprs = [:(_checkpoint_typed_pool!(get_typed_pool!(pool, types[$i]), pool._current_depth)) for i in unique_indices]
     quote
         pool._current_depth += 1
         push!(pool._untracked_flags, false)
@@ -144,8 +153,17 @@ Restore state for multiple specific types in reverse order.
 Decrements _current_depth once after all types are rewound.
 """
 @generated function rewind!(pool::AdaptiveArrayPool, types::Type...)
-    rewind_exprs = [:(_rewind_typed_pool!(get_typed_pool!(pool, types[$i]), pool._current_depth)) for i in length(types):-1:1]
-    reset_exprs = [:(reset!(get_typed_pool!(pool, types[$i]))) for i in 1:length(types)]
+    # Deduplicate types at compile time (e.g., Float64, Float64 → Float64)
+    seen = Set{Any}()
+    unique_indices = Int[]
+    for i in eachindex(types)
+        if !(types[i] in seen)
+            push!(seen, types[i])
+            push!(unique_indices, i)
+        end
+    end
+    rewind_exprs = [:(_rewind_typed_pool!(get_typed_pool!(pool, types[$i]), pool._current_depth)) for i in reverse(unique_indices)]
+    reset_exprs = [:(reset!(get_typed_pool!(pool, types[$i]))) for i in unique_indices]
     quote
         # Safety guard: at global scope (depth=1), delegate to reset!
         if pool._current_depth == 1
