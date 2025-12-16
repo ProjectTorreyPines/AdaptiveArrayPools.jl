@@ -27,17 +27,7 @@ else
 
     # CUDA extension tests (auto-detect, skip with TEST_CUDA=false)
     if get(ENV, "TEST_CUDA", "true") != "false"
-        try
-            using CUDA
-            if CUDA.functional()
-                @info "Running CUDA extension tests..."
-                include("test_cuda_extension.jl")
-            else
-                @info "CUDA not functional (no GPU), skipping CUDA tests"
-            end
-        catch e
-            @info "CUDA not available, skipping CUDA tests"
-        end
+        include("cuda/runtests.jl")
     else
         @info "CUDA tests disabled via TEST_CUDA=false"
     end
