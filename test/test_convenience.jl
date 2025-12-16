@@ -251,4 +251,172 @@
         @test pool.float64.n_active == 0
     end
 
+    @testset "unsafe_zeros!" begin
+        pool = AdaptiveArrayPool()
+
+        @testset "returns raw array (not view)" begin
+            v = unsafe_zeros!(pool, Float64, 10)
+            @test v isa Array{Float64,1}
+            @test !(v isa SubArray)
+            @test length(v) == 10
+            @test all(v .== 0.0)
+        end
+
+        @testset "default type (Float64)" begin
+            v = unsafe_zeros!(pool, 10)
+            @test v isa Array{Float64,1}
+            @test !(v isa SubArray)
+            @test eltype(v) == Float64
+            @test all(v .== 0.0)
+        end
+
+        @testset "multi-dimensional" begin
+            m = unsafe_zeros!(pool, Float64, 3, 4)
+            @test m isa Array{Float64,2}
+            @test !(m isa SubArray)
+            @test size(m) == (3, 4)
+            @test all(m .== 0.0)
+        end
+
+        @testset "tuple form" begin
+            dims = (5, 6)
+            m = unsafe_zeros!(pool, dims)
+            @test size(m) == dims
+            @test !(m isa SubArray)
+
+            m32 = unsafe_zeros!(pool, Float32, dims)
+            @test size(m32) == dims
+            @test eltype(m32) == Float32
+        end
+
+        @testset "Nothing fallback" begin
+            v = unsafe_zeros!(nothing, Float64, 10)
+            @test v isa Array{Float64}
+            @test all(v .== 0.0)
+        end
+    end
+
+    @testset "unsafe_ones!" begin
+        pool = AdaptiveArrayPool()
+
+        @testset "returns raw array (not view)" begin
+            v = unsafe_ones!(pool, Float64, 10)
+            @test v isa Array{Float64,1}
+            @test !(v isa SubArray)
+            @test length(v) == 10
+            @test all(v .== 1.0)
+        end
+
+        @testset "default type (Float64)" begin
+            v = unsafe_ones!(pool, 10)
+            @test v isa Array{Float64,1}
+            @test !(v isa SubArray)
+            @test eltype(v) == Float64
+            @test all(v .== 1.0)
+        end
+
+        @testset "multi-dimensional" begin
+            m = unsafe_ones!(pool, Float64, 3, 4)
+            @test m isa Array{Float64,2}
+            @test !(m isa SubArray)
+            @test size(m) == (3, 4)
+            @test all(m .== 1.0)
+        end
+
+        @testset "tuple form" begin
+            dims = (5, 6)
+            m = unsafe_ones!(pool, dims)
+            @test size(m) == dims
+            @test !(m isa SubArray)
+
+            m32 = unsafe_ones!(pool, Float32, dims)
+            @test size(m32) == dims
+            @test eltype(m32) == Float32
+            @test all(m32 .== 1.0f0)
+        end
+
+        @testset "Nothing fallback" begin
+            v = unsafe_ones!(nothing, Float64, 10)
+            @test v isa Array{Float64}
+            @test all(v .== 1.0)
+        end
+    end
+
+    @testset "unsafe_similar!" begin
+        pool = AdaptiveArrayPool()
+        template = rand(Float64, 10, 10)
+
+        @testset "returns raw array (not view)" begin
+            v = unsafe_similar!(pool, template)
+            @test v isa Array{Float64,2}
+            @test !(v isa SubArray)
+            @test size(v) == size(template)
+        end
+
+        @testset "different type" begin
+            v = unsafe_similar!(pool, template, Float32)
+            @test v isa Array{Float32,2}
+            @test !(v isa SubArray)
+            @test size(v) == size(template)
+        end
+
+        @testset "different size" begin
+            v = unsafe_similar!(pool, template, 5, 5)
+            @test v isa Array{Float64,2}
+            @test !(v isa SubArray)
+            @test size(v) == (5, 5)
+        end
+
+        @testset "different type and size" begin
+            v = unsafe_similar!(pool, template, Int32, 3, 4)
+            @test v isa Array{Int32,2}
+            @test !(v isa SubArray)
+            @test size(v) == (3, 4)
+        end
+
+        @testset "Nothing fallback" begin
+            v = unsafe_similar!(nothing, template)
+            @test v isa Array{Float64}
+            @test size(v) == size(template)
+
+            v2 = unsafe_similar!(nothing, template, Int64)
+            @test v2 isa Array{Int64}
+        end
+    end
+
+    @testset "Integration unsafe functions with @with_pool" begin
+        @testset "unsafe_zeros! in macro" begin
+            result = @with_pool pool begin
+                v = unsafe_zeros!(pool, Float64, 100)
+                @test v isa Array{Float64,1}
+                @test !(v isa SubArray)
+                v .+= 1.0
+                sum(v)
+            end
+            @test result == 100.0
+        end
+
+        @testset "unsafe_ones! in macro" begin
+            result = @with_pool pool begin
+                v = unsafe_ones!(pool, Float64, 50)
+                @test v isa Array{Float64,1}
+                @test !(v isa SubArray)
+                sum(v)
+            end
+            @test result == 50.0
+        end
+
+        @testset "unsafe_similar! in macro" begin
+            template = rand(10)
+            result = @with_pool pool begin
+                v = unsafe_similar!(pool, template)
+                @test v isa Array{Float64,1}
+                @test !(v isa SubArray)
+                v .= 2.0
+                sum(v)
+            end
+            @test result == 20.0
+        end
+    end
+
 end # Convenience Functions

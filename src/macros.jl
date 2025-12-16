@@ -569,6 +569,7 @@ Supported functions:
 - `acquire!` and its alias `acquire_view!`
 - `unsafe_acquire!` and its alias `acquire_array!`
 - `zeros!`, `ones!`, `similar!`
+- `unsafe_zeros!`, `unsafe_ones!`, `unsafe_similar!`
 
 Handles various forms:
 - `[unsafe_]acquire!(pool, Type, dims...)`: extracts Type directly
@@ -610,8 +611,8 @@ function _extract_acquire_types(expr, target_pool, types=Set{Any}())
                         # acquire!(pool, x) - similar-style form
                         push!(types, Expr(:call, :eltype, expr.args[3]))
                     end
-                # zeros!/ones!
-                elseif fn == :zeros! || fn == :ones! || fn_name == :zeros! || fn_name == :ones!
+                # zeros!/ones!/unsafe_zeros!/unsafe_ones!
+                elseif fn in (:zeros!, :ones!, :unsafe_zeros!, :unsafe_ones!) || fn_name in (:zeros!, :ones!, :unsafe_zeros!, :unsafe_ones!)
                     if nargs >= 3
                         third_arg = expr.args[3]
                         # Check if third arg looks like a type (Symbol starting with uppercase or curly)
@@ -622,8 +623,8 @@ function _extract_acquire_types(expr, target_pool, types=Set{Any}())
                             push!(types, :Float64)
                         end
                     end
-                # similar!
-                elseif fn == :similar! || fn_name == :similar!
+                # similar!/unsafe_similar!
+                elseif fn in (:similar!, :unsafe_similar!) || fn_name in (:similar!, :unsafe_similar!)
                     if nargs == 3
                         # similar!(pool, x) - same type as x
                         push!(types, Expr(:call, :eltype, expr.args[3]))
@@ -808,6 +809,9 @@ const _UNSAFE_ACQUIRE_IMPL_REF = GlobalRef(@__MODULE__, :_unsafe_acquire_impl!)
 const _ZEROS_IMPL_REF = GlobalRef(@__MODULE__, :_zeros_impl!)
 const _ONES_IMPL_REF = GlobalRef(@__MODULE__, :_ones_impl!)
 const _SIMILAR_IMPL_REF = GlobalRef(@__MODULE__, :_similar_impl!)
+const _UNSAFE_ZEROS_IMPL_REF = GlobalRef(@__MODULE__, :_unsafe_zeros_impl!)
+const _UNSAFE_ONES_IMPL_REF = GlobalRef(@__MODULE__, :_unsafe_ones_impl!)
+const _UNSAFE_SIMILAR_IMPL_REF = GlobalRef(@__MODULE__, :_unsafe_similar_impl!)
 
 function _transform_acquire_calls(expr, pool_name)
     if expr isa Expr
@@ -829,6 +833,12 @@ function _transform_acquire_calls(expr, pool_name)
                     expr = Expr(:call, _ONES_IMPL_REF, expr.args[2:end]...)
                 elseif fn == :similar!
                     expr = Expr(:call, _SIMILAR_IMPL_REF, expr.args[2:end]...)
+                elseif fn == :unsafe_zeros!
+                    expr = Expr(:call, _UNSAFE_ZEROS_IMPL_REF, expr.args[2:end]...)
+                elseif fn == :unsafe_ones!
+                    expr = Expr(:call, _UNSAFE_ONES_IMPL_REF, expr.args[2:end]...)
+                elseif fn == :unsafe_similar!
+                    expr = Expr(:call, _UNSAFE_SIMILAR_IMPL_REF, expr.args[2:end]...)
                 elseif fn isa Expr && fn.head == :. && length(fn.args) >= 2
                     # Qualified name: AdaptiveArrayPools.acquire! etc.
                     qn = fn.args[end]
@@ -842,6 +852,12 @@ function _transform_acquire_calls(expr, pool_name)
                         expr = Expr(:call, _ONES_IMPL_REF, expr.args[2:end]...)
                     elseif qn == QuoteNode(:similar!)
                         expr = Expr(:call, _SIMILAR_IMPL_REF, expr.args[2:end]...)
+                    elseif qn == QuoteNode(:unsafe_zeros!)
+                        expr = Expr(:call, _UNSAFE_ZEROS_IMPL_REF, expr.args[2:end]...)
+                    elseif qn == QuoteNode(:unsafe_ones!)
+                        expr = Expr(:call, _UNSAFE_ONES_IMPL_REF, expr.args[2:end]...)
+                    elseif qn == QuoteNode(:unsafe_similar!)
+                        expr = Expr(:call, _UNSAFE_SIMILAR_IMPL_REF, expr.args[2:end]...)
                     end
                 end
             end

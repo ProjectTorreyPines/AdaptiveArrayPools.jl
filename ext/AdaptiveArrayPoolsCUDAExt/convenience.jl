@@ -4,7 +4,7 @@
 # Override default-type versions only; explicit type versions use base AbstractArrayPool methods.
 # This matches CUDA.zeros() behavior which defaults to Float32.
 
-using AdaptiveArrayPools: _mark_untracked!, _zeros_impl!, _ones_impl!
+using AdaptiveArrayPools: _mark_untracked!, _zeros_impl!, _ones_impl!, _unsafe_zeros_impl!, _unsafe_ones_impl!
 
 # ==============================================================================
 # zeros! - Float32 default for CUDA (instead of Float64)
@@ -35,7 +35,35 @@ end
 end
 
 # ==============================================================================
-# similar! - No override needed
+# unsafe_zeros! - Float32 default for CUDA (instead of Float64)
 # ==============================================================================
-# similar! uses eltype(template_array) as default, which is backend-agnostic.
+
+@inline function AdaptiveArrayPools.unsafe_zeros!(pool::CuAdaptiveArrayPool, dims::Vararg{Int})
+    _mark_untracked!(pool)
+    _unsafe_zeros_impl!(pool, Float32, dims...)
+end
+
+@inline function AdaptiveArrayPools.unsafe_zeros!(pool::CuAdaptiveArrayPool, dims::Tuple{Vararg{Int}})
+    _mark_untracked!(pool)
+    _unsafe_zeros_impl!(pool, Float32, dims...)
+end
+
+# ==============================================================================
+# unsafe_ones! - Float32 default for CUDA (instead of Float64)
+# ==============================================================================
+
+@inline function AdaptiveArrayPools.unsafe_ones!(pool::CuAdaptiveArrayPool, dims::Vararg{Int})
+    _mark_untracked!(pool)
+    _unsafe_ones_impl!(pool, Float32, dims...)
+end
+
+@inline function AdaptiveArrayPools.unsafe_ones!(pool::CuAdaptiveArrayPool, dims::Tuple{Vararg{Int}})
+    _mark_untracked!(pool)
+    _unsafe_ones_impl!(pool, Float32, dims...)
+end
+
+# ==============================================================================
+# similar! / unsafe_similar! - No override needed
+# ==============================================================================
+# These functions use eltype(template_array) as default, which is backend-agnostic.
 # The base AbstractArrayPool methods work correctly for CUDA pools.
