@@ -16,7 +16,7 @@ A lightweight library that lets you write natural, allocation-style code while a
 In performance-critical code, temporary array allocations inside loops create massive GC pressure:
 
 ```julia
-function compute_naive(n)
+function compute(n)
     A = rand(n, n)      # allocates
     B = rand(n, n)      # allocates
     C = A * B           # allocates
@@ -24,7 +24,7 @@ function compute_naive(n)
 end
 
 for i in 1:10_000
-    compute_naive(100)  # ⚠️ 90k allocations, 2.75 GiB, 31% GC time
+    compute(100)  # ⚠️ 90k allocations, 2.75 GiB, 31% GC time
 end
 ```
 
@@ -58,11 +58,11 @@ for i in 1:10_000
 end
 ```
 
-| Metric | ⚠️ Naive | ✅ Pooled | Improvement |
-|--------|----------|-----------|-------------|
-| Time | 787 ms | 525 ms | **1.5× faster** |
-| Allocations | 90,000 (2.75 GiB) | 0 | **100% eliminated** |
-| GC Time | 31% | 0% | **No GC pauses** |
+| Metric | Standard | **AdaptiveArrayPools** | Improvement |
+|--------|----------|------------------------|-------------|
+| Time | 787 ms | **525 ms** | 1.5× faster |
+| Allocations | ⚠️ 90,000 (2.75 GiB) | ✅ **0** | 100% eliminated |
+| GC Time | ⚠️ 31% | ✅ **0%** | No GC pauses |
 
 > **CUDA support**: Same API—just use `@with_pool :cuda pool`. See [CUDA Backend](docs/cuda.md).
 
