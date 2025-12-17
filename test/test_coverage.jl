@@ -513,4 +513,48 @@
         @test :x in locals5
         @test :y in locals5
     end
+
+    @testset "AbstractArrayPool _impl! default type overloads" begin
+        # These are called when convenience functions are used without type parameter
+        # inside @with_pool macro: unsafe_ones!(pool, 10) → _unsafe_ones_impl!(pool, 10)
+        pool = AdaptiveArrayPool()
+
+        # --- _zeros_impl! without type (uses default_eltype) ---
+        v = AdaptiveArrayPools._zeros_impl!(pool, 5)
+        @test eltype(v) == Float64
+        @test length(v) == 5
+
+        v = AdaptiveArrayPools._zeros_impl!(pool, 3, 4)
+        @test eltype(v) == Float64
+        @test size(v) == (3, 4)
+
+        # --- _ones_impl! without type ---
+        v = AdaptiveArrayPools._ones_impl!(pool, 5)
+        @test eltype(v) == Float64
+        @test length(v) == 5
+
+        v = AdaptiveArrayPools._ones_impl!(pool, 3, 4)
+        @test eltype(v) == Float64
+        @test size(v) == (3, 4)
+
+        # --- _unsafe_zeros_impl! without type ---
+        v = AdaptiveArrayPools._unsafe_zeros_impl!(pool, 5)
+        @test v isa Vector{Float64}
+        @test all(v .== 0.0)
+
+        v = AdaptiveArrayPools._unsafe_zeros_impl!(pool, 3, 4)
+        @test v isa Matrix{Float64}
+        @test size(v) == (3, 4)
+
+        # --- _unsafe_ones_impl! without type ---
+        v = AdaptiveArrayPools._unsafe_ones_impl!(pool, 5)
+        @test v isa Vector{Float64}
+        @test all(v .== 1.0)
+
+        v = AdaptiveArrayPools._unsafe_ones_impl!(pool, 3, 4)
+        @test v isa Matrix{Float64}
+        @test size(v) == (3, 4)
+
+        empty!(pool)
+    end
 end
