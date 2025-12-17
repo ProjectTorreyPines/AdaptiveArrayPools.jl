@@ -93,33 +93,124 @@
     @testset "_impl! delegators for DisabledPool" begin
         pool = DISABLED_CPU
 
-        # These are called by macro-transformed code
+        # --- _zeros_impl! ---
+        # Type + varargs
         v = AdaptiveArrayPools._zeros_impl!(pool, Float64, 5)
         @test v isa Vector{Float64}
         @test all(v .== 0.0)
 
+        v = AdaptiveArrayPools._zeros_impl!(pool, Float32, 3, 4)
+        @test v isa Matrix{Float32}
+        @test size(v) == (3, 4)
+
+        # No type (default eltype)
+        v = AdaptiveArrayPools._zeros_impl!(pool, 5)
+        @test v isa Vector{Float64}
+
+        v = AdaptiveArrayPools._zeros_impl!(pool, 3, 4)
+        @test v isa Matrix{Float64}
+
+        # Tuple dims
+        v = AdaptiveArrayPools._zeros_impl!(pool, Float64, (2, 3))
+        @test v isa Matrix{Float64}
+        @test size(v) == (2, 3)
+
+        v = AdaptiveArrayPools._zeros_impl!(pool, (2, 3))
+        @test v isa Matrix{Float64}
+
+        # --- _ones_impl! ---
         v = AdaptiveArrayPools._ones_impl!(pool, Float64, 5)
         @test v isa Vector{Float64}
         @test all(v .== 1.0)
 
+        v = AdaptiveArrayPools._ones_impl!(pool, 5)
+        @test v isa Vector{Float64}
+
+        v = AdaptiveArrayPools._ones_impl!(pool, Float64, (2, 3))
+        @test v isa Matrix{Float64}
+
+        v = AdaptiveArrayPools._ones_impl!(pool, (2, 3))
+        @test v isa Matrix{Float64}
+
+        # --- _similar_impl! ---
         template = rand(3, 3)
         v = AdaptiveArrayPools._similar_impl!(pool, template)
         @test v isa Matrix{Float64}
 
+        v = AdaptiveArrayPools._similar_impl!(pool, template, Float32)
+        @test v isa Matrix{Float32}
+
+        v = AdaptiveArrayPools._similar_impl!(pool, template, 4, 5)
+        @test v isa Matrix{Float64}
+        @test size(v) == (4, 5)
+
+        v = AdaptiveArrayPools._similar_impl!(pool, template, Int32, 2, 2)
+        @test v isa Matrix{Int32}
+
+        # --- _unsafe_zeros_impl! ---
         v = AdaptiveArrayPools._unsafe_zeros_impl!(pool, Float64, 5)
         @test v isa Vector{Float64}
 
+        v = AdaptiveArrayPools._unsafe_zeros_impl!(pool, 5)
+        @test v isa Vector{Float64}
+
+        v = AdaptiveArrayPools._unsafe_zeros_impl!(pool, Float64, (2, 3))
+        @test v isa Matrix{Float64}
+
+        v = AdaptiveArrayPools._unsafe_zeros_impl!(pool, (2, 3))
+        @test v isa Matrix{Float64}
+
+        # --- _unsafe_ones_impl! ---
         v = AdaptiveArrayPools._unsafe_ones_impl!(pool, Float64, 5)
         @test v isa Vector{Float64}
 
+        v = AdaptiveArrayPools._unsafe_ones_impl!(pool, 5)
+        @test v isa Vector{Float64}
+
+        v = AdaptiveArrayPools._unsafe_ones_impl!(pool, Float64, (2, 3))
+        @test v isa Matrix{Float64}
+
+        v = AdaptiveArrayPools._unsafe_ones_impl!(pool, (2, 3))
+        @test v isa Matrix{Float64}
+
+        # --- _unsafe_similar_impl! ---
         v = AdaptiveArrayPools._unsafe_similar_impl!(pool, template)
         @test v isa Matrix{Float64}
 
+        v = AdaptiveArrayPools._unsafe_similar_impl!(pool, template, Float32)
+        @test v isa Matrix{Float32}
+
+        v = AdaptiveArrayPools._unsafe_similar_impl!(pool, template, 4, 5)
+        @test v isa Matrix{Float64}
+
+        v = AdaptiveArrayPools._unsafe_similar_impl!(pool, template, Int32, 2, 2)
+        @test v isa Matrix{Int32}
+
+        # --- _acquire_impl! ---
         v = AdaptiveArrayPools._acquire_impl!(pool, Float64, 5)
         @test v isa Vector{Float64}
 
+        v = AdaptiveArrayPools._acquire_impl!(pool, Float64, 3, 4)
+        @test v isa Matrix{Float64}
+
+        v = AdaptiveArrayPools._acquire_impl!(pool, Float64, (2, 3))
+        @test v isa Matrix{Float64}
+
+        v = AdaptiveArrayPools._acquire_impl!(pool, template)
+        @test v isa Matrix{Float64}
+
+        # --- _unsafe_acquire_impl! ---
         v = AdaptiveArrayPools._unsafe_acquire_impl!(pool, Float64, 5)
         @test v isa Vector{Float64}
+
+        v = AdaptiveArrayPools._unsafe_acquire_impl!(pool, Float64, 3, 4)
+        @test v isa Matrix{Float64}
+
+        v = AdaptiveArrayPools._unsafe_acquire_impl!(pool, Float64, (2, 3))
+        @test v isa Matrix{Float64}
+
+        v = AdaptiveArrayPools._unsafe_acquire_impl!(pool, template)
+        @test v isa Matrix{Float64}
     end
 
     @testset "Macro internals" begin

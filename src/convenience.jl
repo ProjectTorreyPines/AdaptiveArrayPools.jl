@@ -478,10 +478,42 @@ end
 # ==============================================================================
 # When macros transform zeros!(pool, ...) → _zeros_impl!(pool, ...),
 # DisabledPool needs to delegate back to the public API.
+#
+# Called when: USE_POOLING=true + @maybe_with_pool + MAYBE_POOLING_ENABLED[]=false
+# Explicit overloads for proper inlining (especially important for CUDA backend).
 
-@inline _zeros_impl!(p::DisabledPool, args...) = zeros!(p, args...)
-@inline _ones_impl!(p::DisabledPool, args...) = ones!(p, args...)
-@inline _similar_impl!(p::DisabledPool, args...) = similar!(p, args...)
-@inline _unsafe_zeros_impl!(p::DisabledPool, args...) = unsafe_zeros!(p, args...)
-@inline _unsafe_ones_impl!(p::DisabledPool, args...) = unsafe_ones!(p, args...)
-@inline _unsafe_similar_impl!(p::DisabledPool, args...) = unsafe_similar!(p, args...)
+# --- _zeros_impl! ---
+@inline _zeros_impl!(p::DisabledPool, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = zeros!(p, T, dims...)
+@inline _zeros_impl!(p::DisabledPool, dims::Vararg{Int,N}) where {N} = zeros!(p, dims...)
+@inline _zeros_impl!(p::DisabledPool, ::Type{T}, dims::NTuple{N,Int}) where {T,N} = zeros!(p, T, dims)
+@inline _zeros_impl!(p::DisabledPool, dims::NTuple{N,Int}) where {N} = zeros!(p, dims)
+
+# --- _ones_impl! ---
+@inline _ones_impl!(p::DisabledPool, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = ones!(p, T, dims...)
+@inline _ones_impl!(p::DisabledPool, dims::Vararg{Int,N}) where {N} = ones!(p, dims...)
+@inline _ones_impl!(p::DisabledPool, ::Type{T}, dims::NTuple{N,Int}) where {T,N} = ones!(p, T, dims)
+@inline _ones_impl!(p::DisabledPool, dims::NTuple{N,Int}) where {N} = ones!(p, dims)
+
+# --- _similar_impl! ---
+@inline _similar_impl!(p::DisabledPool, x::AbstractArray) = similar!(p, x)
+@inline _similar_impl!(p::DisabledPool, x::AbstractArray, ::Type{T}) where {T} = similar!(p, x, T)
+@inline _similar_impl!(p::DisabledPool, x::AbstractArray, dims::Vararg{Int,N}) where {N} = similar!(p, x, dims...)
+@inline _similar_impl!(p::DisabledPool, x::AbstractArray, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = similar!(p, x, T, dims...)
+
+# --- _unsafe_zeros_impl! ---
+@inline _unsafe_zeros_impl!(p::DisabledPool, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = unsafe_zeros!(p, T, dims...)
+@inline _unsafe_zeros_impl!(p::DisabledPool, dims::Vararg{Int,N}) where {N} = unsafe_zeros!(p, dims...)
+@inline _unsafe_zeros_impl!(p::DisabledPool, ::Type{T}, dims::NTuple{N,Int}) where {T,N} = unsafe_zeros!(p, T, dims)
+@inline _unsafe_zeros_impl!(p::DisabledPool, dims::NTuple{N,Int}) where {N} = unsafe_zeros!(p, dims)
+
+# --- _unsafe_ones_impl! ---
+@inline _unsafe_ones_impl!(p::DisabledPool, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = unsafe_ones!(p, T, dims...)
+@inline _unsafe_ones_impl!(p::DisabledPool, dims::Vararg{Int,N}) where {N} = unsafe_ones!(p, dims...)
+@inline _unsafe_ones_impl!(p::DisabledPool, ::Type{T}, dims::NTuple{N,Int}) where {T,N} = unsafe_ones!(p, T, dims)
+@inline _unsafe_ones_impl!(p::DisabledPool, dims::NTuple{N,Int}) where {N} = unsafe_ones!(p, dims)
+
+# --- _unsafe_similar_impl! ---
+@inline _unsafe_similar_impl!(p::DisabledPool, x::AbstractArray) = unsafe_similar!(p, x)
+@inline _unsafe_similar_impl!(p::DisabledPool, x::AbstractArray, ::Type{T}) where {T} = unsafe_similar!(p, x, T)
+@inline _unsafe_similar_impl!(p::DisabledPool, x::AbstractArray, dims::Vararg{Int,N}) where {N} = unsafe_similar!(p, x, dims...)
+@inline _unsafe_similar_impl!(p::DisabledPool, x::AbstractArray, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = unsafe_similar!(p, x, T, dims...)

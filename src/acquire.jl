@@ -433,5 +433,14 @@ const _acquire_array_impl! = _unsafe_acquire_impl!
 @inline unsafe_acquire!(p::DisabledPool{B}, args...) where {B} = _throw_backend_not_loaded(B)
 
 # --- _impl! delegators for DisabledPool (macro transformation support) ---
-@inline _acquire_impl!(p::DisabledPool, args...) = acquire!(p, args...)
-@inline _unsafe_acquire_impl!(p::DisabledPool, args...) = unsafe_acquire!(p, args...)
+# Called when: USE_POOLING=true + @maybe_with_pool + MAYBE_POOLING_ENABLED[]=false
+# Explicit overloads for proper inlining (especially important for CUDA backend).
+@inline _acquire_impl!(p::DisabledPool, ::Type{T}, n::Int) where {T} = acquire!(p, T, n)
+@inline _acquire_impl!(p::DisabledPool, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = acquire!(p, T, dims...)
+@inline _acquire_impl!(p::DisabledPool, ::Type{T}, dims::NTuple{N,Int}) where {T,N} = acquire!(p, T, dims)
+@inline _acquire_impl!(p::DisabledPool, x::AbstractArray) = acquire!(p, x)
+
+@inline _unsafe_acquire_impl!(p::DisabledPool, ::Type{T}, n::Int) where {T} = unsafe_acquire!(p, T, n)
+@inline _unsafe_acquire_impl!(p::DisabledPool, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = unsafe_acquire!(p, T, dims...)
+@inline _unsafe_acquire_impl!(p::DisabledPool, ::Type{T}, dims::NTuple{N,Int}) where {T,N} = unsafe_acquire!(p, T, dims)
+@inline _unsafe_acquire_impl!(p::DisabledPool, x::AbstractArray) = unsafe_acquire!(p, x)
