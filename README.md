@@ -58,11 +58,11 @@ for i in 1:10_000
 end
 ```
 
-| | Naive | AdaptiveArrayPools |
-|-------------|-------|---------------------|
-| **Time** | 787 ms | 525 ms |
-| **Allocations** | 90k (2.75 GiB) | 0 |
-| **GC Time** | 31% | 0% |
+| Metric | ⚠️ Naive | ✅ Pooled | Improvement |
+|--------|----------|-----------|-------------|
+| Time | 787 ms | 525 ms | **1.5× faster** |
+| Allocations | 90,000 (2.75 GiB) | 0 | **100% eliminated** |
+| GC Time | 31% | 0% | **No GC pauses** |
 
 > **CUDA support**: Same API—just use `@with_pool :cuda pool`. See [CUDA Backend](docs/cuda.md).
 
