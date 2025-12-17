@@ -212,6 +212,8 @@
         # Use a fresh pool to ensure we start from 0
         pool = AdaptiveArrayPool()
 
+        @test pooling_enabled(pool) == true
+
         # Acquire 511 arrays without rewind - no warning yet
         for i in 1:511
             acquire!(pool, Float64, 10)
