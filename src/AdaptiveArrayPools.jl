@@ -5,6 +5,8 @@ using Printf
 # Public API
 export AdaptiveArrayPool, acquire!, unsafe_acquire!, pool_stats, get_task_local_pool
 export acquire_view!, acquire_array!  # Explicit naming aliases
+export zeros!, ones!, similar!, default_eltype  # Convenience functions
+export unsafe_zeros!, unsafe_ones!, unsafe_similar!  # Unsafe convenience functions
 export @with_pool, @maybe_with_pool
 export USE_POOLING, MAYBE_POOLING_ENABLED, POOL_DEBUG
 export checkpoint!, rewind!, reset!
@@ -13,6 +15,7 @@ export get_task_local_cuda_pool, get_task_local_cuda_pools  # CUDA (stubs, overr
 
 # Extension API (for GPU backends)
 export AbstractTypedPool, AbstractArrayPool  # For subtyping
+export DisabledPool, DISABLED_CPU, pooling_enabled  # Disabled pool support
 # Note: Extensions add methods to _get_pool_for_backend(::Val{:backend}) directly
 
 # Core data structures
@@ -23,6 +26,9 @@ include("utils.jl")
 
 # Acquisition operations: get_view!, acquire!, unsafe_acquire!, aliases
 include("acquire.jl")
+
+# Convenience functions: zeros!, ones!, similar!
+include("convenience.jl")
 
 # State management: checkpoint!, rewind!, reset!, empty!
 include("state.jl")

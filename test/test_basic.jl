@@ -117,14 +117,14 @@
         @test true
     end
 
-    @testset "acquire! fallback (nothing)" begin
+    @testset "acquire! fallback (DISABLED_CPU)" begin
         # Without pool - returns Vector (allocation)
-        v3 = acquire!(nothing, Float64, 10)
+        v3 = acquire!(DISABLED_CPU, Float64, 10)
         @test v3 isa Vector{Float64}
         @test length(v3) == 10
 
         # Different types
-        v4 = acquire!(nothing, Int64, 5)
+        v4 = acquire!(DISABLED_CPU, Int64, 5)
         @test v4 isa Vector{Int64}
         @test length(v4) == 5
     end

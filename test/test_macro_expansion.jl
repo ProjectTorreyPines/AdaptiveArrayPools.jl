@@ -43,9 +43,9 @@
             # Should contain conditional check (MAYBE_POOLING_ENABLED is inlined as RefValue)
             @test occursin("RefValue", expr_str) || occursin("if", expr_str)
 
-            # Should have both branches (pool and nothing)
+            # Should have both branches (pool getter and DisabledPool fallback)
             @test occursin("get_task_local_pool", expr_str)
-            @test occursin("nothing", expr_str)
+            @test occursin("DisabledPool", expr_str)
         end
 
         # Test typed checkpoint optimization
@@ -246,6 +246,79 @@
             @test occursin("Float64", expr_str)
             @test occursin("MyData", expr_str)
             @test occursin(r"\bT\b", expr_str)
+        end
+
+    end
+
+    @testset "Convenience functions expansion" begin
+
+        @testset "zeros! default type uses default_eltype(pool)" begin
+            expr = @macroexpand @with_pool pool begin
+                v = zeros!(pool, 10)
+            end
+
+            expr_str = string(expr)
+
+            # Should contain default_eltype(pool) for backend-flexible type detection
+            @test occursin("default_eltype", expr_str)
+            @test occursin("pool", expr_str)
+        end
+
+        @testset "zeros! explicit type uses that type" begin
+            expr = @macroexpand @with_pool pool begin
+                v = zeros!(pool, Float32, 10)
+            end
+
+            expr_str = string(expr)
+
+            # Should contain Float32 directly (not default_eltype)
+            @test occursin("Float32", expr_str)
+        end
+
+        @testset "ones! default type uses default_eltype(pool)" begin
+            expr = @macroexpand @with_pool pool begin
+                v = ones!(pool, 10)
+            end
+
+            expr_str = string(expr)
+
+            @test occursin("default_eltype", expr_str)
+        end
+
+        @testset "unsafe_zeros! default type uses default_eltype(pool)" begin
+            expr = @macroexpand @with_pool pool begin
+                v = unsafe_zeros!(pool, 10)
+            end
+
+            expr_str = string(expr)
+
+            @test occursin("default_eltype", expr_str)
+        end
+
+        @testset "unsafe_ones! default type uses default_eltype(pool)" begin
+            expr = @macroexpand @with_pool pool begin
+                v = unsafe_ones!(pool, 10)
+            end
+
+            expr_str = string(expr)
+
+            @test occursin("default_eltype", expr_str)
+        end
+
+        @testset "mixed convenience with explicit and default types" begin
+            expr = @macroexpand @with_pool pool begin
+                v1 = zeros!(pool, Float64, 10)  # explicit
+                v2 = ones!(pool, 5)              # default
+                v3 = zeros!(pool, Float32, 3)   # explicit
+            end
+
+            expr_str = string(expr)
+
+            # Explicit types present
+            @test occursin("Float64", expr_str)
+            @test occursin("Float32", expr_str)
+            # default_eltype for untyped ones!
+            @test occursin("default_eltype", expr_str)
         end
 
     end

@@ -55,7 +55,16 @@ Save state for multiple specific types. Uses @generated for zero-overhead
 compile-time unrolling. Increments _current_depth once for all types.
 """
 @generated function checkpoint!(pool::AdaptiveArrayPool, types::Type...)
-    checkpoint_exprs = [:(_checkpoint_typed_pool!(get_typed_pool!(pool, types[$i]), pool._current_depth)) for i in 1:length(types)]
+    # Deduplicate types at compile time (e.g., Float64, Float64 → Float64)
+    seen = Set{Any}()
+    unique_indices = Int[]
+    for i in eachindex(types)
+        if !(types[i] in seen)
+            push!(seen, types[i])
+            push!(unique_indices, i)
+        end
+    end
+    checkpoint_exprs = [:(_checkpoint_typed_pool!(get_typed_pool!(pool, types[$i]), pool._current_depth)) for i in unique_indices]
     quote
         pool._current_depth += 1
         push!(pool._untracked_flags, false)
@@ -63,10 +72,6 @@ compile-time unrolling. Increments _current_depth once for all types.
         nothing
     end
 end
-
-checkpoint!(::Nothing) = nothing
-checkpoint!(::Nothing, ::Type) = nothing
-checkpoint!(::Nothing, types::Type...) = nothing
 
 # Internal helper for checkpoint (works for any AbstractTypedPool)
 @inline function _checkpoint_typed_pool!(tp::AbstractTypedPool, depth::Int)
@@ -144,8 +149,17 @@ Restore state for multiple specific types in reverse order.
 Decrements _current_depth once after all types are rewound.
 """
 @generated function rewind!(pool::AdaptiveArrayPool, types::Type...)
-    rewind_exprs = [:(_rewind_typed_pool!(get_typed_pool!(pool, types[$i]), pool._current_depth)) for i in length(types):-1:1]
-    reset_exprs = [:(reset!(get_typed_pool!(pool, types[$i]))) for i in 1:length(types)]
+    # Deduplicate types at compile time (e.g., Float64, Float64 → Float64)
+    seen = Set{Any}()
+    unique_indices = Int[]
+    for i in eachindex(types)
+        if !(types[i] in seen)
+            push!(seen, types[i])
+            push!(unique_indices, i)
+        end
+    end
+    rewind_exprs = [:(_rewind_typed_pool!(get_typed_pool!(pool, types[$i]), pool._current_depth)) for i in reverse(unique_indices)]
+    reset_exprs = [:(reset!(get_typed_pool!(pool, types[$i]))) for i in unique_indices]
     quote
         # Safety guard: at global scope (depth=1), delegate to reset!
         if pool._current_depth == 1
@@ -158,10 +172,6 @@ Decrements _current_depth once after all types are rewound.
         nothing
     end
 end
-
-rewind!(::Nothing) = nothing
-rewind!(::Nothing, ::Type) = nothing
-rewind!(::Nothing, types::Type...) = nothing
 
 # Internal helper for rewind with orphan cleanup (works for any AbstractTypedPool)
 # Uses 1-based sentinel pattern: no isempty checks needed (sentinel [0] guarantees non-empty)
@@ -257,8 +267,6 @@ function Base.empty!(pool::AdaptiveArrayPool)
 
     return pool
 end
-
-Base.empty!(::Nothing) = nothing
 
 # ==============================================================================
 # State Management - reset!
@@ -368,6 +376,21 @@ See also: [`reset!(::AdaptiveArrayPool)`](@ref), [`rewind!`](@ref)
     end
 end
 
-reset!(::Nothing) = nothing
-reset!(::Nothing, ::Type) = nothing
-reset!(::Nothing, types::Type...) = nothing
+# ==============================================================================
+# DisabledPool State Management (no-ops)
+# ==============================================================================
+# DisabledPool doesn't track state, so all operations are no-ops.
+
+checkpoint!(::DisabledPool) = nothing
+checkpoint!(::DisabledPool, ::Type) = nothing
+checkpoint!(::DisabledPool, types::Type...) = nothing
+
+rewind!(::DisabledPool) = nothing
+rewind!(::DisabledPool, ::Type) = nothing
+rewind!(::DisabledPool, types::Type...) = nothing
+
+reset!(::DisabledPool) = nothing
+reset!(::DisabledPool, ::Type) = nothing
+reset!(::DisabledPool, types::Type...) = nothing
+
+Base.empty!(::DisabledPool) = nothing

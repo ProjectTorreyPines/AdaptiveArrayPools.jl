@@ -27,12 +27,20 @@ Preferences.set_preferences!(AdaptiveArrayPools, "use_pooling" => false)
 ```
 
 When `USE_POOLING = false`:
+- `pool` becomes `DisabledPool{backend}()` instead of an active pool
+- All pool functions fall back to standard allocation
+- Backend context is preserved: `:cuda` still returns `CuArray`
 
 ```julia
 # These become equivalent:
 @with_pool pool acquire!(pool, Float64, n, n)  →  Matrix{Float64}(undef, n, n)
 @with_pool pool acquire!(pool, Float64, n)     →  Vector{Float64}(undef, n)
+
+# With CUDA backend:
+@with_pool :cuda pool zeros!(pool, 100)        →  CUDA.zeros(Float32, 100)
 ```
+
+Use `pooling_enabled(pool)` to check if pooling is active.
 
 **Use cases:**
 - **Debugging**: Compare behavior with/without pooling

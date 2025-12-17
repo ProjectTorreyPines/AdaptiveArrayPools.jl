@@ -279,19 +279,6 @@ end
     _acquire_impl!(pool, T, dims...)
 end
 
-# Fallback: When pool is `nothing` (e.g. pooling disabled), allocate normally
-@inline function acquire!(::Nothing, ::Type{T}, n::Int) where {T}
-    Vector{T}(undef, n)
-end
-
-@inline function acquire!(::Nothing, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
-    Array{T, N}(undef, dims)
-end
-
-@inline function acquire!(::Nothing, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
-    Array{T, N}(undef, dims)
-end
-
 # Similar-style convenience methods
 """
     acquire!(pool, x::AbstractArray) -> SubArray
@@ -311,8 +298,6 @@ end
     _mark_untracked!(pool)
     _acquire_impl!(pool, eltype(x), size(x))
 end
-
-@inline acquire!(::Nothing, x::AbstractArray) = similar(x)
 
 # ==============================================================================
 # Unsafe Acquisition API (Raw Arrays)
@@ -379,19 +364,6 @@ end
     _unsafe_acquire_impl!(pool, T, dims)
 end
 
-# Fallback: When pool is `nothing`, allocate normally
-@inline function unsafe_acquire!(::Nothing, ::Type{T}, n::Int) where {T}
-    Vector{T}(undef, n)
-end
-
-@inline function unsafe_acquire!(::Nothing, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
-    Array{T, N}(undef, dims)
-end
-
-@inline function unsafe_acquire!(::Nothing, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
-    Array{T, N}(undef, dims)
-end
-
 # Similar-style convenience methods
 """
     unsafe_acquire!(pool, x::AbstractArray) -> Array
@@ -411,8 +383,6 @@ end
     _mark_untracked!(pool)
     _unsafe_acquire_impl!(pool, eltype(x), size(x))
 end
-
-@inline unsafe_acquire!(::Nothing, x::AbstractArray) = similar(x)
 
 # ==============================================================================
 # API Aliases
@@ -441,3 +411,36 @@ const acquire_array! = unsafe_acquire!
 # Internal implementation aliases (for macro transformation)
 const _acquire_view_impl! = _acquire_impl!
 const _acquire_array_impl! = _unsafe_acquire_impl!
+
+# ==============================================================================
+# DisabledPool Acquire Fallbacks (pooling disabled with backend context)
+# ==============================================================================
+
+# --- acquire! for DisabledPool{:cpu} ---
+@inline acquire!(::DisabledPool{:cpu}, ::Type{T}, n::Int) where {T} = Vector{T}(undef, n)
+@inline acquire!(::DisabledPool{:cpu}, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = Array{T,N}(undef, dims)
+@inline acquire!(::DisabledPool{:cpu}, ::Type{T}, dims::NTuple{N,Int}) where {T,N} = Array{T,N}(undef, dims)
+@inline acquire!(::DisabledPool{:cpu}, x::AbstractArray) = similar(x)
+
+# --- unsafe_acquire! for DisabledPool{:cpu} ---
+@inline unsafe_acquire!(::DisabledPool{:cpu}, ::Type{T}, n::Int) where {T} = Vector{T}(undef, n)
+@inline unsafe_acquire!(::DisabledPool{:cpu}, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = Array{T,N}(undef, dims)
+@inline unsafe_acquire!(::DisabledPool{:cpu}, ::Type{T}, dims::NTuple{N,Int}) where {T,N} = Array{T,N}(undef, dims)
+@inline unsafe_acquire!(::DisabledPool{:cpu}, x::AbstractArray) = similar(x)
+
+# --- Generic DisabledPool fallbacks (unknown backend → error) ---
+@inline acquire!(p::DisabledPool{B}, args...) where {B} = _throw_backend_not_loaded(B)
+@inline unsafe_acquire!(p::DisabledPool{B}, args...) where {B} = _throw_backend_not_loaded(B)
+
+# --- _impl! delegators for DisabledPool (macro transformation support) ---
+# Called when: USE_POOLING=true + @maybe_with_pool + MAYBE_POOLING_ENABLED[]=false
+# Explicit overloads for proper inlining (especially important for CUDA backend).
+@inline _acquire_impl!(p::DisabledPool, ::Type{T}, n::Int) where {T} = acquire!(p, T, n)
+@inline _acquire_impl!(p::DisabledPool, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = acquire!(p, T, dims...)
+@inline _acquire_impl!(p::DisabledPool, ::Type{T}, dims::NTuple{N,Int}) where {T,N} = acquire!(p, T, dims)
+@inline _acquire_impl!(p::DisabledPool, x::AbstractArray) = acquire!(p, x)
+
+@inline _unsafe_acquire_impl!(p::DisabledPool, ::Type{T}, n::Int) where {T} = unsafe_acquire!(p, T, n)
+@inline _unsafe_acquire_impl!(p::DisabledPool, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = unsafe_acquire!(p, T, dims...)
+@inline _unsafe_acquire_impl!(p::DisabledPool, ::Type{T}, dims::NTuple{N,Int}) where {T,N} = unsafe_acquire!(p, T, dims)
+@inline _unsafe_acquire_impl!(p::DisabledPool, x::AbstractArray) = unsafe_acquire!(p, x)

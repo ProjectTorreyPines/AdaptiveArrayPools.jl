@@ -70,9 +70,9 @@
         end
         @test res == 20.0
 
-        # Verify pool was nothing (fallback allocation used)
+        # Verify pool is DisabledPool (fallback allocation used)
         result_type = @maybe_with_pool pool begin
-            pool === nothing
+            pool isa DisabledPool{:cpu} && !pooling_enabled(pool)
         end
         @test result_type == true
 
@@ -211,6 +211,8 @@
     @testset "Pool growth warning at 512 arrays" begin
         # Use a fresh pool to ensure we start from 0
         pool = AdaptiveArrayPool()
+
+        @test pooling_enabled(pool) == true
 
         # Acquire 511 arrays without rewind - no warning yet
         for i in 1:511

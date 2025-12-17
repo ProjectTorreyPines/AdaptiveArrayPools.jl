@@ -1053,6 +1053,100 @@ import AdaptiveArrayPools: _extract_local_assignments, _filter_static_types, _ex
                 @test length(static_types) == 5
                 @test !has_dynamic
             end
+
+            # ==================================================================
+            # Convenience functions (zeros!, ones!, similar!)
+            # ==================================================================
+
+            @testset "zeros! default type (default_eltype dispatch)" begin
+                expr = :(v = zeros!(pool, 10))
+                types = _extract_acquire_types(expr, :pool)
+                @test length(types) == 1
+                type_expr = first(types)
+                # Should be default_eltype(pool) expression for backend flexibility
+                @test type_expr isa Expr
+                @test type_expr.head == :call
+                @test type_expr.args[1] == :default_eltype
+                @test type_expr.args[2] == :pool
+            end
+
+            @testset "zeros! explicit type" begin
+                expr = :(v = zeros!(pool, Float32, 10, 10))
+                types = _extract_acquire_types(expr, :pool)
+                @test :Float32 in types
+                @test length(types) == 1
+            end
+
+            @testset "ones! default type (default_eltype dispatch)" begin
+                expr = :(v = ones!(pool, 10))
+                types = _extract_acquire_types(expr, :pool)
+                @test length(types) == 1
+                type_expr = first(types)
+                # Should be default_eltype(pool) expression for backend flexibility
+                @test type_expr isa Expr
+                @test type_expr.head == :call
+                @test type_expr.args[1] == :default_eltype
+                @test type_expr.args[2] == :pool
+            end
+
+            @testset "ones! explicit type" begin
+                expr = :(v = ones!(pool, Int64, 5, 5))
+                types = _extract_acquire_types(expr, :pool)
+                @test :Int64 in types
+                @test length(types) == 1
+            end
+
+            @testset "similar! same type as template (nargs == 3)" begin
+                expr = :(v = similar!(pool, template))
+                types = _extract_acquire_types(expr, :pool)
+                @test length(types) == 1
+                type_expr = first(types)
+                @test type_expr isa Expr
+                @test type_expr.head == :call
+                @test type_expr.args[1] == :eltype
+                @test type_expr.args[2] == :template
+            end
+
+            @testset "similar! explicit type (nargs >= 4, type arg)" begin
+                expr = :(v = similar!(pool, template, Float32))
+                types = _extract_acquire_types(expr, :pool)
+                @test :Float32 in types
+                @test length(types) == 1
+            end
+
+            @testset "similar! explicit type with dims (nargs >= 4, type + dims)" begin
+                expr = :(v = similar!(pool, template, Int64, 10, 10))
+                types = _extract_acquire_types(expr, :pool)
+                @test :Int64 in types
+                @test length(types) == 1
+            end
+
+            @testset "similar! same type with different dims (nargs >= 4, dims only)" begin
+                expr = :(v = similar!(pool, template, 5, 5))
+                types = _extract_acquire_types(expr, :pool)
+                @test length(types) == 1
+                type_expr = first(types)
+                @test type_expr isa Expr
+                @test type_expr.head == :call
+                @test type_expr.args[1] == :eltype
+                @test type_expr.args[2] == :template
+            end
+
+            @testset "mixed convenience functions" begin
+                expr = quote
+                    v1 = zeros!(pool, Float64, 10)
+                    v2 = ones!(pool, Float32, 5)
+                    v3 = similar!(pool, template)
+                    v4 = similar!(pool, template, Int64)
+                end
+                types = _extract_acquire_types(expr, :pool)
+                @test :Float64 in types
+                @test :Float32 in types
+                @test :Int64 in types
+                has_eltype = any(t -> t isa Expr && t.head == :call && t.args[1] == :eltype, types)
+                @test has_eltype
+                @test length(types) == 4
+            end
         end
 
     end
@@ -1220,14 +1314,105 @@ import AdaptiveArrayPools: _extract_local_assignments, _filter_static_types, _ex
             end
         end
 
+        @testset "convenience function transformation" begin
+            using AdaptiveArrayPools: _ZEROS_IMPL_REF, _ONES_IMPL_REF, _SIMILAR_IMPL_REF
+
+            @testset "zeros! → _zeros_impl!" begin
+                expr = :(zeros!(pool, Float64, 10))
+                transformed = _transform_acquire_calls(expr, :pool)
+                @test transformed.args[1] == _ZEROS_IMPL_REF
+                @test transformed.args[2] == :pool
+                @test transformed.args[3] == :Float64
+            end
+
+            @testset "ones! → _ones_impl!" begin
+                expr = :(ones!(pool, Int64, 5, 5))
+                transformed = _transform_acquire_calls(expr, :pool)
+                @test transformed.args[1] == _ONES_IMPL_REF
+                @test transformed.args[2] == :pool
+                @test transformed.args[3] == :Int64
+            end
+
+            @testset "similar! → _similar_impl!" begin
+                expr = :(similar!(pool, template))
+                transformed = _transform_acquire_calls(expr, :pool)
+                @test transformed.args[1] == _SIMILAR_IMPL_REF
+                @test transformed.args[2] == :pool
+                @test transformed.args[3] == :template
+            end
+
+            @testset "qualified zeros! → _zeros_impl!" begin
+                expr = :(AAP.zeros!(pool, Float32, 10))
+                transformed = _transform_acquire_calls(expr, :pool)
+                @test transformed.args[1] == _ZEROS_IMPL_REF
+                @test transformed.args[2] == :pool
+            end
+
+            @testset "qualified ones! → _ones_impl!" begin
+                expr = :(AAP.ones!(pool, Int32, 5))
+                transformed = _transform_acquire_calls(expr, :pool)
+                @test transformed.args[1] == _ONES_IMPL_REF
+                @test transformed.args[2] == :pool
+            end
+
+            @testset "qualified similar! → _similar_impl!" begin
+                expr = :(AAP.similar!(pool, arr, Float64))
+                transformed = _transform_acquire_calls(expr, :pool)
+                @test transformed.args[1] == _SIMILAR_IMPL_REF
+                @test transformed.args[2] == :pool
+            end
+        end
+
         @testset "GlobalRef verification" begin
+            using AdaptiveArrayPools: _ZEROS_IMPL_REF, _ONES_IMPL_REF, _SIMILAR_IMPL_REF
+
             # Verify that GlobalRef points to AdaptiveArrayPools module
             @test _ACQUIRE_IMPL_REF isa GlobalRef
             @test _UNSAFE_ACQUIRE_IMPL_REF isa GlobalRef
+            @test _ZEROS_IMPL_REF isa GlobalRef
+            @test _ONES_IMPL_REF isa GlobalRef
+            @test _SIMILAR_IMPL_REF isa GlobalRef
+
             @test _ACQUIRE_IMPL_REF.mod == AdaptiveArrayPools
             @test _UNSAFE_ACQUIRE_IMPL_REF.mod == AdaptiveArrayPools
+            @test _ZEROS_IMPL_REF.mod == AdaptiveArrayPools
+            @test _ONES_IMPL_REF.mod == AdaptiveArrayPools
+            @test _SIMILAR_IMPL_REF.mod == AdaptiveArrayPools
+
             @test _ACQUIRE_IMPL_REF.name == :_acquire_impl!
             @test _UNSAFE_ACQUIRE_IMPL_REF.name == :_unsafe_acquire_impl!
+            @test _ZEROS_IMPL_REF.name == :_zeros_impl!
+            @test _ONES_IMPL_REF.name == :_ones_impl!
+            @test _SIMILAR_IMPL_REF.name == :_similar_impl!
+        end
+    end
+
+    # ==========================================================================
+    # _get_pool_for_backend Tests
+    # ==========================================================================
+
+    @testset "_get_pool_for_backend" begin
+        using AdaptiveArrayPools: _get_pool_for_backend
+
+        @testset "CPU backend returns task-local pool" begin
+            pool = _get_pool_for_backend(Val(:cpu))
+            @test pool isa AdaptiveArrayPool
+            # Should return same instance (task-local)
+            pool2 = _get_pool_for_backend(Val(:cpu))
+            @test pool === pool2
+        end
+
+        @testset "Unknown backend throws error" begin
+            @test_throws ErrorException _get_pool_for_backend(Val(:unknown_backend))
+            @test_throws ErrorException _get_pool_for_backend(Val(:rocm))
+
+            # Check error message contains backend name
+            try
+                _get_pool_for_backend(Val(:foo))
+            catch e
+                @test occursin("foo", e.msg)
+                @test occursin("not available", e.msg)
+            end
         end
     end
 

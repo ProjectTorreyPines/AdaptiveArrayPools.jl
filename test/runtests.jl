@@ -24,6 +24,8 @@ else
     include("test_nway_cache.jl")
     include("test_fixed_slots.jl")
     include("test_backend_macro_expansion.jl")
+    include("test_convenience.jl")
+    include("test_coverage.jl")
 
     # CUDA extension tests (auto-detect, skip with TEST_CUDA=false)
     if get(ENV, "TEST_CUDA", "true") != "false"

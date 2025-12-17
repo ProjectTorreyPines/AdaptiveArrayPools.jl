@@ -27,11 +27,46 @@
 | `get_task_local_pool()` | Returns the task-local pool instance. |
 | `empty!(pool)` | Clears all internal storage, releasing all memory. |
 
+## Convenience Functions
+
+Shortcuts for common `acquire!` + initialization patterns. Default element type is `Float64` (CPU) or `Float32` (CUDA).
+
+### View-returning (like `acquire!`)
+
+| Function | Description |
+|----------|-------------|
+| `zeros!(pool, [T,] dims...)` | Zero-initialized view. Equivalent to `acquire!` + `fill!(0)`. |
+| `ones!(pool, [T,] dims...)` | One-initialized view. Equivalent to `acquire!` + `fill!(1)`. |
+| `similar!(pool, A)` | View matching `eltype(A)` and `size(A)`. |
+| `similar!(pool, A, T)` | View with type `T`, size from `A`. |
+| `similar!(pool, A, dims...)` | View with `eltype(A)`, specified dimensions. |
+| `similar!(pool, A, T, dims...)` | View with type `T`, specified dimensions. |
+
+### Array-returning (like `unsafe_acquire!`)
+
+| Function | Description |
+|----------|-------------|
+| `unsafe_zeros!(pool, [T,] dims...)` | Zero-initialized raw `Array`. |
+| `unsafe_ones!(pool, [T,] dims...)` | One-initialized raw `Array`. |
+| `unsafe_similar!(pool, A, ...)` | Raw `Array` with same signatures as `similar!`. |
+
+All convenience functions support tuple dimensions: `zeros!(pool, (3, 4))`.
+
+**CUDA note**: Default type is `Float32` to match `CUDA.zeros()` behavior.
+
 ## Types
 
 | Type | Description |
 |------|-------------|
 | `AdaptiveArrayPool` | The main pool type. Create with `AdaptiveArrayPool()`. |
+| `DisabledPool{Backend}` | Sentinel type when pooling is disabled. Preserves backend context (`:cpu` or `:cuda`). |
+
+## Utility Functions
+
+| Function | Description |
+|----------|-------------|
+| `pooling_enabled(pool)` | Returns `true` if pool is active, `false` if `DisabledPool`. Use instead of `pool === nothing`. |
+| `default_eltype(pool)` | Returns default element type: `Float64` (CPU) or `Float32` (CUDA). |
 
 ## Constants
 

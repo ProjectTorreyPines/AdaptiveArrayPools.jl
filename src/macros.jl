@@ -161,19 +161,48 @@ macro maybe_with_pool(expr)
     _generate_pool_code(pool_name, expr, false)
 end
 
+# Backend-specific variants: @maybe_with_pool :cuda pool begin ... end
+macro maybe_with_pool(backend::QuoteNode, pool_name, expr)
+    _generate_pool_code_with_backend(backend.value, pool_name, expr, false)
+end
+
+macro maybe_with_pool(backend::QuoteNode, expr)
+    pool_name = gensym(:pool)
+    _generate_pool_code_with_backend(backend.value, pool_name, expr, false)
+end
+
+# ==============================================================================
+# Internal: DisabledPool Expression Generator
+# ==============================================================================
+
+"""
+    _disabled_pool_expr(backend::Symbol) -> Expr
+
+Generate expression for DisabledPool singleton based on backend.
+Used when pooling is disabled to preserve backend context.
+"""
+function _disabled_pool_expr(backend::Symbol)
+    if backend == :cpu
+        :($DISABLED_CPU)
+    else
+        :($(DisabledPool{backend}()))
+    end
+end
+
 # ==============================================================================
 # Internal: Code Generation
 # ==============================================================================
 
 function _generate_pool_code(pool_name, expr, force_enable)
-    # Compile-time check: if pooling disabled, just run expr with pool=nothing
+    # Compile-time check: if pooling disabled, use DisabledPool to preserve backend context
     if !USE_POOLING
+        disabled_pool = _disabled_pool_expr(:cpu)
         if Meta.isexpr(expr, [:function, :(=)]) && _is_function_def(expr)
-            # Function definition: inject local pool = nothing at start of body
-            return _generate_function_pool_code(pool_name, expr, force_enable, true)
+            # Function definition: inject local pool = DisabledPool at start of body
+            return _generate_function_pool_code(pool_name, expr, force_enable, true, :cpu)
         else
             return quote
-                local $(esc(pool_name)) = $(nothing)
+                local $(esc(pool_name)) = $disabled_pool
                 $(esc(expr))
             end
         end
@@ -256,7 +285,7 @@ function _generate_pool_code(pool_name, expr, force_enable)
                     $rewind_call
                 end
             else
-                local $(esc(pool_name)) = $(nothing)
+                local $(esc(pool_name)) = $DISABLED_CPU
                 $(esc(expr))
             end
         end
@@ -276,13 +305,72 @@ Uses `_get_pool_for_backend(Val{backend}())` for zero-overhead dispatch.
 Includes type-specific checkpoint/rewind optimization (same as regular @with_pool).
 """
 function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, force_enable::Bool)
-    # Compile-time check: if pooling disabled, just run expr with pool=nothing
+    # Compile-time check: if pooling disabled, use DisabledPool to preserve backend context
     if !USE_POOLING
+        disabled_pool = _disabled_pool_expr(backend)
         if Meta.isexpr(expr, [:function, :(=)]) && _is_function_def(expr)
             return _generate_function_pool_code_with_backend(backend, pool_name, expr, true)
         else
             return quote
-                local $(esc(pool_name)) = $(nothing)
+                local $(esc(pool_name)) = $disabled_pool
+                $(esc(expr))
+            end
+        end
+    end
+
+    # Runtime check for @maybe_with_pool :backend (force_enable=false)
+    if !force_enable
+        disabled_pool = _disabled_pool_expr(backend)
+        # Check if function definition
+        if Meta.isexpr(expr, [:function, :(=)]) && _is_function_def(expr)
+            return _generate_function_pool_code_with_backend(backend, pool_name, expr, false)
+        end
+
+        # Block logic with runtime check
+        all_types = _extract_acquire_types(expr, pool_name)
+        local_vars = _extract_local_assignments(expr)
+        static_types, has_dynamic = _filter_static_types(all_types, local_vars)
+        use_typed = !has_dynamic && !isempty(static_types)
+        transformed_expr = _transform_acquire_calls(expr, pool_name)
+        pool_getter = :($_get_pool_for_backend($(Val{backend}())))
+
+        if use_typed
+            typed_checkpoint_call = _generate_typed_checkpoint_call(esc(pool_name), static_types)
+            checkpoint_call = quote
+                if @inbounds $(esc(pool_name))._untracked_flags[$(esc(pool_name))._current_depth]
+                    $checkpoint!($(esc(pool_name)))
+                else
+                    $typed_checkpoint_call
+                end
+            end
+            typed_rewind_call = _generate_typed_rewind_call(esc(pool_name), static_types)
+            rewind_call = quote
+                if @inbounds $(esc(pool_name))._untracked_flags[$(esc(pool_name))._current_depth]
+                    $rewind!($(esc(pool_name)))
+                else
+                    $typed_rewind_call
+                end
+            end
+        else
+            checkpoint_call = :($checkpoint!($(esc(pool_name))))
+            rewind_call = :($rewind!($(esc(pool_name))))
+        end
+
+        return quote
+            if $MAYBE_POOLING_ENABLED[]
+                local $(esc(pool_name)) = $pool_getter
+                $checkpoint_call
+                try
+                    local _result = $(esc(transformed_expr))
+                    if $POOL_DEBUG[]
+                        $_validate_pool_return(_result, $(esc(pool_name)))
+                    end
+                    _result
+                finally
+                    $rewind_call
+                end
+            else
+                local $(esc(pool_name)) = $disabled_pool
                 $(esc(expr))
             end
         end
@@ -362,8 +450,9 @@ function _generate_function_pool_code_with_backend(backend::Symbol, pool_name, f
     body = func_def.args[2]
 
     if disable_pooling
+        disabled_pool = _disabled_pool_expr(backend)
         new_body = quote
-            local $(esc(pool_name)) = $(nothing)
+            local $(esc(pool_name)) = $disabled_pool
             $(esc(body))
         end
         return Expr(def_head, esc(call_expr), new_body)
@@ -422,14 +511,15 @@ function _generate_function_pool_code_with_backend(backend::Symbol, pool_name, f
     return Expr(def_head, esc(call_expr), new_body)
 end
 
-function _generate_function_pool_code(pool_name, func_def, force_enable, disable_pooling)
+function _generate_function_pool_code(pool_name, func_def, force_enable, disable_pooling, backend::Symbol=:cpu)
     def_head = func_def.head
     call_expr = func_def.args[1]
     body = func_def.args[2]
 
     if disable_pooling
+        disabled_pool = _disabled_pool_expr(backend)
         new_body = quote
-            local $(esc(pool_name)) = $(nothing)
+            local $(esc(pool_name)) = $disabled_pool
             $(esc(body))
         end
         return Expr(def_head, esc(call_expr), new_body)
@@ -484,6 +574,7 @@ function _generate_function_pool_code(pool_name, func_def, force_enable, disable
             end
         end
     else
+        disabled_pool = _disabled_pool_expr(backend)
         new_body = quote
             if $MAYBE_POOLING_ENABLED[]
                 local $(esc(pool_name)) = get_task_local_pool()
@@ -494,7 +585,7 @@ function _generate_function_pool_code(pool_name, func_def, force_enable, disable
                     $rewind_call
                 end
             else
-                local $(esc(pool_name)) = $(nothing)
+                local $(esc(pool_name)) = $disabled_pool
                 $(esc(body))
             end
         end
@@ -561,46 +652,83 @@ end
 """
     _extract_acquire_types(expr, target_pool) -> Set{Any}
 
-Extract type arguments from acquire function calls in an expression.
+Extract type arguments from acquire/convenience function calls in an expression.
 Only extracts types from calls where the first argument matches `target_pool`.
 This prevents AST pollution when multiple pools are used in the same block.
 
 Supported functions:
 - `acquire!` and its alias `acquire_view!`
 - `unsafe_acquire!` and its alias `acquire_array!`
+- `zeros!`, `ones!`, `similar!`
+- `unsafe_zeros!`, `unsafe_ones!`, `unsafe_similar!`
 
-Handles two forms:
-- `[unsafe_]acquire!(pool, Type, dims...)` (3+ func args): extracts Type (2nd arg) directly
-- `acquire!(pool, x)` (2 func args): generates `eltype(x)` expression for the array
-  (Note: `unsafe_acquire!` / `acquire_array!` does not have the 2-arg form)
+Handles various forms:
+- `[unsafe_]acquire!(pool, Type, dims...)`: extracts Type directly
+- `acquire!(pool, x)`: generates `eltype(x)` expression
+- `zeros!(pool, dims...)` / `ones!(pool, dims...)`: Float64 (default)
+- `zeros!(pool, Type, dims...)` / `ones!(pool, Type, dims...)`: extracts Type
+- `similar!(pool, x)`: generates `eltype(x)` expression
+- `similar!(pool, x, Type, ...)`: extracts Type
 """
 function _extract_acquire_types(expr, target_pool, types=Set{Any}())
     if expr isa Expr
-        # Match: acquire!/acquire_view!/unsafe_acquire!/acquire_array!(pool, ...)
+        # Match: function calls with pool argument
         if expr.head == :call && length(expr.args) >= 3
             fn = expr.args[1]
-            # All acquire function names (including aliases)
-            acquire_names = (:acquire!, :unsafe_acquire!, :acquire_view!, :acquire_array!)
-            acquire_quotenodes = (QuoteNode(:acquire!), QuoteNode(:unsafe_acquire!),
-                                  QuoteNode(:acquire_view!), QuoteNode(:acquire_array!))
-            is_acquire = fn in acquire_names ||
-                         (fn isa Expr && fn.head == :. && length(fn.args) >= 2 &&
-                          fn.args[end] in acquire_quotenodes)
-            if is_acquire
-                # Check if the pool argument matches our target pool
-                pool_arg = expr.args[2]
-                if pool_arg == target_pool
-                    nargs = length(expr.args)
+            pool_arg = expr.args[2]
+
+            # Only process if pool argument matches our target pool
+            if pool_arg == target_pool
+                # All acquire function names (including aliases)
+                acquire_names = (:acquire!, :unsafe_acquire!, :acquire_view!, :acquire_array!)
+
+                # Get function name (handle qualified names)
+                fn_name = fn
+                if fn isa Expr && fn.head == :. && length(fn.args) >= 2
+                    qn = fn.args[end]
+                    if qn isa QuoteNode
+                        fn_name = qn.value
+                    end
+                end
+
+                nargs = length(expr.args)
+
+                # acquire!/unsafe_acquire!/acquire_view!/acquire_array!
+                if fn in acquire_names || fn_name in acquire_names
                     if nargs >= 4
                         # acquire!(pool, Type, dims...) - traditional form
-                        type_arg = expr.args[3]
-                        push!(types, type_arg)
+                        push!(types, expr.args[3])
                     elseif nargs == 3
                         # acquire!(pool, x) - similar-style form
-                        # Type is eltype of the array argument
-                        array_arg = expr.args[3]
-                        type_expr = Expr(:call, :eltype, array_arg)
-                        push!(types, type_expr)
+                        push!(types, Expr(:call, :eltype, expr.args[3]))
+                    end
+                # zeros!/ones!/unsafe_zeros!/unsafe_ones!
+                elseif fn in (:zeros!, :ones!, :unsafe_zeros!, :unsafe_ones!) || fn_name in (:zeros!, :ones!, :unsafe_zeros!, :unsafe_ones!)
+                    if nargs >= 3
+                        third_arg = expr.args[3]
+                        # Check if third arg looks like a type (Symbol starting with uppercase or curly)
+                        if _looks_like_type(third_arg)
+                            push!(types, third_arg)
+                        else
+                            # No type specified, use default_eltype(pool) - resolved at compile time
+                            # CPU: Float64, CUDA: Float32 (via default_eltype dispatch)
+                            push!(types, Expr(:call, :default_eltype, target_pool))
+                        end
+                    end
+                # similar!/unsafe_similar!
+                elseif fn in (:similar!, :unsafe_similar!) || fn_name in (:similar!, :unsafe_similar!)
+                    if nargs == 3
+                        # similar!(pool, x) - same type as x
+                        push!(types, Expr(:call, :eltype, expr.args[3]))
+                    elseif nargs >= 4
+                        fourth_arg = expr.args[4]
+                        if _looks_like_type(fourth_arg)
+                            # similar!(pool, x, Type, ...) - explicit type
+                            push!(types, fourth_arg)
+                        else
+                            # similar!(pool, x, dims...) - same type as x
+                            push!(types, Expr(:call, :eltype, expr.args[3]))
+                        end
                     end
                 end
             end
@@ -611,6 +739,24 @@ function _extract_acquire_types(expr, target_pool, types=Set{Any}())
         end
     end
     return types
+end
+
+"""
+    _looks_like_type(expr) -> Bool
+
+Heuristic to check if an expression looks like a type.
+Returns true for: uppercase Symbols (Float64, Int), curly expressions (Vector{T}), GlobalRef to types.
+"""
+function _looks_like_type(expr)
+    if expr isa Symbol
+        s = string(expr)
+        return !isempty(s) && isuppercase(first(s))
+    elseif expr isa Expr && expr.head == :curly
+        return true
+    elseif expr isa GlobalRef
+        return true
+    end
+    return false
 end
 
 """
@@ -683,6 +829,16 @@ function _filter_static_types(types, local_vars=Set{Symbol}())
                     # x is external (function param, global, etc.) - safe to use
                     push!(static_types, t)
                 end
+            elseif t.head == :call && length(t.args) >= 2 && t.args[1] == :default_eltype
+                # default_eltype(pool) expression from zeros!(pool, 10) etc.
+                # This is a compile-time constant (Float64 for CPU, Float32 for CUDA)
+                # Safe to use - pool type is known at compile time
+                inner_arg = t.args[2]
+                if _uses_local_var(inner_arg, local_vars)
+                    has_dynamic = true
+                else
+                    push!(static_types, t)
+                end
             else
                 # Other expressions - treat as dynamic
                 has_dynamic = true
@@ -733,7 +889,7 @@ end
 """
     _transform_acquire_calls(expr, pool_name) -> Expr
 
-Transform acquire!/unsafe_acquire! calls to their _impl! counterparts.
+Transform acquire!/unsafe_acquire!/convenience function calls to their _impl! counterparts.
 Only transforms calls where the first argument matches `pool_name`.
 
 This allows macro-transformed code to bypass the untracked marking overhead,
@@ -744,11 +900,20 @@ Transformation rules:
 - `acquire_view!(pool, ...)` → `_acquire_impl!(pool, ...)`
 - `unsafe_acquire!(pool, ...)` → `_unsafe_acquire_impl!(pool, ...)`
 - `acquire_array!(pool, ...)` → `_unsafe_acquire_impl!(pool, ...)`
+- `zeros!(pool, ...)` → `_zeros_impl!(pool, ...)`
+- `ones!(pool, ...)` → `_ones_impl!(pool, ...)`
+- `similar!(pool, ...)` → `_similar_impl!(pool, ...)`
 """
 # Module-qualified references for transformed acquire calls
 # Using GlobalRef ensures the function is looked up in AdaptiveArrayPools, not the caller's module
 const _ACQUIRE_IMPL_REF = GlobalRef(@__MODULE__, :_acquire_impl!)
 const _UNSAFE_ACQUIRE_IMPL_REF = GlobalRef(@__MODULE__, :_unsafe_acquire_impl!)
+const _ZEROS_IMPL_REF = GlobalRef(@__MODULE__, :_zeros_impl!)
+const _ONES_IMPL_REF = GlobalRef(@__MODULE__, :_ones_impl!)
+const _SIMILAR_IMPL_REF = GlobalRef(@__MODULE__, :_similar_impl!)
+const _UNSAFE_ZEROS_IMPL_REF = GlobalRef(@__MODULE__, :_unsafe_zeros_impl!)
+const _UNSAFE_ONES_IMPL_REF = GlobalRef(@__MODULE__, :_unsafe_ones_impl!)
+const _UNSAFE_SIMILAR_IMPL_REF = GlobalRef(@__MODULE__, :_unsafe_similar_impl!)
 
 function _transform_acquire_calls(expr, pool_name)
     if expr isa Expr
@@ -764,6 +929,18 @@ function _transform_acquire_calls(expr, pool_name)
                     expr = Expr(:call, _ACQUIRE_IMPL_REF, expr.args[2:end]...)
                 elseif fn == :unsafe_acquire! || fn == :acquire_array!
                     expr = Expr(:call, _UNSAFE_ACQUIRE_IMPL_REF, expr.args[2:end]...)
+                elseif fn == :zeros!
+                    expr = Expr(:call, _ZEROS_IMPL_REF, expr.args[2:end]...)
+                elseif fn == :ones!
+                    expr = Expr(:call, _ONES_IMPL_REF, expr.args[2:end]...)
+                elseif fn == :similar!
+                    expr = Expr(:call, _SIMILAR_IMPL_REF, expr.args[2:end]...)
+                elseif fn == :unsafe_zeros!
+                    expr = Expr(:call, _UNSAFE_ZEROS_IMPL_REF, expr.args[2:end]...)
+                elseif fn == :unsafe_ones!
+                    expr = Expr(:call, _UNSAFE_ONES_IMPL_REF, expr.args[2:end]...)
+                elseif fn == :unsafe_similar!
+                    expr = Expr(:call, _UNSAFE_SIMILAR_IMPL_REF, expr.args[2:end]...)
                 elseif fn isa Expr && fn.head == :. && length(fn.args) >= 2
                     # Qualified name: AdaptiveArrayPools.acquire! etc.
                     qn = fn.args[end]
@@ -771,6 +948,18 @@ function _transform_acquire_calls(expr, pool_name)
                         expr = Expr(:call, _ACQUIRE_IMPL_REF, expr.args[2:end]...)
                     elseif qn == QuoteNode(:unsafe_acquire!) || qn == QuoteNode(:acquire_array!)
                         expr = Expr(:call, _UNSAFE_ACQUIRE_IMPL_REF, expr.args[2:end]...)
+                    elseif qn == QuoteNode(:zeros!)
+                        expr = Expr(:call, _ZEROS_IMPL_REF, expr.args[2:end]...)
+                    elseif qn == QuoteNode(:ones!)
+                        expr = Expr(:call, _ONES_IMPL_REF, expr.args[2:end]...)
+                    elseif qn == QuoteNode(:similar!)
+                        expr = Expr(:call, _SIMILAR_IMPL_REF, expr.args[2:end]...)
+                    elseif qn == QuoteNode(:unsafe_zeros!)
+                        expr = Expr(:call, _UNSAFE_ZEROS_IMPL_REF, expr.args[2:end]...)
+                    elseif qn == QuoteNode(:unsafe_ones!)
+                        expr = Expr(:call, _UNSAFE_ONES_IMPL_REF, expr.args[2:end]...)
+                    elseif qn == QuoteNode(:unsafe_similar!)
+                        expr = Expr(:call, _UNSAFE_SIMILAR_IMPL_REF, expr.args[2:end]...)
                     end
                 end
             end
