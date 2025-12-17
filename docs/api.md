@@ -59,6 +59,14 @@ All convenience functions support tuple dimensions: `zeros!(pool, (3, 4))`.
 | Type | Description |
 |------|-------------|
 | `AdaptiveArrayPool` | The main pool type. Create with `AdaptiveArrayPool()`. |
+| `DisabledPool{Backend}` | Sentinel type when pooling is disabled. Preserves backend context (`:cpu` or `:cuda`). |
+
+## Utility Functions
+
+| Function | Description |
+|----------|-------------|
+| `pooling_enabled(pool)` | Returns `true` if pool is active, `false` if `DisabledPool`. Use instead of `pool === nothing`. |
+| `default_eltype(pool)` | Returns default element type: `Float64` (CPU) or `Float32` (CUDA). |
 
 ## Constants
 

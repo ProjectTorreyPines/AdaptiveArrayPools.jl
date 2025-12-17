@@ -25,8 +25,20 @@ MAYBE_POOLING_ENABLED[] = true   # Uses pool
 ## How It Works
 
 When `MAYBE_POOLING_ENABLED[] == false`:
-- `pool` becomes `nothing`
-- `acquire!(nothing, T, dims...)` allocates normally
+- `pool` becomes `DisabledPool{backend}()` (e.g., `DisabledPool{:cpu}()` or `DisabledPool{:cuda}()`)
+- All pool functions (`acquire!`, `zeros!`, etc.) fall back to standard allocation
+- Backend context is preserved: `:cuda` → `CuArray`, `:cpu` → `Array`
+
+Use `pooling_enabled(pool)` to check if pooling is active:
+```julia
+@maybe_with_pool pool begin
+    if pooling_enabled(pool)
+        # Using pooled memory
+    else
+        # Using standard allocation (DisabledPool)
+    end
+end
+```
 
 ## vs @with_pool
 
