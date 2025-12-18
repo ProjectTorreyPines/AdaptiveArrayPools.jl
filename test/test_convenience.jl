@@ -239,6 +239,174 @@
         end
     end
 
+    @testset "NTuple dispatch in @with_pool (size(x) form)" begin
+        # These tests cover the _impl! NTuple overloads that are invoked when
+        # convenience functions are called with size(x) inside @with_pool macro.
+        # The macro transforms zeros!(pool, T, size(x)) → _zeros_impl!(pool, T, size(x))
+        # which requires NTuple{N,Int} dispatch (not Vararg{Int,N}).
+
+        @testset "zeros! with size(x)" begin
+            x1d = rand(10)
+            x2d = rand(5, 8)
+            x3d = rand(2, 3, 4)
+
+            # 1D with explicit type
+            result = @with_pool pool begin
+                v = zeros!(pool, Float64, size(x1d))
+                @test length(v) == 10
+                @test eltype(v) == Float64
+                @test all(v .== 0.0)
+                sum(v)
+            end
+            @test result == 0.0
+
+            # 1D without type (default_eltype)
+            result = @with_pool pool begin
+                v = zeros!(pool, size(x1d))
+                @test length(v) == 10
+                @test eltype(v) == Float64
+                sum(v)
+            end
+            @test result == 0.0
+
+            # 2D with explicit type
+            result = @with_pool pool begin
+                m = zeros!(pool, Float32, size(x2d))
+                @test size(m) == (5, 8)
+                @test eltype(m) == Float32
+                @test all(m .== 0.0f0)
+                sum(m)
+            end
+            @test result == 0.0f0
+
+            # 3D without type
+            result = @with_pool pool begin
+                t = zeros!(pool, size(x3d))
+                @test size(t) == (2, 3, 4)
+                @test eltype(t) == Float64
+                sum(t)
+            end
+            @test result == 0.0
+        end
+
+        @testset "ones! with size(x)" begin
+            x1d = rand(10)
+            x2d = rand(5, 8)
+
+            # 1D with explicit type
+            result = @with_pool pool begin
+                v = ones!(pool, Float64, size(x1d))
+                @test length(v) == 10
+                @test all(v .== 1.0)
+                sum(v)
+            end
+            @test result == 10.0
+
+            # 1D without type
+            result = @with_pool pool begin
+                v = ones!(pool, size(x1d))
+                @test length(v) == 10
+                @test eltype(v) == Float64
+                sum(v)
+            end
+            @test result == 10.0
+
+            # 2D with explicit type
+            result = @with_pool pool begin
+                m = ones!(pool, Float32, size(x2d))
+                @test size(m) == (5, 8)
+                @test eltype(m) == Float32
+                sum(m)
+            end
+            @test result == 40.0f0
+        end
+
+        @testset "unsafe_zeros! with size(x)" begin
+            x1d = rand(10)
+            x2d = rand(5, 8)
+
+            # 1D with explicit type
+            result = @with_pool pool begin
+                v = unsafe_zeros!(pool, Float64, size(x1d))
+                @test v isa Array{Float64,1}
+                @test length(v) == 10
+                @test all(v .== 0.0)
+                sum(v)
+            end
+            @test result == 0.0
+
+            # 1D without type
+            result = @with_pool pool begin
+                v = unsafe_zeros!(pool, size(x1d))
+                @test v isa Array{Float64,1}
+                @test eltype(v) == Float64
+                sum(v)
+            end
+            @test result == 0.0
+
+            # 2D with explicit type
+            result = @with_pool pool begin
+                m = unsafe_zeros!(pool, Float32, size(x2d))
+                @test m isa Array{Float32,2}
+                @test size(m) == (5, 8)
+                sum(m)
+            end
+            @test result == 0.0f0
+        end
+
+        @testset "unsafe_ones! with size(x)" begin
+            x1d = rand(10)
+            x2d = rand(5, 8)
+
+            # 1D with explicit type
+            result = @with_pool pool begin
+                v = unsafe_ones!(pool, Float64, size(x1d))
+                @test v isa Array{Float64,1}
+                @test length(v) == 10
+                @test all(v .== 1.0)
+                sum(v)
+            end
+            @test result == 10.0
+
+            # 1D without type
+            result = @with_pool pool begin
+                v = unsafe_ones!(pool, size(x1d))
+                @test v isa Array{Float64,1}
+                @test eltype(v) == Float64
+                sum(v)
+            end
+            @test result == 10.0
+
+            # 2D with explicit type
+            result = @with_pool pool begin
+                m = unsafe_ones!(pool, Float32, size(x2d))
+                @test m isa Array{Float32,2}
+                @test size(m) == (5, 8)
+                sum(m)
+            end
+            @test result == 40.0f0
+        end
+
+        @testset "mixed size(x) usage" begin
+            # Realistic scenario: using size() of input arrays
+            input_vec = rand(100)
+            input_mat = rand(10, 20)
+
+            result = @with_pool pool begin
+                # Create working arrays matching input sizes
+                temp_vec = zeros!(pool, Float64, size(input_vec))
+                temp_mat = ones!(pool, size(input_mat))
+
+                # Use them
+                temp_vec .= input_vec .* 2
+                temp_mat .= temp_mat .+ 1.0
+
+                sum(temp_vec) + sum(temp_mat)
+            end
+            @test result ≈ 2 * sum(input_vec) + 400.0
+        end
+    end
+
     @testset "Pool state management" begin
         pool = AdaptiveArrayPool()
         checkpoint!(pool)
