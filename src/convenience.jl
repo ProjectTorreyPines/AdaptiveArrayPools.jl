@@ -74,6 +74,15 @@ end
     _zeros_impl!(pool, default_eltype(pool), dims...)
 end
 
+# NTuple overloads for macro transformation (handles zeros!(pool, T, size(x)) form)
+@inline function _zeros_impl!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N,Int}) where {T,N}
+    _zeros_impl!(pool, T, dims...)
+end
+
+@inline function _zeros_impl!(pool::AbstractArrayPool, dims::NTuple{N,Int}) where {N}
+    _zeros_impl!(pool, default_eltype(pool), dims...)
+end
+
 # ==============================================================================
 # ones! - Acquire one-initialized arrays from pool
 # ==============================================================================
@@ -129,6 +138,15 @@ end
 
 # Default type overload for macro transformation (uses default_eltype for backend flexibility)
 @inline function _ones_impl!(pool::AbstractArrayPool, dims::Vararg{Int,N}) where {N}
+    _ones_impl!(pool, default_eltype(pool), dims...)
+end
+
+# NTuple overloads for macro transformation (handles ones!(pool, T, size(x)) form)
+@inline function _ones_impl!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N,Int}) where {T,N}
+    _ones_impl!(pool, T, dims...)
+end
+
+@inline function _ones_impl!(pool::AbstractArrayPool, dims::NTuple{N,Int}) where {N}
     _ones_impl!(pool, default_eltype(pool), dims...)
 end
 
@@ -257,6 +275,15 @@ end
     _unsafe_zeros_impl!(pool, default_eltype(pool), dims...)
 end
 
+# NTuple overloads for macro transformation (handles unsafe_zeros!(pool, T, size(x)) form)
+@inline function _unsafe_zeros_impl!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N,Int}) where {T,N}
+    _unsafe_zeros_impl!(pool, T, dims...)
+end
+
+@inline function _unsafe_zeros_impl!(pool::AbstractArrayPool, dims::NTuple{N,Int}) where {N}
+    _unsafe_zeros_impl!(pool, default_eltype(pool), dims...)
+end
+
 # ==============================================================================
 # unsafe_ones! - Acquire one-initialized raw arrays from pool
 # ==============================================================================
@@ -312,6 +339,15 @@ end
 
 # Default type overload for macro transformation (uses default_eltype for backend flexibility)
 @inline function _unsafe_ones_impl!(pool::AbstractArrayPool, dims::Vararg{Int,N}) where {N}
+    _unsafe_ones_impl!(pool, default_eltype(pool), dims...)
+end
+
+# NTuple overloads for macro transformation (handles unsafe_ones!(pool, T, size(x)) form)
+@inline function _unsafe_ones_impl!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N,Int}) where {T,N}
+    _unsafe_ones_impl!(pool, T, dims...)
+end
+
+@inline function _unsafe_ones_impl!(pool::AbstractArrayPool, dims::NTuple{N,Int}) where {N}
     _unsafe_ones_impl!(pool, default_eltype(pool), dims...)
 end
 
