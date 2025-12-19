@@ -24,10 +24,12 @@ function AdaptiveArrayPools.pool_stats(tp::CuTypedPool{T}; io::IO=stdout, indent
         return
     end
 
-    # Calculate total elements and bytes
+    # Calculate total elements and memory
     total_elements = sum(length(v) for v in tp.vectors)
-    bytes = total_elements * sizeof(T)
-    bytes_str = Base.format_bytes(bytes)
+    gpu_bytes = sum(sizeof(v) for v in tp.vectors)  # sizeof(CuArray) returns GPU data size
+    cpu_bytes = sum(Base.summarysize(v) for v in tp.vectors)
+    gpu_str = Base.format_bytes(gpu_bytes)
+    cpu_str = Base.format_bytes(cpu_bytes)
 
     # Header
     printstyled(io, prefix, type_name, color=:cyan)
@@ -43,7 +45,7 @@ function AdaptiveArrayPools.pool_stats(tp::CuTypedPool{T}; io::IO=stdout, indent
 
     printstyled(io, prefix, "  elements: ", color=:dark_gray)
     printstyled(io, total_elements, color=:blue)
-    printstyled(io, " ($bytes_str)\n", color=:dark_gray)
+    printstyled(io, " ($gpu_str GPU + $cpu_str CPU)\n", color=:dark_gray)
 end
 
 # ==============================================================================

@@ -96,8 +96,8 @@ function pool_stats(tp::TypedPool{T}; io::IO=stdout, indent::Int=0, name::String
     end
 
     total_elements = sum(length(v) for v in tp.vectors)
-    bytes = total_elements * sizeof(T)
-    bytes_str = Base.format_bytes(bytes)
+    total_bytes = sum(Base.summarysize(v) for v in tp.vectors)
+    bytes_str = Base.format_bytes(total_bytes)
 
     # Header
     printstyled(io, prefix, type_name, color=:cyan)
