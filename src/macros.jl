@@ -106,22 +106,22 @@ end
 ```
 """
 macro with_pool(pool_name, expr)
-    _generate_pool_code(pool_name, expr, true)
+    _generate_pool_code(pool_name, expr, true; source=__source__)
 end
 
 macro with_pool(expr)
     pool_name = gensym(:pool)
-    _generate_pool_code(pool_name, expr, true)
+    _generate_pool_code(pool_name, expr, true; source=__source__)
 end
 
 # Backend-specific variants: @with_pool :cuda pool begin ... end
 macro with_pool(backend::QuoteNode, pool_name, expr)
-    _generate_pool_code_with_backend(backend.value, pool_name, expr, true)
+    _generate_pool_code_with_backend(backend.value, pool_name, expr, true; source=__source__)
 end
 
 macro with_pool(backend::QuoteNode, expr)
     pool_name = gensym(:pool)
-    _generate_pool_code_with_backend(backend.value, pool_name, expr, true)
+    _generate_pool_code_with_backend(backend.value, pool_name, expr, true; source=__source__)
 end
 
 """
@@ -153,22 +153,22 @@ end
 ```
 """
 macro maybe_with_pool(pool_name, expr)
-    _generate_pool_code(pool_name, expr, false)
+    _generate_pool_code(pool_name, expr, false; source=__source__)
 end
 
 macro maybe_with_pool(expr)
     pool_name = gensym(:pool)
-    _generate_pool_code(pool_name, expr, false)
+    _generate_pool_code(pool_name, expr, false; source=__source__)
 end
 
 # Backend-specific variants: @maybe_with_pool :cuda pool begin ... end
 macro maybe_with_pool(backend::QuoteNode, pool_name, expr)
-    _generate_pool_code_with_backend(backend.value, pool_name, expr, false)
+    _generate_pool_code_with_backend(backend.value, pool_name, expr, false; source=__source__)
 end
 
 macro maybe_with_pool(backend::QuoteNode, expr)
     pool_name = gensym(:pool)
-    _generate_pool_code_with_backend(backend.value, pool_name, expr, false)
+    _generate_pool_code_with_backend(backend.value, pool_name, expr, false; source=__source__)
 end
 
 # ==============================================================================
@@ -190,16 +190,70 @@ function _disabled_pool_expr(backend::Symbol)
 end
 
 # ==============================================================================
+# Internal: Source Location Helpers
+# ==============================================================================
+
+"""
+    _maybe_add_source_location!(expr, source)
+
+Insert source location LineNumberNode at the beginning of an Expr block.
+No-op if source is nothing or expr is not an Expr(:block, ...).
+"""
+function _maybe_add_source_location!(expr::Expr, source::Union{LineNumberNode,Nothing})
+    if source !== nothing && expr.head === :block
+        pushfirst!(expr.args, LineNumberNode(source.line, source.file))
+    end
+    return expr
+end
+_maybe_add_source_location!(expr, ::Nothing) = expr
+
+"""
+    _ensure_body_has_toplevel_lnn(body, source)
+
+Ensure body has a LineNumberNode pointing to user source at the top level.
+- If first LNN points to user file (same as source.file), preserve it
+- If first LNN points elsewhere (e.g., macros.jl), replace with source LNN
+- If no LNN exists, prepend source LNN
+
+Returns a new Expr to avoid mutating the original AST.
+"""
+function _ensure_body_has_toplevel_lnn(body, source::Union{LineNumberNode,Nothing})
+    source === nothing && return body
+    source_lnn = LineNumberNode(source.line, source.file)
+
+    if body isa Expr && body.head === :block && !isempty(body.args)
+        first_arg = body.args[1]
+        if first_arg isa LineNumberNode
+            # Check if first LNN already points to user file
+            if first_arg.file == source.file
+                return body  # User file LNN already present
+            else
+                # Replace macros.jl LNN with source LNN
+                return Expr(:block, source_lnn, body.args[2:end]...)
+            end
+        end
+        # No LNN at top, prepend source LNN
+        return Expr(:block, source_lnn, body.args...)
+    elseif body isa Expr && body.head === :block
+        # Empty block
+        return Expr(:block, source_lnn)
+    else
+        # Non-block body
+        return Expr(:block, source_lnn, body)
+    end
+end
+
+# ==============================================================================
 # Internal: Code Generation
 # ==============================================================================
 
-function _generate_pool_code(pool_name, expr, force_enable)
+function _generate_pool_code(pool_name, expr, force_enable; source::Union{LineNumberNode,Nothing}=nothing)
     # Compile-time check: if pooling disabled, use DisabledPool to preserve backend context
     if !USE_POOLING
         disabled_pool = _disabled_pool_expr(:cpu)
         if Meta.isexpr(expr, [:function, :(=)]) && _is_function_def(expr)
             # Function definition: inject local pool = DisabledPool at start of body
-            return _generate_function_pool_code(pool_name, expr, force_enable, true, :cpu)
+            return _generate_function_pool_code(pool_name, expr, force_enable, true, :cpu; source)
         else
             return quote
                 local $(esc(pool_name)) = $disabled_pool
@@ -210,7 +264,7 @@ function _generate_pool_code(pool_name, expr, force_enable)
 
     # Check if function definition
     if Meta.isexpr(expr, [:function, :(=)]) && _is_function_def(expr)
-        return _generate_function_pool_code(pool_name, expr, force_enable, false)
+        return _generate_function_pool_code(pool_name, expr, force_enable, false; source)
     end
 
     # Block logic
@@ -304,12 +358,12 @@ Uses `_get_pool_for_backend(Val{backend}())` for zero-overhead dispatch.
 
 Includes type-specific checkpoint/rewind optimization (same as regular @with_pool).
 """
-function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, force_enable::Bool)
+function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, force_enable::Bool; source::Union{LineNumberNode,Nothing}=nothing)
     # Compile-time check: if pooling disabled, use DisabledPool to preserve backend context
     if !USE_POOLING
         disabled_pool = _disabled_pool_expr(backend)
         if Meta.isexpr(expr, [:function, :(=)]) && _is_function_def(expr)
-            return _generate_function_pool_code_with_backend(backend, pool_name, expr, true)
+            return _generate_function_pool_code_with_backend(backend, pool_name, expr, true; source)
         else
             return quote
                 local $(esc(pool_name)) = $disabled_pool
@@ -323,7 +377,7 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, forc
         disabled_pool = _disabled_pool_expr(backend)
         # Check if function definition
         if Meta.isexpr(expr, [:function, :(=)]) && _is_function_def(expr)
-            return _generate_function_pool_code_with_backend(backend, pool_name, expr, false)
+            return _generate_function_pool_code_with_backend(backend, pool_name, expr, false; source)
         end
 
         # Block logic with runtime check
@@ -378,7 +432,7 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, forc
 
     # Check if function definition
     if Meta.isexpr(expr, [:function, :(=)]) && _is_function_def(expr)
-        return _generate_function_pool_code_with_backend(backend, pool_name, expr, false)
+        return _generate_function_pool_code_with_backend(backend, pool_name, expr, false; source)
     end
 
     # Block logic: Extract types from acquire! calls for optimized checkpoint/rewind
@@ -444,7 +498,7 @@ end
 Generate function code for a specific backend (e.g., :cuda).
 Wraps the function body with pool getter, checkpoint, try-finally, rewind.
 """
-function _generate_function_pool_code_with_backend(backend::Symbol, pool_name, func_def, disable_pooling::Bool)
+function _generate_function_pool_code_with_backend(backend::Symbol, pool_name, func_def, disable_pooling::Bool; source::Union{LineNumberNode,Nothing}=nothing)
     def_head = func_def.head
     call_expr = func_def.args[1]
     body = func_def.args[2]
@@ -455,6 +509,8 @@ function _generate_function_pool_code_with_backend(backend::Symbol, pool_name, f
             local $(esc(pool_name)) = $disabled_pool
             $(esc(body))
         end
+        # Ensure new_body has source location for proper stack traces
+        new_body = _ensure_body_has_toplevel_lnn(new_body, source)
         return Expr(def_head, esc(call_expr), new_body)
     end
 
@@ -508,10 +564,12 @@ function _generate_function_pool_code_with_backend(backend::Symbol, pool_name, f
         end
     end
 
+    # Ensure new_body has source location for proper stack traces
+    new_body = _ensure_body_has_toplevel_lnn(new_body, source)
     return Expr(def_head, esc(call_expr), new_body)
 end
 
-function _generate_function_pool_code(pool_name, func_def, force_enable, disable_pooling, backend::Symbol=:cpu)
+function _generate_function_pool_code(pool_name, func_def, force_enable, disable_pooling, backend::Symbol=:cpu; source::Union{LineNumberNode,Nothing}=nothing)
     def_head = func_def.head
     call_expr = func_def.args[1]
     body = func_def.args[2]
@@ -522,6 +580,8 @@ function _generate_function_pool_code(pool_name, func_def, force_enable, disable
             local $(esc(pool_name)) = $disabled_pool
             $(esc(body))
         end
+        # Ensure new_body has source location for proper stack traces
+        new_body = _ensure_body_has_toplevel_lnn(new_body, source)
         return Expr(def_head, esc(call_expr), new_body)
     end
 
@@ -591,6 +651,8 @@ function _generate_function_pool_code(pool_name, func_def, force_enable, disable
         end
     end
 
+    # Ensure new_body has source location for proper stack traces
+    new_body = _ensure_body_has_toplevel_lnn(new_body, source)
     return Expr(def_head, esc(call_expr), new_body)
 end
 
