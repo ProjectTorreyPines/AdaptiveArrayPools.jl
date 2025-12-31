@@ -391,15 +391,13 @@ function get_function_body(expr)
 end
 
 """
-    find_toplevel_lnn(args; max_scan=6) -> Union{LineNumberNode, Nothing}
+    find_toplevel_lnn(args) -> Union{LineNumberNode, Nothing}
 
-Find the first LineNumberNode in the top-level arg list, skipping leading
-Expr(:meta, ...) nodes and stopping at the first real expression.
+Find the first LineNumberNode in the leading prefix of `args`, skipping
+`Expr(:meta, ...)` nodes. Stops at the first non-meta, non-LNN expression.
 """
-function find_toplevel_lnn(args; max_scan::Int=6)
-    scan_limit = min(max_scan, length(args))
-    for i in 1:scan_limit
-        arg = args[i]
+function find_toplevel_lnn(args)
+    for arg in args
         if arg isa LineNumberNode
             return arg
         elseif arg isa Expr && arg.head === :meta
@@ -671,7 +669,7 @@ end
         @test !isempty(body.args)
 
         # Find the first LineNumberNode (should be after Expr(:meta, :inline))
-        lnn = find_toplevel_lnn(body.args; max_scan=6)
+        lnn = find_toplevel_lnn(body.args)
         @test lnn !== nothing
         # Should point to this test file, not macros.jl
         @test lnn.file !== :none
@@ -691,7 +689,7 @@ end
         @test body.head === :block
         @test !isempty(body.args)
 
-        lnn = find_toplevel_lnn(body.args; max_scan=6)
+        lnn = find_toplevel_lnn(body.args)
         @test lnn !== nothing
         @test lnn.file !== :none
         @test lnn.file == this_file

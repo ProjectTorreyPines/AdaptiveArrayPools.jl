@@ -194,16 +194,21 @@ end
 # ==============================================================================
 
 """
-    _find_first_lnn_index(args, max_scan=6) -> Union{Int, Nothing}
+    _find_first_lnn_index(args) -> Union{Int, Nothing}
 
-Find the index of the first LineNumberNode at the top level, skipping leading
-Expr(:meta, ...) nodes (from @inline, @inbounds, etc.). Stops once a non-meta,
-non-LNN expression is encountered to avoid matching deeper LNNs.
+Find the index of the first LineNumberNode in the leading prefix of `args`.
+
+Scans sequentially, skipping `Expr(:meta, ...)` nodes (inserted by `@inline`,
+`@inbounds`, etc.). Returns `nothing` as soon as a non-meta, non-LNN expression
+is encountered—this prevents matching LNNs deeper in the AST.
+
+# Example AST prefix patterns
+- `[Expr(:meta,:inline), LNN, ...]` → returns 2
+- `[LNN, ...]` → returns 1
+- `[Expr(:meta,:inline), Expr(:call,...), LNN, ...]` → returns nothing (stopped at call)
 """
-function _find_first_lnn_index(args, max_scan::Int=6)
-    scan_limit = min(max_scan, length(args))
-    for i in 1:scan_limit
-        arg = args[i]
+function _find_first_lnn_index(args)
+    for (i, arg) in enumerate(args)
         if arg isa LineNumberNode
             return i
         elseif arg isa Expr && arg.head === :meta
