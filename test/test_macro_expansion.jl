@@ -324,3 +324,197 @@
     end
 
 end # Macro Expansion Details
+
+# ==============================================================================
+# Source Location Preservation Tests (LineNumberNode)
+# ==============================================================================
+#
+# These tests verify that macro-generated code preserves source location
+# information for better coverage, stack traces, and debugging.
+
+# Test helper functions for robust AST inspection
+"""
+    find_linenumbernode_with_line(expr, target_line) -> Union{LineNumberNode, Nothing}
+
+Recursively search for a LineNumberNode matching target_line.
+More robust than checking only the first LNN (handles block forms where
+`_maybe_add_source_location!` may insert LNN before user code LNN).
+"""
+function find_linenumbernode_with_line(expr, target_line::Int)
+    if expr isa LineNumberNode && expr.line == target_line
+        return expr
+    elseif expr isa Expr
+        for arg in expr.args
+            result = find_linenumbernode_with_line(arg, target_line)
+            result !== nothing && return result
+        end
+    end
+    return nothing
+end
+
+"""
+    has_valid_linenumbernode(expr) -> Bool
+
+Check if expr contains any LineNumberNode with valid line info.
+"""
+function has_valid_linenumbernode(expr)
+    if expr isa LineNumberNode
+        return expr.line > 0 && expr.file !== :none
+    elseif expr isa Expr
+        for arg in expr.args
+            has_valid_linenumbernode(arg) && return true
+        end
+    end
+    return false
+end
+
+"""
+    get_function_body(expr) -> Union{Expr, Nothing}
+
+Extract function body from a function definition expression.
+Handles both `function f() ... end` and `f() = ...` forms.
+"""
+function get_function_body(expr)
+    if expr isa Expr
+        if expr.head === :function && length(expr.args) >= 2
+            return expr.args[2]
+        elseif expr.head === :(=) && expr.args[1] isa Expr && expr.args[1].head === :call
+            return expr.args[2]
+        end
+        # Recurse for wrapped expressions
+        for arg in expr.args
+            result = get_function_body(arg)
+            result !== nothing && return result
+        end
+    end
+    return nothing
+end
+
+@testset "Source Location Preservation" begin
+    # Get this test file's path as Symbol for comparison
+    this_file = Symbol(@__FILE__)
+
+    # Test 1: @with_pool block form
+    @testset "@with_pool block source location" begin
+        expected_line = (@__LINE__) + 2
+        expr = @macroexpand @with_pool pool begin
+            v = acquire!(pool, Float64, 10)
+        end
+        # Should find LNN matching the macro call line AND pointing to THIS file
+        lnn = find_linenumbernode_with_line(expr, expected_line)
+        @test lnn !== nothing
+        @test lnn.file !== :none  # Must have a valid file
+        @test lnn.file == this_file  # Must point to the call site, not macros.jl
+        # At minimum, there should be some valid LNN
+        @test has_valid_linenumbernode(expr)
+    end
+
+    # Test 2: @with_pool function form
+    # The FIRST LNN in function body must point to user file, not macros.jl
+    @testset "@with_pool function source location" begin
+        expected_line = (@__LINE__) + 2
+        func_expr = @macroexpand @with_pool pool function test_func_source(n)
+            acquire!(pool, Float64, n)
+        end
+        body = get_function_body(func_expr)
+        @test body !== nothing
+        # Check that FIRST LNN in body points to user file (not macros.jl)
+        @test body isa Expr
+        @test body.head === :block
+        @test !isempty(body.args)
+        first_lnn = body.args[1]
+        @test first_lnn isa LineNumberNode
+        @test first_lnn.file !== :none
+        @test first_lnn.file == this_file  # Must point to call site, not macros.jl
+    end
+
+    # Test 3: @maybe_with_pool block form
+    @testset "@maybe_with_pool block source location" begin
+        expected_line = (@__LINE__) + 2
+        expr = @macroexpand @maybe_with_pool pool begin
+            v = acquire!(pool, Float64, 10)
+        end
+        lnn = find_linenumbernode_with_line(expr, expected_line)
+        @test lnn !== nothing
+        @test lnn.file !== :none
+        @test lnn.file == this_file
+    end
+
+    # Test 4: Backend variant (@with_pool :cpu)
+    @testset "@with_pool :cpu backend source location" begin
+        expected_line = (@__LINE__) + 2
+        expr = @macroexpand @with_pool :cpu pool begin
+            v = acquire!(pool, Float64, 10)
+        end
+        lnn = find_linenumbernode_with_line(expr, expected_line)
+        @test lnn !== nothing
+        @test lnn.file !== :none
+        @test lnn.file == this_file
+    end
+
+    # Test 5: Without pool name (implicit gensym)
+    @testset "@with_pool without pool name source location" begin
+        expected_line = (@__LINE__) + 2
+        expr = @macroexpand @with_pool begin
+            inner_function()
+        end
+        lnn = find_linenumbernode_with_line(expr, expected_line)
+        @test lnn !== nothing
+        @test lnn.file !== :none
+        @test lnn.file == this_file
+    end
+
+    # Test 6: Short-form function (f(x) = ...) - LNN이 없는 케이스, __source__로 보정됨
+    # The FIRST LNN in function body must point to user file
+    @testset "@with_pool short function source location" begin
+        func_expr = @macroexpand @with_pool pool test_short_func(x) = acquire!(pool, Float64, x)
+        body = get_function_body(func_expr)
+        @test body !== nothing
+        # Short functions need __source__ fallback since they lack original LNN
+        # Check that FIRST LNN in body points to user file (not macros.jl)
+        @test body isa Expr
+        @test body.head === :block
+        @test !isempty(body.args)
+        first_lnn = body.args[1]
+        @test first_lnn isa LineNumberNode
+        @test first_lnn.file !== :none
+        @test first_lnn.file == this_file  # Must point to call site
+    end
+
+    # Test 7: @maybe_with_pool function form
+    # The FIRST LNN in function body must point to user file
+    @testset "@maybe_with_pool function source location" begin
+        func_expr = @macroexpand @maybe_with_pool pool function maybe_test_func(n)
+            acquire!(pool, Float64, n)
+        end
+        body = get_function_body(func_expr)
+        @test body !== nothing
+        # Check that FIRST LNN in body points to user file (not macros.jl)
+        @test body isa Expr
+        @test body.head === :block
+        @test !isempty(body.args)
+        first_lnn = body.args[1]
+        @test first_lnn isa LineNumberNode
+        @test first_lnn.file !== :none
+        @test first_lnn.file == this_file
+    end
+
+    # Test 8: @with_pool :cpu function form
+    # The FIRST LNN in function body must point to user file
+    @testset "@with_pool :cpu function source location" begin
+        func_expr = @macroexpand @with_pool :cpu pool function cpu_test_func(n)
+            acquire!(pool, Float64, n)
+        end
+        body = get_function_body(func_expr)
+        @test body !== nothing
+        # Check that FIRST LNN in body points to user file (not macros.jl)
+        @test body isa Expr
+        @test body.head === :block
+        @test !isempty(body.args)
+        first_lnn = body.args[1]
+        @test first_lnn isa LineNumberNode
+        @test first_lnn.file !== :none
+        @test first_lnn.file == this_file
+    end
+
+end # Source Location Preservation
