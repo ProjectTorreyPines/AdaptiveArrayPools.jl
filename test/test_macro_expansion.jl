@@ -583,10 +583,86 @@ end
         end
 
         @test func_frame !== nothing
-        # Line number should be from this file (small number), not macros.jl (600+)
-        @test func_frame.line < 600  # This file has <600 lines
         # The line should be close to where we defined the function (within 10 lines)
+        # This validates it's not from macros.jl (which has lines 600+)
         @test abs(func_frame.line - func_def_line) < 10
+    end
+
+    # Test 11: Verify nested @with_pool functions have correct source locations
+    # This ensures both outer and inner function frames point to user code
+    @testset "Nested @with_pool source locations" begin
+        outer_def_line = @__LINE__
+        @with_pool pool function _test_nested_outer(n)
+            @with_pool inner_pool function _test_nested_inner(_)
+                error("nested error")
+            end
+            _test_nested_inner(n)
+        end
+
+        bt = try
+            _test_nested_outer(10)
+            nothing
+        catch
+            catch_backtrace()
+        end
+
+        @test bt !== nothing
+        frames = stacktrace(bt)
+
+        # Find both function frames
+        outer_frame = nothing
+        inner_frame = nothing
+        for frame in frames
+            fname = string(frame.func)
+            if occursin("_test_nested_outer", fname) && outer_frame === nothing
+                outer_frame = frame
+            elseif occursin("_test_nested_inner", fname) && inner_frame === nothing
+                inner_frame = frame
+            end
+        end
+
+        # Both frames should exist and point to this file
+        @test outer_frame !== nothing
+        @test inner_frame !== nothing
+
+        # Both should have lines close to definition (within 15 lines)
+        # This validates they're not from macros.jl (which has lines 600+)
+        @test abs(outer_frame.line - outer_def_line) < 15
+        @test abs(inner_frame.line - outer_def_line) < 15
+
+        # Both should point to test file, not macros.jl
+        @test !occursin("macros.jl", string(outer_frame.file))
+        @test !occursin("macros.jl", string(inner_frame.file))
+    end
+
+    # Test 12: Verify @inline functions with Expr(:meta, ...) are handled correctly
+    # Tests that _find_first_lnn_index scans past meta expressions
+    # Note: @inline functions get inlined by compiler, so we test AST structure only
+    @testset "@inline function AST source location" begin
+        expected_line = (@__LINE__) + 2
+        func_expr = @macroexpand @with_pool pool @inline function _test_inline_ast(n)
+            acquire!(pool, Float64, n)
+        end
+
+        body = get_function_body(func_expr)
+        @test body !== nothing
+        @test body isa Expr
+        @test body.head === :block
+        @test !isempty(body.args)
+
+        # Find the first LineNumberNode (should be after Expr(:meta, :inline))
+        lnn_found = false
+        for i in 1:min(5, length(body.args))
+            arg = body.args[i]
+            if arg isa LineNumberNode
+                lnn_found = true
+                # Should point to this test file, not macros.jl
+                @test arg.file !== :none
+                @test arg.file == this_file
+                break
+            end
+        end
+        @test lnn_found  # A LineNumberNode should exist in first 5 args
     end
 
 end # Source Location Preservation

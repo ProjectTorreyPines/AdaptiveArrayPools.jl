@@ -194,23 +194,23 @@ end
 # ==============================================================================
 
 """
-    _maybe_add_source_location!(expr, source)
+    _find_first_lnn_index(args, max_scan=3) -> Union{Int, Nothing}
 
-Insert source location LineNumberNode at the beginning of an Expr block.
-No-op if source is nothing or expr is not an Expr(:block, ...).
+Find the index of the first LineNumberNode within the first `max_scan` args.
+Handles cases where Expr(:meta, ...) (from @inline etc.) precedes the LNN.
 """
-function _maybe_add_source_location!(expr::Expr, source::Union{LineNumberNode,Nothing})
-    if source !== nothing && expr.head === :block
-        pushfirst!(expr.args, LineNumberNode(source.line, source.file))
+function _find_first_lnn_index(args, max_scan::Int=3)
+    for i in 1:min(max_scan, length(args))
+        args[i] isa LineNumberNode && return i
     end
-    return expr
+    return nothing
 end
-_maybe_add_source_location!(expr, ::Nothing) = expr
 
 """
     _ensure_body_has_toplevel_lnn(body, source)
 
 Ensure body has a LineNumberNode pointing to user source at the top level.
+- Scans first 3 args to handle Expr(:meta, ...) from @inline etc.
 - If first LNN points to user file (same as source.file), preserve it
 - If first LNN points elsewhere (e.g., macros.jl), replace with source LNN
 - If no LNN exists, prepend source LNN
@@ -222,17 +222,20 @@ function _ensure_body_has_toplevel_lnn(body, source::Union{LineNumberNode,Nothin
     source_lnn = LineNumberNode(source.line, source.file)
 
     if body isa Expr && body.head === :block && !isempty(body.args)
-        first_arg = body.args[1]
-        if first_arg isa LineNumberNode
-            # Check if first LNN already points to user file
-            if first_arg.file == source.file
+        lnn_idx = _find_first_lnn_index(body.args)
+        if lnn_idx !== nothing
+            existing_lnn = body.args[lnn_idx]
+            # Check if LNN already points to user file
+            if existing_lnn.file == source.file
                 return body  # User file LNN already present
             else
                 # Replace macros.jl LNN with source LNN
-                return Expr(:block, source_lnn, body.args[2:end]...)
+                new_args = copy(body.args)
+                new_args[lnn_idx] = source_lnn
+                return Expr(:block, new_args...)
             end
         end
-        # No LNN at top, prepend source LNN
+        # No LNN found in first 3 args, prepend source LNN
         return Expr(:block, source_lnn, body.args...)
     elseif body isa Expr && body.head === :block
         # Empty block
@@ -251,6 +254,7 @@ Julia's stack trace uses the LAST LNN before error location for line numbers.
 By replacing the first LNN in try body with source LNN, we ensure correct
 line numbers in stack traces.
 
+Scans first 3 args to handle Expr(:meta, ...) from @inline etc.
 Modifies expr in-place and returns it.
 """
 function _fix_try_body_lnn!(expr, source::Union{LineNumberNode,Nothing})
@@ -261,10 +265,13 @@ function _fix_try_body_lnn!(expr, source::Union{LineNumberNode,Nothing})
         if expr.head === :try && length(expr.args) >= 1
             try_body = expr.args[1]
             if try_body isa Expr && try_body.head === :block && !isempty(try_body.args)
-                first_arg = try_body.args[1]
-                if first_arg isa LineNumberNode && first_arg.file != source.file
-                    # Replace macros.jl LNN with source LNN
-                    try_body.args[1] = source_lnn
+                lnn_idx = _find_first_lnn_index(try_body.args)
+                if lnn_idx !== nothing
+                    existing_lnn = try_body.args[lnn_idx]
+                    if existing_lnn.file != source.file
+                        # Replace macros.jl LNN with source LNN
+                        try_body.args[lnn_idx] = source_lnn
+                    end
                 end
             end
         end
