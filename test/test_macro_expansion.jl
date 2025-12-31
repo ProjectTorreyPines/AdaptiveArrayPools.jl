@@ -390,6 +390,27 @@ function get_function_body(expr)
     return nothing
 end
 
+"""
+    find_toplevel_lnn(args; max_scan=6) -> Union{LineNumberNode, Nothing}
+
+Find the first LineNumberNode in the top-level arg list, skipping leading
+Expr(:meta, ...) nodes and stopping at the first real expression.
+"""
+function find_toplevel_lnn(args; max_scan::Int=6)
+    scan_limit = min(max_scan, length(args))
+    for i in 1:scan_limit
+        arg = args[i]
+        if arg isa LineNumberNode
+            return arg
+        elseif arg isa Expr && arg.head === :meta
+            continue
+        else
+            return nothing
+        end
+    end
+    return nothing
+end
+
 @testset "Source Location Preservation" begin
     # Get this test file's path as Symbol for comparison
     this_file = Symbol(@__FILE__)
@@ -639,7 +660,6 @@ end
     # Tests that _find_first_lnn_index scans past meta expressions
     # Note: @inline functions get inlined by compiler, so we test AST structure only
     @testset "@inline function AST source location" begin
-        expected_line = (@__LINE__) + 2
         func_expr = @macroexpand @with_pool pool @inline function _test_inline_ast(n)
             acquire!(pool, Float64, n)
         end
@@ -651,18 +671,42 @@ end
         @test !isempty(body.args)
 
         # Find the first LineNumberNode (should be after Expr(:meta, :inline))
-        lnn_found = false
-        for i in 1:min(5, length(body.args))
-            arg = body.args[i]
-            if arg isa LineNumberNode
-                lnn_found = true
-                # Should point to this test file, not macros.jl
-                @test arg.file !== :none
-                @test arg.file == this_file
-                break
-            end
+        lnn = find_toplevel_lnn(body.args; max_scan=6)
+        @test lnn !== nothing
+        # Should point to this test file, not macros.jl
+        @test lnn.file !== :none
+        @test lnn.file == this_file
+    end
+
+    # Test 13: @inline applied outside @with_pool (macro stacking)
+    # Ensures outer macros don't break LNN detection in function bodies
+    @testset "@inline outer macro function source location" begin
+        func_expr = @macroexpand @inline @with_pool pool function _test_inline_outer(n)
+            acquire!(pool, Float64, n)
         end
-        @test lnn_found  # A LineNumberNode should exist in first 5 args
+
+        body = get_function_body(func_expr)
+        @test body !== nothing
+        @test body isa Expr
+        @test body.head === :block
+        @test !isempty(body.args)
+
+        lnn = find_toplevel_lnn(body.args; max_scan=6)
+        @test lnn !== nothing
+        @test lnn.file !== :none
+        @test lnn.file == this_file
+    end
+
+    # Test 14: Macro stacking for block form (outer macro)
+    @testset "@inbounds outer macro block source location" begin
+        expected_line = (@__LINE__) + 2
+        expr = @macroexpand @inbounds @with_pool pool begin
+            v = acquire!(pool, Float64, 10)
+        end
+        lnn = find_linenumbernode_with_line(expr, expected_line)
+        @test lnn !== nothing
+        @test lnn.file !== :none
+        @test lnn.file == this_file
     end
 
 end # Source Location Preservation

@@ -194,14 +194,23 @@ end
 # ==============================================================================
 
 """
-    _find_first_lnn_index(args, max_scan=3) -> Union{Int, Nothing}
+    _find_first_lnn_index(args, max_scan=6) -> Union{Int, Nothing}
 
-Find the index of the first LineNumberNode within the first `max_scan` args.
-Handles cases where Expr(:meta, ...) (from @inline etc.) precedes the LNN.
+Find the index of the first LineNumberNode at the top level, skipping leading
+Expr(:meta, ...) nodes (from @inline, @inbounds, etc.). Stops once a non-meta,
+non-LNN expression is encountered to avoid matching deeper LNNs.
 """
-function _find_first_lnn_index(args, max_scan::Int=3)
-    for i in 1:min(max_scan, length(args))
-        args[i] isa LineNumberNode && return i
+function _find_first_lnn_index(args, max_scan::Int=6)
+    scan_limit = min(max_scan, length(args))
+    for i in 1:scan_limit
+        arg = args[i]
+        if arg isa LineNumberNode
+            return i
+        elseif arg isa Expr && arg.head === :meta
+            continue
+        else
+            return nothing
+        end
     end
     return nothing
 end
@@ -210,15 +219,18 @@ end
     _ensure_body_has_toplevel_lnn(body, source)
 
 Ensure body has a LineNumberNode pointing to user source at the top level.
-- Scans first 3 args to handle Expr(:meta, ...) from @inline etc.
+- Scans first few args to handle Expr(:meta, ...) from @inline etc.
 - If first LNN points to user file (same as source.file), preserve it
 - If first LNN points elsewhere (e.g., macros.jl), replace with source LNN
 - If no LNN exists, prepend source LNN
+- If source.file === :none (REPL/eval), don't clobber valid file LNNs
 
 Returns a new Expr to avoid mutating the original AST.
 """
 function _ensure_body_has_toplevel_lnn(body, source::Union{LineNumberNode,Nothing})
     source === nothing && return body
+    # Don't clobber valid file info with :none from REPL/eval
+    source.file === :none && return body
     source_lnn = LineNumberNode(source.line, source.file)
 
     if body isa Expr && body.head === :block && !isempty(body.args)
@@ -235,7 +247,7 @@ function _ensure_body_has_toplevel_lnn(body, source::Union{LineNumberNode,Nothin
                 return Expr(:block, new_args...)
             end
         end
-        # No LNN found in first 3 args, prepend source LNN
+        # No LNN found, prepend source LNN
         return Expr(:block, source_lnn, body.args...)
     elseif body isa Expr && body.head === :block
         # Empty block
@@ -254,11 +266,14 @@ Julia's stack trace uses the LAST LNN before error location for line numbers.
 By replacing the first LNN in try body with source LNN, we ensure correct
 line numbers in stack traces.
 
-Scans first 3 args to handle Expr(:meta, ...) from @inline etc.
+Scans first few args to handle Expr(:meta, ...) from @inline etc.
+If source.file === :none (REPL/eval), don't clobber valid file LNNs.
 Modifies expr in-place and returns it.
 """
 function _fix_try_body_lnn!(expr, source::Union{LineNumberNode,Nothing})
     source === nothing && return expr
+    # Don't clobber valid file info with :none from REPL/eval
+    source.file === :none && return expr
     source_lnn = LineNumberNode(source.line, source.file)
 
     if expr isa Expr
