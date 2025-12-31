@@ -517,4 +517,76 @@ end
         @test first_lnn.file == this_file
     end
 
+    # Test 9: Stack trace verification - the most direct validation
+    # Verifies that actual runtime stack traces point to user code, not macros.jl
+    @testset "Stack trace points to user file" begin
+        # Define a function that throws an error inside @with_pool
+        @with_pool pool function _test_stacktrace_error_location(n)
+            x = acquire!(pool, Float64, n)
+            error("intentional error for stack trace test")
+        end
+
+        # Capture the backtrace when error occurs
+        bt = try
+            _test_stacktrace_error_location(10)
+            nothing
+        catch
+            catch_backtrace()
+        end
+
+        @test bt !== nothing
+        frames = stacktrace(bt)
+        @test !isempty(frames)
+
+        # Find the first frame with our test function name
+        func_frame = nothing
+        for frame in frames
+            if occursin("_test_stacktrace_error_location", string(frame.func))
+                func_frame = frame
+                break
+            end
+        end
+
+        @test func_frame !== nothing
+        # The function definition should point to THIS file, not macros.jl
+        @test !occursin("macros.jl", string(func_frame.file))
+        @test occursin("test_macro_expansion.jl", string(func_frame.file))
+    end
+
+    # Test 10: Verify line numbers in stack trace are accurate (not from macros.jl)
+    # This tests the _fix_try_body_lnn! helper that replaces macros.jl LNNs
+    @testset "Stack trace line numbers are accurate" begin
+        # Track the line where the function is defined
+        func_def_line = @__LINE__
+        @with_pool pool function _test_stacktrace_line_accuracy(n)
+            x = acquire!(pool, Float64, n)
+            error("line accuracy test")
+        end
+
+        bt = try
+            _test_stacktrace_line_accuracy(10)
+            nothing
+        catch
+            catch_backtrace()
+        end
+
+        @test bt !== nothing
+        frames = stacktrace(bt)
+
+        # Find the function frame
+        func_frame = nothing
+        for frame in frames
+            if occursin("_test_stacktrace_line_accuracy", string(frame.func))
+                func_frame = frame
+                break
+            end
+        end
+
+        @test func_frame !== nothing
+        # Line number should be from this file (small number), not macros.jl (600+)
+        @test func_frame.line < 600  # This file has <600 lines
+        # The line should be close to where we defined the function (within 10 lines)
+        @test abs(func_frame.line - func_def_line) < 10
+    end
+
 end # Source Location Preservation

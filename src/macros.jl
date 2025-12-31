@@ -243,6 +243,39 @@ function _ensure_body_has_toplevel_lnn(body, source::Union{LineNumberNode,Nothin
     end
 end
 
+"""
+    _fix_try_body_lnn!(expr, source)
+
+Fix LineNumberNodes inside try blocks to point to user source.
+Julia's stack trace uses the LAST LNN before error location for line numbers.
+By replacing the first LNN in try body with source LNN, we ensure correct
+line numbers in stack traces.
+
+Modifies expr in-place and returns it.
+"""
+function _fix_try_body_lnn!(expr, source::Union{LineNumberNode,Nothing})
+    source === nothing && return expr
+    source_lnn = LineNumberNode(source.line, source.file)
+
+    if expr isa Expr
+        if expr.head === :try && length(expr.args) >= 1
+            try_body = expr.args[1]
+            if try_body isa Expr && try_body.head === :block && !isempty(try_body.args)
+                first_arg = try_body.args[1]
+                if first_arg isa LineNumberNode && first_arg.file != source.file
+                    # Replace macros.jl LNN with source LNN
+                    try_body.args[1] = source_lnn
+                end
+            end
+        end
+        # Recurse into all args
+        for arg in expr.args
+            _fix_try_body_lnn!(arg, source)
+        end
+    end
+    return expr
+end
+
 # ==============================================================================
 # Internal: Code Generation
 # ==============================================================================
@@ -566,6 +599,7 @@ function _generate_function_pool_code_with_backend(backend::Symbol, pool_name, f
 
     # Ensure new_body has source location for proper stack traces
     new_body = _ensure_body_has_toplevel_lnn(new_body, source)
+    _fix_try_body_lnn!(new_body, source)  # Fix try block LNNs for accurate stack traces
     return Expr(def_head, esc(call_expr), new_body)
 end
 
@@ -653,6 +687,7 @@ function _generate_function_pool_code(pool_name, func_def, force_enable, disable
 
     # Ensure new_body has source location for proper stack traces
     new_body = _ensure_body_has_toplevel_lnn(new_body, source)
+    _fix_try_body_lnn!(new_body, source)  # Fix try block LNNs for accurate stack traces
     return Expr(def_head, esc(call_expr), new_body)
 end
 
