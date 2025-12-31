@@ -338,7 +338,7 @@ end # Macro Expansion Details
 
 Recursively search for a LineNumberNode matching target_line.
 More robust than checking only the first LNN (handles block forms where
-`_maybe_add_source_location!` may insert LNN before user code LNN).
+source LNN may be inserted before user code LNN).
 """
 function find_linenumbernode_with_line(expr, target_line::Int)
     if expr isa LineNumberNode && expr.line == target_line
@@ -603,7 +603,7 @@ end
 
         @test func_frame !== nothing
         # The line should be close to where we defined the function (within 10 lines)
-        # This validates it's not from macros.jl (which has lines 600+)
+        # This validates the frame points to our definition, not src/macros.jl
         @test abs(func_frame.line - func_def_line) < 10
     end
 
@@ -645,7 +645,7 @@ end
         @test inner_frame !== nothing
 
         # Both should have lines close to definition (within 15 lines)
-        # This validates they're not from macros.jl (which has lines 600+)
+        # This validates the frames point to our definitions, not src/macros.jl
         @test abs(outer_frame.line - outer_def_line) < 15
         @test abs(inner_frame.line - outer_def_line) < 15
 
