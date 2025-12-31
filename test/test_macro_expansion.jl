@@ -324,3 +324,387 @@
     end
 
 end # Macro Expansion Details
+
+# ==============================================================================
+# Source Location Preservation Tests (LineNumberNode)
+# ==============================================================================
+#
+# These tests verify that macro-generated code preserves source location
+# information for better coverage, stack traces, and debugging.
+
+# Test helper functions for robust AST inspection
+"""
+    find_linenumbernode_with_line(expr, target_line) -> Union{LineNumberNode, Nothing}
+
+Recursively search for a LineNumberNode matching target_line.
+More robust than checking only the first LNN (handles block forms where
+source LNN may be inserted before user code LNN).
+"""
+function find_linenumbernode_with_line(expr, target_line::Int)
+    if expr isa LineNumberNode && expr.line == target_line
+        return expr
+    elseif expr isa Expr
+        for arg in expr.args
+            result = find_linenumbernode_with_line(arg, target_line)
+            result !== nothing && return result
+        end
+    end
+    return nothing
+end
+
+"""
+    has_valid_linenumbernode(expr) -> Bool
+
+Check if expr contains any LineNumberNode with valid line info.
+"""
+function has_valid_linenumbernode(expr)
+    if expr isa LineNumberNode
+        return expr.line > 0 && expr.file !== :none
+    elseif expr isa Expr
+        for arg in expr.args
+            has_valid_linenumbernode(arg) && return true
+        end
+    end
+    return false
+end
+
+"""
+    get_function_body(expr) -> Union{Expr, Nothing}
+
+Extract function body from a function definition expression.
+Handles both `function f() ... end` and `f() = ...` forms.
+"""
+function get_function_body(expr)
+    if expr isa Expr
+        if expr.head === :function && length(expr.args) >= 2
+            return expr.args[2]
+        elseif expr.head === :(=) && expr.args[1] isa Expr && expr.args[1].head === :call
+            return expr.args[2]
+        end
+        # Recurse for wrapped expressions
+        for arg in expr.args
+            result = get_function_body(arg)
+            result !== nothing && return result
+        end
+    end
+    return nothing
+end
+
+"""
+    find_toplevel_lnn(args) -> Union{LineNumberNode, Nothing}
+
+Find the first LineNumberNode in the leading prefix of `args`, skipping
+`Expr(:meta, ...)` nodes. Stops at the first non-meta, non-LNN expression.
+"""
+function find_toplevel_lnn(args)
+    for arg in args
+        if arg isa LineNumberNode
+            return arg
+        elseif arg isa Expr && arg.head === :meta
+            continue
+        else
+            return nothing
+        end
+    end
+    return nothing
+end
+
+@testset "Source Location Preservation" begin
+    # Get this test file's path as Symbol for comparison
+    this_file = Symbol(@__FILE__)
+
+    # Test 1: @with_pool block form
+    @testset "@with_pool block source location" begin
+        expected_line = (@__LINE__) + 2
+        expr = @macroexpand @with_pool pool begin
+            v = acquire!(pool, Float64, 10)
+        end
+        # Should find LNN matching the macro call line AND pointing to THIS file
+        lnn = find_linenumbernode_with_line(expr, expected_line)
+        @test lnn !== nothing
+        @test lnn.file !== :none  # Must have a valid file
+        @test lnn.file == this_file  # Must point to the call site, not macros.jl
+        # At minimum, there should be some valid LNN
+        @test has_valid_linenumbernode(expr)
+    end
+
+    # Test 2: @with_pool function form
+    # The FIRST LNN in function body must point to user file, not macros.jl
+    @testset "@with_pool function source location" begin
+        expected_line = (@__LINE__) + 2
+        func_expr = @macroexpand @with_pool pool function test_func_source(n)
+            acquire!(pool, Float64, n)
+        end
+        body = get_function_body(func_expr)
+        @test body !== nothing
+        # Check that FIRST LNN in body points to user file (not macros.jl)
+        @test body isa Expr
+        @test body.head === :block
+        @test !isempty(body.args)
+        first_lnn = body.args[1]
+        @test first_lnn isa LineNumberNode
+        @test first_lnn.file !== :none
+        @test first_lnn.file == this_file  # Must point to call site, not macros.jl
+    end
+
+    # Test 3: @maybe_with_pool block form
+    @testset "@maybe_with_pool block source location" begin
+        expected_line = (@__LINE__) + 2
+        expr = @macroexpand @maybe_with_pool pool begin
+            v = acquire!(pool, Float64, 10)
+        end
+        lnn = find_linenumbernode_with_line(expr, expected_line)
+        @test lnn !== nothing
+        @test lnn.file !== :none
+        @test lnn.file == this_file
+    end
+
+    # Test 4: Backend variant (@with_pool :cpu)
+    @testset "@with_pool :cpu backend source location" begin
+        expected_line = (@__LINE__) + 2
+        expr = @macroexpand @with_pool :cpu pool begin
+            v = acquire!(pool, Float64, 10)
+        end
+        lnn = find_linenumbernode_with_line(expr, expected_line)
+        @test lnn !== nothing
+        @test lnn.file !== :none
+        @test lnn.file == this_file
+    end
+
+    # Test 5: Without pool name (implicit gensym)
+    @testset "@with_pool without pool name source location" begin
+        expected_line = (@__LINE__) + 2
+        expr = @macroexpand @with_pool begin
+            inner_function()
+        end
+        lnn = find_linenumbernode_with_line(expr, expected_line)
+        @test lnn !== nothing
+        @test lnn.file !== :none
+        @test lnn.file == this_file
+    end
+
+    # Test 6: Short-form function (f(x) = ...) - LNN이 없는 케이스, __source__로 보정됨
+    # The FIRST LNN in function body must point to user file
+    @testset "@with_pool short function source location" begin
+        func_expr = @macroexpand @with_pool pool test_short_func(x) = acquire!(pool, Float64, x)
+        body = get_function_body(func_expr)
+        @test body !== nothing
+        # Short functions need __source__ fallback since they lack original LNN
+        # Check that FIRST LNN in body points to user file (not macros.jl)
+        @test body isa Expr
+        @test body.head === :block
+        @test !isempty(body.args)
+        first_lnn = body.args[1]
+        @test first_lnn isa LineNumberNode
+        @test first_lnn.file !== :none
+        @test first_lnn.file == this_file  # Must point to call site
+    end
+
+    # Test 7: @maybe_with_pool function form
+    # The FIRST LNN in function body must point to user file
+    @testset "@maybe_with_pool function source location" begin
+        func_expr = @macroexpand @maybe_with_pool pool function maybe_test_func(n)
+            acquire!(pool, Float64, n)
+        end
+        body = get_function_body(func_expr)
+        @test body !== nothing
+        # Check that FIRST LNN in body points to user file (not macros.jl)
+        @test body isa Expr
+        @test body.head === :block
+        @test !isempty(body.args)
+        first_lnn = body.args[1]
+        @test first_lnn isa LineNumberNode
+        @test first_lnn.file !== :none
+        @test first_lnn.file == this_file
+    end
+
+    # Test 8: @with_pool :cpu function form
+    # The FIRST LNN in function body must point to user file
+    @testset "@with_pool :cpu function source location" begin
+        func_expr = @macroexpand @with_pool :cpu pool function cpu_test_func(n)
+            acquire!(pool, Float64, n)
+        end
+        body = get_function_body(func_expr)
+        @test body !== nothing
+        # Check that FIRST LNN in body points to user file (not macros.jl)
+        @test body isa Expr
+        @test body.head === :block
+        @test !isempty(body.args)
+        first_lnn = body.args[1]
+        @test first_lnn isa LineNumberNode
+        @test first_lnn.file !== :none
+        @test first_lnn.file == this_file
+    end
+
+    # Test 9: Stack trace verification - the most direct validation
+    # Verifies that actual runtime stack traces point to user code, not macros.jl
+    @testset "Stack trace points to user file" begin
+        # Define a function that throws an error inside @with_pool
+        @with_pool pool function _test_stacktrace_error_location(n)
+            x = acquire!(pool, Float64, n)
+            error("intentional error for stack trace test")
+        end
+
+        # Capture the backtrace when error occurs
+        bt = try
+            _test_stacktrace_error_location(10)
+            nothing
+        catch
+            catch_backtrace()
+        end
+
+        @test bt !== nothing
+        frames = stacktrace(bt)
+        @test !isempty(frames)
+
+        # Find the first frame with our test function name
+        func_frame = nothing
+        for frame in frames
+            if occursin("_test_stacktrace_error_location", string(frame.func))
+                func_frame = frame
+                break
+            end
+        end
+
+        @test func_frame !== nothing
+        # The function definition should point to THIS file, not macros.jl
+        @test !occursin("macros.jl", string(func_frame.file))
+        @test occursin("test_macro_expansion.jl", string(func_frame.file))
+    end
+
+    # Test 10: Verify line numbers in stack trace are accurate (not from macros.jl)
+    # This tests the _fix_try_body_lnn! helper that replaces macros.jl LNNs
+    @testset "Stack trace line numbers are accurate" begin
+        # Track the line where the function is defined
+        func_def_line = @__LINE__
+        @with_pool pool function _test_stacktrace_line_accuracy(n)
+            x = acquire!(pool, Float64, n)
+            error("line accuracy test")
+        end
+
+        bt = try
+            _test_stacktrace_line_accuracy(10)
+            nothing
+        catch
+            catch_backtrace()
+        end
+
+        @test bt !== nothing
+        frames = stacktrace(bt)
+
+        # Find the function frame
+        func_frame = nothing
+        for frame in frames
+            if occursin("_test_stacktrace_line_accuracy", string(frame.func))
+                func_frame = frame
+                break
+            end
+        end
+
+        @test func_frame !== nothing
+        # The line should be close to where we defined the function (within 10 lines)
+        # This validates the frame points to our definition, not src/macros.jl
+        @test abs(func_frame.line - func_def_line) < 10
+    end
+
+    # Test 11: Verify nested @with_pool functions have correct source locations
+    # This ensures both outer and inner function frames point to user code
+    @testset "Nested @with_pool source locations" begin
+        outer_def_line = @__LINE__
+        @with_pool pool function _test_nested_outer(n)
+            @with_pool inner_pool function _test_nested_inner(_)
+                error("nested error")
+            end
+            _test_nested_inner(n)
+        end
+
+        bt = try
+            _test_nested_outer(10)
+            nothing
+        catch
+            catch_backtrace()
+        end
+
+        @test bt !== nothing
+        frames = stacktrace(bt)
+
+        # Find both function frames
+        outer_frame = nothing
+        inner_frame = nothing
+        for frame in frames
+            fname = string(frame.func)
+            if occursin("_test_nested_outer", fname) && outer_frame === nothing
+                outer_frame = frame
+            elseif occursin("_test_nested_inner", fname) && inner_frame === nothing
+                inner_frame = frame
+            end
+        end
+
+        # Both frames should exist and point to this file
+        @test outer_frame !== nothing
+        @test inner_frame !== nothing
+
+        # Both should have lines close to definition (within 15 lines)
+        # This validates the frames point to our definitions, not src/macros.jl
+        @test abs(outer_frame.line - outer_def_line) < 15
+        @test abs(inner_frame.line - outer_def_line) < 15
+
+        # Both should point to test file, not macros.jl
+        @test !occursin("macros.jl", string(outer_frame.file))
+        @test !occursin("macros.jl", string(inner_frame.file))
+    end
+
+    # Test 12: Verify @inline functions with Expr(:meta, ...) are handled correctly
+    # Tests that _find_first_lnn_index scans past meta expressions
+    # Note: @inline functions get inlined by compiler, so we test AST structure only
+    @testset "@inline function AST source location" begin
+        func_expr = @macroexpand @with_pool pool @inline function _test_inline_ast(n)
+            acquire!(pool, Float64, n)
+        end
+
+        body = get_function_body(func_expr)
+        @test body !== nothing
+        @test body isa Expr
+        @test body.head === :block
+        @test !isempty(body.args)
+
+        # Find the first LineNumberNode (should be after Expr(:meta, :inline))
+        lnn = find_toplevel_lnn(body.args)
+        @test lnn !== nothing
+        # Should point to this test file, not macros.jl
+        @test lnn.file !== :none
+        @test lnn.file == this_file
+    end
+
+    # Test 13: @inline applied outside @with_pool (macro stacking)
+    # Ensures outer macros don't break LNN detection in function bodies
+    @testset "@inline outer macro function source location" begin
+        func_expr = @macroexpand @inline @with_pool pool function _test_inline_outer(n)
+            acquire!(pool, Float64, n)
+        end
+
+        body = get_function_body(func_expr)
+        @test body !== nothing
+        @test body isa Expr
+        @test body.head === :block
+        @test !isempty(body.args)
+
+        lnn = find_toplevel_lnn(body.args)
+        @test lnn !== nothing
+        @test lnn.file !== :none
+        @test lnn.file == this_file
+    end
+
+    # Test 14: Macro stacking for block form (outer macro)
+    @testset "@inbounds outer macro block source location" begin
+        expected_line = (@__LINE__) + 2
+        expr = @macroexpand @inbounds @with_pool pool begin
+            v = acquire!(pool, Float64, 10)
+        end
+        lnn = find_linenumbernode_with_line(expr, expected_line)
+        @test lnn !== nothing
+        @test lnn.file !== :none
+        @test lnn.file == this_file
+    end
+
+end # Source Location Preservation
