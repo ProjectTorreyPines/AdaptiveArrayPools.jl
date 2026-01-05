@@ -12,3 +12,8 @@ CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
 
 [extensions]
 AdaptiveArrayPoolsCUDAExt = "CUDA"
+
+[compat]
+julia = "1.10"
+Preferences = "1"
+CUDA = "5"
