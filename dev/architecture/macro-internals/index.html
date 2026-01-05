@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>@with_pool Internals · AdaptiveArrayPools.jl</title><meta name="title" content="@with_pool Internals · AdaptiveArrayPools.jl"/><meta property="og:title" content="@with_pool Internals · AdaptiveArrayPools.jl"/><meta property="twitter:title" content="@with_pool Internals · AdaptiveArrayPools.jl"/><meta name="description" content="Documentation for AdaptiveArrayPools.jl."/><meta property="og:description" content="Documentation for AdaptiveArrayPools.jl."/><meta property="twitter:description" content="Documentation for AdaptiveArrayPools.jl."/><meta property="og:url" content="https://projecttorreypines.github.io/AdaptiveArrayPools.jl/architecture/macro-internals/"/><meta property="twitter:url" content="https://projecttorreypines.github.io/AdaptiveArrayPools.jl/architecture/macro-internals/"/><link rel="canonical" href="https://projecttorreypines.github.io/AdaptiveArrayPools.jl/architecture/macro-internals/"/><script data-outdated-warner src="../../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.050/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL="../.."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../../assets/documenter.js"></script><script src="../../search_index.js"></script><script src="../../siteinfo.js"></script><script src="../../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../../assets/themeswap.js"></script></head><body><div id="documenter"><nav class="docs-sidebar"><div class="docs-package-name"><span class="docs-autofit"><a href="../../">AdaptiveArrayPools.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../../">Home</a></li><li><span class="tocitem">Basics</span><ul><li><a class="tocitem" href="../../basics/quick-start/">Quick Start</a></li><li><a class="tocitem" href="../../basics/with-pool-patterns/"><code>@with_pool</code> Patterns</a></li><li><a class="tocitem" href="../../basics/api-essentials/">Essential API</a></li><li><a class="tocitem" href="../../basics/safety-rules/">Safety Rules</a></li></ul></li><li><span class="tocitem">Advanced</span><ul><li><a class="tocitem" href="../../advanced/pool-patterns/">Pool Patterns</a></li><li><a class="tocitem" href="../../features/multi-threading/">Multi-threading</a></li></ul></li><li><span class="tocitem">Features</span><ul><li><a class="tocitem" href="../../features/maybe-with-pool/"><code>@maybe_with_pool</code></a></li><li><a class="tocitem" href="../../features/cuda-support/">CUDA Support</a></li><li><a class="tocitem" href="../../features/configuration/">Configuration</a></li></ul></li><li><span class="tocitem">Reference</span><ul><li><a class="tocitem" href="../../reference/api/">Full API</a></li></ul></li><li><span class="tocitem">Architecture</span><ul><li><a class="tocitem" href="../how-it-works/">How It Works</a></li><li><a class="tocitem" href="../type-dispatch/">Type Dispatch &amp; Cache</a></li><li class="is-active"><a class="tocitem" href><code>@with_pool</code> Internals</a><ul class="internal"><li><a class="tocitem" href="#Overview"><span>Overview</span></a></li><li><a class="tocitem" href="#Basic-Lifecycle-Flow"><span>Basic Lifecycle Flow</span></a></li><li><a class="tocitem" href="#Type-Extraction:-Static-Analysis-at-Compile-Time"><span>Type Extraction: Static Analysis at Compile Time</span></a></li><li><a class="tocitem" href="#Untracked-Acquire-Detection"><span>Untracked Acquire Detection</span></a></li><li><a class="tocitem" href="#Nested-@with_pool-Handling"><span>Nested <code>@with_pool</code> Handling</span></a></li><li><a class="tocitem" href="#Performance-Impact"><span>Performance Impact</span></a></li><li><a class="tocitem" href="#Code-Generation-Summary"><span>Code Generation Summary</span></a></li><li><a class="tocitem" href="#Key-Internal-Functions"><span>Key Internal Functions</span></a></li><li><a class="tocitem" href="#See-Also"><span>See Also</span></a></li></ul></li><li><a class="tocitem" href="../design-docs/">Design Documents</a></li></ul></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li><a class="is-disabled">Architecture</a></li><li class="is-active"><a href><code>@with_pool</code> Internals</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href><code>@with_pool</code> Internals</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/ProjectTorreyPines/AdaptiveArrayPools.jl" title="View the repository on GitHub"><span class="docs-icon fa-brands"></span><span class="docs-label is-hidden-touch">GitHub</span></a><a class="docs-navbar-link" href="https://github.com/ProjectTorreyPines/AdaptiveArrayPools.jl/blob/master/docs/src/architecture/macro-internals.md" title="Edit source on GitHub"><span class="docs-icon fa-solid"></span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><h1 id="How-@with_pool-Works"><a class="docs-heading-anchor" href="#How-@with_pool-Works">How <code>@with_pool</code> Works</a><a id="How-@with_pool-Works-1"></a><a class="docs-heading-anchor-permalink" href="#How-@with_pool-Works" title="Permalink"></a></h1><p>This page explains the internal mechanics of the <code>@with_pool</code> macro for advanced users and contributors who want to understand the optimization strategies.</p><h2 id="Overview"><a class="docs-heading-anchor" href="#Overview">Overview</a><a id="Overview-1"></a><a class="docs-heading-anchor-permalink" href="#Overview" title="Permalink"></a></h2><p>The <code>@with_pool</code> macro provides automatic lifecycle management with three key optimizations:</p><ol><li><strong>Try-Finally Safety</strong> — Guarantees cleanup even on exceptions</li><li><strong>Typed Checkpoint/Rewind</strong> — Only saves/restores used types (~77% faster)</li><li><strong>Untracked Acquire Detection</strong> — Safely handles <code>acquire!</code> calls outside macro visibility</li></ol><h2 id="Basic-Lifecycle-Flow"><a class="docs-heading-anchor" href="#Basic-Lifecycle-Flow">Basic Lifecycle Flow</a><a id="Basic-Lifecycle-Flow-1"></a><a class="docs-heading-anchor-permalink" href="#Basic-Lifecycle-Flow" title="Permalink"></a></h2><pre><code class="nohighlight hljs">┌─────────────────────────────────────────────────────────────┐
+│  @with_pool pool function foo(x)                            │
+│      A = acquire!(pool, Float64, 100)                       │
+│      B = similar!(pool, A)                                  │
+│      return sum(A) + sum(B)                                 │
+│  end                                                        │
+└─────────────────────────────────────────────────────────────┘
+                              ↓
+              ┌───────────────────────────────────┐
+              │       Macro Transformation        │
+              └───────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────┐
+│  function foo(x)                                            │
+│      pool = get_task_local_pool()                           │
+│      checkpoint!(pool, Float64)     # ← Type-specific       │
+│      try                                                    │
+│          A = _acquire_impl!(pool, Float64, 100)             │
+│          B = _similar_impl!(pool, A)                        │
+│          return sum(A) + sum(B)                             │
+│      finally                                                │
+│          rewind!(pool, Float64)     # ← Type-specific       │
+│      end                                                    │
+│  end                                                        │
+└─────────────────────────────────────────────────────────────┘</code></pre><h3 id="Key-Points"><a class="docs-heading-anchor" href="#Key-Points">Key Points</a><a id="Key-Points-1"></a><a class="docs-heading-anchor-permalink" href="#Key-Points" title="Permalink"></a></h3><ul><li><strong><code>try-finally</code></strong> ensures <code>rewind!</code> executes even if an exception occurs</li><li><code>acquire!</code> → <code>_acquire_impl!</code> transformation bypasses untracked marking overhead</li><li>Type-specific <code>checkpoint!(pool, Float64)</code> is ~77% faster than full checkpoint</li></ul><h2 id="Type-Extraction:-Static-Analysis-at-Compile-Time"><a class="docs-heading-anchor" href="#Type-Extraction:-Static-Analysis-at-Compile-Time">Type Extraction: Static Analysis at Compile Time</a><a id="Type-Extraction:-Static-Analysis-at-Compile-Time-1"></a><a class="docs-heading-anchor-permalink" href="#Type-Extraction:-Static-Analysis-at-Compile-Time" title="Permalink"></a></h2><p>The macro analyzes the AST to extract types used in <code>acquire!</code> calls:</p><pre><code class="language-julia hljs"># Macro sees these acquire! calls:
+@with_pool pool begin
+    A = acquire!(pool, Float64, 10, 10)     # → extracts Float64
+    B = zeros!(pool, ComplexF64, 100)       # → extracts ComplexF64
+    C = similar!(pool, A)                    # → extracts eltype(A) → Float64
+end
+
+# Generated code uses typed checkpoint/rewind:
+checkpoint!(pool, Float64, ComplexF64)
+try
+    ...
+finally
+    rewind!(pool, Float64, ComplexF64)
+end</code></pre><h3 id="Type-Extraction-Rules"><a class="docs-heading-anchor" href="#Type-Extraction-Rules">Type Extraction Rules</a><a id="Type-Extraction-Rules-1"></a><a class="docs-heading-anchor-permalink" href="#Type-Extraction-Rules" title="Permalink"></a></h3><table><tr><th style="text-align: right">Call Pattern</th><th style="text-align: right">Extracted Type</th></tr><tr><td style="text-align: right"><code>acquire!(pool, Float64, dims...)</code></td><td style="text-align: right"><code>Float64</code></td></tr><tr><td style="text-align: right"><code>acquire!(pool, x)</code></td><td style="text-align: right"><code>eltype(x)</code> (if x is external)</td></tr><tr><td style="text-align: right"><code>zeros!(pool, dims...)</code></td><td style="text-align: right"><code>default_eltype(pool)</code></td></tr><tr><td style="text-align: right"><code>zeros!(pool, Float32, dims...)</code></td><td style="text-align: right"><code>Float32</code></td></tr><tr><td style="text-align: right"><code>similar!(pool, x)</code></td><td style="text-align: right"><code>eltype(x)</code></td></tr><tr><td style="text-align: right"><code>similar!(pool, x, Int64, ...)</code></td><td style="text-align: right"><code>Int64</code></td></tr></table><h3 id="When-Type-Extraction-Fails-Full-Checkpoint"><a class="docs-heading-anchor" href="#When-Type-Extraction-Fails-Full-Checkpoint">When Type Extraction Fails → Full Checkpoint</a><a id="When-Type-Extraction-Fails-Full-Checkpoint-1"></a><a class="docs-heading-anchor-permalink" href="#When-Type-Extraction-Fails-Full-Checkpoint" title="Permalink"></a></h3><p>The macro falls back to full <code>checkpoint!(pool)</code> when:</p><pre><code class="language-julia hljs">@with_pool pool begin
+    T = eltype(data)                  # T defined locally AFTER checkpoint
+    A = acquire!(pool, T, 100)        # Can&#39;t use T at checkpoint time!
+end
+# → Falls back to checkpoint!(pool) / rewind!(pool)
+
+@with_pool pool begin
+    local_arr = compute()             # local_arr defined AFTER checkpoint
+    B = similar!(pool, local_arr)     # eltype(local_arr) unavailable
+end
+# → Falls back to checkpoint!(pool) / rewind!(pool)</code></pre><h2 id="Untracked-Acquire-Detection"><a class="docs-heading-anchor" href="#Untracked-Acquire-Detection">Untracked Acquire Detection</a><a id="Untracked-Acquire-Detection-1"></a><a class="docs-heading-anchor-permalink" href="#Untracked-Acquire-Detection" title="Permalink"></a></h2><h3 id="The-Problem"><a class="docs-heading-anchor" href="#The-Problem">The Problem</a><a id="The-Problem-1"></a><a class="docs-heading-anchor-permalink" href="#The-Problem" title="Permalink"></a></h3><p>The macro can only see <code>acquire!</code> calls <strong>directly in its AST</strong>. Calls inside helper functions are invisible:</p><pre><code class="language-julia hljs">function helper!(pool)
+    return zeros!(pool, Float64, 100)   # Macro can&#39;t see this!
+end
+
+@with_pool pool begin
+    A = acquire!(pool, Int64, 10)       # ← Macro sees this (Int64)
+    B = helper!(pool)                    # ← Macro can&#39;t see Float64 inside!
+end
+
+# If only checkpoint!(pool, Int64), Float64 arrays won&#39;t be rewound!</code></pre><h3 id="The-Solution:-_untracked_flags"><a class="docs-heading-anchor" href="#The-Solution:-_untracked_flags">The Solution: <code>_untracked_flags</code></a><a id="The-Solution:-_untracked_flags-1"></a><a class="docs-heading-anchor-permalink" href="#The-Solution:-_untracked_flags" title="Permalink"></a></h3><p>Every <code>acquire!</code> call (and convenience functions) marks itself as &quot;untracked&quot;:</p><pre><code class="language-julia hljs"># Public API (called from user code outside macro)
+@inline function acquire!(pool, ::Type{T}, n::Int) where {T}
+    _mark_untracked!(pool)              # ← Sets flag!
+    _acquire_impl!(pool, T, n)
+end
+
+# Macro-transformed calls skip the marking
+# (because macro already knows about them)
+_acquire_impl!(pool, T, n)               # ← No flag</code></pre><h3 id="Flow-Diagram"><a class="docs-heading-anchor" href="#Flow-Diagram">Flow Diagram</a><a id="Flow-Diagram-1"></a><a class="docs-heading-anchor-permalink" href="#Flow-Diagram" title="Permalink"></a></h3><pre><code class="nohighlight hljs">@with_pool pool begin                    State of pool._untracked_flags
+    │                                    ─────────────────────────────────
+    ├─► checkpoint!(pool, Int64)         depth=2, flag[2]=false
+    │
+    │   A = _acquire_impl!(...)          (macro-transformed, no flag set)
+    │   B = helper!(pool)
+    │       └─► zeros!(pool, Float64, N)
+    │           └─► _mark_untracked!(pool)  flag[2]=TRUE ←──┐
+    │                                                        │
+    │   ... more code ...                                    │
+    │                                                        │
+    └─► rewind! check:                                       │
+        if pool._untracked_flags[2]  ─────────────────────────┘
+            rewind!(pool)            # Full rewind (safe)
+        else
+            rewind!(pool, Int64)     # Typed rewind (fast)
+        end
+end</code></pre><h3 id="Why-This-Works"><a class="docs-heading-anchor" href="#Why-This-Works">Why This Works</a><a id="Why-This-Works-1"></a><a class="docs-heading-anchor-permalink" href="#Why-This-Works" title="Permalink"></a></h3><ol><li><strong>Macro-tracked calls</strong>: Transformed to <code>_acquire_impl!</code> → no flag → typed rewind</li><li><strong>Untracked calls</strong>: Use public API → sets flag → triggers full rewind</li><li><strong>Result</strong>: Always safe, with optimization when possible</li></ol><h2 id="Nested-@with_pool-Handling"><a class="docs-heading-anchor" href="#Nested-@with_pool-Handling">Nested <code>@with_pool</code> Handling</a><a id="Nested-@with_pool-Handling-1"></a><a class="docs-heading-anchor-permalink" href="#Nested-@with_pool-Handling" title="Permalink"></a></h2><p>Each <code>@with_pool</code> maintains its own checkpoint depth:</p><pre><code class="nohighlight hljs">@with_pool p1 begin                      depth: 1 → 2
+    v1 = acquire!(p1, Float64, 10)
+    │
+    ├─► @with_pool p2 begin              depth: 2 → 3
+    │       v2 = acquire!(p2, Int64, 5)
+    │       helper!(p2)                  # sets flag[3]=true
+    │       sum(v2)
+    │   end                              depth: 3 → 2, flag[3] checked
+    │
+    │   # v1 still valid here!
+    sum(v1)
+end                                      depth: 2 → 1, flag[2] checked</code></pre><h3 id="Depth-Tracking-Data-Structures"><a class="docs-heading-anchor" href="#Depth-Tracking-Data-Structures">Depth Tracking Data Structures</a><a id="Depth-Tracking-Data-Structures-1"></a><a class="docs-heading-anchor-permalink" href="#Depth-Tracking-Data-Structures" title="Permalink"></a></h3><pre><code class="language-julia hljs">struct AdaptiveArrayPool
+    # ... type pools ...
+    _current_depth::Int              # Current scope depth (1 = global)
+    _untracked_flags::Vector{Bool}   # Per-depth flag array
+end
+
+# Initialized with sentinel:
+_current_depth = 1                   # Global scope
+_untracked_flags = [false]           # Sentinel for depth=1</code></pre><h2 id="Performance-Impact"><a class="docs-heading-anchor" href="#Performance-Impact">Performance Impact</a><a id="Performance-Impact-1"></a><a class="docs-heading-anchor-permalink" href="#Performance-Impact" title="Permalink"></a></h2><table><tr><th style="text-align: right">Scenario</th><th style="text-align: right">Checkpoint Method</th><th style="text-align: right">Relative Speed</th></tr><tr><td style="text-align: right">1 type, no untracked</td><td style="text-align: right"><code>checkpoint!(pool, T)</code></td><td style="text-align: right"><strong>~77% faster</strong></td></tr><tr><td style="text-align: right">Multiple types, no untracked</td><td style="text-align: right"><code>checkpoint!(pool, T1, T2, ...)</code></td><td style="text-align: right"><strong>~50% faster</strong></td></tr><tr><td style="text-align: right">Any untracked acquire</td><td style="text-align: right"><code>checkpoint!(pool)</code></td><td style="text-align: right">Baseline</td></tr></table><p>The optimization matters most in tight loops with many iterations.</p><h2 id="Code-Generation-Summary"><a class="docs-heading-anchor" href="#Code-Generation-Summary">Code Generation Summary</a><a id="Code-Generation-Summary-1"></a><a class="docs-heading-anchor-permalink" href="#Code-Generation-Summary" title="Permalink"></a></h2><pre><code class="language-julia hljs"># INPUT
+@with_pool pool function compute(data)
+    A = acquire!(pool, Float64, length(data))
+    result = helper!(pool, A)  # May have untracked acquires
+    return result
+end
+
+# OUTPUT (simplified)
+function compute(data)
+    pool = get_task_local_pool()
+
+    # Check if parent scope had untracked (for nested pools)
+    if pool._untracked_flags[pool._current_depth]
+        checkpoint!(pool)                    # Full checkpoint
+    else
+        checkpoint!(pool, Float64)           # Typed checkpoint
+    end
+
+    try
+        A = _acquire_impl!(pool, Float64, length(data))
+        result = helper!(pool, A)
+        return result
+    finally
+        # Check if untracked acquires occurred in this scope
+        if pool._untracked_flags[pool._current_depth]
+            rewind!(pool)                    # Full rewind
+        else
+            rewind!(pool, Float64)           # Typed rewind
+        end
+    end
+end</code></pre><h2 id="Key-Internal-Functions"><a class="docs-heading-anchor" href="#Key-Internal-Functions">Key Internal Functions</a><a id="Key-Internal-Functions-1"></a><a class="docs-heading-anchor-permalink" href="#Key-Internal-Functions" title="Permalink"></a></h2><table><tr><th style="text-align: right">Function</th><th style="text-align: right">Purpose</th></tr><tr><td style="text-align: right"><code>_extract_acquire_types(expr, pool_name)</code></td><td style="text-align: right">AST walk to find types</td></tr><tr><td style="text-align: right"><code>_filter_static_types(types, local_vars)</code></td><td style="text-align: right">Filter out locally-defined types</td></tr><tr><td style="text-align: right"><code>_transform_acquire_calls(expr, pool_name)</code></td><td style="text-align: right">Replace <code>acquire!</code> → <code>_acquire_impl!</code></td></tr><tr><td style="text-align: right"><code>_mark_untracked!(pool)</code></td><td style="text-align: right">Set untracked flag for current depth</td></tr><tr><td style="text-align: right"><code>_generate_typed_checkpoint_call(pool, types)</code></td><td style="text-align: right">Generate <code>checkpoint!(pool, T...)</code></td></tr></table><h2 id="See-Also"><a class="docs-heading-anchor" href="#See-Also">See Also</a><a id="See-Also-1"></a><a class="docs-heading-anchor-permalink" href="#See-Also" title="Permalink"></a></h2><ul><li><a href="../how-it-works/">How It Works</a> — Overview of pool architecture</li><li><a href="../../basics/safety-rules/">Safety Rules</a> — Scope rules and best practices</li><li><a href="../../features/configuration/">Configuration</a> — Performance tuning options</li></ul></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../type-dispatch/">« Type Dispatch &amp; Cache</a><a class="docs-footer-nextpage" href="../design-docs/">Design Documents »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.16.1 on <span class="colophon-date" title="Monday 5 January 2026 21:40">Monday 5 January 2026</span>. Using Julia version 1.12.3.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
