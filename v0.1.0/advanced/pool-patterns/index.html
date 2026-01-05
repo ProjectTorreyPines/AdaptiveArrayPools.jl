@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>Pool Patterns · AdaptiveArrayPools.jl</title><meta name="title" content="Pool Patterns · AdaptiveArrayPools.jl"/><meta property="og:title" content="Pool Patterns · AdaptiveArrayPools.jl"/><meta property="twitter:title" content="Pool Patterns · AdaptiveArrayPools.jl"/><meta name="description" content="Documentation for AdaptiveArrayPools.jl."/><meta property="og:description" content="Documentation for AdaptiveArrayPools.jl."/><meta property="twitter:description" content="Documentation for AdaptiveArrayPools.jl."/><meta property="og:url" content="https://projecttorreypines.github.io/AdaptiveArrayPools.jl/advanced/pool-patterns/"/><meta property="twitter:url" content="https://projecttorreypines.github.io/AdaptiveArrayPools.jl/advanced/pool-patterns/"/><link rel="canonical" href="https://projecttorreypines.github.io/AdaptiveArrayPools.jl/advanced/pool-patterns/"/><script data-outdated-warner src="../../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.050/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL="../.."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../../assets/documenter.js"></script><script src="../../search_index.js"></script><script src="../../siteinfo.js"></script><script src="../../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../../assets/themeswap.js"></script></head><body><div id="documenter"><nav class="docs-sidebar"><div class="docs-package-name"><span class="docs-autofit"><a href="../../">AdaptiveArrayPools.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../../">Home</a></li><li><span class="tocitem">Basics</span><ul><li><a class="tocitem" href="../../basics/quick-start/">Quick Start</a></li><li><a class="tocitem" href="../../basics/with-pool-patterns/"><code>@with_pool</code> Patterns</a></li><li><a class="tocitem" href="../../basics/api-essentials/">Essential API</a></li><li><a class="tocitem" href="../../basics/safety-rules/">Safety Rules</a></li></ul></li><li><span class="tocitem">Advanced</span><ul><li class="is-active"><a class="tocitem" href>Pool Patterns</a><ul class="internal"><li><a class="tocitem" href="#Calling-Other-@with_pool-Functions"><span>Calling Other <code>@with_pool</code> Functions</span></a></li><li><a class="tocitem" href="#Passing-Pool-as-Argument"><span>Passing Pool as Argument</span></a></li><li><a class="tocitem" href="#Direct-Pool-Access-in-Inner-Functions"><span>Direct Pool Access in Inner Functions</span></a></li><li><a class="tocitem" href="#Manual-Checkpoint/Rewind"><span>Manual Checkpoint/Rewind</span></a></li><li><a class="tocitem" href="#Scope-Only-@with_pool"><span>Scope-Only <code>@with_pool</code></span></a></li><li><a class="tocitem" href="#See-Also"><span>See Also</span></a></li></ul></li><li><a class="tocitem" href="../../features/multi-threading/">Multi-threading</a></li></ul></li><li><span class="tocitem">Features</span><ul><li><a class="tocitem" href="../../features/maybe-with-pool/"><code>@maybe_with_pool</code></a></li><li><a class="tocitem" href="../../features/cuda-support/">CUDA Support</a></li><li><a class="tocitem" href="../../features/configuration/">Configuration</a></li></ul></li><li><span class="tocitem">Reference</span><ul><li><a class="tocitem" href="../../reference/api/">Full API</a></li></ul></li><li><span class="tocitem">Architecture</span><ul><li><a class="tocitem" href="../../architecture/how-it-works/">How It Works</a></li><li><a class="tocitem" href="../../architecture/type-dispatch/">Type Dispatch &amp; Cache</a></li><li><a class="tocitem" href="../../architecture/macro-internals/"><code>@with_pool</code> Internals</a></li><li><a class="tocitem" href="../../architecture/design-docs/">Design Documents</a></li></ul></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li><a class="is-disabled">Advanced</a></li><li class="is-active"><a href>Pool Patterns</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>Pool Patterns</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/ProjectTorreyPines/AdaptiveArrayPools.jl" title="View the repository on GitHub"><span class="docs-icon fa-brands"></span><span class="docs-label is-hidden-touch">GitHub</span></a><a class="docs-navbar-link" href="https://github.com/ProjectTorreyPines/AdaptiveArrayPools.jl/blob/master/docs/src/advanced/pool-patterns.md" title="Edit source on GitHub"><span class="docs-icon fa-solid"></span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><h1 id="Advanced-Pool-Patterns"><a class="docs-heading-anchor" href="#Advanced-Pool-Patterns">Advanced Pool Patterns</a><a id="Advanced-Pool-Patterns-1"></a><a class="docs-heading-anchor-permalink" href="#Advanced-Pool-Patterns" title="Permalink"></a></h1><p>This page covers advanced usage patterns for experienced users.</p><h2 id="Calling-Other-@with_pool-Functions"><a class="docs-heading-anchor" href="#Calling-Other-@with_pool-Functions">Calling Other <code>@with_pool</code> Functions</a><a id="Calling-Other-@with_pool-Functions-1"></a><a class="docs-heading-anchor-permalink" href="#Calling-Other-@with_pool-Functions" title="Permalink"></a></h2><p>Each <code>@with_pool</code> function manages its own checkpoint. They can call each other freely:</p><pre><code class="language-julia hljs">@with_pool pool function step1(n)
+    A = zeros!(pool, Float64, n)
+    fill!(A, 1.0)
+    return sum(A)
+end
+
+@with_pool pool function step2(n)
+    B = zeros!(pool, Float64, n)
+    fill!(B, 2.0)
+    return sum(B)
+end
+
+@with_pool pool function pipeline(n)
+    a = step1(n)   # step1&#39;s arrays marked for reuse when it returns
+    b = step2(n)   # step2&#39;s arrays marked for reuse when it returns
+    C = acquire!(pool, Float64, n)
+    fill!(C, a + b)
+    return sum(C)
+end</code></pre><h2 id="Passing-Pool-as-Argument"><a class="docs-heading-anchor" href="#Passing-Pool-as-Argument">Passing Pool as Argument</a><a id="Passing-Pool-as-Argument-1"></a><a class="docs-heading-anchor-permalink" href="#Passing-Pool-as-Argument" title="Permalink"></a></h2><p>For complex call hierarchies, use <code>@with_pool</code> only at the top level and pass the pool through function arguments:</p><pre><code class="language-julia hljs"># Inner functions receive pool as argument - no @with_pool needed
+function compute_step!(pool, data, result)
+    temp = acquire!(pool, Float64, length(data))
+    temp .= data .* 2
+    result[] += sum(temp)
+end
+
+function process_chunk!(pool, chunk, result)
+    temp = zeros!(pool, Float64, length(chunk))
+    compute_step!(pool, chunk, temp)
+    result[] += sum(temp)
+end
+
+# Only the entry point uses @with_pool
+@with_pool pool function main_computation(chunks)
+    result = Ref(0.0)
+    for chunk in chunks
+        process_chunk!(pool, chunk, result)
+    end
+    return result[]
+end</code></pre><p><strong>Benefits:</strong></p><ul><li>Single checkpoint/rewind at top level</li><li>Inner functions are simpler (no macro overhead)</li><li>Pool lifetime is explicit and controlled</li></ul><h2 id="Direct-Pool-Access-in-Inner-Functions"><a class="docs-heading-anchor" href="#Direct-Pool-Access-in-Inner-Functions">Direct Pool Access in Inner Functions</a><a id="Direct-Pool-Access-in-Inner-Functions-1"></a><a class="docs-heading-anchor-permalink" href="#Direct-Pool-Access-in-Inner-Functions" title="Permalink"></a></h2><p>An alternative to passing pool as argument: inner functions call <code>get_task_local_pool()</code> directly, while a top-level <code>@with_pool</code> function controls the lifecycle.</p><pre><code class="language-julia hljs"># Inner functions access pool directly - no argument needed
+function compute_step!(data, result)
+    pool = get_task_local_pool()  # Direct access
+    temp = acquire!(pool, Float64, length(data))
+    temp .= data .* 2
+    result[] += sum(temp)
+    # temp NOT released here - stays active
+end
+
+function process_chunk!(chunk, accumulator)
+    pool = get_task_local_pool()  # Direct access
+    buffer = zeros!(pool, Float64, length(chunk))
+    compute_step!(chunk, buffer)
+    accumulator[] += sum(buffer)
+    # buffer NOT released here - stays active
+end
+
+# Top-level controls lifecycle with @with_pool
+@with_pool pool function main_pipeline(chunks)
+    #  checkpoint!() ─────────────────────────────────┐
+    accumulator = Ref(0.0)                          # │
+    for chunk in chunks                             # │
+        process_chunk!(chunk, accumulator)          # │  All arrays from
+        # └─ compute_step! allocates temp           # │  inner functions
+        # └─ process_chunk! allocates buffer        # │  accumulate here
+    end                                             # │
+    return accumulator[]                            # │
+    #  rewind!() ─────────────────────────────────────┘
+    #     └─ ALL arrays (temp, buffer, ...) marked for reuse
+end</code></pre><h3 id="Memory-Flow-Visualization"><a class="docs-heading-anchor" href="#Memory-Flow-Visualization">Memory Flow Visualization</a><a id="Memory-Flow-Visualization-1"></a><a class="docs-heading-anchor-permalink" href="#Memory-Flow-Visualization" title="Permalink"></a></h3><pre><code class="nohighlight hljs">main_pipeline(chunks)          Inner Functions
+       │
+  checkpoint!()
+       │
+       ├──► process_chunk!()
+       │         │
+       │         ├──► get_task_local_pool() ──► buffer allocated
+       │         │
+       │         └──► compute_step!()
+       │                   │
+       │                   └──► get_task_local_pool() ──► temp allocated
+       │
+       ├──► process_chunk!()  (next iteration)
+       │         └──► ... more allocations ...
+       │
+       ▼
+    rewind!()  ◄─────── ALL arrays marked for reuse</code></pre><h3 id="User-Responsibility-Warning"><a class="docs-heading-anchor" href="#User-Responsibility-Warning">⚠️ User Responsibility Warning</a><a id="User-Responsibility-Warning-1"></a><a class="docs-heading-anchor-permalink" href="#User-Responsibility-Warning" title="Permalink"></a></h3><p>This pattern requires <strong>you</strong> to guarantee that inner functions are <strong>always</strong> called through a <code>@with_pool</code> entry point:</p><pre><code class="language-julia hljs"># SAFE: Called through main_pipeline
+main_pipeline(my_chunks)  # ✓ Lifecycle managed
+
+# DANGEROUS: Direct call without @with_pool wrapper
+compute_step!(some_data, some_ref)  # ✗ No checkpoint/rewind!
+# └─ Arrays allocated but NEVER marked for reuse → pool grows unboundedly</code></pre><p><strong>When to use this pattern:</strong></p><ul><li>Deep call hierarchies where threading pool through every function is tedious</li><li>Performance-critical code where you want to avoid argument passing overhead</li><li>You can enforce that all entry points use <code>@with_pool</code></li></ul><p><strong>When to prefer &quot;Passing Pool as Argument&quot;:</strong></p><ul><li>Functions may be called from various contexts (some pooled, some not)</li><li>Library code where you can&#39;t control the caller</li><li>You want explicit documentation of pool dependency in function signatures</li></ul><h2 id="Manual-Checkpoint/Rewind"><a class="docs-heading-anchor" href="#Manual-Checkpoint/Rewind">Manual Checkpoint/Rewind</a><a id="Manual-Checkpoint/Rewind-1"></a><a class="docs-heading-anchor-permalink" href="#Manual-Checkpoint/Rewind" title="Permalink"></a></h2><p>For fine-grained control, use <code>checkpoint!</code> and <code>rewind!</code> directly:</p><pre><code class="language-julia hljs">function manual_control()
+    pool = get_task_local_pool()
+
+    checkpoint!(pool)
+    try
+        A = acquire!(pool, Float64, 100)
+        B = acquire!(pool, Float64, 100)
+        # ... compute ...
+        return sum(A) + sum(B)
+    finally
+        rewind!(pool)
+    end
+end</code></pre><p>This is what <code>@with_pool</code> generates internally. Use manual control when:</p><ul><li>Integrating with existing try/catch blocks</li><li>Conditional checkpoint/rewind logic needed</li><li>Building custom pool management abstractions</li></ul><h2 id="Scope-Only-@with_pool"><a class="docs-heading-anchor" href="#Scope-Only-@with_pool">Scope-Only <code>@with_pool</code></a><a id="Scope-Only-@with_pool-1"></a><a class="docs-heading-anchor-permalink" href="#Scope-Only-@with_pool" title="Permalink"></a></h2><p>You can omit the pool name when inner functions handle their own acquire:</p><pre><code class="language-julia hljs">@with_pool p function step1()
+    v = acquire!(p, Float64, 100)
+    sum(v)
+end
+
+@with_pool p function step2()
+    v = acquire!(p, Float64, 200)
+    sum(v)
+end
+
+# Outer function just provides scope management
+@with_pool function orchestrate()
+    a = step1()
+    b = step2()
+    return a + b
+end</code></pre><p>The name-less <code>@with_pool</code> still performs checkpoint/rewind but doesn&#39;t expose the pool variable. This is useful when you&#39;re orchestrating other <code>@with_pool</code> functions.</p><h2 id="See-Also"><a class="docs-heading-anchor" href="#See-Also">See Also</a><a id="See-Also-1"></a><a class="docs-heading-anchor-permalink" href="#See-Also" title="Permalink"></a></h2><ul><li><a href="../../basics/with-pool-patterns/"><code>@with_pool</code> Patterns</a> - Basic usage patterns</li><li><a href="../../basics/safety-rules/">Safety Rules</a> - Scope rules</li></ul></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../../basics/safety-rules/">« Safety Rules</a><a class="docs-footer-nextpage" href="../../features/multi-threading/">Multi-threading »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.16.1 on <span class="colophon-date" title="Monday 5 January 2026 21:55">Monday 5 January 2026</span>. Using Julia version 1.12.3.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
