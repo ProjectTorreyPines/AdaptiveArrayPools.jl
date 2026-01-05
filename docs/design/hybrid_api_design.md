@@ -132,6 +132,24 @@ end
 - Array is already a heap-allocated object → no additional allocation when reusing cached instance
 - Avoids wrapper object optimization issues in type-unspecified paths
 
+### API Aliases
+
+For clarity, explicit aliases are provided:
+
+```julia
+# Main APIs
+export acquire!, unsafe_acquire!
+
+# Explicit Aliases
+export acquire_view!, acquire_array!
+
+"""Alias for [`acquire!`](@ref). Returns a ReshapedArray (View)."""
+const acquire_view! = acquire!
+
+"""Alias for [`unsafe_acquire!`](@ref). Returns an Array (via unsafe_wrap)."""
+const acquire_array! = unsafe_acquire!
+```
+
 ---
 
 ## Comparison Matrix
@@ -152,6 +170,84 @@ end
 | Variable dims (cyclic pattern) | Optimizable | cache miss occurs | `acquire!` |
 | Type-unspecified path | Wrapper alloc | **0 bytes** (hit) | **`unsafe_acquire!`** |
 | FFI / raw pointer | N/A | 0 bytes | `unsafe_acquire!` |
+
+---
+
+## Implementation Specification
+
+### Data Structure Changes (types.jl)
+
+#### Constants
+```julia
+const CACHE_WAYS = 4
+```
+
+#### TypedPool Struct Layout
+
+```julia
+mutable struct TypedPool{T}
+    # --- Backing Storage ---
+    vectors::Vector{Vector{T}}
+
+    # --- 1D Cache (Simple 1-way or Direct) ---
+    views::Vector{SubArray{T, 1, Vector{T}, Tuple{UnitRange{Int}}, true}}
+    view_lengths::Vector{Int}
+
+    # --- N-D Array Cache (N-way Set Associative) ---
+    # Layout: Flat Vector. Index = (slot_idx - 1) * CACHE_WAYS + way_idx
+    nd_arrays::Vector{Any}      # Stores Array{T, N}
+    nd_dims::Vector{Any}        # Stores NTuple{N, Int}
+    nd_ptrs::Vector{UInt}       # Stores objectid/pointer for validation
+    nd_next_way::Vector{Int}    # Round-Robin counter per slot (1 per slot)
+
+    # --- State ---
+    n_active::Int
+    _checkpoint_n_active::Vector{Int}
+    _checkpoint_depths::Vector{Int}
+end
+```
+
+**Key Changes**:
+- **Remove**: `nd_views` (No longer needed as `acquire!` returns `ReshapedArray`)
+- **Update**: `nd_arrays`, `nd_dims`, `nd_ptrs` store `CACHE_WAYS` items per active slot
+- **Add**: `nd_next_way::Vector{Int}` for Round-Robin replacement index per slot
+
+### Logic Implementation (core.jl)
+
+#### `acquire!` (The Fast Path)
+
+**Goal**: Always return `ReshapedArray`. No N-D cache lookup.
+
+```julia
+@inline function get_nd_view!(tp::TypedPool{T}, dims::NTuple{N, Int}) where {T, N}
+    len = safe_prod(dims)
+    flat_view = get_view!(tp, len)
+    return reshape(flat_view, dims)
+end
+```
+
+#### `unsafe_acquire!` (The N-way Cache Path)
+
+**Goal**: Return `Array`. Use N-way cache with Linear Search + Round-Robin Replacement.
+
+**Algorithm**:
+1. Get 1D view: `flat_view = get_view!(tp, prod(dims))`
+2. Get current pointer: `current_ptr = UInt(pointer(flat_view))`
+3. Calculate Base Index: `base = (tp.n_active - 1) * CACHE_WAYS`
+4. **Search (Hit Check)**:
+   - Loop `k` from `1` to `CACHE_WAYS`
+   - Check if `nd_dims[base + k] == dims` **AND** `nd_ptrs[base + k] == current_ptr`
+   - If match: Return `nd_arrays[base + k]`
+5. **Miss (Replacement)**:
+   - Get victim way from `nd_next_way[tp.n_active]`
+   - Target Index: `target = base + victim_way + 1`
+   - Create Array: `arr = unsafe_wrap(Array{T, N}, pointer(flat_view), dims)`
+   - **Update Cache**:
+     - `nd_arrays[target] = arr`
+     - `nd_dims[target] = dims`
+     - `nd_ptrs[target] = current_ptr`
+   - **Update Round-Robin**: Increment `nd_next_way` (modulo `CACHE_WAYS`)
+   - Return `arr`
 
 ---
 
@@ -181,11 +277,6 @@ end
 end
 ```
 
-**Change Summary**:
-- Remove `get_nd_array!` call
-- Directly return `reshape(1D_view, dims)`
-- N-D view cache (`nd_views`) not used (in acquire! path)
-
 ### Phase 2: Maintain `unsafe_acquire!` Cache
 
 **No changes** - maintain current implementation:
@@ -193,32 +284,9 @@ end
 - Maintain N-way cache (4-way)
 - 112 bytes allocation on cache miss
 
-### Phase 3: TypedPool Field Cleanup (Optional)
+### Phase 3: TypedPool Field Updates
 
-Since `acquire!` no longer uses N-D cache, redefine field purposes:
-
-```julia
-mutable struct TypedPool{T}
-    # Storage
-    vectors::Vector{Vector{T}}
-
-    # 1D Cache (shared by acquire! 1D + acquire! N-D)
-    views::Vector{SubArray{...}}
-    view_lengths::Vector{Int}
-
-    # N-D Cache (unsafe_acquire! only)
-    nd_arrays::Vector{Any}      # Array objects for unsafe_acquire!
-    nd_dims::Vector{Any}        # Dimension tuples
-    nd_ptrs::Vector{UInt}       # Pointer validation
-
-    # Note: nd_views can be removed (acquire! uses reshape)
-
-    # State
-    n_active::Int
-    _checkpoint_n_active::Vector{Int}
-    _checkpoint_depths::Vector{Int}
-end
-```
+Update struct as specified in Implementation Specification above.
 
 ### Phase 4: Test Updates
 
@@ -331,6 +399,17 @@ end
 
 ---
 
+## Verification Checklist
+
+1. **Type Check**: `acquire!` must return `ReshapedArray`. `unsafe_acquire!` must return `Array`.
+2. **Allocation Check**:
+   - `acquire!`: 0 allocations always
+   - `unsafe_acquire!`: 0 allocations on cache hit
+   - `unsafe_acquire!`: 0 allocations on interleaved access (e.g., alternating 10x10 and 20x20) thanks to N-way cache
+3. **Safety**: Ensure `unsafe_acquire!` validates pointers (re-wraps if the backing vector was resized)
+
+---
+
 ## TurbulentTransport Integration
 
 ### Changed File: `src/tglf_nn.jl`
@@ -438,4 +517,3 @@ end
 ## References
 
 - [nd_array_approach_comparison.md](./nd_array_approach_comparison.md) - Benchmark results and boxing analysis
-- [PR_MESSAGE.md](../PR_MESSAGE.md) - Original PR description
