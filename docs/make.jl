@@ -22,31 +22,32 @@ end
 const GITHUB_PAGES_BASE = "https://projecttorreypines.github.io/AdaptiveArrayPools.jl/stable"
 const REPO_URL = "https://github.com/ProjectTorreyPines/AdaptiveArrayPools.jl"
 
+# Path mapping table: (pattern, replacement)
+# Order matters for overlapping patterns
+const README_PATH_MAPPINGS = [
+    # Reference
+    (r"\(docs/api\.md(#[^)]+)?\)", s"(reference/api.md\1)"),
+
+    # Features
+    (r"\(docs/cuda\.md(#[^)]+)?\)", s"(features/cuda-support.md\1)"),
+    (r"\(docs/configuration\.md(#[^)]+)?\)", s"(features/configuration.md\1)"),
+    (r"\(docs/maybe_with_pool\.md(#[^)]+)?\)", s"(features/maybe-with-pool.md\1)"),
+    (r"\(docs/multi-threading\.md(#[^)]+)?\)", s"(features/multi-threading.md\1)"),
+
+    # Basics
+    (r"\(docs/safety\.md(#[^)]+)?\)", s"(basics/safety-rules.md\1)"),
+]
+
 """
 Rewrite relative paths in README.md for Documenter structure.
 
-Converts GitHub repo links to internal Documenter links:
-- `docs/api.md` → `usage/api.md`
-- `docs/cuda.md` → `usage/cuda.md`
-- `docs/safety.md` → `guide/safety.md`
-- `docs/multi-threading.md` → `advanced/multi-threading.md`
-- `docs/configuration.md` → `usage/configuration.md`
-- `docs/maybe_with_pool.md` → `usage/maybe_with_pool.md`
-
+Uses mapping table to convert GitHub repo links to internal Documenter links.
 Also handles anchor links (e.g., `docs/api.md#convenience-functions`).
 """
 function rewrite_readme_paths(content::String)
-    # Usage docs (with optional anchors)
-    content = replace(content, r"\(docs/api\.md(#[^)]+)?\)" => s"(usage/api.md\1)")
-    content = replace(content, r"\(docs/cuda\.md(#[^)]+)?\)" => s"(usage/cuda.md\1)")
-    content = replace(content, r"\(docs/configuration\.md(#[^)]+)?\)" => s"(usage/configuration.md\1)")
-    content = replace(content, r"\(docs/maybe_with_pool\.md(#[^)]+)?\)" => s"(usage/maybe_with_pool.md\1)")
-
-    # Guide docs
-    content = replace(content, r"\(docs/safety\.md(#[^)]+)?\)" => s"(guide/safety.md\1)")
-
-    # Advanced docs
-    content = replace(content, r"\(docs/multi-threading\.md(#[^)]+)?\)" => s"(advanced/multi-threading.md\1)")
+    for (pattern, replacement) in README_PATH_MAPPINGS
+        content = replace(content, pattern => replacement)
+    end
 
     # LICENSE link → GitHub
     content = replace(content, "(LICENSE)" => "($(REPO_URL)/blob/master/LICENSE)")
@@ -80,20 +81,26 @@ makedocs(
     ),
     pages = [
         "Home" => "index.md",
-        "Guide" => [
-            "Getting Started" => "guide/getting-started.md",
-            "Safety Rules" => "guide/safety.md",
+        "Basics" => [
+            "Quick Start" => "basics/quick-start.md",
+            "@with_pool Patterns" => "basics/with-pool-patterns.md",
+            "Essential API" => "basics/api-essentials.md",
+            "Safety Rules" => "basics/safety-rules.md",
         ],
-        "Usage" => [
-            "API Reference" => "usage/api.md",
-            "Configuration" => "usage/configuration.md",
-            "@maybe_with_pool" => "usage/maybe_with_pool.md",
-            "CUDA Support" => "usage/cuda.md",
+        "Features" => [
+            "@maybe_with_pool" => "features/maybe-with-pool.md",
+            "CUDA Support" => "features/cuda-support.md",
+            "Multi-threading" => "features/multi-threading.md",
+            "Configuration" => "features/configuration.md",
         ],
-        "Advanced" => [
-            "Multi-threading" => "advanced/multi-threading.md",
-            "How @with_pool Works" => "advanced/macro-internals.md",
-            "Internals" => "advanced/internals.md",
+        "Reference" => [
+            "Full API" => "reference/api.md",
+        ],
+        "Architecture" => [
+            "How It Works" => "architecture/how-it-works.md",
+            "Type Dispatch & Cache" => "architecture/type-dispatch.md",
+            "@with_pool Internals" => "architecture/macro-internals.md",
+            "Design Documents" => "architecture/design-docs.md",
         ],
     ],
     doctest = false,  # Doctests not set up in existing docs

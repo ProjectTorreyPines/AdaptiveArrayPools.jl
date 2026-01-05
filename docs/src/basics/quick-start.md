@@ -1,4 +1,4 @@
-# Getting Started
+# Quick Start
 
 This guide will help you get up and running with AdaptiveArrayPools.jl in minutes.
 
@@ -105,12 +105,12 @@ end
 end
 ```
 
-For complete safety guidelines, see [Safety Rules](safety.md).
+For complete safety guidelines, see [Safety Rules](safety-rules.md).
 
 ## Next Steps
 
-- [Safety Rules](safety.md) - Complete scope rules and anti-patterns
-- [API Reference](../usage/api.md) - Full function and macro reference
-- [Configuration](../usage/configuration.md) - Preferences and cache tuning
-- [Multi-threading](../advanced/multi-threading.md) - Task/thread safety patterns
-- [CUDA Support](../usage/cuda.md) - GPU backend usage
+- [Safety Rules](safety-rules.md) - Complete scope rules and anti-patterns
+- [Full API Reference](../reference/api.md) - Complete function and macro reference
+- [Configuration](../features/configuration.md) - Preferences and cache tuning
+- [Multi-threading](../features/multi-threading.md) - Task/thread safety patterns
+- [CUDA Support](../features/cuda-support.md) - GPU backend usage

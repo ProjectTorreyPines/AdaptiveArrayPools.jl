@@ -64,7 +64,7 @@ end
 | Allocations | ⚠️ 90,000 (2.75 GiB) | ✅ **0** | 100% eliminated |
 | GC Time | ⚠️ 31% | ✅ **0%** | No GC pauses |
 
-> **CUDA support**: Same API—just use `@with_pool :cuda pool`. See [CUDA Backend](usage/cuda.md).
+> **CUDA support**: Same API—just use `@with_pool :cuda pool`. See [CUDA Backend](https://projecttorreypines.github.io/AdaptiveArrayPools.jl/stable/usage/cuda).
 
 ## How It Works
 
@@ -76,11 +76,11 @@ end
 
 This automatic checkpoint/rewind cycle is what enables zero allocation on repeated calls. You just write normal-looking code with `acquire!` instead of constructors.
 
-`acquire!` returns lightweight views (`SubArray`, `ReshapedArray`) that work seamlessly with BLAS/LAPACK. If you need native `Array` types (FFI, type constraints), use `unsafe_acquire!`—see [API Reference](usage/api.md).
+`acquire!` returns lightweight views (`SubArray`, `ReshapedArray`) that work seamlessly with BLAS/LAPACK. If you need native `Array` types (FFI, type constraints), use `unsafe_acquire!`—see [API Reference](https://projecttorreypines.github.io/AdaptiveArrayPools.jl/stable/usage/api).
 
-> **Note**: Keeping acquired arrays inside the scope is your responsibility. Return computed values (scalars, copies), not the arrays themselves. See [Safety Guide](guide/safety.md).
+> **Note**: Keeping acquired arrays inside the scope is your responsibility. Return computed values (scalars, copies), not the arrays themselves. See [Safety Guide](https://projecttorreypines.github.io/AdaptiveArrayPools.jl/stable/guide/safety).
 
-**Thread-safe by design**: Each Julia Task gets its own independent pool—no locks needed. See [Multi-Threading](advanced/multi-threading.md) for patterns.
+**Thread-safe by design**: Each Julia Task gets its own independent pool—no locks needed. See [Multi-Threading](https://projecttorreypines.github.io/AdaptiveArrayPools.jl/stable/advanced/multi-threading) for patterns.
 
 ### Convenience Functions
 
@@ -92,7 +92,7 @@ Common initialization patterns have convenience functions:
 | `ones!(pool, Float32, 3, 3)` | `acquire!` + `fill!(1)` |
 | `similar!(pool, A)` | `acquire!` matching `eltype(A)`, `size(A)` |
 
-These return views like `acquire!`. For raw `Array` types, use `unsafe_acquire!` or its convenience variants (`unsafe_zeros!`, `unsafe_ones!`, `unsafe_similar!`). See [API Reference](usage/api.md#convenience-functions).
+These return views like `acquire!`. For raw `Array` types, use `unsafe_acquire!` or its convenience variants (`unsafe_zeros!`, `unsafe_ones!`, `unsafe_similar!`). See [API Reference](https://projecttorreypines.github.io/AdaptiveArrayPools.jl/stable/usage/api#convenience-functions).
 
 ## Installation
 
@@ -106,11 +106,11 @@ Pkg.add("AdaptiveArrayPools")
 
 | Guide | Description |
 |-------|-------------|
-| [API Reference](usage/api.md) | Complete function and macro reference |
-| [CUDA Backend](usage/cuda.md) | GPU-specific usage and examples |
-| [Safety Guide](guide/safety.md) | Scope rules and best practices |
-| [Multi-Threading](advanced/multi-threading.md) | Task/thread safety patterns |
-| [Configuration](usage/configuration.md) | Preferences and cache tuning |
+| [API Reference](https://projecttorreypines.github.io/AdaptiveArrayPools.jl/stable/usage/api) | Complete function and macro reference |
+| [CUDA Backend](https://projecttorreypines.github.io/AdaptiveArrayPools.jl/stable/usage/cuda) | GPU-specific usage and examples |
+| [Safety Guide](https://projecttorreypines.github.io/AdaptiveArrayPools.jl/stable/guide/safety) | Scope rules and best practices |
+| [Multi-Threading](https://projecttorreypines.github.io/AdaptiveArrayPools.jl/stable/advanced/multi-threading) | Task/thread safety patterns |
+| [Configuration](https://projecttorreypines.github.io/AdaptiveArrayPools.jl/stable/usage/configuration) | Preferences and cache tuning |
 
 ## License
 

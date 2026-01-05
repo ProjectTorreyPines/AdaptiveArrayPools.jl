@@ -1,26 +1,67 @@
-# Internals
+# How It Works
 
-This page provides an overview of the internal architecture of AdaptiveArrayPools.jl. For detailed design documents, see the [`docs/design/`](https://github.com/ProjectTorreyPines/AdaptiveArrayPools.jl/tree/master/docs/design) folder in the repository.
+This page explains the core mechanisms that enable zero-allocation array reuse.
+
+## The Zero-Allocation Promise
+
+```
++-------------------------------------------------------------+
+|  Call 1 (warmup):                                           |
+|    checkpoint! --> acquire! x 3 --> rewind!                 |
+|         |                                                   |
+|         +-- backing memory allocated                        |
+|                                                             |
+|  Call 2+ (zero-alloc):                                      |
+|    checkpoint! --> acquire! x 3 --> rewind!                 |
+|         |                                                   |
+|         +-- same memory reused, 0 bytes allocated           |
++-------------------------------------------------------------+
+```
 
 ## Checkpoint/Rewind Lifecycle
 
-The core mechanism that enables zero-allocation reuse:
+The core mechanism that enables memory reuse:
 
 ```
 @with_pool pool function foo()
-    │
-    ├─► checkpoint!(pool)     # Save current state (n_active counters)
-    │
-    │   A = acquire!(pool, ...)  # n_active += 1
-    │   B = acquire!(pool, ...)  # n_active += 1
-    │   C = acquire!(pool, ...)  # n_active += 1
-    │   ... compute ...
-    │
-    └─► rewind!(pool)         # Restore n_active → all arrays recycled
+    |
+    +---> checkpoint!(pool)     # Save current state (n_active counters)
+    |
+    |     A = acquire!(pool, ...)  # n_active += 1
+    |     B = acquire!(pool, ...)  # n_active += 1
+    |     C = acquire!(pool, ...)  # n_active += 1
+    |     ... compute ...
+    |
+    +---> rewind!(pool)         # Restore n_active, arrays recycled
 end
 ```
 
 On repeated calls, the same memory is reused without any allocation.
+
+## Exception Safety: try...finally
+
+The `@with_pool` macro generates code with exception-safe cleanup:
+
+```julia
+# What you write:
+@with_pool pool begin
+    A = acquire!(pool, Float64, 100)
+    result = compute(A)
+end
+
+# What the macro generates:
+let pool = get_task_local_pool()
+    checkpoint!(pool)
+    try
+        A = acquire!(pool, Float64, 100)
+        result = compute(A)
+    finally
+        rewind!(pool)  # Always executes, even on exception
+    end
+end
+```
+
+**Key guarantee**: The `finally` block ensures `rewind!` is called even if an exception occurs, preventing memory leaks and state corruption.
 
 ## Fixed-Slot Type Dispatch
 

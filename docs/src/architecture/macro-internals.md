@@ -251,6 +251,6 @@ end
 
 ## See Also
 
-- [Internals](internals.md) — Overview of pool architecture
-- [Safety Rules](../guide/safety.md) — Scope rules and best practices
-- [Configuration](../usage/configuration.md) — Performance tuning options
+- [How It Works](how-it-works.md) — Overview of pool architecture
+- [Safety Rules](../basics/safety-rules.md) — Scope rules and best practices
+- [Configuration](../features/configuration.md) — Performance tuning options

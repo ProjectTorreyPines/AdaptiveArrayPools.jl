@@ -1,8 +1,41 @@
-# Safety Guide
+# Safety Rules
 
-AdaptiveArrayPools achieves zero allocation by reusing memory across calls. This requires one simple rule: **acquired arrays are only valid within their `@with_pool` scope**.
+AdaptiveArrayPools achieves zero allocation by reusing memory across calls. This requires understanding one critical rule.
 
-## The Scope Rule
+---
+
+## The One Rule
+
+```
++-------------------------------------------------------------+
+|                                                             |
+|  Pool arrays are ONLY valid within their @with_pool scope   |
+|                                                             |
+|  When the scope ends, the memory is recycled.               |
+|  Using arrays after scope ends = UNDEFINED BEHAVIOR         |
+|                                                             |
++-------------------------------------------------------------+
+```
+
+### What's Safe
+
+| Pattern | Example | Why It Works |
+|---------|---------|--------------|
+| Return computed values | `return sum(v)` | Scalar escapes, not the array |
+| Return copies | `return copy(v)` | New allocation, independent data |
+| Use within scope | `result = A * B` | Arrays valid during computation |
+
+### What's Dangerous
+
+| Pattern | Example | Why It Fails |
+|---------|---------|--------------|
+| Return array | `return v` | Array recycled after return |
+| Store in global | `global_ref = v` | Points to recycled memory |
+| Capture in closure | `() -> sum(v)` | v invalid when closure runs |
+
+---
+
+## The Scope Rule in Detail
 
 When `@with_pool` ends, all arrays acquired within that scope are recycled. Using them after the scope ends leads to undefined behavior.
 
@@ -107,4 +140,4 @@ end
 end
 ```
 
-See [Multi-Threading](../advanced/multi-threading.md) for more patterns.
+See [Multi-Threading](../features/multi-threading.md) for more patterns.
