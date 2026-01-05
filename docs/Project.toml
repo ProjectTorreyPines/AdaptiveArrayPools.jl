@@ -1,6 +1,6 @@
 [deps]
 Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
-AdaptiveArrayPools = "5768322a-0810-4546-8322-123456789abc"
+AdaptiveArrayPools = "4f381ef7-9af0-4cbe-99d4-cf36d7b0f233"
 LiveServer = "16fef848-5104-11e9-1b77-fb7a48bbb589"
 
 [compat]
