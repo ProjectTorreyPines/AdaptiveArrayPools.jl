@@ -1,6 +1,6 @@
 # Internals
 
-This page provides an overview of the internal architecture of AdaptiveArrayPools.jl. For detailed design documents (in Korean), see the `design/` folder in the repository.
+This page provides an overview of the internal architecture of AdaptiveArrayPools.jl. For detailed design documents, see the [`docs/design/`](https://github.com/ProjectTorreyPines/AdaptiveArrayPools.jl/tree/master/docs/design) folder in the repository.
 
 ## Checkpoint/Rewind Lifecycle
 
@@ -128,9 +128,10 @@ This pattern reduces branching in hot paths where every nanosecond counts.
 
 ## Further Reading
 
-For detailed design documents (in Korean):
-- `design/hybrid_api_design.md` — Two-API strategy rationale
-- `design/cuda_extension_design.md` — CUDA backend architecture
-- `design/untracked_acquire_design.md` — Untracked acquire detection
-- `design/fixed_slots_codegen_design.md` — Code generation for fixed slots
-- `design/nd_array_approach_comparison.md` — N-way cache design comparison
+For detailed design documents:
+
+- [`hybrid_api_design.md`](https://github.com/ProjectTorreyPines/AdaptiveArrayPools.jl/blob/master/docs/design/hybrid_api_design.md) — Two-API strategy (`acquire!` vs `unsafe_acquire!`) and type stability analysis
+- [`nd_array_approach_comparison.md`](https://github.com/ProjectTorreyPines/AdaptiveArrayPools.jl/blob/master/docs/design/nd_array_approach_comparison.md) — N-way cache design, boxing analysis, and ReshapedArray benchmarks
+- [`untracked_acquire_design.md`](https://github.com/ProjectTorreyPines/AdaptiveArrayPools.jl/blob/master/docs/design/untracked_acquire_design.md) — Macro-based untracked acquire detection and 1-based sentinel pattern
+- [`fixed_slots_codegen_design.md`](https://github.com/ProjectTorreyPines/AdaptiveArrayPools.jl/blob/master/docs/design/fixed_slots_codegen_design.md) — Zero-allocation iteration via `@generated` functions
+- [`cuda_extension_design.md`](https://github.com/ProjectTorreyPines/AdaptiveArrayPools.jl/blob/master/docs/design/cuda_extension_design.md) — CUDA backend architecture and extension loading
