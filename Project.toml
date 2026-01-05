@@ -1,6 +1,6 @@
 name = "AdaptiveArrayPools"
 uuid = "4f381ef7-9af0-4cbe-99d4-cf36d7b0f233"
-version = "0.4.0"
+version = "0.1.0"
 authors = ["Min-Gu Yoo <mgyoo86@gmail.com>"]
 
 [deps]
