@@ -20,7 +20,7 @@ end
 
 ### `unsafe_acquire!(pool, T, dims...)`
 
-Returns a native `Array` type. Only use when you specifically need `Array{T,N}`:
+Returns a native `Array` type. **Zero-allocation on cache hit**—only allocates a small header (~80-144 bytes) on cache miss. Use when you specifically need `Array{T,N}`:
 
 ```julia
 @with_pool pool begin
@@ -33,6 +33,9 @@ Returns a native `Array` type. Only use when you specifically need `Array{T,N}`:
     # - Functions with strict Array{T,N} type signatures
 end
 ```
+
+!!! tip "Cache behavior"
+    Same dimension pattern → **0 bytes**. Different pattern → 80-144 bytes header only (data memory always reused). See [N-Way Cache](../architecture/type-dispatch.md#n-way-set-associative-cache) for details.
 
 ## Convenience Functions
 
@@ -106,7 +109,7 @@ end
 | Function | Returns | Allocation | Use Case |
 |----------|---------|------------|----------|
 | `acquire!(pool, T, dims...)` | View type | 0 bytes | Default choice |
-| `unsafe_acquire!(pool, T, dims...)` | `Array{T,N}` | 0-144 bytes | FFI, type constraints |
+| `unsafe_acquire!(pool, T, dims...)` | `Array{T,N}` | 0 (hit) / 80-144 (miss) | FFI, type constraints |
 | `zeros!(pool, [T,] dims...)` | View type | 0 bytes | Zero-initialized |
 | `ones!(pool, [T,] dims...)` | View type | 0 bytes | One-initialized |
 | `similar!(pool, A)` | View type | 0 bytes | Match existing array |

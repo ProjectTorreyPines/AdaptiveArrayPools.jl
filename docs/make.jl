@@ -83,14 +83,17 @@ makedocs(
         "Home" => "index.md",
         "Basics" => [
             "Quick Start" => "basics/quick-start.md",
-            "@with_pool Patterns" => "basics/with-pool-patterns.md",
+            "`@with_pool` Patterns" => "basics/with-pool-patterns.md",
             "Essential API" => "basics/api-essentials.md",
             "Safety Rules" => "basics/safety-rules.md",
         ],
-        "Features" => [
-            "@maybe_with_pool" => "features/maybe-with-pool.md",
-            "CUDA Support" => "features/cuda-support.md",
+        "Advanced" => [
+            "Pool Patterns" => "advanced/pool-patterns.md",
             "Multi-threading" => "features/multi-threading.md",
+        ],
+        "Features" => [
+            "`@maybe_with_pool`" => "features/maybe-with-pool.md",
+            "CUDA Support" => "features/cuda-support.md",
             "Configuration" => "features/configuration.md",
         ],
         "Reference" => [
@@ -99,7 +102,7 @@ makedocs(
         "Architecture" => [
             "How It Works" => "architecture/how-it-works.md",
             "Type Dispatch & Cache" => "architecture/type-dispatch.md",
-            "@with_pool Internals" => "architecture/macro-internals.md",
+            "`@with_pool` Internals" => "architecture/macro-internals.md",
             "Design Documents" => "architecture/design-docs.md",
         ],
     ],

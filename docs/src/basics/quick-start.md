@@ -95,7 +95,7 @@ Arrays from the pool are **only valid within the `@with_pool` scope**:
 # DO NOT return pool-backed arrays
 @with_pool pool function bad_example()
     A = acquire!(pool, Float64, 10)
-    return A  # WRONG - A will be recycled after this scope!
+    return A  # WRONG - A marked for reuse, data may be overwritten!
 end
 
 # Return computed values instead

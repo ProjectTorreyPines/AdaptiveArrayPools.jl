@@ -11,7 +11,7 @@ AdaptiveArrayPools achieves zero allocation by reusing memory across calls. This
 |                                                             |
 |  Pool arrays are ONLY valid within their @with_pool scope   |
 |                                                             |
-|  When the scope ends, the memory is recycled.               |
+|  When the scope ends, arrays are marked for reuse.          |
 |  Using arrays after scope ends = UNDEFINED BEHAVIOR         |
 |                                                             |
 +-------------------------------------------------------------+
@@ -29,15 +29,15 @@ AdaptiveArrayPools achieves zero allocation by reusing memory across calls. This
 
 | Pattern | Example | Why It Fails |
 |---------|---------|--------------|
-| Return array | `return v` | Array recycled after return |
-| Store in global | `global_ref = v` | Points to recycled memory |
-| Capture in closure | `() -> sum(v)` | v invalid when closure runs |
+| Return array | `return v` | Array marked for reuse after return |
+| Store in global | `global_ref = v` | Points to reusable memory |
+| Capture in closure | `() -> sum(v)` | v may be overwritten when closure runs |
 
 ---
 
 ## The Scope Rule in Detail
 
-When `@with_pool` ends, all arrays acquired within that scope are recycled. Using them after the scope ends leads to undefined behavior.
+When `@with_pool` ends, all arrays acquired within that scope are **marked available for reuse**—not immediately freed. This is what makes zero-allocation possible on subsequent calls.
 
 ```julia
 @with_pool pool begin
@@ -46,8 +46,17 @@ When `@with_pool` ends, all arrays acquired within that scope are recycled. Usin
     result = sum(v)  # ✅ compute and return values
     copied = copy(v) # ✅ copy if you need data outside
 end
-# v is no longer valid here
+# v is no longer valid here - it's marked for reuse
 ```
+
+!!! warning "Why Undefined Behavior?"
+    After scope ends, using `v` is undefined because:
+
+    - **Subsequent `acquire!` calls may overwrite the data** — the memory is available for reuse
+    - **Task termination may trigger GC** — the pool itself could be garbage collected
+    - **It might "work" by luck** — data unchanged until next acquire, but don't rely on this
+
+    The worst case is **silent data corruption**: your code appears to work but produces wrong results intermittently.
 
 ## What NOT to Do
 
@@ -57,7 +66,7 @@ end
 # ❌ Wrong: returning the array itself
 @with_pool pool function bad_example()
     v = acquire!(pool, Float64, 100)
-    return v  # v will be recycled after this returns!
+    return v  # v marked for reuse after return!
 end
 
 # ✅ Correct: return computed values or copies
@@ -75,12 +84,12 @@ global_ref = nothing
 @with_pool pool begin
     global_ref = acquire!(pool, Float64, 100)
 end
-# global_ref now points to recycled memory
+# global_ref now points to reusable memory - data may be overwritten
 
 # ❌ Wrong: capturing in closure
 @with_pool pool begin
     v = acquire!(pool, Float64, 100)
-    callback = () -> sum(v)  # v captured but will be invalid
+    callback = () -> sum(v)  # v captured but may be overwritten later
 end
 ```
 

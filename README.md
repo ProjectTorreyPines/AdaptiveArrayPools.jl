@@ -72,7 +72,7 @@ end
 
 1. **Checkpoint** — Saves current pool state when entering the block
 2. **Acquire** — `acquire!` returns arrays backed by pooled memory
-3. **Rewind** — When the block ends, all acquired arrays are recycled for reuse
+3. **Rewind** — When the block ends, all acquired arrays are marked available for reuse
 
 This automatic checkpoint/rewind cycle is what enables zero allocation on repeated calls. You just write normal-looking code with `acquire!` instead of constructors.
 

@@ -32,7 +32,7 @@ The core mechanism that enables memory reuse:
     |     C = acquire!(pool, ...)  # n_active += 1
     |     ... compute ...
     |
-    +---> rewind!(pool)         # Restore n_active, arrays recycled
+    +---> rewind!(pool)         # Restore n_active, arrays available for reuse
 end
 ```
 
