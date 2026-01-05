@@ -188,8 +188,10 @@ function Base.empty!(pool::AdaptiveArrayPool)
     end
     empty!(pool.others)
 
-    pool._current_depth = 0
+    # Reset untracked detection state (1-based sentinel pattern)
+    pool._current_depth = 1                   # 1 = global scope (sentinel)
     empty!(pool._untracked_flags)
+    push!(pool._untracked_flags, false)       # Sentinel: global scope starts with false
     pool
 end
 ```

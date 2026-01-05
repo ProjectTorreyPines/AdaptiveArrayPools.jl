@@ -207,10 +207,10 @@ mutable struct TypedPool{T}
 end
 ```
 
-**Key Changes**:
-- **Remove**: `nd_views` (No longer needed as `acquire!` returns `ReshapedArray`)
-- **Update**: `nd_arrays`, `nd_dims`, `nd_ptrs` store `CACHE_WAYS` items per active slot
-- **Add**: `nd_next_way::Vector{Int}` for Round-Robin replacement index per slot
+**Implemented Changes** (compared to initial design):
+- **Removed**: `nd_views` (No longer needed as `acquire!` returns `ReshapedArray`) ✓
+- **Updated**: `nd_arrays`, `nd_dims`, `nd_ptrs` store `CACHE_WAYS` items per active slot ✓
+- **Added**: `nd_next_way::Vector{Int}` for Round-Robin replacement index per slot ✓
 
 ### Logic Implementation (core.jl)
 
@@ -506,11 +506,11 @@ end
 
 ---
 
-## Open Questions for Review
+## Resolved Questions
 
-1. **N-way cache retention level**: Keep current 4-way? Reduce to 2-way?
-2. **nd_views field removal**: Can be removed since `acquire!` no longer uses it?
-3. **Backward compatibility**: Cases where existing `acquire!` users check for `SubArray` type?
+1. **N-way cache retention level**: Configurable via `CACHE_WAYS` preference (default: 4-way). ✅
+2. **nd_views field removal**: Removed. `acquire!` now returns `ReshapedArray` via `reshape()`. ✅
+3. **Backward compatibility**: `acquire!` returns `ReshapedArray` (a type of `AbstractArray`), maintaining API compatibility. ✅
 
 ---
 

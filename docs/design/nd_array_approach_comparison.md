@@ -257,13 +257,14 @@ acquire!(pool, Float64, 64, 100)
 arr = unsafe_wrap(Array{T, N}, pointer(flat_view), dims)
 ```
 
-### N-way Cache Structure
+### N-way Cache Structure (Current Implementation)
 ```julia
-# In TypedPool (src/types.jl)
-nd_views::Vector{Any}      # Cached SubArray objects
+# In TypedPool (src/types.jl) - used by unsafe_acquire! only
+# Note: nd_views was removed since acquire! now uses reshape()
 nd_arrays::Vector{Any}     # Cached Array objects (from unsafe_wrap)
 nd_dims::Vector{Any}       # Cached dimension tuples
 nd_ptrs::Vector{UInt}      # Cached pointers for invalidation
+nd_next_way::Vector{Int}   # Round-robin counter per slot
 ```
 
 ---

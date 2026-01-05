@@ -167,10 +167,10 @@ end
 end
 
 # Untracked marking (still needed - for typed rewind vs full rewind decision)
-@inline function _mark_untracked!(pool::AdaptiveArrayPool)
-    if pool._current_depth > 0
-        @inbounds pool._untracked_flags[pool._current_depth] = true
-    end
+# Note: 1-based sentinel pattern guarantees _current_depth >= 1, so no check needed
+@inline function _mark_untracked!(pool::AbstractArrayPool)
+    # Always mark (_current_depth >= 1 guaranteed by sentinel)
+    @inbounds pool._untracked_flags[pool._current_depth] = true
 end
 ```
 
@@ -275,62 +275,78 @@ function rewind!(pool::AdaptiveArrayPool, types::Type...)
 end
 
 # Full rewind (untracked fallback - simplified with _checkpoint_depths!)
+# Note: Uses 1-based sentinel pattern. At global scope (depth=1), delegates to reset!()
 function rewind!(pool::AdaptiveArrayPool)
-    depth = pool._current_depth
-    for tp in all_type_stacks(pool)
-        if !isempty(tp._checkpoint_depths) && tp._checkpoint_depths[end] == depth
-            # Checkpointed at current depth → pop
-            pop!(tp._checkpoint_depths)
-            tp.n_active = pop!(tp._checkpoint_n_active)
-        elseif !isempty(tp._checkpoint_n_active)
-            # Checkpointed at previous depth → restore without pop
-            tp.n_active = tp._checkpoint_n_active[end]
-        elseif tp.n_active > 0
-            # ⚠️ CRITICAL ERROR: Would destroy arrays outside @with_pool
-            T = eltype(tp)
-            error("""
-                [AdaptiveArrayPools] Cannot rewind type $T: no checkpoint exists.
-                Found $(tp.n_active) active array(s) that were never checkpointed.
+    cur_depth = pool._current_depth
 
-                Fix: Wrap the scope where $T was first acquired in @with_pool.
-                """)
-        end
-        # else: _checkpoint_n_active empty and n_active == 0 → normal, do nothing
+    # Safety guard: at global scope (depth=1), no checkpoint to rewind to
+    # Delegate to reset! which safely clears all n_active counters
+    if cur_depth == 1
+        reset!(pool)
+        return nothing
     end
+
+    # Fixed slots - zero allocation via @generated iteration
+    foreach_fixed_slot(pool) do tp
+        _rewind_typed_pool!(tp, cur_depth)
+    end
+
+    # Process fallback types
+    for tp in values(pool.others)
+        _rewind_typed_pool!(tp, cur_depth)
+    end
+
     pop!(pool._untracked_flags)
     pool._current_depth -= 1
+    return nothing
+end
+
+# Internal helper for rewind with orphan cleanup
+# Uses 1-based sentinel pattern: no isempty checks needed
+@inline function _rewind_typed_pool!(tp::AbstractTypedPool, current_depth::Int)
+    # 1. Orphaned Checkpoints Cleanup
+    while @inbounds tp._checkpoint_depths[end] > current_depth
+        pop!(tp._checkpoint_depths)
+        pop!(tp._checkpoint_n_active)
+    end
+
+    # 2. Normal Rewind Logic (Sentinel Pattern)
+    if @inbounds tp._checkpoint_depths[end] == current_depth
+        pop!(tp._checkpoint_depths)
+        tp.n_active = pop!(tp._checkpoint_n_active)
+    else
+        # No checkpoint at current depth - restore from parent
+        tp.n_active = @inbounds tp._checkpoint_n_active[end]
+    end
+    nothing
 end
 ```
 
 **Key Improvement:** `_checkpoint_depths[end] == depth` comparison enables accurate pop/restore decision → `_full_rewind_with_types!` not needed!
 
-### 4.5 all_type_stacks Implementation
+### 4.5 Zero-Allocation Iteration (Current Implementation)
+
+> **Note**: The design originally proposed `all_type_stacks()` generator, but was replaced with
+> `foreach_fixed_slot()` @generated function for zero allocation via compile-time unrolling.
 
 ```julia
-# Generator to iterate all TypedPools (fixed slots + others)
-function all_type_stacks(pool::AdaptiveArrayPool)
-    return Iterators.flatten((
-        # Fixed slots (7)
-        (pool.float64, pool.float32, pool.int64, pool.int32, pool.complexf64, pool.complexf32, pool.bool),
-        # Others (IdDict values)
-        values(pool.others)
-    ))
-end
+# Current implementation uses @generated for zero allocation
+const FIXED_SLOT_FIELDS = (:float64, :float32, :int64, :int32, :complexf64, :complexf32, :bool)
 
-# Or callback pattern (more efficient, no allocation)
-@inline function foreach_type_stack(f, pool::AdaptiveArrayPool)
-    f(pool.float64)
-    f(pool.float32)
-    f(pool.int64)
-    f(pool.int32)
-    f(pool.complexf64)
-    f(pool.complexf32)
-    f(pool.bool)
-    for tp in values(pool.others)
-        f(tp)
+@generated function foreach_fixed_slot(f::F, pool::AdaptiveArrayPool) where {F}
+    exprs = [:(f(getfield(pool, $(QuoteNode(field))))) for field in FIXED_SLOT_FIELDS]
+    quote
+        Base.@_inline_meta
+        $(exprs...)
+        nothing
     end
 end
 ```
+
+**Benefits over generator approach**:
+- Zero allocation via compile-time unrolling
+- Full inlining for hot paths
+- No runtime iteration overhead
 
 ### 4.6 Macro Generated Code
 
