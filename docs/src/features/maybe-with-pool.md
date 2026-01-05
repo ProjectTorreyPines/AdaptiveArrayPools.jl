@@ -1,4 +1,4 @@
-# @maybe_with_pool
+# `@maybe_with_pool`
 
 Runtime-toggleable pooling. Users can enable/disable via `MAYBE_POOLING_ENABLED[]`.
 
