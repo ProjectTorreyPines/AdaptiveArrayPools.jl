@@ -15,24 +15,17 @@ function write_if_changed(path::String, content::String)
     write(path, content)
 end
 
-"""
-Copy file only if content changed (prevents mtime update triggering rebuild).
-"""
-function cp_if_changed(src::String, dst::String)
-    if isfile(dst) && read(src) == read(dst)
-        return  # Content unchanged, skip copy
-    end
-    cp(src, dst; force=true)
-end
-
 # ============================================
 # Helper: Rewrite relative paths in README
 # ============================================
 
+const GITHUB_PAGES_BASE = "https://projecttorreypines.github.io/AdaptiveArrayPools.jl/stable"
+const REPO_URL = "https://github.com/ProjectTorreyPines/AdaptiveArrayPools.jl"
+
 """
 Rewrite relative paths in README.md for Documenter structure.
 
-Converts:
+Converts GitHub repo links to internal Documenter links:
 - `docs/api.md` → `usage/api.md`
 - `docs/cuda.md` → `usage/cuda.md`
 - `docs/safety.md` → `guide/safety.md`
@@ -43,8 +36,6 @@ Converts:
 Also handles anchor links (e.g., `docs/api.md#convenience-functions`).
 """
 function rewrite_readme_paths(content::String)
-    repo_url = "https://github.com/ProjectTorreyPines/AdaptiveArrayPools.jl"
-
     # Usage docs (with optional anchors)
     content = replace(content, r"\(docs/api\.md(#[^)]+)?\)" => s"(usage/api.md\1)")
     content = replace(content, r"\(docs/cuda\.md(#[^)]+)?\)" => s"(usage/cuda.md\1)")
@@ -58,50 +49,24 @@ function rewrite_readme_paths(content::String)
     content = replace(content, r"\(docs/multi-threading\.md(#[^)]+)?\)" => s"(advanced/multi-threading.md\1)")
 
     # LICENSE link → GitHub
-    content = replace(content, "(LICENSE)" => "($(repo_url)/blob/master/LICENSE)")
+    content = replace(content, "(LICENSE)" => "($(REPO_URL)/blob/master/LICENSE)")
 
     return content
 end
 
 # ============================================
-# Step 1: Setup directories
+# Generate index.md from README
 # ============================================
 
 const DOCS_DIR = @__DIR__
 const DOCS_SRC = joinpath(DOCS_DIR, "src")
 
-# Create directory structure
-mkpath(DOCS_SRC)
-mkpath(joinpath(DOCS_SRC, "guide"))
-mkpath(joinpath(DOCS_SRC, "usage"))
-mkpath(joinpath(DOCS_SRC, "advanced"))
-
-# ============================================
-# Step 2: Copy and transform content
-# ============================================
-
 # README.md → index.md (with path rewriting)
 readme_content = read(joinpath(DOCS_DIR, "../README.md"), String)
 write_if_changed(joinpath(DOCS_SRC, "index.md"), rewrite_readme_paths(readme_content))
 
-# Copy existing docs to their new locations (with path fixes)
-
-# Guide section - fix relative links
-safety_content = read(joinpath(DOCS_DIR, "safety.md"), String)
-safety_content = replace(safety_content, "(multi-threading.md)" => "(../advanced/multi-threading.md)")
-write_if_changed(joinpath(DOCS_SRC, "guide/safety.md"), safety_content)
-
-# Usage section
-cp_if_changed(joinpath(DOCS_DIR, "api.md"), joinpath(DOCS_SRC, "usage/api.md"))
-cp_if_changed(joinpath(DOCS_DIR, "configuration.md"), joinpath(DOCS_SRC, "usage/configuration.md"))
-cp_if_changed(joinpath(DOCS_DIR, "maybe_with_pool.md"), joinpath(DOCS_SRC, "usage/maybe_with_pool.md"))
-cp_if_changed(joinpath(DOCS_DIR, "cuda.md"), joinpath(DOCS_SRC, "usage/cuda.md"))
-
-# Advanced section
-cp_if_changed(joinpath(DOCS_DIR, "multi-threading.md"), joinpath(DOCS_SRC, "advanced/multi-threading.md"))
-
 # ============================================
-# Step 3: Build documentation
+# Build documentation
 # ============================================
 
 makedocs(
