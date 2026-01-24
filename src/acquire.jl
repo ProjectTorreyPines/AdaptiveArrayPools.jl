@@ -6,8 +6,12 @@
 @inline allocate_vector(::AbstractTypedPool{T,Vector{T}}, n::Int) where {T} =
     Vector{T}(undef, n)
 
-# BitTypedPool allocates BitVector
+# BitTypedPool allocates BitVector (used when acquiring with Bit type)
 @inline allocate_vector(::BitTypedPool, n::Int) = BitVector(undef, n)
+
+# Bit type returns Bool element type for fill operations (zero/one)
+@inline Base.zero(::Type{Bit}) = false
+@inline Base.one(::Type{Bit}) = true
 
 # Wrap flat view into N-D array (dispatch point for extensions)
 @inline function wrap_array(::AbstractTypedPool{T,Vector{T}},
@@ -416,84 +420,6 @@ const _acquire_view_impl! = _acquire_impl!
 const _acquire_array_impl! = _unsafe_acquire_impl!
 
 # ==============================================================================
-# BitVector Acquisition API
-# ==============================================================================
-
-"""
-    acquire_bits!(pool, n) -> SubArray{Bool,1,BitVector,...}
-    acquire_bits!(pool, dims...) -> ReshapedArray{Bool,N,...}
-    acquire_bits!(pool, dims::NTuple{N,Int}) -> ReshapedArray{Bool,N,...}
-
-Acquire a BitVector-backed boolean array from the pool.
-
-Returns a view backed by BitVector (1 bit per element), which is ~8x more
-memory efficient than `acquire!(pool, Bool, n)` which uses Vector{Bool}
-(1 byte per element).
-
-## Return Types
-- **1D**: `SubArray{Bool,1,BitVector,Tuple{UnitRange{Int64}},true}`
-- **N-D**: `Base.ReshapedArray{Bool,N,...}` (reshaped view of 1D BitVector)
-
-## Important Limitation
-**`unsafe_acquire!` is NOT supported for BitArray** because Julia's `BitArray`
-stores data in a `chunks::Vector{UInt64}` field that cannot be wrapped with
-`unsafe_wrap`. Only view-based acquisition is available.
-
-## Type Compatibility
-For downstream code expecting `::BitArray`, use a union type:
-```julia
-const BitArrayLike{N} = Union{
-    BitArray{N},
-    SubArray{Bool,N,<:BitArray},
-    Base.ReshapedArray{Bool,N,<:SubArray{Bool,1,<:BitArray}}
-}
-```
-
-## Example
-```julia
-@with_pool pool begin
-    bv = acquire_bits!(pool, 100)           # 1D BitVector view
-    ba = acquire_bits!(pool, 10, 10)        # 2D reshaped view
-    bt = acquire_bits!(pool, (5, 5, 4))     # 3D via tuple
-
-    bv .= true   # Set all bits
-    ba[1,1] = false
-end
-```
-
-See also: [`trues!`](@ref), [`falses!`](@ref), [`acquire!`](@ref)
-"""
-@inline function acquire_bits!(pool::AbstractArrayPool, n::Int)
-    _mark_untracked!(pool)
-    _acquire_bits_impl!(pool, n)
-end
-
-@inline function acquire_bits!(pool::AbstractArrayPool, dims::Vararg{Int, N}) where {N}
-    _mark_untracked!(pool)
-    _acquire_bits_impl!(pool, dims...)
-end
-
-@inline function acquire_bits!(pool::AbstractArrayPool, dims::NTuple{N, Int}) where {N}
-    _mark_untracked!(pool)
-    _acquire_bits_impl!(pool, dims...)
-end
-
-# Internal implementation (for macro transformation)
-@inline function _acquire_bits_impl!(pool::AbstractArrayPool, n::Int)
-    return get_view!(pool.bits, n)
-end
-
-@inline function _acquire_bits_impl!(pool::AbstractArrayPool, dims::Vararg{Int, N}) where {N}
-    total = safe_prod(dims)
-    flat_view = get_view!(pool.bits, total)
-    return reshape(flat_view, dims)
-end
-
-@inline function _acquire_bits_impl!(pool::AbstractArrayPool, dims::NTuple{N, Int}) where {N}
-    _acquire_bits_impl!(pool, dims...)
-end
-
-# ==============================================================================
 # DisabledPool Acquire Fallbacks (pooling disabled with backend context)
 # ==============================================================================
 
@@ -509,15 +435,14 @@ end
 @inline unsafe_acquire!(::DisabledPool{:cpu}, ::Type{T}, dims::NTuple{N,Int}) where {T,N} = Array{T,N}(undef, dims)
 @inline unsafe_acquire!(::DisabledPool{:cpu}, x::AbstractArray) = similar(x)
 
-# --- acquire_bits! for DisabledPool{:cpu} ---
-@inline acquire_bits!(::DisabledPool{:cpu}, n::Int) = BitVector(undef, n)
-@inline acquire_bits!(::DisabledPool{:cpu}, dims::Vararg{Int,N}) where {N} = BitArray{N}(undef, dims)
-@inline acquire_bits!(::DisabledPool{:cpu}, dims::NTuple{N,Int}) where {N} = BitArray{N}(undef, dims)
+# --- acquire! for DisabledPool{:cpu} with Bit type (returns BitArray) ---
+@inline acquire!(::DisabledPool{:cpu}, ::Type{Bit}, n::Int) = BitVector(undef, n)
+@inline acquire!(::DisabledPool{:cpu}, ::Type{Bit}, dims::Vararg{Int,N}) where {N} = BitArray{N}(undef, dims)
+@inline acquire!(::DisabledPool{:cpu}, ::Type{Bit}, dims::NTuple{N,Int}) where {N} = BitArray{N}(undef, dims)
 
 # --- Generic DisabledPool fallbacks (unknown backend → error) ---
 @inline acquire!(p::DisabledPool{B}, args...) where {B} = _throw_backend_not_loaded(B)
 @inline unsafe_acquire!(p::DisabledPool{B}, args...) where {B} = _throw_backend_not_loaded(B)
-@inline acquire_bits!(p::DisabledPool{B}, args...) where {B} = _throw_backend_not_loaded(B)
 
 # --- _impl! delegators for DisabledPool (macro transformation support) ---
 # Called when: USE_POOLING=true + @maybe_with_pool + MAYBE_POOLING_ENABLED[]=false
@@ -531,8 +456,3 @@ end
 @inline _unsafe_acquire_impl!(p::DisabledPool, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = unsafe_acquire!(p, T, dims...)
 @inline _unsafe_acquire_impl!(p::DisabledPool, ::Type{T}, dims::NTuple{N,Int}) where {T,N} = unsafe_acquire!(p, T, dims)
 @inline _unsafe_acquire_impl!(p::DisabledPool, x::AbstractArray) = unsafe_acquire!(p, x)
-
-# --- _acquire_bits_impl! delegators for DisabledPool ---
-@inline _acquire_bits_impl!(p::DisabledPool, n::Int) = acquire_bits!(p, n)
-@inline _acquire_bits_impl!(p::DisabledPool, dims::Vararg{Int,N}) where {N} = acquire_bits!(p, dims...)
-@inline _acquire_bits_impl!(p::DisabledPool, dims::NTuple{N,Int}) where {N} = acquire_bits!(p, dims)

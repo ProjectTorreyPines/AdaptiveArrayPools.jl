@@ -108,7 +108,7 @@
         acquire!(pool, ComplexF64, 10)
         acquire!(pool, ComplexF32, 10)
         acquire!(pool, Bool, 10)
-        acquire_bits!(pool, 10)  # BitTypedPool
+        acquire!(pool, Bit, 10)  # BitTypedPool
 
         # Verify all pools have active arrays
         for field in FIXED_SLOT_FIELDS

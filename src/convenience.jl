@@ -418,102 +418,6 @@ end
 end
 
 # ==============================================================================
-# trues! - Acquire BitArray filled with true values
-# ==============================================================================
-
-"""
-    trues!(pool, dims...) -> BitArray view
-    trues!(pool, dims::Tuple) -> BitArray view
-
-Acquire a BitArray from the pool and fill with `true` values.
-
-Equivalent to `acquire_bits!(pool, dims...)` followed by `fill!(arr, true)`.
-
-## Return Type
-Returns a view backed by `BitVector`:
-- **1D**: `SubArray{Bool,1,BitVector,...}`
-- **N-D**: `ReshapedArray{Bool,N,...}` (reshaped view)
-
-## Example
-```julia
-@with_pool pool begin
-    mask = trues!(pool, 100)           # 1D, all true
-    grid = trues!(pool, 10, 10)        # 2D, all true
-end
-```
-
-See also: [`falses!`](@ref), [`acquire_bits!`](@ref), [`ones!`](@ref)
-"""
-@inline function trues!(pool::AbstractArrayPool, dims::Vararg{Int,N}) where {N}
-    _mark_untracked!(pool)
-    _trues_impl!(pool, dims...)
-end
-
-@inline function trues!(pool::AbstractArrayPool, dims::NTuple{N,Int}) where {N}
-    _mark_untracked!(pool)
-    _trues_impl!(pool, dims...)
-end
-
-# Internal implementation (for macro transformation)
-@inline function _trues_impl!(pool::AbstractArrayPool, dims::Vararg{Int,N}) where {N}
-    arr = _acquire_bits_impl!(pool, dims...)
-    fill!(arr, true)
-    arr
-end
-
-@inline function _trues_impl!(pool::AbstractArrayPool, dims::NTuple{N,Int}) where {N}
-    _trues_impl!(pool, dims...)
-end
-
-# ==============================================================================
-# falses! - Acquire BitArray filled with false values
-# ==============================================================================
-
-"""
-    falses!(pool, dims...) -> BitArray view
-    falses!(pool, dims::Tuple) -> BitArray view
-
-Acquire a BitArray from the pool and fill with `false` values.
-
-Equivalent to `acquire_bits!(pool, dims...)` followed by `fill!(arr, false)`.
-
-## Return Type
-Returns a view backed by `BitVector`:
-- **1D**: `SubArray{Bool,1,BitVector,...}`
-- **N-D**: `ReshapedArray{Bool,N,...}` (reshaped view)
-
-## Example
-```julia
-@with_pool pool begin
-    mask = falses!(pool, 100)          # 1D, all false
-    grid = falses!(pool, 10, 10)       # 2D, all false
-end
-```
-
-See also: [`trues!`](@ref), [`acquire_bits!`](@ref), [`zeros!`](@ref)
-"""
-@inline function falses!(pool::AbstractArrayPool, dims::Vararg{Int,N}) where {N}
-    _mark_untracked!(pool)
-    _falses_impl!(pool, dims...)
-end
-
-@inline function falses!(pool::AbstractArrayPool, dims::NTuple{N,Int}) where {N}
-    _mark_untracked!(pool)
-    _falses_impl!(pool, dims...)
-end
-
-# Internal implementation (for macro transformation)
-@inline function _falses_impl!(pool::AbstractArrayPool, dims::Vararg{Int,N}) where {N}
-    arr = _acquire_bits_impl!(pool, dims...)
-    fill!(arr, false)
-    arr
-end
-
-@inline function _falses_impl!(pool::AbstractArrayPool, dims::NTuple{N,Int}) where {N}
-    _falses_impl!(pool, dims...)
-end
-
-# ==============================================================================
 # BackendNotLoadedError - Error for unknown backends
 # ==============================================================================
 
@@ -573,13 +477,11 @@ end
 @inline ones!(::DisabledPool{:cpu}, ::Type{T}, dims::NTuple{N,Int}) where {T,N} = ones(T, dims...)
 @inline ones!(p::DisabledPool{:cpu}, dims::NTuple{N,Int}) where {N} = ones(default_eltype(p), dims...)
 
-# --- trues! for DisabledPool{:cpu} ---
-@inline trues!(::DisabledPool{:cpu}, dims::Vararg{Int,N}) where {N} = trues(dims...)
-@inline trues!(::DisabledPool{:cpu}, dims::NTuple{N,Int}) where {N} = trues(dims...)
-
-# --- falses! for DisabledPool{:cpu} ---
-@inline falses!(::DisabledPool{:cpu}, dims::Vararg{Int,N}) where {N} = falses(dims...)
-@inline falses!(::DisabledPool{:cpu}, dims::NTuple{N,Int}) where {N} = falses(dims...)
+# --- zeros!/ones! for DisabledPool{:cpu} with Bit type (returns BitArray) ---
+@inline zeros!(::DisabledPool{:cpu}, ::Type{Bit}, dims::Vararg{Int,N}) where {N} = falses(dims...)
+@inline zeros!(::DisabledPool{:cpu}, ::Type{Bit}, dims::NTuple{N,Int}) where {N} = falses(dims...)
+@inline ones!(::DisabledPool{:cpu}, ::Type{Bit}, dims::Vararg{Int,N}) where {N} = trues(dims...)
+@inline ones!(::DisabledPool{:cpu}, ::Type{Bit}, dims::NTuple{N,Int}) where {N} = trues(dims...)
 
 # --- similar! for DisabledPool{:cpu} ---
 @inline similar!(::DisabledPool{:cpu}, x::AbstractArray) = similar(x)
@@ -612,8 +514,6 @@ end
 @inline unsafe_zeros!(p::DisabledPool{B}, args...) where {B} = _throw_backend_not_loaded(B)
 @inline unsafe_ones!(p::DisabledPool{B}, args...) where {B} = _throw_backend_not_loaded(B)
 @inline unsafe_similar!(p::DisabledPool{B}, args...) where {B} = _throw_backend_not_loaded(B)
-@inline trues!(p::DisabledPool{B}, args...) where {B} = _throw_backend_not_loaded(B)
-@inline falses!(p::DisabledPool{B}, args...) where {B} = _throw_backend_not_loaded(B)
 
 # ==============================================================================
 # _impl! Delegators for DisabledPool
@@ -659,11 +559,3 @@ end
 @inline _unsafe_similar_impl!(p::DisabledPool, x::AbstractArray, ::Type{T}) where {T} = unsafe_similar!(p, x, T)
 @inline _unsafe_similar_impl!(p::DisabledPool, x::AbstractArray, dims::Vararg{Int,N}) where {N} = unsafe_similar!(p, x, dims...)
 @inline _unsafe_similar_impl!(p::DisabledPool, x::AbstractArray, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = unsafe_similar!(p, x, T, dims...)
-
-# --- _trues_impl! ---
-@inline _trues_impl!(p::DisabledPool, dims::Vararg{Int,N}) where {N} = trues!(p, dims...)
-@inline _trues_impl!(p::DisabledPool, dims::NTuple{N,Int}) where {N} = trues!(p, dims)
-
-# --- _falses_impl! ---
-@inline _falses_impl!(p::DisabledPool, dims::Vararg{Int,N}) where {N} = falses!(p, dims...)
-@inline _falses_impl!(p::DisabledPool, dims::NTuple{N,Int}) where {N} = falses!(p, dims)

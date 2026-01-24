@@ -211,6 +211,46 @@ TypedPool{T}() where {T} = TypedPool{T}(
 )
 
 # ==============================================================================
+# Bit Sentinel Type
+# ==============================================================================
+
+"""
+    Bit
+
+Sentinel type for bit-packed boolean storage via `BitVector`.
+
+Use `Bit` instead of `Bool` in pool operations to get memory-efficient
+bit-packed arrays (1 bit per element vs 1 byte for `Vector{Bool}`).
+
+## Usage
+```julia
+@with_pool pool begin
+    # BitVector view (1 bit per element, ~8x memory savings)
+    bv = acquire!(pool, Bit, 1000)
+
+    # vs Vector{Bool} (1 byte per element)
+    vb = acquire!(pool, Bool, 1000)
+
+    # Convenience functions work too
+    mask = zeros!(pool, Bit, 100)   # BitVector filled with false
+    flags = ones!(pool, Bit, 100)   # BitVector filled with true
+end
+```
+
+## Return Types
+- **1D**: `SubArray{Bool,1,BitVector,...}`
+- **N-D**: `ReshapedArray{Bool,N,...}` (reshaped view of 1D BitVector)
+
+## Limitation
+`unsafe_acquire!(pool, Bit, ...)` is **not supported** because Julia's
+`BitArray` stores data in immutable `chunks::Vector{UInt64}` that cannot
+be wrapped with `unsafe_wrap`.
+
+See also: [`acquire!`](@ref), [`BitTypedPool`](@ref)
+"""
+struct Bit end
+
+# ==============================================================================
 # BitTypedPool - Specialized pool for BitVector/BitArray
 # ==============================================================================
 
@@ -357,6 +397,7 @@ end
 @inline get_typed_pool!(p::AdaptiveArrayPool, ::Type{ComplexF64}) = p.complexf64
 @inline get_typed_pool!(p::AdaptiveArrayPool, ::Type{ComplexF32}) = p.complexf32
 @inline get_typed_pool!(p::AdaptiveArrayPool, ::Type{Bool}) = p.bool
+@inline get_typed_pool!(p::AdaptiveArrayPool, ::Type{Bit}) = p.bits
 
 # Slow Path: rare types via IdDict
 @inline function get_typed_pool!(p::AdaptiveArrayPool, ::Type{T}) where {T}

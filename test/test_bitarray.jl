@@ -1,5 +1,12 @@
 @testset "BitArray Support" begin
 
+    @testset "Bit sentinel type" begin
+        # Bit is exported and usable
+        @test Bit isa DataType
+        @test zero(Bit) == false
+        @test one(Bit) == true
+    end
+
     @testset "BitTypedPool structure" begin
         pool = AdaptiveArrayPool()
 
@@ -9,10 +16,10 @@
         @test isempty(pool.bits.vectors)
     end
 
-    @testset "acquire_bits! 1D" begin
+    @testset "acquire!(pool, Bit, n) - 1D" begin
         pool = AdaptiveArrayPool()
 
-        bv = acquire_bits!(pool, 100)
+        bv = acquire!(pool, Bit, 100)
         @test length(bv) == 100
         @test eltype(bv) == Bool
         @test bv isa SubArray{Bool, 1, BitVector}
@@ -26,7 +33,7 @@
         @test count(bv) == 99
 
         # Second acquire
-        bv2 = acquire_bits!(pool, 50)
+        bv2 = acquire!(pool, Bit, 50)
         @test length(bv2) == 50
         @test pool.bits.n_active == 2
 
@@ -36,11 +43,11 @@
         @test count(bv) == 99  # bv unchanged
     end
 
-    @testset "acquire_bits! N-D" begin
+    @testset "acquire!(pool, Bit, dims...) - N-D" begin
         pool = AdaptiveArrayPool()
 
         # 2D
-        ba2 = acquire_bits!(pool, 10, 10)
+        ba2 = acquire!(pool, Bit, 10, 10)
         @test size(ba2) == (10, 10)
         @test eltype(ba2) == Bool
         @test ba2 isa Base.ReshapedArray
@@ -56,54 +63,54 @@
         @test !ba2[2, 2]
 
         # 3D
-        ba3 = acquire_bits!(pool, 4, 5, 3)
+        ba3 = acquire!(pool, Bit, 4, 5, 3)
         @test size(ba3) == (4, 5, 3)
         @test pool.bits.n_active == 2
 
         # Tuple form
-        ba_tuple = acquire_bits!(pool, (3, 4, 2))
+        ba_tuple = acquire!(pool, Bit, (3, 4, 2))
         @test size(ba_tuple) == (3, 4, 2)
         @test pool.bits.n_active == 3
     end
 
-    @testset "trues!" begin
+    @testset "ones!(pool, Bit, dims...) - filled with true" begin
         pool = AdaptiveArrayPool()
 
         # 1D
-        t1 = trues!(pool, 100)
+        t1 = ones!(pool, Bit, 100)
         @test length(t1) == 100
         @test all(t1)
         @test pool.bits.n_active == 1
 
         # 2D
-        t2 = trues!(pool, 10, 10)
+        t2 = ones!(pool, Bit, 10, 10)
         @test size(t2) == (10, 10)
         @test all(t2)
         @test count(t2) == 100
 
         # Tuple form
-        t3 = trues!(pool, (5, 5, 4))
+        t3 = ones!(pool, Bit, (5, 5, 4))
         @test size(t3) == (5, 5, 4)
         @test all(t3)
     end
 
-    @testset "falses!" begin
+    @testset "zeros!(pool, Bit, dims...) - filled with false" begin
         pool = AdaptiveArrayPool()
 
         # 1D
-        f1 = falses!(pool, 100)
+        f1 = zeros!(pool, Bit, 100)
         @test length(f1) == 100
         @test !any(f1)
         @test pool.bits.n_active == 1
 
         # 2D
-        f2 = falses!(pool, 10, 10)
+        f2 = zeros!(pool, Bit, 10, 10)
         @test size(f2) == (10, 10)
         @test !any(f2)
         @test count(f2) == 0
 
         # Tuple form
-        f3 = falses!(pool, (5, 5, 4))
+        f3 = zeros!(pool, Bit, (5, 5, 4))
         @test size(f3) == (5, 5, 4)
         @test !any(f3)
     end
@@ -111,20 +118,20 @@
     @testset "State management" begin
         # Use @with_pool which manages checkpoint/rewind automatically
         @with_pool outer_pool begin
-            bv1 = acquire_bits!(outer_pool, 100)
+            bv1 = acquire!(outer_pool, Bit, 100)
             parent1 = parent(bv1)
 
             @test outer_pool.bits.n_active == 1
 
             @with_pool inner_pool begin
-                bv2 = acquire_bits!(inner_pool, 200)
+                bv2 = acquire!(inner_pool, Bit, 200)
                 @test inner_pool.bits.n_active == 2
             end
             # After inner scope rewind
             @test outer_pool.bits.n_active == 1
 
             # bv1 should still be valid (same parent BitVector object)
-            bv3 = acquire_bits!(outer_pool, 150)
+            bv3 = acquire!(outer_pool, Bit, 150)
             @test parent(bv1) === parent1  # Same object identity
         end
         # Pool goes back to task-local state after scope ends
@@ -136,9 +143,9 @@
         checkpoint!(pool)
         @test pool.bits.n_active == 0
 
-        bv1 = acquire_bits!(pool, 100)
-        t1 = trues!(pool, 50)
-        f1 = falses!(pool, 50)
+        bv1 = acquire!(pool, Bit, 100)
+        t1 = ones!(pool, Bit, 50)
+        f1 = zeros!(pool, Bit, 50)
         @test pool.bits.n_active == 3
 
         rewind!(pool)
@@ -148,8 +155,8 @@
     @testset "reset! and empty!" begin
         pool = AdaptiveArrayPool()
 
-        bv1 = acquire_bits!(pool, 100)
-        bv2 = acquire_bits!(pool, 200)
+        bv1 = acquire!(pool, Bit, 100)
+        bv2 = acquire!(pool, Bit, 200)
         @test pool.bits.n_active == 2
         @test length(pool.bits.vectors) >= 2
 
@@ -159,43 +166,43 @@
         @test length(pool.bits.vectors) >= 2  # vectors preserved
 
         # empty! clears everything
-        bv3 = acquire_bits!(pool, 50)
+        bv3 = acquire!(pool, Bit, 50)
         empty!(pool)
         @test pool.bits.n_active == 0
         @test isempty(pool.bits.vectors)
     end
 
     @testset "DisabledPool fallback" begin
-        # acquire_bits!
-        bv = acquire_bits!(DISABLED_CPU, 100)
+        # acquire! with Bit
+        bv = acquire!(DISABLED_CPU, Bit, 100)
         @test bv isa BitVector
         @test length(bv) == 100
 
         # N-D
-        ba = acquire_bits!(DISABLED_CPU, 10, 10)
+        ba = acquire!(DISABLED_CPU, Bit, 10, 10)
         @test ba isa BitArray{2}
         @test size(ba) == (10, 10)
 
         # Tuple form
-        ba_tuple = acquire_bits!(DISABLED_CPU, (5, 5))
+        ba_tuple = acquire!(DISABLED_CPU, Bit, (5, 5))
         @test ba_tuple isa BitArray{2}
         @test size(ba_tuple) == (5, 5)
 
-        # trues!
-        t = trues!(DISABLED_CPU, 50)
+        # ones! with Bit (like trues)
+        t = ones!(DISABLED_CPU, Bit, 50)
         @test t isa BitVector
         @test all(t)
 
-        t2d = trues!(DISABLED_CPU, 5, 5)
+        t2d = ones!(DISABLED_CPU, Bit, 5, 5)
         @test t2d isa BitArray{2}
         @test all(t2d)
 
-        # falses!
-        f = falses!(DISABLED_CPU, 50)
+        # zeros! with Bit (like falses)
+        f = zeros!(DISABLED_CPU, Bit, 50)
         @test f isa BitVector
         @test !any(f)
 
-        f2d = falses!(DISABLED_CPU, 5, 5)
+        f2d = zeros!(DISABLED_CPU, Bit, 5, 5)
         @test f2d isa BitArray{2}
         @test !any(f2d)
     end
@@ -205,7 +212,7 @@
 
         # BitVector should use ~8x less memory than Vector{Bool}
         # (1 bit vs 1 byte per element)
-        bv = acquire_bits!(pool, 1000)
+        bv = acquire!(pool, Bit, 1000)
         vb = acquire!(pool, Bool, 1000)
 
         bv_parent = parent(bv)
@@ -219,9 +226,9 @@
 
     @testset "@with_pool macro integration" begin
         result = @with_pool pool begin
-            bv = acquire_bits!(pool, 100)
-            t = trues!(pool, 50)
-            f = falses!(pool, 50)
+            bv = acquire!(pool, Bit, 100)
+            t = ones!(pool, Bit, 50)
+            f = zeros!(pool, Bit, 50)
 
             bv .= true
             sum_bv = count(bv)
@@ -237,7 +244,7 @@
     @testset "@maybe_with_pool macro integration" begin
         # With pooling enabled (default)
         result1 = @maybe_with_pool pool begin
-            bv = acquire_bits!(pool, 100)
+            bv = acquire!(pool, Bit, 100)
             bv .= true
             count(bv)
         end
@@ -247,7 +254,7 @@
         AdaptiveArrayPools.MAYBE_POOLING_ENABLED[] = false
         try
             result2 = @maybe_with_pool pool begin
-                bv = acquire_bits!(pool, 100)
+                bv = acquire!(pool, Bit, 100)
                 @test bv isa BitVector  # DisabledPool returns BitVector
                 bv .= true
                 count(bv)
@@ -261,13 +268,13 @@
     @testset "Mixed Bool types" begin
         pool = AdaptiveArrayPool()
 
-        # Vector{Bool} via acquire!
+        # Vector{Bool} via acquire! with Bool
         vb = acquire!(pool, Bool, 100)
         @test vb isa SubArray{Bool, 1, Vector{Bool}}
         @test pool.bool.n_active == 1
 
-        # BitVector via acquire_bits!
-        bv = acquire_bits!(pool, 100)
+        # BitVector via acquire! with Bit
+        bv = acquire!(pool, Bit, 100)
         @test bv isa SubArray{Bool, 1, BitVector}
         @test pool.bits.n_active == 1
 
@@ -284,11 +291,11 @@
 
     @testset "Nested scopes" begin
         outer_result = @with_pool outer_pool begin
-            outer_bv = acquire_bits!(outer_pool, 100)
+            outer_bv = acquire!(outer_pool, Bit, 100)
             outer_bv .= true
 
             inner_result = @with_pool inner_pool begin
-                inner_bv = acquire_bits!(inner_pool, 50)
+                inner_bv = acquire!(inner_pool, Bit, 50)
                 inner_bv .= false
                 count(inner_bv)
             end
@@ -299,6 +306,33 @@
         end
 
         @test outer_result == (100, 0)
+    end
+
+    @testset "API consistency" begin
+        # Verify the API is consistent across types
+        pool = AdaptiveArrayPool()
+
+        # All these should work with the same pattern
+        v_f64 = acquire!(pool, Float64, 10)
+        v_i32 = acquire!(pool, Int32, 10)
+        v_bool = acquire!(pool, Bool, 10)
+        v_bit = acquire!(pool, Bit, 10)
+
+        @test eltype(v_f64) == Float64
+        @test eltype(v_i32) == Int32
+        @test eltype(v_bool) == Bool
+        @test eltype(v_bit) == Bool
+
+        # zeros!/ones! work consistently
+        z_f64 = zeros!(pool, Float64, 10)
+        z_bit = zeros!(pool, Bit, 10)
+        o_f64 = ones!(pool, Float64, 10)
+        o_bit = ones!(pool, Bit, 10)
+
+        @test all(z_f64 .== 0.0)
+        @test !any(z_bit)
+        @test all(o_f64 .== 1.0)
+        @test all(o_bit)
     end
 
 end # BitArray Support
