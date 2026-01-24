@@ -19,6 +19,16 @@
     unsafe_wrap(Array{T,N}, pointer(flat_view), dims)
 end
 
+# BitTypedPool cannot use unsafe_wrap - throw clear error
+# Called from _unsafe_acquire_impl! dispatches for Bit type
+@noinline function _throw_bit_unsafe_error()
+    throw(ArgumentError(
+        "unsafe_acquire!(pool, Bit, ...) is not supported. " *
+        "BitArray stores data in immutable chunks::Vector{UInt64} that cannot be wrapped with unsafe_wrap. " *
+        "Use acquire!(pool, Bit, ...) instead, which returns a view."
+    ))
+end
+
 # ==============================================================================
 # Helper: Overflow-Safe Product
 # ==============================================================================
@@ -235,6 +245,11 @@ end
 # Similar-style
 @inline _unsafe_acquire_impl!(pool::AbstractArrayPool, x::AbstractArray) = _unsafe_acquire_impl!(pool, eltype(x), size(x))
 
+# Bit type: unsafe_acquire! not supported (throw clear error early)
+@inline _unsafe_acquire_impl!(::AbstractArrayPool, ::Type{Bit}, ::Int) = _throw_bit_unsafe_error()
+@inline _unsafe_acquire_impl!(::AbstractArrayPool, ::Type{Bit}, ::Vararg{Int,N}) where {N} = _throw_bit_unsafe_error()
+@inline _unsafe_acquire_impl!(::AbstractArrayPool, ::Type{Bit}, ::NTuple{N,Int}) where {N} = _throw_bit_unsafe_error()
+
 # ==============================================================================
 # Acquisition API (User-facing with untracked marking)
 # ==============================================================================
@@ -441,8 +456,8 @@ const _acquire_array_impl! = _unsafe_acquire_impl!
 @inline acquire!(::DisabledPool{:cpu}, ::Type{Bit}, dims::NTuple{N,Int}) where {N} = BitArray{N}(undef, dims)
 
 # --- Generic DisabledPool fallbacks (unknown backend → error) ---
-@inline acquire!(p::DisabledPool{B}, args...) where {B} = _throw_backend_not_loaded(B)
-@inline unsafe_acquire!(p::DisabledPool{B}, args...) where {B} = _throw_backend_not_loaded(B)
+@inline acquire!(::DisabledPool{B}, _args...) where {B} = _throw_backend_not_loaded(B)
+@inline unsafe_acquire!(::DisabledPool{B}, _args...) where {B} = _throw_backend_not_loaded(B)
 
 # --- _impl! delegators for DisabledPool (macro transformation support) ---
 # Called when: USE_POOLING=true + @maybe_with_pool + MAYBE_POOLING_ENABLED[]=false

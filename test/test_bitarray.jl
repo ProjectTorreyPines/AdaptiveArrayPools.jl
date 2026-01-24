@@ -308,6 +308,24 @@
         @test outer_result == (100, 0)
     end
 
+    @testset "unsafe_acquire! not supported" begin
+        pool = AdaptiveArrayPool()
+
+        # unsafe_acquire! with Bit should throw a clear error
+        @test_throws ArgumentError unsafe_acquire!(pool, Bit, 100)
+        @test_throws ArgumentError unsafe_acquire!(pool, Bit, 10, 10)
+
+        # Verify the error message is helpful
+        try
+            unsafe_acquire!(pool, Bit, 100)
+        catch e
+            @test e isa ArgumentError
+            @test occursin("unsafe_acquire!", e.msg)
+            @test occursin("Bit", e.msg)
+            @test occursin("acquire!", e.msg)  # Suggests alternative
+        end
+    end
+
     @testset "API consistency" begin
         # Verify the API is consistent across types
         pool = AdaptiveArrayPool()
