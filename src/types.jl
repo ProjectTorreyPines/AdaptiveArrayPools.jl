@@ -265,7 +265,7 @@ this pool stores `BitVector` (1 bit per element, ~8x memory efficiency).
 ## Important Limitation
 **`unsafe_acquire!` is NOT supported for BitArray** because Julia's `BitArray`
 stores data in a `chunks::Vector{UInt64}` field that cannot be wrapped with
-`unsafe_wrap`. Only view-based acquisition via `acquire_bits!` is available.
+`unsafe_wrap`. Only view-based acquisition via `acquire!(pool, Bit, ...)` is available.
 
 ## Fields
 - `vectors`: Backing `BitVector` storage
@@ -278,14 +278,14 @@ stores data in a `chunks::Vector{UInt64}` field that cannot be wrapped with
 ## Usage
 ```julia
 @with_pool pool begin
-    bv = acquire_bits!(pool, 100)         # SubArray{Bool,1,BitVector,...}
-    ba = acquire_bits!(pool, 10, 10)      # ReshapedArray{Bool,2,...}
+    bv = acquire!(pool, Bit, 100)         # SubArray{Bool,1,BitVector,...}
+    ba = acquire!(pool, Bit, 10, 10)      # ReshapedArray{Bool,2,...}
     t = trues!(pool, 50)                  # Filled with true
     f = falses!(pool, 50)                 # Filled with false
 end
 ```
 
-See also: [`acquire_bits!`](@ref), [`trues!`](@ref), [`falses!`](@ref)
+See also: [`trues!`](@ref), [`falses!`](@ref)
 """
 mutable struct BitTypedPool <: AbstractTypedPool{Bool, BitVector}
     # --- Storage ---

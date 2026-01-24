@@ -3,8 +3,18 @@
     @testset "Bit sentinel type" begin
         # Bit is exported and usable
         @test Bit isa DataType
-        @test zero(Bit) == false
-        @test one(Bit) == true
+
+        # zero(Bit) and one(Bit) are defined for fill operations
+        # These are used by zeros!(pool, Bit, ...) and ones!(pool, Bit, ...)
+        @test zero(Bit) === false
+        @test one(Bit) === true
+
+        # Verify these work with fill!
+        bv = BitVector(undef, 10)
+        fill!(bv, zero(Bit))
+        @test !any(bv)
+        fill!(bv, one(Bit))
+        @test all(bv)
     end
 
     @testset "BitTypedPool structure" begin
@@ -197,6 +207,11 @@
         @test t2d isa BitArray{2}
         @test all(t2d)
 
+        # ones! with Bit - Tuple form (covers convenience.jl:484)
+        t_tuple = ones!(DISABLED_CPU, Bit, (4, 4))
+        @test t_tuple isa BitArray{2}
+        @test all(t_tuple)
+
         # zeros! with Bit (like falses)
         f = zeros!(DISABLED_CPU, Bit, 50)
         @test f isa BitVector
@@ -205,6 +220,11 @@
         f2d = zeros!(DISABLED_CPU, Bit, 5, 5)
         @test f2d isa BitArray{2}
         @test !any(f2d)
+
+        # zeros! with Bit - Tuple form (covers convenience.jl:482)
+        f_tuple = zeros!(DISABLED_CPU, Bit, (4, 4))
+        @test f_tuple isa BitArray{2}
+        @test !any(f_tuple)
     end
 
     @testset "Memory efficiency vs Vector{Bool}" begin
@@ -314,6 +334,9 @@
         # unsafe_acquire! with Bit should throw a clear error
         @test_throws ArgumentError unsafe_acquire!(pool, Bit, 100)
         @test_throws ArgumentError unsafe_acquire!(pool, Bit, 10, 10)
+
+        # Tuple form (covers acquire.jl:251)
+        @test_throws ArgumentError unsafe_acquire!(pool, Bit, (10, 10))
 
         # Verify the error message is helpful
         try

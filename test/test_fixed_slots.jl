@@ -100,7 +100,7 @@
     @testset "Integration: empty! Uses foreach_fixed_slot" begin
         pool = AdaptiveArrayPool()
 
-        # Acquire arrays of different types (including BitVector via acquire_bits!)
+        # Acquire arrays of different types (including BitVector)
         acquire!(pool, Float64, 10)
         acquire!(pool, Float32, 10)
         acquire!(pool, Int64, 10)
