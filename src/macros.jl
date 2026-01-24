@@ -854,6 +854,10 @@ function _extract_acquire_types(expr, target_pool, types=Set{Any}())
                             push!(types, Expr(:call, :eltype, expr.args[3]))
                         end
                     end
+                # acquire_bits!/trues!/falses! - uses bits slot (not get_typed_pool!)
+                # Mark as :_bits_slot to trigger has_dynamic=true in _filter_static_types
+                elseif fn in (:acquire_bits!, :trues!, :falses!) || fn_name in (:acquire_bits!, :trues!, :falses!)
+                    push!(types, :_bits_slot)
                 end
             end
         end
@@ -930,7 +934,11 @@ function _filter_static_types(types, local_vars=Set{Symbol}())
 
     for t in types
         if t isa Symbol
-            if t in local_vars
+            if t == :_bits_slot
+                # BitArray functions (acquire_bits!, trues!, falses!) use bits slot
+                # directly, not via get_typed_pool! - requires full checkpoint
+                has_dynamic = true
+            elseif t in local_vars
                 # Local variable like T = eltype(x) - defined after checkpoint!
                 # Must fall back to full checkpoint
                 has_dynamic = true
@@ -1038,6 +1046,9 @@ const _SIMILAR_IMPL_REF = GlobalRef(@__MODULE__, :_similar_impl!)
 const _UNSAFE_ZEROS_IMPL_REF = GlobalRef(@__MODULE__, :_unsafe_zeros_impl!)
 const _UNSAFE_ONES_IMPL_REF = GlobalRef(@__MODULE__, :_unsafe_ones_impl!)
 const _UNSAFE_SIMILAR_IMPL_REF = GlobalRef(@__MODULE__, :_unsafe_similar_impl!)
+const _ACQUIRE_BITS_IMPL_REF = GlobalRef(@__MODULE__, :_acquire_bits_impl!)
+const _TRUES_IMPL_REF = GlobalRef(@__MODULE__, :_trues_impl!)
+const _FALSES_IMPL_REF = GlobalRef(@__MODULE__, :_falses_impl!)
 
 function _transform_acquire_calls(expr, pool_name)
     if expr isa Expr
@@ -1065,6 +1076,12 @@ function _transform_acquire_calls(expr, pool_name)
                     expr = Expr(:call, _UNSAFE_ONES_IMPL_REF, expr.args[2:end]...)
                 elseif fn == :unsafe_similar!
                     expr = Expr(:call, _UNSAFE_SIMILAR_IMPL_REF, expr.args[2:end]...)
+                elseif fn == :acquire_bits!
+                    expr = Expr(:call, _ACQUIRE_BITS_IMPL_REF, expr.args[2:end]...)
+                elseif fn == :trues!
+                    expr = Expr(:call, _TRUES_IMPL_REF, expr.args[2:end]...)
+                elseif fn == :falses!
+                    expr = Expr(:call, _FALSES_IMPL_REF, expr.args[2:end]...)
                 elseif fn isa Expr && fn.head == :. && length(fn.args) >= 2
                     # Qualified name: AdaptiveArrayPools.acquire! etc.
                     qn = fn.args[end]
@@ -1084,6 +1101,12 @@ function _transform_acquire_calls(expr, pool_name)
                         expr = Expr(:call, _UNSAFE_ONES_IMPL_REF, expr.args[2:end]...)
                     elseif qn == QuoteNode(:unsafe_similar!)
                         expr = Expr(:call, _UNSAFE_SIMILAR_IMPL_REF, expr.args[2:end]...)
+                    elseif qn == QuoteNode(:acquire_bits!)
+                        expr = Expr(:call, _ACQUIRE_BITS_IMPL_REF, expr.args[2:end]...)
+                    elseif qn == QuoteNode(:trues!)
+                        expr = Expr(:call, _TRUES_IMPL_REF, expr.args[2:end]...)
+                    elseif qn == QuoteNode(:falses!)
+                        expr = Expr(:call, _FALSES_IMPL_REF, expr.args[2:end]...)
                     end
                 end
             end
