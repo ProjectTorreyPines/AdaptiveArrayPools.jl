@@ -1,25 +1,26 @@
 @testset "Fixed Slot Infrastructure" begin
-    using AdaptiveArrayPools: FIXED_SLOT_FIELDS, foreach_fixed_slot, TypedPool
+    using AdaptiveArrayPools: FIXED_SLOT_FIELDS, foreach_fixed_slot, TypedPool, AbstractTypedPool
 
     @testset "FIXED_SLOT_FIELDS Synchronization" begin
         pool = AdaptiveArrayPool()
 
-        # Forward check: all FIXED_SLOT_FIELDS exist in struct as TypedPool
+        # Forward check: all FIXED_SLOT_FIELDS exist in struct as AbstractTypedPool
+        # (includes TypedPool{T} and BitTypedPool)
         for field in FIXED_SLOT_FIELDS
             @test hasfield(AdaptiveArrayPool, field)
-            @test fieldtype(AdaptiveArrayPool, field) <: TypedPool
-            @test getfield(pool, field) isa TypedPool
+            @test fieldtype(AdaptiveArrayPool, field) <: AbstractTypedPool
+            @test getfield(pool, field) isa AbstractTypedPool
         end
 
-        # Reverse check: all TypedPool fields in struct are in FIXED_SLOT_FIELDS
+        # Reverse check: all AbstractTypedPool fields in struct are in FIXED_SLOT_FIELDS
         for (name, type) in zip(fieldnames(AdaptiveArrayPool), fieldtypes(AdaptiveArrayPool))
-            if type <: TypedPool
+            if type <: AbstractTypedPool
                 @test name in FIXED_SLOT_FIELDS
             end
         end
 
         # Count verification
-        typedpool_count = count(t -> t <: TypedPool, fieldtypes(AdaptiveArrayPool))
+        typedpool_count = count(t -> t <: AbstractTypedPool, fieldtypes(AdaptiveArrayPool))
         @test typedpool_count == length(FIXED_SLOT_FIELDS)
     end
 
@@ -99,7 +100,7 @@
     @testset "Integration: empty! Uses foreach_fixed_slot" begin
         pool = AdaptiveArrayPool()
 
-        # Acquire arrays of different types
+        # Acquire arrays of different types (including BitVector via acquire_bits!)
         acquire!(pool, Float64, 10)
         acquire!(pool, Float32, 10)
         acquire!(pool, Int64, 10)
@@ -107,6 +108,7 @@
         acquire!(pool, ComplexF64, 10)
         acquire!(pool, ComplexF32, 10)
         acquire!(pool, Bool, 10)
+        acquire_bits!(pool, 10)  # BitTypedPool
 
         # Verify all pools have active arrays
         for field in FIXED_SLOT_FIELDS
