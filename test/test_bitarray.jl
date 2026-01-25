@@ -125,6 +125,60 @@
         @test !any(f3)
     end
 
+    @testset "trues!(pool, dims...) - convenience for BitArray filled with true" begin
+        pool = AdaptiveArrayPool()
+
+        # 1D
+        t1 = trues!(pool, 100)
+        @test length(t1) == 100
+        @test all(t1)
+        @test eltype(t1) == Bool
+        @test pool.bits.n_active == 1
+
+        # 2D
+        t2 = trues!(pool, 10, 10)
+        @test size(t2) == (10, 10)
+        @test all(t2)
+        @test count(t2) == 100
+
+        # Tuple form
+        t3 = trues!(pool, (5, 5, 4))
+        @test size(t3) == (5, 5, 4)
+        @test all(t3)
+
+        # Equivalent to ones!(pool, Bit, ...)
+        t4 = trues!(pool, 50)
+        t5 = ones!(pool, Bit, 50)
+        @test all(t4 .== t5)
+    end
+
+    @testset "falses!(pool, dims...) - convenience for BitArray filled with false" begin
+        pool = AdaptiveArrayPool()
+
+        # 1D
+        f1 = falses!(pool, 100)
+        @test length(f1) == 100
+        @test !any(f1)
+        @test eltype(f1) == Bool
+        @test pool.bits.n_active == 1
+
+        # 2D
+        f2 = falses!(pool, 10, 10)
+        @test size(f2) == (10, 10)
+        @test !any(f2)
+        @test count(f2) == 0
+
+        # Tuple form
+        f3 = falses!(pool, (5, 5, 4))
+        @test size(f3) == (5, 5, 4)
+        @test !any(f3)
+
+        # Equivalent to zeros!(pool, Bit, ...)
+        f4 = falses!(pool, 50)
+        f5 = zeros!(pool, Bit, 50)
+        @test all(f4 .== f5)
+    end
+
     @testset "State management" begin
         # Use @with_pool which manages checkpoint/rewind automatically
         @with_pool outer_pool begin
@@ -225,6 +279,32 @@
         f_tuple = zeros!(DISABLED_CPU, Bit, (4, 4))
         @test f_tuple isa BitArray{2}
         @test !any(f_tuple)
+
+        # trues! (convenience for BitVector filled with true)
+        t_trues = trues!(DISABLED_CPU, 50)
+        @test t_trues isa BitVector
+        @test all(t_trues)
+
+        t_trues_2d = trues!(DISABLED_CPU, 5, 5)
+        @test t_trues_2d isa BitArray{2}
+        @test all(t_trues_2d)
+
+        t_trues_tuple = trues!(DISABLED_CPU, (4, 4))
+        @test t_trues_tuple isa BitArray{2}
+        @test all(t_trues_tuple)
+
+        # falses! (convenience for BitVector filled with false)
+        f_falses = falses!(DISABLED_CPU, 50)
+        @test f_falses isa BitVector
+        @test !any(f_falses)
+
+        f_falses_2d = falses!(DISABLED_CPU, 5, 5)
+        @test f_falses_2d isa BitArray{2}
+        @test !any(f_falses_2d)
+
+        f_falses_tuple = falses!(DISABLED_CPU, (4, 4))
+        @test f_falses_tuple isa BitArray{2}
+        @test !any(f_falses_tuple)
     end
 
     @testset "Memory efficiency vs Vector{Bool}" begin
@@ -259,6 +339,19 @@
         end
 
         @test result == (100, 50, 0)
+
+        # Test trues!/falses! within @with_pool
+        result2 = @with_pool pool begin
+            t = trues!(pool, 100)
+            f = falses!(pool, 50)
+
+            @test all(t)
+            @test !any(f)
+
+            (count(t), count(f))
+        end
+
+        @test result2 == (100, 0)
     end
 
     @testset "@maybe_with_pool macro integration" begin
@@ -280,6 +373,30 @@
                 count(bv)
             end
             @test result2 == 100
+
+            # Test trues!/falses! with pooling disabled
+            result3 = @maybe_with_pool pool begin
+                t = trues!(pool, 50)
+                f = falses!(pool, 30)
+                @test t isa BitVector  # Falls back to Julia's trues()
+                @test f isa BitVector  # Falls back to Julia's falses()
+                @test all(t)
+                @test !any(f)
+                (count(t), count(f))
+            end
+            @test result3 == (50, 0)
+
+            # Test ones!/zeros! with Bit type, pooling disabled
+            result4 = @maybe_with_pool pool begin
+                o = ones!(pool, Bit, 40)
+                z = zeros!(pool, Bit, 20)
+                @test o isa BitVector  # Falls back to Julia's trues()
+                @test z isa BitVector  # Falls back to Julia's falses()
+                @test all(o)
+                @test !any(z)
+                (count(o), count(z))
+            end
+            @test result4 == (40, 0)
         finally
             AdaptiveArrayPools.MAYBE_POOLING_ENABLED[] = true
         end

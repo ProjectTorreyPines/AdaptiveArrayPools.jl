@@ -826,6 +826,9 @@ function _extract_acquire_types(expr, target_pool, types=Set{Any}())
                         # acquire!(pool, x) - similar-style form
                         push!(types, Expr(:call, :eltype, expr.args[3]))
                     end
+                # trues!/falses! (always uses Bit type)
+                elseif fn in (:trues!, :falses!) || fn_name in (:trues!, :falses!)
+                    push!(types, :Bit)
                 # zeros!/ones!/unsafe_zeros!/unsafe_ones!
                 elseif fn in (:zeros!, :ones!, :unsafe_zeros!, :unsafe_ones!) || fn_name in (:zeros!, :ones!, :unsafe_zeros!, :unsafe_ones!)
                     if nargs >= 3
@@ -1034,6 +1037,8 @@ const _ACQUIRE_IMPL_REF = GlobalRef(@__MODULE__, :_acquire_impl!)
 const _UNSAFE_ACQUIRE_IMPL_REF = GlobalRef(@__MODULE__, :_unsafe_acquire_impl!)
 const _ZEROS_IMPL_REF = GlobalRef(@__MODULE__, :_zeros_impl!)
 const _ONES_IMPL_REF = GlobalRef(@__MODULE__, :_ones_impl!)
+const _TRUES_IMPL_REF = GlobalRef(@__MODULE__, :_trues_impl!)
+const _FALSES_IMPL_REF = GlobalRef(@__MODULE__, :_falses_impl!)
 const _SIMILAR_IMPL_REF = GlobalRef(@__MODULE__, :_similar_impl!)
 const _UNSAFE_ZEROS_IMPL_REF = GlobalRef(@__MODULE__, :_unsafe_zeros_impl!)
 const _UNSAFE_ONES_IMPL_REF = GlobalRef(@__MODULE__, :_unsafe_ones_impl!)
@@ -1057,6 +1062,10 @@ function _transform_acquire_calls(expr, pool_name)
                     expr = Expr(:call, _ZEROS_IMPL_REF, expr.args[2:end]...)
                 elseif fn == :ones!
                     expr = Expr(:call, _ONES_IMPL_REF, expr.args[2:end]...)
+                elseif fn == :trues!
+                    expr = Expr(:call, _TRUES_IMPL_REF, expr.args[2:end]...)
+                elseif fn == :falses!
+                    expr = Expr(:call, _FALSES_IMPL_REF, expr.args[2:end]...)
                 elseif fn == :similar!
                     expr = Expr(:call, _SIMILAR_IMPL_REF, expr.args[2:end]...)
                 elseif fn == :unsafe_zeros!
@@ -1076,6 +1085,10 @@ function _transform_acquire_calls(expr, pool_name)
                         expr = Expr(:call, _ZEROS_IMPL_REF, expr.args[2:end]...)
                     elseif qn == QuoteNode(:ones!)
                         expr = Expr(:call, _ONES_IMPL_REF, expr.args[2:end]...)
+                    elseif qn == QuoteNode(:trues!)
+                        expr = Expr(:call, _TRUES_IMPL_REF, expr.args[2:end]...)
+                    elseif qn == QuoteNode(:falses!)
+                        expr = Expr(:call, _FALSES_IMPL_REF, expr.args[2:end]...)
                     elseif qn == QuoteNode(:similar!)
                         expr = Expr(:call, _SIMILAR_IMPL_REF, expr.args[2:end]...)
                     elseif qn == QuoteNode(:unsafe_zeros!)
