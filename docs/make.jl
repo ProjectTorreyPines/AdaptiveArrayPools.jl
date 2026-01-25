@@ -92,6 +92,7 @@ makedocs(
             "Multi-threading" => "features/multi-threading.md",
         ],
         "Features" => [
+            "Bit Arrays" => "features/bit-arrays.md",
             "`@maybe_with_pool`" => "features/maybe-with-pool.md",
             "CUDA Support" => "features/cuda-support.md",
             "Configuration" => "features/configuration.md",
