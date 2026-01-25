@@ -83,6 +83,12 @@ end
     _zeros_impl!(pool, default_eltype(pool), dims...)
 end
 
+# Bit type specialization: zeros!(pool, Bit, ...) delegates to falses!(pool, ...)
+@inline zeros!(pool::AbstractArrayPool, ::Type{Bit}, dims::Vararg{Int,N}) where {N} = falses!(pool, dims...)
+@inline zeros!(pool::AbstractArrayPool, ::Type{Bit}, dims::NTuple{N,Int}) where {N} = falses!(pool, dims)
+@inline _zeros_impl!(pool::AbstractArrayPool, ::Type{Bit}, dims::Vararg{Int,N}) where {N} = _falses_impl!(pool, dims...)
+@inline _zeros_impl!(pool::AbstractArrayPool, ::Type{Bit}, dims::NTuple{N,Int}) where {N} = _falses_impl!(pool, dims)
+
 # ==============================================================================
 # ones! - Acquire one-initialized arrays from pool
 # ==============================================================================
@@ -150,6 +156,12 @@ end
     _ones_impl!(pool, default_eltype(pool), dims...)
 end
 
+# Bit type specialization: ones!(pool, Bit, ...) delegates to trues!(pool, ...)
+@inline ones!(pool::AbstractArrayPool, ::Type{Bit}, dims::Vararg{Int,N}) where {N} = trues!(pool, dims...)
+@inline ones!(pool::AbstractArrayPool, ::Type{Bit}, dims::NTuple{N,Int}) where {N} = trues!(pool, dims)
+@inline _ones_impl!(pool::AbstractArrayPool, ::Type{Bit}, dims::Vararg{Int,N}) where {N} = _trues_impl!(pool, dims...)
+@inline _ones_impl!(pool::AbstractArrayPool, ::Type{Bit}, dims::NTuple{N,Int}) where {N} = _trues_impl!(pool, dims)
+
 # ==============================================================================
 # trues! - Acquire BitArray filled with true from pool
 # ==============================================================================
@@ -160,7 +172,7 @@ end
 
 Acquire a bit-packed boolean array filled with `true` from the pool.
 
-This is a convenience wrapper for `ones!(pool, Bit, dims...)`.
+Equivalent to Julia's `trues(dims...)` but using pooled memory.
 Uses ~8x less memory than `ones!(pool, Bool, dims...)`.
 
 ## Example
@@ -173,12 +185,22 @@ end
 
 See also: [`falses!`](@ref), [`ones!`](@ref), [`acquire!`](@ref)
 """
-@inline trues!(pool::AbstractArrayPool, dims::Vararg{Int,N}) where {N} = ones!(pool, Bit, dims...)
-@inline trues!(pool::AbstractArrayPool, dims::NTuple{N,Int}) where {N} = ones!(pool, Bit, dims...)
+@inline function trues!(pool::AbstractArrayPool, dims::Vararg{Int,N}) where {N}
+    _mark_untracked!(pool)
+    _trues_impl!(pool, dims...)
+end
+@inline function trues!(pool::AbstractArrayPool, dims::NTuple{N,Int}) where {N}
+    _mark_untracked!(pool)
+    _trues_impl!(pool, dims...)
+end
 
 # Internal implementation (for macro transformation)
-@inline _trues_impl!(pool::AbstractArrayPool, dims::Vararg{Int,N}) where {N} = _ones_impl!(pool, Bit, dims...)
-@inline _trues_impl!(pool::AbstractArrayPool, dims::NTuple{N,Int}) where {N} = _ones_impl!(pool, Bit, dims...)
+@inline function _trues_impl!(pool::AbstractArrayPool, dims::Vararg{Int,N}) where {N}
+    arr = _acquire_impl!(pool, Bit, dims...)
+    fill!(arr, true)
+    arr
+end
+@inline _trues_impl!(pool::AbstractArrayPool, dims::NTuple{N,Int}) where {N} = _trues_impl!(pool, dims...)
 
 # ==============================================================================
 # falses! - Acquire BitArray filled with false from pool
@@ -190,7 +212,7 @@ See also: [`falses!`](@ref), [`ones!`](@ref), [`acquire!`](@ref)
 
 Acquire a bit-packed boolean array filled with `false` from the pool.
 
-This is a convenience wrapper for `zeros!(pool, Bit, dims...)`.
+Equivalent to Julia's `falses(dims...)` but using pooled memory.
 Uses ~8x less memory than `zeros!(pool, Bool, dims...)`.
 
 ## Example
@@ -203,12 +225,22 @@ end
 
 See also: [`trues!`](@ref), [`zeros!`](@ref), [`acquire!`](@ref)
 """
-@inline falses!(pool::AbstractArrayPool, dims::Vararg{Int,N}) where {N} = zeros!(pool, Bit, dims...)
-@inline falses!(pool::AbstractArrayPool, dims::NTuple{N,Int}) where {N} = zeros!(pool, Bit, dims...)
+@inline function falses!(pool::AbstractArrayPool, dims::Vararg{Int,N}) where {N}
+    _mark_untracked!(pool)
+    _falses_impl!(pool, dims...)
+end
+@inline function falses!(pool::AbstractArrayPool, dims::NTuple{N,Int}) where {N}
+    _mark_untracked!(pool)
+    _falses_impl!(pool, dims...)
+end
 
 # Internal implementation (for macro transformation)
-@inline _falses_impl!(pool::AbstractArrayPool, dims::Vararg{Int,N}) where {N} = _zeros_impl!(pool, Bit, dims...)
-@inline _falses_impl!(pool::AbstractArrayPool, dims::NTuple{N,Int}) where {N} = _zeros_impl!(pool, Bit, dims...)
+@inline function _falses_impl!(pool::AbstractArrayPool, dims::Vararg{Int,N}) where {N}
+    arr = _acquire_impl!(pool, Bit, dims...)
+    fill!(arr, false)
+    arr
+end
+@inline _falses_impl!(pool::AbstractArrayPool, dims::NTuple{N,Int}) where {N} = _falses_impl!(pool, dims...)
 
 # ==============================================================================
 # similar! - Acquire arrays with same type/size as template
