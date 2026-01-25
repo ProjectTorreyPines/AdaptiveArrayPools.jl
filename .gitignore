@@ -2,7 +2,18 @@
 *.jl.*.cov
 *.jl.mem
 coverage/
-docs/build/
-docs/site/
 Manifest.toml
 LocalPreferences.toml
+
+# Build artifacts
+/build/
+/deps/build.log
+/deps/deps.jl
+
+# Documentation build
+/docs/build/
+/docs/site/
+/docs/Manifest.toml
+
+# Auto-generated docs (created by make.jl)
+/docs/src/index.md

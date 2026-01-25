@@ -107,13 +107,13 @@ makedocs(
             "Design Documents" => "architecture/design-docs.md",
         ],
     ],
-    doctest = false,  # Doctests not set up in existing docs
-    checkdocs = :none,  # Using manual API tables, not @autodocs
+    doctest = true,
+    checkdocs = :exports,
     warnonly = [:cross_references, :missing_docs],
 )
 
 deploydocs(
     repo = "github.com/ProjectTorreyPines/AdaptiveArrayPools.jl.git",
     devbranch = "master",
-    push_preview = false,  # Deploy only on master/tag, not on PR
+    push_preview = true,
 )
