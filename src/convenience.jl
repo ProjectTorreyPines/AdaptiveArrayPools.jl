@@ -83,6 +83,12 @@ end
     _zeros_impl!(pool, default_eltype(pool), dims...)
 end
 
+# Bit type specialization: zeros!(pool, Bit, ...) delegates to falses!(pool, ...)
+@inline zeros!(pool::AbstractArrayPool, ::Type{Bit}, dims::Vararg{Int,N}) where {N} = falses!(pool, dims...)
+@inline zeros!(pool::AbstractArrayPool, ::Type{Bit}, dims::NTuple{N,Int}) where {N} = falses!(pool, dims)
+@inline _zeros_impl!(pool::AbstractArrayPool, ::Type{Bit}, dims::Vararg{Int,N}) where {N} = _falses_impl!(pool, dims...)
+@inline _zeros_impl!(pool::AbstractArrayPool, ::Type{Bit}, dims::NTuple{N,Int}) where {N} = _falses_impl!(pool, dims)
+
 # ==============================================================================
 # ones! - Acquire one-initialized arrays from pool
 # ==============================================================================
@@ -149,6 +155,92 @@ end
 @inline function _ones_impl!(pool::AbstractArrayPool, dims::NTuple{N,Int}) where {N}
     _ones_impl!(pool, default_eltype(pool), dims...)
 end
+
+# Bit type specialization: ones!(pool, Bit, ...) delegates to trues!(pool, ...)
+@inline ones!(pool::AbstractArrayPool, ::Type{Bit}, dims::Vararg{Int,N}) where {N} = trues!(pool, dims...)
+@inline ones!(pool::AbstractArrayPool, ::Type{Bit}, dims::NTuple{N,Int}) where {N} = trues!(pool, dims)
+@inline _ones_impl!(pool::AbstractArrayPool, ::Type{Bit}, dims::Vararg{Int,N}) where {N} = _trues_impl!(pool, dims...)
+@inline _ones_impl!(pool::AbstractArrayPool, ::Type{Bit}, dims::NTuple{N,Int}) where {N} = _trues_impl!(pool, dims)
+
+# ==============================================================================
+# trues! - Acquire BitArray filled with true from pool
+# ==============================================================================
+
+"""
+    trues!(pool, dims...) -> BitArray view
+    trues!(pool, dims::Tuple) -> BitArray view
+
+Acquire a bit-packed boolean array filled with `true` from the pool.
+
+Equivalent to Julia's `trues(dims...)` but using pooled memory.
+Uses ~8x less memory than `ones!(pool, Bool, dims...)`.
+
+## Example
+```julia
+@with_pool pool begin
+    bv = trues!(pool, 100)        # BitVector-backed view, all true
+    bm = trues!(pool, 10, 10)     # BitMatrix-backed reshaped array
+end
+```
+
+See also: [`falses!`](@ref), [`ones!`](@ref), [`acquire!`](@ref)
+"""
+@inline function trues!(pool::AbstractArrayPool, dims::Vararg{Int,N}) where {N}
+    _mark_untracked!(pool)
+    _trues_impl!(pool, dims...)
+end
+@inline function trues!(pool::AbstractArrayPool, dims::NTuple{N,Int}) where {N}
+    _mark_untracked!(pool)
+    _trues_impl!(pool, dims...)
+end
+
+# Internal implementation (for macro transformation)
+@inline function _trues_impl!(pool::AbstractArrayPool, dims::Vararg{Int,N}) where {N}
+    arr = _acquire_impl!(pool, Bit, dims...)
+    fill!(arr, true)
+    arr
+end
+@inline _trues_impl!(pool::AbstractArrayPool, dims::NTuple{N,Int}) where {N} = _trues_impl!(pool, dims...)
+
+# ==============================================================================
+# falses! - Acquire BitArray filled with false from pool
+# ==============================================================================
+
+"""
+    falses!(pool, dims...) -> BitArray view
+    falses!(pool, dims::Tuple) -> BitArray view
+
+Acquire a bit-packed boolean array filled with `false` from the pool.
+
+Equivalent to Julia's `falses(dims...)` but using pooled memory.
+Uses ~8x less memory than `zeros!(pool, Bool, dims...)`.
+
+## Example
+```julia
+@with_pool pool begin
+    bv = falses!(pool, 100)       # BitVector-backed view, all false
+    bm = falses!(pool, 10, 10)    # BitMatrix-backed reshaped array
+end
+```
+
+See also: [`trues!`](@ref), [`zeros!`](@ref), [`acquire!`](@ref)
+"""
+@inline function falses!(pool::AbstractArrayPool, dims::Vararg{Int,N}) where {N}
+    _mark_untracked!(pool)
+    _falses_impl!(pool, dims...)
+end
+@inline function falses!(pool::AbstractArrayPool, dims::NTuple{N,Int}) where {N}
+    _mark_untracked!(pool)
+    _falses_impl!(pool, dims...)
+end
+
+# Internal implementation (for macro transformation)
+@inline function _falses_impl!(pool::AbstractArrayPool, dims::Vararg{Int,N}) where {N}
+    arr = _acquire_impl!(pool, Bit, dims...)
+    fill!(arr, false)
+    arr
+end
+@inline _falses_impl!(pool::AbstractArrayPool, dims::NTuple{N,Int}) where {N} = _falses_impl!(pool, dims...)
 
 # ==============================================================================
 # similar! - Acquire arrays with same type/size as template
@@ -477,6 +569,18 @@ end
 @inline ones!(::DisabledPool{:cpu}, ::Type{T}, dims::NTuple{N,Int}) where {T,N} = ones(T, dims...)
 @inline ones!(p::DisabledPool{:cpu}, dims::NTuple{N,Int}) where {N} = ones(default_eltype(p), dims...)
 
+# --- zeros!/ones! for DisabledPool{:cpu} with Bit type (returns BitArray) ---
+@inline zeros!(::DisabledPool{:cpu}, ::Type{Bit}, dims::Vararg{Int,N}) where {N} = falses(dims...)
+@inline zeros!(::DisabledPool{:cpu}, ::Type{Bit}, dims::NTuple{N,Int}) where {N} = falses(dims...)
+@inline ones!(::DisabledPool{:cpu}, ::Type{Bit}, dims::Vararg{Int,N}) where {N} = trues(dims...)
+@inline ones!(::DisabledPool{:cpu}, ::Type{Bit}, dims::NTuple{N,Int}) where {N} = trues(dims...)
+
+# --- trues!/falses! for DisabledPool{:cpu} ---
+@inline trues!(::DisabledPool{:cpu}, dims::Vararg{Int,N}) where {N} = trues(dims...)
+@inline trues!(::DisabledPool{:cpu}, dims::NTuple{N,Int}) where {N} = trues(dims...)
+@inline falses!(::DisabledPool{:cpu}, dims::Vararg{Int,N}) where {N} = falses(dims...)
+@inline falses!(::DisabledPool{:cpu}, dims::NTuple{N,Int}) where {N} = falses(dims...)
+
 # --- similar! for DisabledPool{:cpu} ---
 @inline similar!(::DisabledPool{:cpu}, x::AbstractArray) = similar(x)
 @inline similar!(::DisabledPool{:cpu}, x::AbstractArray, ::Type{T}) where {T} = similar(x, T)
@@ -504,6 +608,8 @@ end
 # --- Generic DisabledPool fallbacks (unknown backend → error) ---
 @inline zeros!(p::DisabledPool{B}, args...) where {B} = _throw_backend_not_loaded(B)
 @inline ones!(p::DisabledPool{B}, args...) where {B} = _throw_backend_not_loaded(B)
+@inline trues!(p::DisabledPool{B}, args...) where {B} = _throw_backend_not_loaded(B)
+@inline falses!(p::DisabledPool{B}, args...) where {B} = _throw_backend_not_loaded(B)
 @inline similar!(p::DisabledPool{B}, args...) where {B} = _throw_backend_not_loaded(B)
 @inline unsafe_zeros!(p::DisabledPool{B}, args...) where {B} = _throw_backend_not_loaded(B)
 @inline unsafe_ones!(p::DisabledPool{B}, args...) where {B} = _throw_backend_not_loaded(B)
@@ -529,6 +635,14 @@ end
 @inline _ones_impl!(p::DisabledPool, dims::Vararg{Int,N}) where {N} = ones!(p, dims...)
 @inline _ones_impl!(p::DisabledPool, ::Type{T}, dims::NTuple{N,Int}) where {T,N} = ones!(p, T, dims)
 @inline _ones_impl!(p::DisabledPool, dims::NTuple{N,Int}) where {N} = ones!(p, dims)
+
+# --- _trues_impl! ---
+@inline _trues_impl!(p::DisabledPool, dims::Vararg{Int,N}) where {N} = trues!(p, dims...)
+@inline _trues_impl!(p::DisabledPool, dims::NTuple{N,Int}) where {N} = trues!(p, dims)
+
+# --- _falses_impl! ---
+@inline _falses_impl!(p::DisabledPool, dims::Vararg{Int,N}) where {N} = falses!(p, dims...)
+@inline _falses_impl!(p::DisabledPool, dims::NTuple{N,Int}) where {N} = falses!(p, dims)
 
 # --- _similar_impl! ---
 @inline _similar_impl!(p::DisabledPool, x::AbstractArray) = similar!(p, x)

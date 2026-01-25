@@ -4,6 +4,16 @@
 
 @testset "Coverage Tests" begin
 
+    @testset "pooling_enabled dispatch" begin
+        # AbstractArrayPool dispatch (types.jl:137)
+        pool = AdaptiveArrayPool()
+        @test pooling_enabled(pool) === true
+
+        # DisabledPool dispatch (types.jl:138)
+        @test pooling_enabled(DISABLED_CPU) === false
+        @test pooling_enabled(DisabledPool{:cuda}()) === false
+    end
+
     @testset "DisabledPool convenience functions" begin
         pool = DISABLED_CPU
 

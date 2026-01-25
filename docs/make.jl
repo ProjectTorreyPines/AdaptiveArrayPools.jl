@@ -93,6 +93,7 @@ makedocs(
         ],
         "Features" => [
             "`@maybe_with_pool`" => "features/maybe-with-pool.md",
+            "Bit Arrays" => "features/bit-arrays.md",
             "CUDA Support" => "features/cuda-support.md",
             "Configuration" => "features/configuration.md",
         ],

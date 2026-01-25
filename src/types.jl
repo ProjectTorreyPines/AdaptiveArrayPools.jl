@@ -211,6 +211,122 @@ TypedPool{T}() where {T} = TypedPool{T}(
 )
 
 # ==============================================================================
+# Bit Sentinel Type
+# ==============================================================================
+
+"""
+    Bit
+
+Sentinel type for bit-packed boolean storage via `BitVector`.
+
+Use `Bit` instead of `Bool` in pool operations to get memory-efficient
+bit-packed arrays (1 bit per element vs 1 byte for `Vector{Bool}`).
+
+## Usage
+```julia
+@with_pool pool begin
+    # BitVector view (1 bit per element, ~8x memory savings)
+    bv = acquire!(pool, Bit, 1000)
+
+    # vs Vector{Bool} (1 byte per element)
+    vb = acquire!(pool, Bool, 1000)
+
+    # Convenience functions work too
+    mask = zeros!(pool, Bit, 100)   # BitVector filled with false
+    flags = ones!(pool, Bit, 100)   # BitVector filled with true
+end
+```
+
+## Return Types
+- **1D**: `SubArray{Bool,1,BitVector,...}`
+- **N-D**: `ReshapedArray{Bool,N,...}` (reshaped view of 1D BitVector)
+
+## Limitation
+`unsafe_acquire!(pool, Bit, ...)` is **not supported** because Julia's
+`BitArray` stores data in immutable `chunks::Vector{UInt64}` that cannot
+be wrapped with `unsafe_wrap`.
+
+See also: [`acquire!`](@ref), [`BitTypedPool`](@ref)
+"""
+struct Bit end
+
+# ==============================================================================
+# BitTypedPool - Specialized pool for BitVector/BitArray
+# ==============================================================================
+
+"""
+    BitTypedPool <: AbstractTypedPool{Bool, BitVector}
+
+Specialized pool for `BitVector` arrays with memory reuse.
+
+Unlike `TypedPool{Bool}` which stores `Vector{Bool}` (1 byte per element),
+this pool stores `BitVector` (1 bit per element, ~8x memory efficiency).
+
+## Important Limitation
+**`unsafe_acquire!` is NOT supported for BitArray** because Julia's `BitArray`
+stores data in a `chunks::Vector{UInt64}` field that cannot be wrapped with
+`unsafe_wrap`. Only view-based acquisition via `acquire!(pool, Bit, ...)` is available.
+
+## Fields
+- `vectors`: Backing `BitVector` storage
+- `views`: Cached `SubArray` views for zero-allocation 1D access
+- `view_lengths`: Cached lengths for fast comparison
+- `nd_*`: Empty N-D cache fields (for `empty!` compatibility, unused)
+- `n_active`: Count of currently active arrays
+- `_checkpoint_*`: State management stacks (1-based sentinel pattern)
+
+## Usage
+```julia
+@with_pool pool begin
+    bv = acquire!(pool, Bit, 100)         # SubArray{Bool,1,BitVector,...}
+    ba = acquire!(pool, Bit, 10, 10)      # ReshapedArray{Bool,2,...}
+    t = trues!(pool, 50)                  # Filled with true
+    f = falses!(pool, 50)                 # Filled with false
+end
+```
+
+See also: [`trues!`](@ref), [`falses!`](@ref)
+"""
+mutable struct BitTypedPool <: AbstractTypedPool{Bool, BitVector}
+    # --- Storage ---
+    vectors::Vector{BitVector}
+
+    # --- 1D Cache (1:1 mapping) ---
+    views::Vector{SubArray{Bool, 1, BitVector, Tuple{UnitRange{Int64}}, true}}
+    view_lengths::Vector{Int}
+
+    # --- N-D Array Cache (empty, for empty! compatibility) ---
+    # BitArray cannot use unsafe_wrap, so no N-D caching is possible.
+    # These fields exist only for compatibility with empty!(::AbstractTypedPool).
+    nd_arrays::Vector{Any}
+    nd_dims::Vector{Any}
+    nd_ptrs::Vector{UInt}
+    nd_next_way::Vector{Int}
+
+    # --- State Management (1-based sentinel pattern) ---
+    n_active::Int
+    _checkpoint_n_active::Vector{Int}
+    _checkpoint_depths::Vector{Int}
+end
+
+BitTypedPool() = BitTypedPool(
+    # Storage
+    BitVector[],
+    # 1D Cache
+    SubArray{Bool, 1, BitVector, Tuple{UnitRange{Int64}}, true}[],
+    Int[],
+    # N-D Array Cache (empty, for compatibility)
+    Any[],
+    Any[],
+    UInt[],
+    Int[],
+    # State Management (1-based sentinel pattern)
+    0,          # n_active
+    [0],        # _checkpoint_n_active: sentinel
+    [0]         # _checkpoint_depths: sentinel
+)
+
+# ==============================================================================
 # Fixed Slot Configuration
 # ==============================================================================
 
@@ -222,7 +338,7 @@ Field names for fixed slot TypedPools. Single source of truth for `foreach_fixed
 When modifying, also update: struct definition, `get_typed_pool!` dispatches, constructor.
 Tests verify synchronization automatically.
 """
-const FIXED_SLOT_FIELDS = (:float64, :float32, :int64, :int32, :complexf64, :complexf32, :bool)
+const FIXED_SLOT_FIELDS = (:float64, :float32, :int64, :int32, :complexf64, :complexf32, :bool, :bits)
 
 # ==============================================================================
 # AdaptiveArrayPool
@@ -243,6 +359,7 @@ mutable struct AdaptiveArrayPool <: AbstractArrayPool
     complexf64::TypedPool{ComplexF64}
     complexf32::TypedPool{ComplexF32}
     bool::TypedPool{Bool}
+    bits::BitTypedPool              # BitVector pool (1 bit per element)
 
     # Fallback: rare types
     others::IdDict{DataType, Any}
@@ -261,6 +378,7 @@ function AdaptiveArrayPool()
         TypedPool{ComplexF64}(),
         TypedPool{ComplexF32}(),
         TypedPool{Bool}(),
+        BitTypedPool(),
         IdDict{DataType, Any}(),
         1,              # _current_depth: 1 = global scope (sentinel)
         [false]         # _untracked_flags: sentinel for global scope
@@ -279,6 +397,7 @@ end
 @inline get_typed_pool!(p::AdaptiveArrayPool, ::Type{ComplexF64}) = p.complexf64
 @inline get_typed_pool!(p::AdaptiveArrayPool, ::Type{ComplexF32}) = p.complexf32
 @inline get_typed_pool!(p::AdaptiveArrayPool, ::Type{Bool}) = p.bool
+@inline get_typed_pool!(p::AdaptiveArrayPool, ::Type{Bit}) = p.bits
 
 # Slow Path: rare types via IdDict
 @inline function get_typed_pool!(p::AdaptiveArrayPool, ::Type{T}) where {T}
