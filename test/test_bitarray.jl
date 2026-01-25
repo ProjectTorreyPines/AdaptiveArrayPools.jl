@@ -493,4 +493,81 @@
         @test all(o_bit)
     end
 
+    @testset "NTuple form coverage" begin
+        pool = AdaptiveArrayPool()
+
+        # Test NTuple forms for trues!/falses! (covers _trues_impl! and _falses_impl! NTuple overloads)
+        t_tuple = trues!(pool, (5, 5))
+        @test size(t_tuple) == (5, 5)
+        @test all(t_tuple)
+
+        f_tuple = falses!(pool, (5, 5))
+        @test size(f_tuple) == (5, 5)
+        @test !any(f_tuple)
+
+        # Test NTuple forms for zeros!/ones! with Bit type
+        # (covers _zeros_impl! and _ones_impl! with Bit NTuple overloads)
+        z_bit_tuple = zeros!(pool, Bit, (4, 4))
+        @test size(z_bit_tuple) == (4, 4)
+        @test !any(z_bit_tuple)
+
+        o_bit_tuple = ones!(pool, Bit, (4, 4))
+        @test size(o_bit_tuple) == (4, 4)
+        @test all(o_bit_tuple)
+    end
+
+    @testset "Generic DisabledPool fallback for unknown backend" begin
+        # Test that trues!/falses! throw BackendNotLoadedError for unknown backends
+        unknown_pool = DisabledPool{:unknown_backend}()
+
+        @test_throws AdaptiveArrayPools.BackendNotLoadedError trues!(unknown_pool, 10)
+        @test_throws AdaptiveArrayPools.BackendNotLoadedError falses!(unknown_pool, 10)
+
+        # Verify error message
+        try
+            trues!(unknown_pool, 10)
+        catch e
+            @test e isa AdaptiveArrayPools.BackendNotLoadedError
+            @test e.backend == :unknown_backend
+        end
+    end
+
+    @testset "_impl! delegators for DisabledPool" begin
+        # Test _trues_impl! and _falses_impl! for DisabledPool (macro transformation path)
+        # These are called when @maybe_with_pool transforms trues!/falses! calls
+
+        # Vararg form
+        t = AdaptiveArrayPools._trues_impl!(DISABLED_CPU, 10)
+        @test t isa BitVector
+        @test all(t)
+
+        f = AdaptiveArrayPools._falses_impl!(DISABLED_CPU, 10)
+        @test f isa BitVector
+        @test !any(f)
+
+        # NTuple form
+        t_tuple = AdaptiveArrayPools._trues_impl!(DISABLED_CPU, (5, 5))
+        @test t_tuple isa BitArray{2}
+        @test all(t_tuple)
+
+        f_tuple = AdaptiveArrayPools._falses_impl!(DISABLED_CPU, (5, 5))
+        @test f_tuple isa BitArray{2}
+        @test !any(f_tuple)
+    end
+
+    @testset "_impl! with Bit type NTuple for AbstractArrayPool" begin
+        # Test _zeros_impl! and _ones_impl! with Bit type NTuple form
+        # These are internal functions called by macro transformation
+        pool = AdaptiveArrayPool()
+
+        # Direct calls to _impl! functions with Bit type and NTuple
+        z = AdaptiveArrayPools._zeros_impl!(pool, Bit, (3, 3))
+        @test size(z) == (3, 3)
+        @test !any(z)
+
+        o = AdaptiveArrayPools._ones_impl!(pool, Bit, (3, 3))
+        @test size(o) == (3, 3)
+        @test all(o)
+    end
+
 end # BitArray Support
