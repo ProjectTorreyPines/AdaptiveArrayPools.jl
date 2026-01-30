@@ -445,24 +445,60 @@
         @test outer_result == (100, 0)
     end
 
-    @testset "unsafe_acquire! not supported" begin
+    @testset "unsafe_acquire! returns BitVector with shared chunks" begin
         pool = AdaptiveArrayPool()
 
-        # unsafe_acquire! with Bit should throw a clear error
-        @test_throws ArgumentError unsafe_acquire!(pool, Bit, 100)
-        @test_throws ArgumentError unsafe_acquire!(pool, Bit, 10, 10)
+        # unsafe_acquire! with Bit returns a real BitVector (not SubArray)
+        bv = unsafe_acquire!(pool, Bit, 100)
+        @test bv isa BitVector
+        @test length(bv) == 100
 
-        # Tuple form (covers acquire.jl:251)
-        @test_throws ArgumentError unsafe_acquire!(pool, Bit, (10, 10))
+        # N-D returns BitArray (reshape of BitVector becomes BitArray in Julia)
+        ba = unsafe_acquire!(pool, Bit, 10, 10)
+        @test ba isa BitMatrix  # reshape(BitVector, dims) → BitArray
+        @test size(ba) == (10, 10)
 
-        # Verify the error message is helpful
-        try
-            unsafe_acquire!(pool, Bit, 100)
-        catch e
-            @test e isa ArgumentError
-            @test occursin("unsafe_acquire!", e.msg)
-            @test occursin("Bit", e.msg)
-            @test occursin("acquire!", e.msg)  # Suggests alternative
+        # Tuple form
+        ba_tuple = unsafe_acquire!(pool, Bit, (10, 10))
+        @test ba_tuple isa BitMatrix
+        @test size(ba_tuple) == (10, 10)
+
+        # Verify chunks sharing (key feature!)
+        @with_pool pool2 begin
+            bv2 = unsafe_acquire!(pool2, Bit, 100)
+            pool_bv = pool2.bits.vectors[1]
+            @test bv2.chunks === pool_bv.chunks  # Same chunks object!
+
+            # Verify data is shared
+            bv2[1] = true
+            @test pool_bv[1] == true
+            bv2[1] = false
+            @test pool_bv[1] == false
+        end
+    end
+
+    @testset "unsafe_acquire! SIMD performance" begin
+        # Verify that unsafe_acquire! preserves SIMD-optimized operations
+        pool = AdaptiveArrayPool()
+
+        @with_pool pool begin
+            n = 10000
+
+            # Setup: fill with known pattern
+            bv_unsafe = unsafe_acquire!(pool, Bit, n)
+            fill!(bv_unsafe, true)
+
+            # count() should work correctly
+            @test count(bv_unsafe) == n
+
+            # Verify it's using the fast path (type check)
+            @test bv_unsafe isa BitVector
+
+            # Compare with acquire! (SubArray)
+            bv_view = acquire!(pool, Bit, n)
+            fill!(bv_view, true)
+            @test count(bv_view) == n
+            @test bv_view isa SubArray
         end
     end
 

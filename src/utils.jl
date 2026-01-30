@@ -117,6 +117,43 @@ function pool_stats(tp::TypedPool{T}; io::IO=stdout, indent::Int=0, name::String
 end
 
 """
+    pool_stats(tp::BitTypedPool; io::IO=stdout, indent::Int=0, name::String="")
+
+Print statistics for a BitTypedPool.
+"""
+function pool_stats(tp::BitTypedPool; io::IO=stdout, indent::Int=0, name::String="")
+    prefix = " "^indent
+    type_name = isempty(name) ? "Bit" : name
+
+    n_arrays = length(tp.vectors)
+    if n_arrays == 0
+        printstyled(io, prefix, type_name, color=:cyan)
+        printstyled(io, " (empty)\n", color=:dark_gray)
+        return
+    end
+
+    total_bits = sum(length(v) for v in tp.vectors)
+    total_bytes = sum(sizeof(v.chunks) for v in tp.vectors)
+    bytes_str = Base.format_bytes(total_bytes)
+
+    # Header
+    printstyled(io, prefix, type_name, color=:cyan)
+    println(io)
+
+    # Stats
+    printstyled(io, prefix, "  slots: ", color=:dark_gray)
+    printstyled(io, n_arrays, color=:blue)
+    printstyled(io, " (active: ", color=:dark_gray)
+    printstyled(io, tp.n_active, color=:blue)
+    printstyled(io, ")\n", color=:dark_gray)
+
+    printstyled(io, prefix, "  bits: ", color=:dark_gray)
+    printstyled(io, total_bits, color=:blue)
+    printstyled(io, " ($bytes_str)\n", color=:dark_gray)
+    return nothing
+end
+
+"""
     pool_stats(pool::AdaptiveArrayPool; io::IO=stdout)
 
 Print detailed statistics about pool usage with colored output.
@@ -141,8 +178,13 @@ function pool_stats(pool::AdaptiveArrayPool; io::IO=stdout)
     foreach_fixed_slot(pool) do tp
         if !isempty(tp.vectors)
             has_content = true
-            T = typeof(tp).parameters[1]  # Extract T from TypedPool{T}
-            pool_stats(tp; io, indent=2, name="$T (fixed)")
+            name = if tp isa BitTypedPool
+                "Bit (fixed)"
+            else
+                T = typeof(tp).parameters[1]  # Extract T from TypedPool{T}
+                "$T (fixed)"
+            end
+            pool_stats(tp; io, indent=2, name)
         end
     end
 
@@ -226,6 +268,30 @@ end
 # Multi-line show for TypedPool
 function Base.show(io::IO, ::MIME"text/plain", tp::TypedPool{T}) where {T}
     pool_stats(tp; io, name="TypedPool{$T}")
+end
+
+# Compact one-line show for BitTypedPool
+function Base.show(io::IO, tp::BitTypedPool)
+    n_vectors = length(tp.vectors)
+    if n_vectors == 0
+        print(io, "BitTypedPool(empty)")
+    else
+        total_bits = sum(length(v) for v in tp.vectors)
+        print(io, "BitTypedPool(slots=$n_vectors, active=$(tp.n_active), bits=$total_bits)")
+    end
+end
+
+# Multi-line show for BitTypedPool
+function Base.show(io::IO, ::MIME"text/plain", tp::BitTypedPool)
+    n_vectors = length(tp.vectors)
+    println(io, "BitTypedPool:")
+    println(io, "  slots:  $n_vectors")
+    println(io, "  active: $(tp.n_active)")
+    if n_vectors > 0
+        total_bits = sum(length(v) for v in tp.vectors)
+        total_bytes = sum(sizeof(v.chunks) for v in tp.vectors)
+        println(io, "  bits:   $total_bits ($(Base.format_bytes(total_bytes)))")
+    end
 end
 
 # Compact one-line show for AdaptiveArrayPool

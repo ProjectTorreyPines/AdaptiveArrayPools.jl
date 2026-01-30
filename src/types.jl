@@ -241,10 +241,10 @@ end
 - **1D**: `SubArray{Bool,1,BitVector,...}`
 - **N-D**: `ReshapedArray{Bool,N,...}` (reshaped view of 1D BitVector)
 
-## Limitation
-`unsafe_acquire!(pool, Bit, ...)` is **not supported** because Julia's
-`BitArray` stores data in immutable `chunks::Vector{UInt64}` that cannot
-be wrapped with `unsafe_wrap`.
+## Performance Note
+`unsafe_acquire!(pool, Bit, n)` returns a real `BitVector` with shared chunks,
+preserving SIMD-optimized operations like `count()` (~140x faster than SubArray).
+Use this when you need native BitVector performance.
 
 See also: [`acquire!`](@ref), [`BitTypedPool`](@ref)
 """
@@ -262,30 +262,41 @@ Specialized pool for `BitVector` arrays with memory reuse.
 Unlike `TypedPool{Bool}` which stores `Vector{Bool}` (1 byte per element),
 this pool stores `BitVector` (1 bit per element, ~8x memory efficiency).
 
-## Important Limitation
-**`unsafe_acquire!` is NOT supported for BitArray** because Julia's `BitArray`
-stores data in a `chunks::Vector{UInt64}` field that cannot be wrapped with
-`unsafe_wrap`. Only view-based acquisition via `acquire!(pool, Bit, ...)` is available.
+## Acquisition Methods
+- `acquire!(pool, Bit, n)` → `SubArray{Bool,1,BitVector,...}` (view-based)
+- `unsafe_acquire!(pool, Bit, n)` → `BitVector` (chunks-sharing, SIMD optimized)
+
+Use `unsafe_acquire!` when you need native BitVector operations like `count()`,
+`sum()`, or bitwise operations - these are ~140x faster than SubArray equivalents.
 
 ## Fields
 - `vectors`: Backing `BitVector` storage
-- `views`: Cached `SubArray` views for zero-allocation 1D access
+- `views`: Cached `SubArray` views for `acquire!`
 - `view_lengths`: Cached lengths for fast comparison
-- `nd_*`: Empty N-D cache fields (for `empty!` compatibility, unused)
+- `nd_arrays`: Cached wrapper BitVectors for `unsafe_acquire!` (chunks sharing)
+- `nd_dims`: Cached lengths for wrapper cache validation
+- `nd_ptrs`: Cached chunk pointers for invalidation detection
+- `nd_next_way`: Round-robin counter for N-way cache
 - `n_active`: Count of currently active arrays
 - `_checkpoint_*`: State management stacks (1-based sentinel pattern)
 
 ## Usage
 ```julia
 @with_pool pool begin
-    bv = acquire!(pool, Bit, 100)         # SubArray{Bool,1,BitVector,...}
-    ba = acquire!(pool, Bit, 10, 10)      # ReshapedArray{Bool,2,...}
-    t = trues!(pool, 50)                  # Filled with true
-    f = falses!(pool, 50)                 # Filled with false
+    # View-based (standard)
+    bv = acquire!(pool, Bit, 100)              # SubArray{Bool,1,BitVector,...}
+
+    # SIMD-optimized (for performance-critical code)
+    bv_fast = unsafe_acquire!(pool, Bit, 100)  # BitVector (real)
+    count(bv_fast)                             # ~140x faster than count(bv)
+
+    # Convenience functions
+    t = trues!(pool, 50)                       # Filled with true
+    f = falses!(pool, 50)                      # Filled with false
 end
 ```
 
-See also: [`trues!`](@ref), [`falses!`](@ref)
+See also: [`trues!`](@ref), [`falses!`](@ref), [`Bit`](@ref)
 """
 mutable struct BitTypedPool <: AbstractTypedPool{Bool, BitVector}
     # --- Storage ---
