@@ -35,6 +35,7 @@
         # Returns BitVector (not SubArray) for SIMD-optimized operations
         @test bv isa BitVector
         @test pool.bits.n_active == 1
+        @test bv.chunks === pool.bits.vectors[1].chunks
 
         # Write and read back
         bv .= true
@@ -48,6 +49,7 @@
         @test length(bv2) == 50
         @test bv2 isa BitVector
         @test pool.bits.n_active == 2
+        @test bv2.chunks === pool.bits.vectors[2].chunks
 
         # Independent values
         bv2 .= false
@@ -204,7 +206,8 @@
         # Use @with_pool which manages checkpoint/rewind automatically
         @with_pool outer_pool begin
             bv1 = acquire!(outer_pool, Bit, 100)
-            parent1 = parent(bv1)
+            chunks1 = bv1.chunks
+            @test chunks1 === outer_pool.bits.vectors[1].chunks
 
             @test outer_pool.bits.n_active == 1
 
@@ -215,9 +218,10 @@
             # After inner scope rewind
             @test outer_pool.bits.n_active == 1
 
-            # bv1 should still be valid (same parent BitVector object)
+            # bv1 should still be valid (same chunks object)
             bv3 = acquire!(outer_pool, Bit, 150)
-            @test parent(bv1) === parent1  # Same object identity
+            @test bv3.chunks === outer_pool.bits.vectors[2].chunks
+            @test bv1.chunks === chunks1  # Same object identity
         end
         # Pool goes back to task-local state after scope ends
     end
@@ -351,13 +355,12 @@
         bv = acquire!(pool, Bit, 1000)
         vb = acquire!(pool, Bool, 1000)
 
-        bv_parent = parent(bv)
         vb_parent = parent(vb)
 
         # BitVector stores 64 bits per chunk (UInt64)
-        @test sizeof(bv_parent.chunks) < sizeof(vb_parent)
+        @test sizeof(bv.chunks) < sizeof(vb_parent)
         # Approximate: BitVector ~125 bytes (1000/8), Vector{Bool} ~1000 bytes
-        @test sizeof(bv_parent.chunks) <= div(1000, 8) + 8  # allow some overhead
+        @test sizeof(bv.chunks) <= div(1000, 8) + 8  # allow some overhead
     end
 
     @testset "@with_pool macro integration" begin
@@ -523,6 +526,8 @@
 
             # unsafe_acquire! returns BitVector
             bv_unsafe = unsafe_acquire!(pool, Bit, n)
+            @test bv_unsafe isa BitVector
+            @test bv_unsafe.chunks === pool.bits.vectors[1].chunks
             fill!(bv_unsafe, true)
             @test count(bv_unsafe) == n
             @test bv_unsafe isa BitVector

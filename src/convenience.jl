@@ -167,8 +167,8 @@ end
 # ==============================================================================
 
 """
-    trues!(pool, dims...) -> BitArray view
-    trues!(pool, dims::Tuple) -> BitArray view
+    trues!(pool, dims...) -> BitArray
+    trues!(pool, dims::Tuple) -> BitArray
 
 Acquire a bit-packed boolean array filled with `true` from the pool.
 
@@ -178,8 +178,8 @@ Uses ~8x less memory than `ones!(pool, Bool, dims...)`.
 ## Example
 ```julia
 @with_pool pool begin
-    bv = trues!(pool, 100)        # BitVector-backed view, all true
-    bm = trues!(pool, 10, 10)     # BitMatrix-backed reshaped array
+    bv = trues!(pool, 100)        # BitVector, all true
+    bm = trues!(pool, 10, 10)     # BitMatrix, all true
 end
 ```
 
@@ -207,8 +207,8 @@ end
 # ==============================================================================
 
 """
-    falses!(pool, dims...) -> BitArray view
-    falses!(pool, dims::Tuple) -> BitArray view
+    falses!(pool, dims...) -> BitArray
+    falses!(pool, dims::Tuple) -> BitArray
 
 Acquire a bit-packed boolean array filled with `false` from the pool.
 
@@ -218,8 +218,8 @@ Uses ~8x less memory than `zeros!(pool, Bool, dims...)`.
 ## Example
 ```julia
 @with_pool pool begin
-    bv = falses!(pool, 100)       # BitVector-backed view, all false
-    bm = falses!(pool, 10, 10)    # BitMatrix-backed reshaped array
+    bv = falses!(pool, 100)       # BitVector, all false
+    bm = falses!(pool, 10, 10)    # BitMatrix, all false
 end
 ```
 

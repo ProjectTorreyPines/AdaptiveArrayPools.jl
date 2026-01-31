@@ -237,14 +237,16 @@ end
     acquire!(pool, Type{T}, dims...) -> view type
     acquire!(pool, Type{T}, dims::NTuple{N,Int}) -> view type
 
-Acquire a view of an array of type `T` with size `n` or dimensions `dims`.
+Acquire a pooled array of type `T` with size `n` or dimensions `dims`.
 
-Returns a view backed by the pool (backend-dependent type):
+Returns a pooled array (backend-dependent type):
 - **CPU 1D**: `SubArray{T,1,Vector{T},...}` (parent is `Vector{T}`)
 - **CPU N-D**: `ReshapedArray{T,N,...}` (zero creation cost)
+- **Bit** (`T === Bit`): `BitVector` / `BitArray{N}` (chunks-sharing, SIMD optimized)
 - **CUDA**: `CuArray{T,N}` (unified N-way cache)
 
-All return types are `StridedArray`, compatible with BLAS and broadcasting.
+For CPU numeric arrays, the return types are `StridedArray`, compatible with
+BLAS and broadcasting.
 
 For type-unspecified paths (struct fields without concrete type parameters),
 use [`unsafe_acquire!`](@ref) instead - cached native array instances can be reused.
@@ -312,6 +314,7 @@ Acquire a native array backed by pool memory.
 
 Returns the backend's native array type:
 - **CPU**: `Array{T,N}` (via `unsafe_wrap`)
+- **Bit** (`T === Bit`): `BitVector` / `BitArray{N}` (chunks-sharing; equivalent to `acquire!`)
 - **CUDA**: `CuArray{T,N}` (via unified view cache)
 
 For CPU pools, since `Array` instances are mutable references, cached instances can be

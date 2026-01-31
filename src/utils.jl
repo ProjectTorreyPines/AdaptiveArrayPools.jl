@@ -13,6 +13,12 @@ Default: `false`
 const POOL_DEBUG = Ref(false)
 
 function _validate_pool_return(val, pool::AdaptiveArrayPool)
+    # 0. Check BitArray / BitVector (bit-packed storage)
+    if val isa BitArray
+        _check_bitchunks_overlap(val, pool)
+        return
+    end
+
     # 1. Check SubArray
     if val isa SubArray
         p = parent(val)
@@ -22,6 +28,8 @@ function _validate_pool_return(val, pool::AdaptiveArrayPool)
         # - view(unsafe_acquire!()): SubArray backed by unsafe_wrap'd Array
         if p isa Array
             _check_pointer_overlap(p, pool)
+        elseif p isa BitArray
+            _check_bitchunks_overlap(p, pool)
         end
         return
     end
@@ -34,6 +42,8 @@ function _validate_pool_return(val, pool::AdaptiveArrayPool)
             pp = parent(p)
             if pp isa Array
                 _check_pointer_overlap(pp, pool)
+            elseif pp isa BitArray
+                _check_bitchunks_overlap(pp, pool)
             end
         end
         return
@@ -71,6 +81,25 @@ function _check_pointer_overlap(arr::Array, pool::AdaptiveArrayPool)
     for tp in values(pool.others)
         check_overlap(tp)
     end
+end
+
+# Check if BitArray chunks overlap with the pool's BitTypedPool storage
+function _check_bitchunks_overlap(arr::BitArray, pool::AdaptiveArrayPool)
+    arr_chunks = arr.chunks
+    arr_ptr = UInt(pointer(arr_chunks))
+    arr_len = length(arr_chunks) * sizeof(UInt64)
+    arr_end = arr_ptr + arr_len
+
+    for v in pool.bits.vectors
+        v_chunks = v.chunks
+        v_ptr = UInt(pointer(v_chunks))
+        v_len = length(v_chunks) * sizeof(UInt64)
+        v_end = v_ptr + v_len
+        if !(arr_end <= v_ptr || v_end <= arr_ptr)
+            error("Safety Violation: The function returned a BitArray backed by pool memory. This is unsafe as the memory will be reclaimed. Please return a copy (copy) or a scalar.")
+        end
+    end
+    return nothing
 end
 
 _validate_pool_return(val, ::DisabledPool) = nothing
