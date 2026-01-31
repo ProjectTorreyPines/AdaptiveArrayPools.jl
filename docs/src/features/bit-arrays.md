@@ -14,7 +14,7 @@ To distinguish between standard boolean arrays (`Vector{Bool}`, 1 byte/element) 
 ## Usage
 
 ### 1D Arrays (BitVector)
-For 1D arrays, `acquire!` returns a view into a pooled `BitVector`.
+For 1D arrays, `acquire!` returns a native `BitVector`. This design choice enables full SIMD optimization, making operations significantly faster (10x~100x) than using views.
 
 ```julia
 @with_pool pool begin
@@ -25,17 +25,17 @@ For 1D arrays, `acquire!` returns a view into a pooled `BitVector`.
     bv .= true
     bv[1] = false
     
-    # Supports standard operations
+    # Supports standard operations with full SIMD acceleration
     count(bv)
 end
 ```
 
-### N-D Arrays (BitArray / Reshaped)
-For multi-dimensional arrays, `acquire!` returns a `ReshapedArray` wrapper around the linear `BitVector`. This maintains zero-allocation efficiency while providing N-D indexing.
+### N-D Arrays (BitArray)
+For multi-dimensional arrays, `acquire!` returns a `BitArray{N}` (specifically `BitMatrix` for 2D). This preserves the packed memory layout and SIMD benefits while providing N-D indexing.
 
 ```julia
 @with_pool pool begin
-    # 100x100 bit matrix
+    # 100x100 bit matrix (returns BitMatrix)
     mask = zeros!(pool, Bit, 100, 100)
     
     mask[5, 5] = true
@@ -68,11 +68,17 @@ end
 Note: `zeros!(pool, Bit, ...)` and `ones!(pool, Bit, ...)` are also supported (aliased to `falses!` and `trues!`).
 ```
 
-## How It Works
+## Performance & Safety
 
-The pool maintains a separate `BitTypedPool` specifically for `BitVector` storage.
-- **Sentinel**: `acquire!(..., Bit, ...)` dispatches to this special pool.
-- **Views**: 1D returns `SubArray{Bool, 1, BitVector, ...}`.
-- **Reshaping**: N-D returns `ReshapedArray{Bool, N, SubArray{...}}`.
+### Why Native BitVector?
+The pool returns native `BitVector`/`BitArray` types instead of `SubArray` views for **performance**.
+Operations like `count()`, `sum()`, and bitwise broadcasting are **10x~100x faster** on native bit arrays because they utilize SIMD instructions on packed 64-bit chunks.
 
-This ensures that even for complex shapes, the underlying storage is always a compact `BitVector` reused from the pool.
+### ⚠️ Important: Do Not Resize
+
+While the returned arrays are standard `BitVector` types, they share their underlying memory chunks with the pool.
+
+!!! warning "Do Not Resize"
+    **NEVER** resize (`push!`, `pop!`, `resize!`) a pooled `BitVector` or `BitArray`.
+    
+    The underlying memory is owned and managed by the pool. Resizing it will detach it from the pool or potentially corrupt the shared state. Treat these arrays as **fixed-size** scratch buffers only.
