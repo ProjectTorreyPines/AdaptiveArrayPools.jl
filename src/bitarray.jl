@@ -20,7 +20,7 @@
 # intentional for several reasons:
 #
 # 1. **SIMD Performance**: BitVector operations like `count()`, `sum()`, and
-#    bitwise operations are ~140x faster than their SubArray equivalents
+#    bitwise operations are ~(10x ~ 100x) faster than their SubArray equivalents
 #    because they use SIMD-optimized chunked algorithms.
 #
 # 2. **API Simplicity**: Users always get BitVector regardless of which API
@@ -61,7 +61,7 @@ Get a BitVector that shares `chunks` with the pooled BitVector.
 
 Unlike `get_view!` which returns a `SubArray` (loses SIMD optimizations),
 this returns a real `BitVector` with shared chunks, preserving native
-BitVector performance (~140x faster for `count()`, `sum()`, etc.).
+BitVector performance (~(10x ~ 100x) faster for `count()`, `sum()`, etc.).
 
 ## Implementation
 Creates a new BitVector shell and replaces its `chunks` field with the
@@ -169,7 +169,7 @@ end
 # Unlike other types where acquire! returns SubArray (view-based) and
 # unsafe_acquire! returns Array (raw), Bit type always returns BitVector.
 # This is because BitVector's SIMD-optimized operations (count, sum, etc.)
-# are ~140x faster than SubArray equivalents.
+# are ~(10x ~ 100x) faster than SubArray equivalents.
 #
 # The delegation is transparent: users calling acquire!(pool, Bit, n) get
 # BitVector without needing to know about unsafe_acquire!.

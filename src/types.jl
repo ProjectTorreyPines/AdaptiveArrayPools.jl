@@ -247,7 +247,7 @@ needing to remember which API to use.
 
 ## Performance
 `BitVector` operations like `count()`, `sum()`, and bitwise operations are
-~140x faster than equivalent operations on `SubArray{Bool}` because they
+~(10x ~ 100x) faster than equivalent operations on `SubArray{Bool}` because they
 use SIMD-optimized algorithms on packed 64-bit chunks.
 
 ```julia
@@ -314,7 +314,7 @@ end
 ```
 
 ## Performance
-Operations like `count()`, `sum()`, and bitwise operations are ~140x faster
+Operations like `count()`, `sum()`, and bitwise operations are ~(10x ~ 100x) faster
 than equivalent operations on `SubArray{Bool}` because `BitVector` uses
 SIMD-optimized algorithms on packed 64-bit chunks.
 
