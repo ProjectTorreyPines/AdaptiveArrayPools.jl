@@ -28,6 +28,9 @@ include("utils.jl")
 # Acquisition operations: get_view!, acquire!, unsafe_acquire!, aliases
 include("acquire.jl")
 
+# BitArray-specific acquisition (SIMD-optimized BitVector operations)
+include("bitarray.jl")
+
 # Convenience functions: zeros!, ones!, similar!
 include("convenience.jl")
 

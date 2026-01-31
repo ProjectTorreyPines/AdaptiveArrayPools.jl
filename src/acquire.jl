@@ -6,27 +6,10 @@
 @inline allocate_vector(::AbstractTypedPool{T,Vector{T}}, n::Int) where {T} =
     Vector{T}(undef, n)
 
-# BitTypedPool allocates BitVector (used when acquiring with Bit type)
-@inline allocate_vector(::BitTypedPool, n::Int) = BitVector(undef, n)
-
-# Bit type returns Bool element type for fill operations (zero/one)
-@inline Base.zero(::Type{Bit}) = false
-@inline Base.one(::Type{Bit}) = true
-
 # Wrap flat view into N-D array (dispatch point for extensions)
 @inline function wrap_array(::AbstractTypedPool{T,Vector{T}},
                             flat_view, dims::NTuple{N,Int}) where {T,N}
     unsafe_wrap(Array{T,N}, pointer(flat_view), dims)
-end
-
-# BitTypedPool cannot use unsafe_wrap - throw clear error
-# Called from _unsafe_acquire_impl! dispatches for Bit type
-@noinline function _throw_bit_unsafe_error()
-    throw(ArgumentError(
-        "unsafe_acquire!(pool, Bit, ...) is not supported. " *
-        "BitArray stores data in immutable chunks::Vector{UInt64} that cannot be wrapped with unsafe_wrap. " *
-        "Use acquire!(pool, Bit, ...) instead, which returns a view."
-    ))
 end
 
 # ==============================================================================
@@ -245,11 +228,6 @@ end
 # Similar-style
 @inline _unsafe_acquire_impl!(pool::AbstractArrayPool, x::AbstractArray) = _unsafe_acquire_impl!(pool, eltype(x), size(x))
 
-# Bit type: unsafe_acquire! not supported (throw clear error early)
-@inline _unsafe_acquire_impl!(::AbstractArrayPool, ::Type{Bit}, ::Int) = _throw_bit_unsafe_error()
-@inline _unsafe_acquire_impl!(::AbstractArrayPool, ::Type{Bit}, ::Vararg{Int,N}) where {N} = _throw_bit_unsafe_error()
-@inline _unsafe_acquire_impl!(::AbstractArrayPool, ::Type{Bit}, ::NTuple{N,Int}) where {N} = _throw_bit_unsafe_error()
-
 # ==============================================================================
 # Acquisition API (User-facing with untracked marking)
 # ==============================================================================
@@ -449,11 +427,6 @@ const _acquire_array_impl! = _unsafe_acquire_impl!
 @inline unsafe_acquire!(::DisabledPool{:cpu}, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = Array{T,N}(undef, dims)
 @inline unsafe_acquire!(::DisabledPool{:cpu}, ::Type{T}, dims::NTuple{N,Int}) where {T,N} = Array{T,N}(undef, dims)
 @inline unsafe_acquire!(::DisabledPool{:cpu}, x::AbstractArray) = similar(x)
-
-# --- acquire! for DisabledPool{:cpu} with Bit type (returns BitArray) ---
-@inline acquire!(::DisabledPool{:cpu}, ::Type{Bit}, n::Int) = BitVector(undef, n)
-@inline acquire!(::DisabledPool{:cpu}, ::Type{Bit}, dims::Vararg{Int,N}) where {N} = BitArray{N}(undef, dims)
-@inline acquire!(::DisabledPool{:cpu}, ::Type{Bit}, dims::NTuple{N,Int}) where {N} = BitArray{N}(undef, dims)
 
 # --- Generic DisabledPool fallbacks (unknown backend → error) ---
 @inline acquire!(::DisabledPool{B}, _args...) where {B} = _throw_backend_not_loaded(B)

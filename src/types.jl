@@ -225,28 +225,45 @@ bit-packed arrays (1 bit per element vs 1 byte for `Vector{Bool}`).
 ## Usage
 ```julia
 @with_pool pool begin
-    # BitVector view (1 bit per element, ~8x memory savings)
+    # BitVector (1 bit per element, ~8x memory savings)
     bv = acquire!(pool, Bit, 1000)
 
     # vs Vector{Bool} (1 byte per element)
     vb = acquire!(pool, Bool, 1000)
 
     # Convenience functions work too
-    mask = zeros!(pool, Bit, 100)   # BitVector filled with false
-    flags = ones!(pool, Bit, 100)   # BitVector filled with true
+    mask = falses!(pool, 100)       # BitVector filled with false
+    flags = trues!(pool, 100)       # BitVector filled with true
 end
 ```
 
-## Return Types
-- **1D**: `SubArray{Bool,1,BitVector,...}`
-- **N-D**: `ReshapedArray{Bool,N,...}` (reshaped view of 1D BitVector)
+## Return Types (Unified for Performance)
+Unlike other types, `Bit` always returns native `BitVector`/`BitArray`:
+- **1D**: `BitVector` (both `acquire!` and `unsafe_acquire!`)
+- **N-D**: `BitArray{N}` (reshaped, preserves SIMD optimization)
 
-## Limitation
-`unsafe_acquire!(pool, Bit, ...)` is **not supported** because Julia's
-`BitArray` stores data in immutable `chunks::Vector{UInt64}` that cannot
-be wrapped with `unsafe_wrap`.
+This design ensures users always get SIMD-optimized performance without
+needing to remember which API to use.
 
-See also: [`acquire!`](@ref), [`BitTypedPool`](@ref)
+## Performance
+`BitVector` operations like `count()`, `sum()`, and bitwise operations are
+~(10x ~ 100x) faster than equivalent operations on `SubArray{Bool}` because they
+use SIMD-optimized algorithms on packed 64-bit chunks.
+
+```julia
+@with_pool pool begin
+    bv = acquire!(pool, Bit, 10000)
+    fill!(bv, true)
+    count(bv)  # Uses fast SIMD path automatically
+end
+```
+
+## Memory Safety
+The returned `BitVector` shares its internal `chunks` array with the pool.
+It is only valid within the `@with_pool` scope - using it after the scope
+ends leads to undefined behavior (use-after-free risk).
+
+See also: [`trues!`](@ref), [`falses!`](@ref), [`BitTypedPool`](@ref)
 """
 struct Bit end
 
@@ -262,46 +279,58 @@ Specialized pool for `BitVector` arrays with memory reuse.
 Unlike `TypedPool{Bool}` which stores `Vector{Bool}` (1 byte per element),
 this pool stores `BitVector` (1 bit per element, ~8x memory efficiency).
 
-## Important Limitation
-**`unsafe_acquire!` is NOT supported for BitArray** because Julia's `BitArray`
-stores data in a `chunks::Vector{UInt64}` field that cannot be wrapped with
-`unsafe_wrap`. Only view-based acquisition via `acquire!(pool, Bit, ...)` is available.
+## Unified API (Always Returns BitVector)
+Unlike other types, both `acquire!` and `unsafe_acquire!` return `BitVector`
+for the `Bit` type. This design ensures users always get SIMD-optimized
+performance without needing to choose between APIs.
+
+- `acquire!(pool, Bit, n)` → `BitVector` (SIMD optimized)
+- `unsafe_acquire!(pool, Bit, n)` → `BitVector` (same behavior)
+- `trues!(pool, n)` → `BitVector` filled with `true`
+- `falses!(pool, n)` → `BitVector` filled with `false`
 
 ## Fields
 - `vectors`: Backing `BitVector` storage
-- `views`: Cached `SubArray` views for zero-allocation 1D access
-- `view_lengths`: Cached lengths for fast comparison
-- `nd_*`: Empty N-D cache fields (for `empty!` compatibility, unused)
+- `nd_arrays`: Cached wrapper BitVectors (chunks sharing)
+- `nd_dims`: Cached lengths for wrapper cache validation
+- `nd_ptrs`: Cached chunk pointers for invalidation detection
+- `nd_next_way`: Round-robin counter for N-way cache
 - `n_active`: Count of currently active arrays
 - `_checkpoint_*`: State management stacks (1-based sentinel pattern)
 
 ## Usage
 ```julia
 @with_pool pool begin
-    bv = acquire!(pool, Bit, 100)         # SubArray{Bool,1,BitVector,...}
-    ba = acquire!(pool, Bit, 10, 10)      # ReshapedArray{Bool,2,...}
-    t = trues!(pool, 50)                  # Filled with true
-    f = falses!(pool, 50)                 # Filled with false
+    # All return BitVector with SIMD performance
+    bv = acquire!(pool, Bit, 100)              # BitVector
+    count(bv)                                  # Fast SIMD path
+
+    # Convenience functions
+    t = trues!(pool, 50)                       # BitVector filled with true
+    f = falses!(pool, 50)                      # BitVector filled with false
 end
 ```
 
-See also: [`trues!`](@ref), [`falses!`](@ref)
+## Performance
+Operations like `count()`, `sum()`, and bitwise operations are ~(10x ~ 100x) faster
+than equivalent operations on `SubArray{Bool}` because `BitVector` uses
+SIMD-optimized algorithms on packed 64-bit chunks.
+
+See also: [`trues!`](@ref), [`falses!`](@ref), [`Bit`](@ref)
 """
 mutable struct BitTypedPool <: AbstractTypedPool{Bool, BitVector}
     # --- Storage ---
     vectors::Vector{BitVector}
 
-    # --- 1D Cache (1:1 mapping) ---
-    views::Vector{SubArray{Bool, 1, BitVector, Tuple{UnitRange{Int64}}, true}}
-    view_lengths::Vector{Int}
-
-    # --- N-D Array Cache (empty, for empty! compatibility) ---
-    # BitArray cannot use unsafe_wrap, so no N-D caching is possible.
-    # These fields exist only for compatibility with empty!(::AbstractTypedPool).
-    nd_arrays::Vector{Any}
-    nd_dims::Vector{Any}
-    nd_ptrs::Vector{UInt}
-    nd_next_way::Vector{Int}
+    # --- N-D BitArray Cache (N-way set associative) ---
+    # Unlike TypedPool which uses views for 1D and nd_* for N-D,
+    # BitTypedPool uses nd_* for ALL dimensions (1D, 2D, 3D, etc.).
+    # No views needed since we always return BitArray{N}, not SubArray.
+    # BitArray.dims is mutable, enabling 0-alloc reuse for same-ndims requests.
+    nd_arrays::Vector{Any}      # Cached BitArray{N} instances
+    nd_dims::Vector{Any}        # Cached dims (NTuple{N,Int})
+    nd_ptrs::Vector{UInt}       # pointer validation
+    nd_next_way::Vector{Int}    # round-robin counter per slot
 
     # --- State Management (1-based sentinel pattern) ---
     n_active::Int
@@ -312,10 +341,7 @@ end
 BitTypedPool() = BitTypedPool(
     # Storage
     BitVector[],
-    # 1D Cache
-    SubArray{Bool, 1, BitVector, Tuple{UnitRange{Int64}}, true}[],
-    Int[],
-    # N-D Array Cache (empty, for compatibility)
+    # 1D BitVector Wrapper Cache (N-way)
     Any[],
     Any[],
     UInt[],
