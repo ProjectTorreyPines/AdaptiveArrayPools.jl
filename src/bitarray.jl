@@ -98,8 +98,8 @@ function get_bitvector_wrapper!(tp::BitTypedPool, n::Int)
 
         # Warn at powers of 2 (possible missing rewind!)
         if idx >= 512 && (idx & (idx - 1)) == 0
-            total_bits = sum(length, tp.vectors)
-            @warn "BitTypedPool growing large ($idx arrays, ~$(total_bits ÷ 8) bytes). Missing rewind!()?"
+            total_bytes = sum(_vector_bytes, tp.vectors)
+            @warn "BitTypedPool growing large ($idx arrays, ~$(Base.format_bytes(total_bytes))). Missing rewind!()?"
         end
 
         return wrapper

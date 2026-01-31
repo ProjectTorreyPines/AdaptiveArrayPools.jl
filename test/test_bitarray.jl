@@ -661,6 +661,31 @@
         bv = AdaptiveArrayPools._acquire_impl!(pool, Bit, 100)
         @test bv isa BitVector
         @test length(bv) == 100
+
+        bv = AdaptiveArrayPools._acquire_impl!(pool, Bit, (10, 10))
+        @test bv isa BitMatrix
+        @test size(bv) == (10, 10)
+    end
+    @testset "BitTypedPool growth warning at 512 arrays" begin
+        # Use a fresh pool to ensure we start from 0
+        pool = AdaptiveArrayPool()
+
+        @test pooling_enabled(pool) == true
+
+        # Acquire 511 arrays without rewind - no warning yet
+        for i in 1:511
+            acquire!(pool, Bit, 10)
+        end
+        @test pool.bits.n_active == 511
+
+        # The 512th acquire should trigger a warning
+        @test_logs (:warn, r"BitTypedPool growing large \(512 arrays") begin
+            acquire!(pool, Bit, 10)
+        end
+        @test pool.bits.n_active == 512
+
+        # Clean up
+        empty!(pool)
     end
 
 end # BitArray Support

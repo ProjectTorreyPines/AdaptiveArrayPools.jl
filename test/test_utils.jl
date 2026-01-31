@@ -196,8 +196,8 @@ end
         rewind!(pool)
     end
 
-    @testset "Base.show for TypedPool" begin
-        import AdaptiveArrayPools: TypedPool
+    @testset "Base.show for TypedPool & BitTypedPool" begin
+        import AdaptiveArrayPools: TypedPool, BitTypedPool 
 
         # Empty TypedPool - compact show
         tp_empty = TypedPool{Float64}()
@@ -210,6 +210,8 @@ end
         acquire!(pool, Float64, 100)
         acquire!(pool, Float64, 50)
 
+        acquire!(pool, Bit, 10)
+
         output = sprint(show, pool.float64)
         @test occursin("TypedPool{Float64}", output)
         @test occursin("slots=2", output)
@@ -221,6 +223,16 @@ end
         @test occursin("TypedPool{Float64}", output)
         @test occursin("slots:", output)
         @test occursin("active:", output)
+
+        # BitTypedPool - compact show
+        output = sprint(show, pool.bits)
+        @test output == "BitTypedPool(slots=1, active=1, bits=10)"
+        # Multi-line show (MIME"text/plain")
+        output = sprint(show, MIME("text/plain"), pool.bits)
+        @test occursin("BitTypedPool", output)
+        @test occursin("slots:", output)
+        @test occursin("active:", output)
+        @test occursin("bits:", output)
 
         rewind!(pool)
     end
