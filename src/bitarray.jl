@@ -198,7 +198,7 @@ end
 end
 
 @inline function _unsafe_acquire_impl!(pool::AbstractArrayPool, ::Type{Bit}, dims::Vararg{Int,N}) where {N}
-    total = prod(dims)
+    total = safe_prod(dims)
     bv = _unsafe_acquire_impl!(pool, Bit, total)
     return reshape(bv, dims)  # BitArray{N} (Julia's reshape on BitVector returns BitArray)
 end
