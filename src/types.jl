@@ -322,12 +322,13 @@ mutable struct BitTypedPool <: AbstractTypedPool{Bool, BitVector}
     # --- Storage ---
     vectors::Vector{BitVector}
 
-    # --- 1D BitVector Wrapper Cache (N-way set associative) ---
+    # --- N-D BitArray Cache (N-way set associative) ---
     # Unlike TypedPool which uses views for 1D and nd_* for N-D,
-    # BitTypedPool uses nd_* for 1D wrapper caching (BitVector with shared chunks).
-    # No views needed since we always return BitVector, not SubArray.
-    nd_arrays::Vector{Any}      # BitVector wrappers
-    nd_dims::Vector{Any}        # requested lengths (Int, not tuple)
+    # BitTypedPool uses nd_* for ALL dimensions (1D, 2D, 3D, etc.).
+    # No views needed since we always return BitArray{N}, not SubArray.
+    # BitArray.dims is mutable, enabling 0-alloc reuse for same-ndims requests.
+    nd_arrays::Vector{Any}      # Cached BitArray{N} instances
+    nd_dims::Vector{Any}        # Cached dims (NTuple{N,Int})
     nd_ptrs::Vector{UInt}       # pointer validation
     nd_next_way::Vector{Int}    # round-robin counter per slot
 

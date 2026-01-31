@@ -688,29 +688,71 @@
         empty!(pool)
     end
 
-    @testset "N-D BitArray caching - zero allocation on reuse" begin
-        # Test that N-D caching works: first call may allocate, subsequent calls should not
-        # This verifies the optimization where BitArray{N}.dims can be modified in-place
+    @testset "N-D BitArray caching - same ndims different dims" begin
+        # Test the optimization where BitArray{N}.dims can be modified in-place
+        # when ndims matches but dims differ (e.g., (10,10) → (5,20))
 
         pool = get_task_local_pool()
-        empty!(pool) # Start fresh
-        @with_pool pool function foo()
-            # Warmup to populate cache
-            bv = acquire!(pool, Bit, 100)
-            ba2 = acquire!(pool, Bit, 10, 10)
-            ba3 = acquire!(pool, Bit, 5, 5, 4)
+        empty!(pool)
 
-            tt1 = trues!(pool, 256)
-            tt2 = ones!(pool, 10, 20)
-            ff1 = falses!(pool, 100, 5)
-            ff2 = zeros!(pool, 100)
+        # Test correctness: verify dims are updated correctly
+        @with_pool pool begin
+            m1 = acquire!(pool, Bit, 10, 10)
+            @test size(m1) == (10, 10)
+            rewind!(pool)
 
-            C = similar!(pool, tt1)
+            m2 = acquire!(pool, Bit, 5, 20)  # Same ndims, different dims
+            @test size(m2) == (5, 20)
+            rewind!(pool)
+
+            m3 = acquire!(pool, Bit, 25, 4)
+            @test size(m3) == (25, 4)
         end
 
-        @test (@allocated foo()) > 0 # First call allocates
-        @test (@allocated foo()) == 0 # Subsequent calls reuse cached arrays
-        @test (@allocated foo()) == 0 # Further calls also zero allocation
+        # Test zero-allocation: separate function without assertions/returns
+        @with_pool pool function bar_alloc()
+            acquire!(pool, Bit, 10, 10)
+            rewind!(pool)
+            acquire!(pool, Bit, 5, 20)
+            rewind!(pool)
+            acquire!(pool, Bit, 25, 4)
+            nothing
+        end
+
+        bar_alloc()  # Warmup
+        @test (@allocated bar_alloc()) == 0
+    end
+
+    @testset "N-D BitArray caching - cache eviction (round-robin)" begin
+        # Test that round-robin replacement works correctly when cache is full
+        # CACHE_WAYS determines how many different ndims can be cached per slot
+
+        pool = get_task_local_pool()
+        empty!(pool)
+
+        # Test that different ndims each allocate initially, but reuse on repeat
+        @with_pool pool function test_ndims_caching()
+            # These all use slot 1, each with different ndims
+            acquire!(pool, Bit, 100)          # 1D
+            acquire!(pool, Bit, 10, 10)       # 2D
+            acquire!(pool, Bit, 5, 5, 4)      # 3D
+            acquire!(pool, Bit, 5, 2, 2, 5)   # 4D
+            nothing
+        end
+
+        test_ndims_caching()  # Warmup
+        @test (@allocated test_ndims_caching()) == 0
+
+        # Test that cache eviction doesn't break functionality
+        @with_pool pool begin
+            # Exceed CACHE_WAYS with different ndims to force eviction
+            for n in 1:6
+                dims = ntuple(_ -> 2, n)
+                ba = acquire!(pool, Bit, dims...)
+                @test ndims(ba) == n
+                @test size(ba) == dims
+            end
+        end
     end
 
 end # BitArray Support

@@ -165,12 +165,12 @@ end
 # ==============================================================================
 #
 # Unlike other types where acquire! returns SubArray (view-based) and
-# unsafe_acquire! returns Array (raw), Bit type always returns BitVector.
-# This is because BitVector's SIMD-optimized operations (count, sum, etc.)
+# unsafe_acquire! returns Array (raw), Bit type always returns BitArray{N}.
+# This is because BitArray's SIMD-optimized operations (count, sum, etc.)
 # are ~(10x ~ 100x) faster than SubArray equivalents.
 #
-# The delegation is transparent: users calling acquire!(pool, Bit, n) get
-# BitVector without needing to know about unsafe_acquire!.
+# The delegation is transparent: users calling acquire!(pool, Bit, dims...) get
+# BitArray{N} without needing to know about unsafe_acquire!.
 
 # Bit type: delegates to _unsafe_acquire_impl! for SIMD performance
 @inline function _acquire_impl!(pool::AbstractArrayPool, ::Type{Bit}, n::Int)
