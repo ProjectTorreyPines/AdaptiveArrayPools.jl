@@ -447,4 +447,130 @@ end
         POOL_DEBUG[] = old_debug
     end
 
+    # ==============================================================================
+    # Tests for _check_bitchunks_overlap (BitArray safety validation)
+    # ==============================================================================
+
+    @testset "_check_bitchunks_overlap - direct BitArray validation" begin
+        import AdaptiveArrayPools: _check_bitchunks_overlap
+
+        pool = AdaptiveArrayPool()
+        checkpoint!(pool)
+
+        # 1D BitVector from pool - should detect overlap
+        bv = acquire!(pool, Bit, 100)
+        @test bv isa BitVector
+        @test_throws ErrorException _check_bitchunks_overlap(bv, pool)
+
+        # N-D BitArray from pool - should detect overlap (shares chunks with pool)
+        ba = acquire!(pool, Bit, 10, 10)
+        @test ba isa BitMatrix
+        @test_throws ErrorException _check_bitchunks_overlap(ba, pool)
+
+        # 3D BitArray from pool
+        ba3 = acquire!(pool, Bit, 4, 5, 3)
+        @test ba3 isa BitArray{3}
+        @test_throws ErrorException _check_bitchunks_overlap(ba3, pool)
+
+        rewind!(pool)
+    end
+
+    @testset "_check_bitchunks_overlap - external BitArray passes" begin
+        import AdaptiveArrayPools: _check_bitchunks_overlap
+
+        pool = AdaptiveArrayPool()
+        checkpoint!(pool)
+
+        # Populate pool with some BitVectors
+        _ = acquire!(pool, Bit, 100)
+        _ = acquire!(pool, Bit, 200)
+
+        # External BitVector (not from pool) should pass validation
+        external_bv = BitVector(undef, 50)
+        _check_bitchunks_overlap(external_bv, pool)  # Should not throw
+
+        # External BitMatrix should pass
+        external_ba = BitArray(undef, 10, 10)
+        _check_bitchunks_overlap(external_ba, pool)  # Should not throw
+
+        # External 3D BitArray should pass
+        external_ba3 = BitArray(undef, 5, 5, 5)
+        _check_bitchunks_overlap(external_ba3, pool)  # Should not throw
+
+        rewind!(pool)
+    end
+
+    @testset "_validate_pool_return with BitArray (via _check_bitchunks_overlap)" begin
+        pool = AdaptiveArrayPool()
+        checkpoint!(pool)
+
+        # Direct BitVector from pool fails validation
+        bv = acquire!(pool, Bit, 100)
+        @test_throws ErrorException _validate_pool_return(bv, pool)
+
+        # Direct BitMatrix from pool fails validation
+        ba = acquire!(pool, Bit, 10, 10)
+        @test_throws ErrorException _validate_pool_return(ba, pool)
+
+        # External BitArray passes validation
+        external_bv = BitVector(undef, 50)
+        _validate_pool_return(external_bv, pool)  # Should not throw
+
+        rewind!(pool)
+    end
+
+    @testset "_validate_pool_return with SubArray{BitArray} parent" begin
+        pool = AdaptiveArrayPool()
+        checkpoint!(pool)
+
+        # Create a view of a pool BitVector
+        bv = acquire!(pool, Bit, 100)
+        bv_view = view(bv, 1:50)
+        @test bv_view isa SubArray
+        @test parent(bv_view) isa BitVector
+        @test_throws ErrorException _validate_pool_return(bv_view, pool)
+
+        # View of external BitVector should pass
+        external_bv = BitVector(undef, 100)
+        external_view = view(external_bv, 1:50)
+        _validate_pool_return(external_view, pool)  # Should not throw
+
+        rewind!(pool)
+    end
+
+    @testset "POOL_DEBUG with BitArray" begin
+        old_debug = POOL_DEBUG[]
+        POOL_DEBUG[] = true
+
+        # BitVector from pool should throw error when returned with debug on
+        @test_throws ErrorException @with_pool pool begin
+            bv = acquire!(pool, Bit, 100)
+            bv  # Unsafe: returning pool-backed BitVector
+        end
+
+        # BitMatrix from pool should throw error when returned
+        @test_throws ErrorException @with_pool pool begin
+            ba = acquire!(pool, Bit, 10, 10)
+            ba  # Unsafe: returning pool-backed BitMatrix
+        end
+
+        # Safe returns should work fine
+        result = @with_pool pool begin
+            bv = acquire!(pool, Bit, 100)
+            bv .= true
+            count(bv)  # Safe: returning scalar
+        end
+        @test result == 100
+
+        # Returning a copy is also safe
+        result = @with_pool pool begin
+            bv = acquire!(pool, Bit, 5)
+            bv .= true
+            copy(bv)  # Safe: returning a copy
+        end
+        @test result == trues(5)
+
+        POOL_DEBUG[] = old_debug
+    end
+
 end # Utilities and Debugging
