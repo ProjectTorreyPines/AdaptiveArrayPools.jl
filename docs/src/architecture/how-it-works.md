@@ -134,6 +134,9 @@ Type stability is critical for performance. AdaptiveArrayPools provides two APIs
 | `acquire!` | `SubArray{T,1}` | `ReshapedArray{T,N}` | Always 0 bytes |
 | `unsafe_acquire!` | `Vector{T}` | `Array{T,N}` | 0 bytes (hit) / ~100 bytes (miss) |
 
+!!! note "`Bit` type behavior"
+    For `T === Bit`, both `acquire!` and `unsafe_acquire!` return native `BitVector` / `BitArray{N}` (not views). Cache hit achieves 0 bytes allocation.
+
 ### Why Two APIs?
 
 **`acquire!` (views)** — The compiler can eliminate view wrappers entirely through SROA (Scalar Replacement of Aggregates) and escape analysis. This is why 1D `SubArray` and N-D `ReshapedArray` achieve true zero allocation.

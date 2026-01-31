@@ -6,17 +6,18 @@ This page covers the core functions you'll use 99% of the time. For the complete
 
 ### `acquire!(pool, T, dims...)`
 
-The primary function. Returns a view (`SubArray` for 1D, `ReshapedArray` for N-D).
+The primary function. Returns a view (`SubArray` for 1D, `ReshapedArray` for N-D) for most `T`. For `T === Bit`, returns a native `BitVector`/`BitArray{N}`.
 
 ```julia
 @with_pool pool begin
     v = acquire!(pool, Float64, 100)        # 1D: SubArray{Float64,1}
     m = acquire!(pool, Float64, 10, 10)     # 2D: ReshapedArray{Float64,2}
     t = acquire!(pool, Int64, 2, 3, 4)      # 3D: ReshapedArray{Int64,3}
+    mask = acquire!(pool, Bit, 1000)        # BitVector (bit-packed)
 end
 ```
 
-**Always use `acquire!` by default.** Views are zero-allocation and work with all BLAS/LAPACK operations.
+**Always use `acquire!` by default.** Views are zero-allocation and work with BLAS/LAPACK; `Bit` masks are bit-packed and optimized for boolean-kernel operations (`count`, `any`, `all`, etc.).
 
 ### `unsafe_acquire!(pool, T, dims...)`
 
@@ -36,6 +37,9 @@ end
 
 !!! tip "Cache behavior"
     Same dimension pattern → **0 bytes**. Different pattern → 80-144 bytes header only (data memory always reused). See [N-Way Cache](../architecture/type-dispatch.md#n-way-set-associative-cache) for details.
+
+!!! note "`Bit` behavior"
+    For `T === Bit`, `unsafe_acquire!` is equivalent to `acquire!` and returns native `BitVector`/`BitArray{N}`.
 
 ## Convenience Functions
 

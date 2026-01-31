@@ -123,8 +123,8 @@ end
 
 | Function | Returns | Best For |
 |----------|---------|----------|
-| `acquire!` | View types (`SubArray`, `ReshapedArray`) | General use, BLAS/LAPACK |
-| `unsafe_acquire!` | Native `Array`/`CuArray` | FFI, type constraints |
+| `acquire!` | View types (`SubArray`, `ReshapedArray`) for most `T`; native `BitVector`/`BitArray{N}` for `T === Bit` | General use, BLAS/LAPACK; fast bit masks |
+| `unsafe_acquire!` | Native `Array`/`CuArray` (for `T === Bit`, equivalent to `acquire!`) | FFI, type constraints |
 
 Both follow the same scope rules. Use `acquire!` by default—views work with all standard Julia linear algebra operations.
 

@@ -14,7 +14,7 @@ To distinguish between standard boolean arrays (`Vector{Bool}`, 1 byte/element) 
 ## Usage
 
 ### 1D Arrays (BitVector)
-For 1D arrays, `acquire!` returns a native `BitVector`. This design choice enables full SIMD optimization, making operations significantly faster (10x~100x) than using views.
+For 1D arrays, `acquire!` returns a native `BitVector` backed by pooled storage. This design enables full SIMD optimization, making operations like `count`, `any`, and bitwise ops significantly faster than views.
 
 ```julia
 @with_pool pool begin
@@ -31,7 +31,7 @@ end
 ```
 
 ### N-D Arrays (BitArray)
-For multi-dimensional arrays, `acquire!` returns a `BitArray{N}` (specifically `BitMatrix` for 2D). This preserves the packed memory layout and SIMD benefits while providing N-D indexing.
+For multi-dimensional arrays, `acquire!` returns a native `BitArray{N}` (e.g., `BitMatrix` for 2D) that shares chunks with pooled storage. This preserves the packed memory layout and SIMD benefits while providing N-D indexing.
 
 ```julia
 @with_pool pool begin

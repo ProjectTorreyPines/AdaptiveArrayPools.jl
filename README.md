@@ -78,7 +78,7 @@ end
 
 This automatic checkpoint/rewind cycle is what enables zero allocation on repeated calls. You just write normal-looking code with `acquire!` instead of constructors.
 
-`acquire!` returns lightweight views (`SubArray`, `ReshapedArray`) that work seamlessly with BLAS/LAPACK. If you need native `Array` types (FFI, type constraints), use `unsafe_acquire!`—see [API Reference](https://projecttorreypines.github.io/AdaptiveArrayPools.jl/stable/usage/api).
+`acquire!` usually returns lightweight views (`SubArray`, `ReshapedArray`) that work seamlessly with BLAS/LAPACK. For bit-packed boolean masks, use the `Bit` sentinel type to get native `BitVector`/`BitArray` with SIMD-optimized kernels. If you need native `Array` types (FFI, type constraints), use `unsafe_acquire!`—see [API Reference](https://projecttorreypines.github.io/AdaptiveArrayPools.jl/stable/usage/api).
 
 > **Note**: Keeping acquired arrays inside the scope is your responsibility. Return computed values (scalars, copies), not the arrays themselves. See [Safety Guide](https://projecttorreypines.github.io/AdaptiveArrayPools.jl/stable/guide/safety).
 

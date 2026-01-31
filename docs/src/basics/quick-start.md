@@ -74,11 +74,13 @@ end
 
 ## Return Types
 
-`acquire!` and convenience functions return **view types** (`SubArray`, `ReshapedArray`) that work seamlessly with BLAS/LAPACK:
+`acquire!` and convenience functions usually return **view types** (`SubArray`, `ReshapedArray`) that work seamlessly with BLAS/LAPACK. For `Bit` masks, `acquire!` returns native `BitVector`/`BitArray{N}` (bit-packed):
 
 ```julia
 A = acquire!(pool, Float64, 10, 10)  # ReshapedArray{Float64,2}
 mul!(C, A, B)  # works perfectly with BLAS
+
+mask = acquire!(pool, Bit, 1000)     # BitVector (bit-packed)
 ```
 
 If you need native `Array` types (FFI, type constraints), use `unsafe_acquire!`:

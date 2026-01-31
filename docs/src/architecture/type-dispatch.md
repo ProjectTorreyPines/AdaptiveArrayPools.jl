@@ -79,6 +79,9 @@ end
 2. **BLAS/LAPACK compatible**: Processed as `StridedArray`, no performance difference
 3. **Type stable**: Always returns the same wrapper types
 
+!!! note "`Bit` masks"
+    For `T === Bit`, both APIs return native `BitVector`/`BitArray{N}` (not views) to preserve BitArray-specialized kernels (`count`, `any`, `all`, bitwise ops). Cache hit achieves 0 bytes allocation. These are not `StridedArray`.
+
 ### When to Use unsafe_acquire!
 
 1. **C FFI**: When `ccall` requires `Ptr{T}` from contiguous memory

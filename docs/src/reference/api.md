@@ -13,10 +13,10 @@
 
 | Function | Description |
 |----------|-------------|
-| `acquire!(pool, T, dims...)` | Returns a view: `SubArray{T,1}` for 1D, `ReshapedArray{T,N}` for N-D. Always 0 bytes. |
+| `acquire!(pool, T, dims...)` | Returns a view for most `T`: `SubArray{T,1}` for 1D, `ReshapedArray{T,N}` for N-D. For `T === Bit`, returns native `BitVector`/`BitArray{N}`. Cache hit 0 bytes. |
 | `acquire!(pool, T, dims::Tuple)` | Tuple overload for `acquire!` (e.g., `acquire!(pool, T, size(x))`). |
 | `acquire!(pool, x::AbstractArray)` | Similar-style: acquires array matching `eltype(x)` and `size(x)`. |
-| `unsafe_acquire!(pool, T, dims...)` | Returns native `Array`/`CuArray` (CPU: `Vector{T}` for 1D, `Array{T,N}` for N-D). Only for FFI/type constraints. |
+| `unsafe_acquire!(pool, T, dims...)` | Returns native `Array`/`CuArray` (CPU: `Vector{T}` for 1D, `Array{T,N}` for N-D). For `T === Bit`, returns native `BitVector`/`BitArray{N}` (equivalent to `acquire!`). Only use for FFI/type constraints. |
 | `unsafe_acquire!(pool, x::AbstractArray)` | Similar-style: acquires raw array matching `eltype(x)` and `size(x)`. |
 | `checkpoint!(pool)` | Saves the current pool state (stack pointer). |
 | `rewind!(pool)` | Restores the pool to the last checkpoint, freeing all arrays acquired since then. |
@@ -32,8 +32,8 @@ Default element type is `Float64` (CPU) or `Float32` (CUDA).
 |----------|-------------|
 | `zeros!(pool, [T,] dims...)` | Zero-initialized view. Equivalent to `acquire!` + `fill!(0)`. |
 | `ones!(pool, [T,] dims...)` | One-initialized view. Equivalent to `acquire!` + `fill!(1)`. |
-| `trues!(pool, dims...)` | Bit-packed `BitVector` filled with `true`. |
-| `falses!(pool, dims...)` | Bit-packed `BitVector` filled with `false`. |
+| `trues!(pool, dims...)` | Bit-packed `BitVector` / `BitArray{N}` filled with `true`. |
+| `falses!(pool, dims...)` | Bit-packed `BitVector` / `BitArray{N}` filled with `false`. |
 | `similar!(pool, A)` | View matching `eltype(A)` and `size(A)`. |
 
 ### Types
