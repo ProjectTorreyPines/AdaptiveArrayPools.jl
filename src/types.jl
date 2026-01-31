@@ -291,8 +291,6 @@ performance without needing to choose between APIs.
 
 ## Fields
 - `vectors`: Backing `BitVector` storage
-- `views`: Cached `SubArray` views (legacy, maintained for compatibility)
-- `view_lengths`: Cached lengths for fast comparison
 - `nd_arrays`: Cached wrapper BitVectors (chunks sharing)
 - `nd_dims`: Cached lengths for wrapper cache validation
 - `nd_ptrs`: Cached chunk pointers for invalidation detection
@@ -324,17 +322,14 @@ mutable struct BitTypedPool <: AbstractTypedPool{Bool, BitVector}
     # --- Storage ---
     vectors::Vector{BitVector}
 
-    # --- 1D Cache (1:1 mapping) ---
-    views::Vector{SubArray{Bool, 1, BitVector, Tuple{UnitRange{Int64}}, true}}
-    view_lengths::Vector{Int}
-
-    # --- N-D Array Cache (empty, for empty! compatibility) ---
-    # BitArray cannot use unsafe_wrap, so no N-D caching is possible.
-    # These fields exist only for compatibility with empty!(::AbstractTypedPool).
-    nd_arrays::Vector{Any}
-    nd_dims::Vector{Any}
-    nd_ptrs::Vector{UInt}
-    nd_next_way::Vector{Int}
+    # --- 1D BitVector Wrapper Cache (N-way set associative) ---
+    # Unlike TypedPool which uses views for 1D and nd_* for N-D,
+    # BitTypedPool uses nd_* for 1D wrapper caching (BitVector with shared chunks).
+    # No views needed since we always return BitVector, not SubArray.
+    nd_arrays::Vector{Any}      # BitVector wrappers
+    nd_dims::Vector{Any}        # requested lengths (Int, not tuple)
+    nd_ptrs::Vector{UInt}       # pointer validation
+    nd_next_way::Vector{Int}    # round-robin counter per slot
 
     # --- State Management (1-based sentinel pattern) ---
     n_active::Int
@@ -345,10 +340,7 @@ end
 BitTypedPool() = BitTypedPool(
     # Storage
     BitVector[],
-    # 1D Cache
-    SubArray{Bool, 1, BitVector, Tuple{UnitRange{Int64}}, true}[],
-    Int[],
-    # N-D Array Cache (empty, for compatibility)
+    # 1D BitVector Wrapper Cache (N-way)
     Any[],
     Any[],
     UInt[],

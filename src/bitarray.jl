@@ -1,5 +1,5 @@
 # ==============================================================================
-# BitArray Acquisition (Unified BitVector API)
+# BitArray Acquisition (N-D Cached BitArray API)
 # ==============================================================================
 #
 # This file contains BitArray-specific pool operations, separated from the
@@ -7,35 +7,35 @@
 #
 # Key components:
 # - Base.zero/one(::Type{Bit}) - Fill value dispatch for Bit sentinel type
-# - get_bitvector_wrapper! - SIMD-optimized BitVector with shared chunks
+# - get_bitarray! - N-D BitArray with shared chunks and N-way caching
 # - _acquire_impl! for Bit - Delegates to _unsafe_acquire_impl! for performance
-# - _unsafe_acquire_impl! for Bit - Raw BitVector/BitArray acquisition
+# - _unsafe_acquire_impl! for Bit - Raw BitArray acquisition with caching
 # - DisabledPool fallbacks for Bit type
 #
-# Design Decision: Unified BitVector Return Type
+# Design Decision: Unified BitArray Return Type
 # =============================================
 # Unlike regular types where acquire! returns SubArray and unsafe_acquire!
-# returns Array, for Bit type BOTH return BitVector. This design choice is
+# returns Array, for Bit type BOTH return BitArray{N}. This design choice is
 # intentional for several reasons:
 #
-# 1. **SIMD Performance**: BitVector operations like `count()`, `sum()`, and
+# 1. **SIMD Performance**: BitArray operations like `count()`, `sum()`, and
 #    bitwise operations are ~(10x ~ 100x) faster than their SubArray equivalents
 #    because they use SIMD-optimized chunked algorithms.
 #
-# 2. **API Simplicity**: Users always get BitVector regardless of which API
+# 2. **API Simplicity**: Users always get BitArray regardless of which API
 #    they call. No need to remember "use unsafe_acquire! for performance".
 #
-# 3. **Semantic Clarity**: The "unsafe" in unsafe_acquire! refers to memory
-#    safety concerns (use-after-free risk). BitVector already handles memory
-#    efficiently (1 bit per element), so the naming would be misleading.
+# 3. **N-D Caching**: BitArray{N} can be reused by modifying dims/len fields
+#    when ndims matches, achieving 0 allocation on repeated calls. This is
+#    unique to BitArray - regular Array cannot modify dims in place.
 #
 # 4. **Backwards Compatibility**: Code using trues!/falses! just works with
-#    optimal performance - these convenience functions now return BitVector.
+#    optimal performance - these convenience functions return BitVector.
 #
 # Implementation:
 # - _acquire_impl!(pool, Bit, ...) delegates to _unsafe_acquire_impl!
-# - get_bitvector_wrapper! creates BitVector shells sharing pool's chunks
-# - N-D requests return reshaped BitArrays (reshape preserves chunk sharing)
+# - get_bitarray! creates BitArray shells sharing pool's chunks
+# - N-way cache stores BitArray{N} entries, reused via dims modification
 # ==============================================================================
 
 # ==============================================================================
@@ -47,40 +47,45 @@
 @inline Base.one(::Type{Bit}) = true
 
 # ==============================================================================
-# BitVector Wrapper (chunks sharing for SIMD performance)
+# BitArray Acquisition (N-D caching with chunks sharing)
 # ==============================================================================
 
 """
-    get_bitvector_wrapper!(tp::BitTypedPool, n::Int) -> BitVector
+    get_bitarray!(tp::BitTypedPool, dims::NTuple{N,Int}) -> BitArray{N}
 
-Get a BitVector that shares `chunks` with the pooled BitVector.
+Get a BitArray{N} that shares `chunks` with the pooled BitVector.
 
-Unlike `get_view!` which returns a `SubArray` (loses SIMD optimizations),
-this returns a real `BitVector` with shared chunks, preserving native
-BitVector performance (~(10x ~ 100x) faster for `count()`, `sum()`, etc.).
+Uses N-way cache for BitArray reuse. Unlike Array which requires unsafe_wrap
+for each shape, BitArray can reuse cached entries by modifying `dims`/`len`
+fields when ndims matches (0 bytes allocation).
 
-## Implementation
-Creates a new BitVector shell and replaces its `chunks` field with the
-pooled BitVector's chunks. Uses N-way cache for wrapper reuse.
+## Cache Strategy
+- **Exact match**: Return cached BitArray directly (0 bytes)
+- **Same ndims**: Modify dims/len/chunks of cached entry (0 bytes)
+- **Different ndims**: Create new BitArray{N} and cache it (~944 bytes)
+
+## Implementation Notes
+- BitVector (N=1): `size()` uses `len` field, `dims` is ignored
+- BitArray{N>1}: `size()` uses `dims` field
+- All BitArrays share `chunks` with the pool's backing BitVector
 
 ## Safety
-The returned BitVector is only valid within the `@with_pool` scope.
+The returned BitArray is only valid within the `@with_pool` scope.
 Do NOT use after the scope ends (use-after-free risk).
 """
-function get_bitvector_wrapper!(tp::BitTypedPool, n::Int)
+function get_bitarray!(tp::BitTypedPool, dims::NTuple{N,Int}) where {N}
+    total_len = safe_prod(dims)
     tp.n_active += 1
     idx = tp.n_active
 
     # 1. Pool expansion needed (new slot)
     if idx > length(tp.vectors)
-        pool_bv = BitVector(undef, n)
+        pool_bv = BitVector(undef, total_len)
         push!(tp.vectors, pool_bv)
-        push!(tp.views, view(pool_bv, 1:n))
-        push!(tp.view_lengths, n)
 
-        # Create wrapper sharing chunks
-        wrapper = BitVector(undef, n)
-        wrapper.chunks = pool_bv.chunks
+        # Create BitArray sharing chunks
+        ba = BitArray{N}(undef, dims)
+        ba.chunks = pool_bv.chunks
 
         # Expand N-way cache (CACHE_WAYS entries per slot)
         for _ in 1:CACHE_WAYS
@@ -92,8 +97,8 @@ function get_bitvector_wrapper!(tp::BitTypedPool, n::Int)
 
         # Cache in first way
         base = (idx - 1) * CACHE_WAYS + 1
-        @inbounds tp.nd_arrays[base] = wrapper
-        @inbounds tp.nd_dims[base] = n
+        @inbounds tp.nd_arrays[base] = ba
+        @inbounds tp.nd_dims[base] = dims
         @inbounds tp.nd_ptrs[base] = UInt(pointer(pool_bv.chunks))
 
         # Warn at powers of 2 (possible missing rewind!)
@@ -102,48 +107,58 @@ function get_bitvector_wrapper!(tp::BitTypedPool, n::Int)
             @warn "BitTypedPool growing large ($idx arrays, ~$(Base.format_bytes(total_bytes))). Missing rewind!()?"
         end
 
-        return wrapper
+        return ba
     end
 
-    # 2. Check N-way cache for hit (cache slots always exist - created with vector slot above)
+    # 2. Ensure pool_bv has correct size
     @inbounds pool_bv = tp.vectors[idx]
+    if length(pool_bv) != total_len
+        resize!(pool_bv, total_len)
+    end
     current_ptr = UInt(pointer(pool_bv.chunks))
     base = (idx - 1) * CACHE_WAYS
 
-    # Linear search across all ways
+    # 3. Check N-way cache for hit
     for k in 1:CACHE_WAYS
         cache_idx = base + k
-        @inbounds cached_n = tp.nd_dims[cache_idx]
+        @inbounds cached_dims = tp.nd_dims[cache_idx]
         @inbounds cached_ptr = tp.nd_ptrs[cache_idx]
 
-        if cached_n == n && cached_ptr == current_ptr
-            return @inbounds tp.nd_arrays[cache_idx]::BitVector
+        # Must check isa FIRST for type stability (avoids boxing in == comparison)
+        if cached_dims isa NTuple{N,Int} && cached_ptr == current_ptr
+            if cached_dims == dims
+                # Exact match - return cached BitArray directly (0 alloc)
+                return @inbounds tp.nd_arrays[cache_idx]::BitArray{N}
+            else
+                # Same ndims but different dims - reuse by modifying fields (0 alloc!)
+                ba = @inbounds tp.nd_arrays[cache_idx]::BitArray{N}
+                ba.len = total_len
+                ba.dims = dims
+                ba.chunks = pool_bv.chunks
+                # Update cache metadata
+                @inbounds tp.nd_dims[cache_idx] = dims
+                return ba
+            end
         end
     end
 
-    # 3. Cache miss - resize pool_bv to EXACTLY n elements and create new wrapper
-    # Unlike regular arrays where we only grow, BitVector wrappers MUST have exactly
-    # the right number of chunks. Otherwise fill!()/count() iterate over all chunks,
-    # not just the bits within wrapper.len, causing incorrect behavior.
-    if length(pool_bv) != n
-        resize!(pool_bv, n)
-        @inbounds tp.views[idx] = view(pool_bv, 1:n)
-        @inbounds tp.view_lengths[idx] = n
-    end
-
-    wrapper = BitVector(undef, n)
-    wrapper.chunks = pool_bv.chunks
+    # 4. Cache miss - create new BitArray{N}
+    ba = BitArray{N}(undef, dims)
+    ba.chunks = pool_bv.chunks
 
     # Round-robin replacement
     @inbounds way_offset = tp.nd_next_way[idx]
     target_idx = base + way_offset + 1
-    @inbounds tp.nd_arrays[target_idx] = wrapper
-    @inbounds tp.nd_dims[target_idx] = n
-    @inbounds tp.nd_ptrs[target_idx] = UInt(pointer(pool_bv.chunks))
+    @inbounds tp.nd_arrays[target_idx] = ba
+    @inbounds tp.nd_dims[target_idx] = dims
+    @inbounds tp.nd_ptrs[target_idx] = current_ptr
     @inbounds tp.nd_next_way[idx] = (way_offset + 1) % CACHE_WAYS
 
-    return wrapper
+    return ba
 end
+
+# Convenience: 1D case wraps to tuple
+@inline get_bitarray!(tp::BitTypedPool, n::Int) = get_bitarray!(tp, (n,))
 
 # ==============================================================================
 # Acquire Implementation (Bit type → delegates to unsafe_acquire for performance)
@@ -174,20 +189,20 @@ end
 # Unsafe Acquire Implementation (Bit type)
 # ==============================================================================
 
-# Bit type: returns BitVector with shared chunks (SIMD optimized)
+# Bit type: returns BitArray{N} with shared chunks (SIMD optimized, N-D cached)
 @inline function _unsafe_acquire_impl!(pool::AbstractArrayPool, ::Type{Bit}, n::Int)
     tp = get_typed_pool!(pool, Bit)::BitTypedPool
-    return get_bitvector_wrapper!(tp, n)
+    return get_bitarray!(tp, n)
 end
 
 @inline function _unsafe_acquire_impl!(pool::AbstractArrayPool, ::Type{Bit}, dims::Vararg{Int,N}) where {N}
-    total = safe_prod(dims)
-    bv = _unsafe_acquire_impl!(pool, Bit, total)
-    return reshape(bv, dims)  # BitArray{N} (Julia's reshape on BitVector returns BitArray)
+    tp = get_typed_pool!(pool, Bit)::BitTypedPool
+    return get_bitarray!(tp, dims)
 end
 
 @inline function _unsafe_acquire_impl!(pool::AbstractArrayPool, ::Type{Bit}, dims::NTuple{N,Int}) where {N}
-    return _unsafe_acquire_impl!(pool, Bit, dims...)
+    tp = get_typed_pool!(pool, Bit)::BitTypedPool
+    return get_bitarray!(tp, dims)
 end
 
 # ==============================================================================

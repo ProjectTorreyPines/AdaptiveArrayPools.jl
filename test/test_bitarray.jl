@@ -688,4 +688,29 @@
         empty!(pool)
     end
 
+    @testset "N-D BitArray caching - zero allocation on reuse" begin
+        # Test that N-D caching works: first call may allocate, subsequent calls should not
+        # This verifies the optimization where BitArray{N}.dims can be modified in-place
+
+        pool = get_task_local_pool()
+        empty!(pool) # Start fresh
+        @with_pool pool function foo()
+            # Warmup to populate cache
+            bv = acquire!(pool, Bit, 100)
+            ba2 = acquire!(pool, Bit, 10, 10)
+            ba3 = acquire!(pool, Bit, 5, 5, 4)
+
+            tt1 = trues!(pool, 256)
+            tt2 = ones!(pool, 10, 20)
+            ff1 = falses!(pool, 100, 5)
+            ff2 = zeros!(pool, 100)
+
+            C = similar!(pool, tt1)
+        end
+
+        @test (@allocated foo()) > 0 # First call allocates
+        @test (@allocated foo()) == 0 # Subsequent calls reuse cached arrays
+        @test (@allocated foo()) == 0 # Further calls also zero allocation
+    end
+
 end # BitArray Support
