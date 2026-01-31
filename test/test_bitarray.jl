@@ -26,13 +26,14 @@
         @test isempty(pool.bits.vectors)
     end
 
-    @testset "acquire!(pool, Bit, n) - 1D" begin
+    @testset "acquire!(pool, Bit, n) - 1D (returns BitVector for SIMD performance)" begin
         pool = AdaptiveArrayPool()
 
         bv = acquire!(pool, Bit, 100)
         @test length(bv) == 100
         @test eltype(bv) == Bool
-        @test bv isa SubArray{Bool, 1, BitVector}
+        # Returns BitVector (not SubArray) for SIMD-optimized operations
+        @test bv isa BitVector
         @test pool.bits.n_active == 1
 
         # Write and read back
@@ -45,6 +46,7 @@
         # Second acquire
         bv2 = acquire!(pool, Bit, 50)
         @test length(bv2) == 50
+        @test bv2 isa BitVector
         @test pool.bits.n_active == 2
 
         # Independent values
@@ -53,14 +55,15 @@
         @test count(bv) == 99  # bv unchanged
     end
 
-    @testset "acquire!(pool, Bit, dims...) - N-D" begin
+    @testset "acquire!(pool, Bit, dims...) - N-D (returns BitArray for SIMD performance)" begin
         pool = AdaptiveArrayPool()
 
-        # 2D
+        # 2D - returns BitMatrix (Julia's reshape(BitVector, dims) returns BitArray)
         ba2 = acquire!(pool, Bit, 10, 10)
         @test size(ba2) == (10, 10)
         @test eltype(ba2) == Bool
-        @test ba2 isa Base.ReshapedArray
+        # Note: reshape(BitVector, dims) returns BitArray{N}, not ReshapedArray
+        @test ba2 isa BitMatrix
         @test pool.bits.n_active == 1
 
         # Test indexing
@@ -75,108 +78,126 @@
         # 3D
         ba3 = acquire!(pool, Bit, 4, 5, 3)
         @test size(ba3) == (4, 5, 3)
+        @test ba3 isa BitArray{3}
         @test pool.bits.n_active == 2
 
         # Tuple form
         ba_tuple = acquire!(pool, Bit, (3, 4, 2))
         @test size(ba_tuple) == (3, 4, 2)
+        @test ba_tuple isa BitArray{3}
         @test pool.bits.n_active == 3
     end
 
-    @testset "ones!(pool, Bit, dims...) - filled with true" begin
+    @testset "ones!(pool, Bit, dims...) - BitVector filled with true" begin
         pool = AdaptiveArrayPool()
 
-        # 1D
+        # 1D - returns BitVector
         t1 = ones!(pool, Bit, 100)
         @test length(t1) == 100
         @test all(t1)
+        @test t1 isa BitVector
         @test pool.bits.n_active == 1
 
-        # 2D
+        # 2D - returns BitMatrix (reshape of BitVector)
         t2 = ones!(pool, Bit, 10, 10)
         @test size(t2) == (10, 10)
         @test all(t2)
         @test count(t2) == 100
+        @test t2 isa BitMatrix
 
         # Tuple form
         t3 = ones!(pool, Bit, (5, 5, 4))
         @test size(t3) == (5, 5, 4)
         @test all(t3)
+        @test t3 isa BitArray{3}
     end
 
-    @testset "zeros!(pool, Bit, dims...) - filled with false" begin
+    @testset "zeros!(pool, Bit, dims...) - BitVector filled with false" begin
         pool = AdaptiveArrayPool()
 
-        # 1D
+        # 1D - returns BitVector
         f1 = zeros!(pool, Bit, 100)
         @test length(f1) == 100
         @test !any(f1)
+        @test f1 isa BitVector
         @test pool.bits.n_active == 1
 
-        # 2D
+        # 2D - returns BitMatrix (reshape of BitVector)
         f2 = zeros!(pool, Bit, 10, 10)
         @test size(f2) == (10, 10)
         @test !any(f2)
         @test count(f2) == 0
+        @test f2 isa BitMatrix
 
         # Tuple form
         f3 = zeros!(pool, Bit, (5, 5, 4))
         @test size(f3) == (5, 5, 4)
         @test !any(f3)
+        @test f3 isa BitArray{3}
     end
 
-    @testset "trues!(pool, dims...) - convenience for BitArray filled with true" begin
+    @testset "trues!(pool, dims...) - BitVector filled with true (SIMD optimized)" begin
         pool = AdaptiveArrayPool()
 
-        # 1D
+        # 1D - returns BitVector
         t1 = trues!(pool, 100)
         @test length(t1) == 100
         @test all(t1)
         @test eltype(t1) == Bool
+        @test t1 isa BitVector
         @test pool.bits.n_active == 1
 
-        # 2D
+        # 2D - returns BitMatrix (reshape of BitVector)
         t2 = trues!(pool, 10, 10)
         @test size(t2) == (10, 10)
         @test all(t2)
         @test count(t2) == 100
+        @test t2 isa BitMatrix
 
         # Tuple form
         t3 = trues!(pool, (5, 5, 4))
         @test size(t3) == (5, 5, 4)
         @test all(t3)
+        @test t3 isa BitArray{3}
 
         # Equivalent to ones!(pool, Bit, ...)
         t4 = trues!(pool, 50)
         t5 = ones!(pool, Bit, 50)
         @test all(t4 .== t5)
+        @test t4 isa BitVector
+        @test t5 isa BitVector
     end
 
-    @testset "falses!(pool, dims...) - convenience for BitArray filled with false" begin
+    @testset "falses!(pool, dims...) - BitVector filled with false (SIMD optimized)" begin
         pool = AdaptiveArrayPool()
 
-        # 1D
+        # 1D - returns BitVector
         f1 = falses!(pool, 100)
         @test length(f1) == 100
         @test !any(f1)
         @test eltype(f1) == Bool
+        @test f1 isa BitVector
         @test pool.bits.n_active == 1
 
-        # 2D
+        # 2D - returns BitMatrix (reshape of BitVector)
         f2 = falses!(pool, 10, 10)
         @test size(f2) == (10, 10)
         @test !any(f2)
         @test count(f2) == 0
+        @test f2 isa BitMatrix
 
         # Tuple form
         f3 = falses!(pool, (5, 5, 4))
         @test size(f3) == (5, 5, 4)
         @test !any(f3)
+        @test f3 isa BitArray{3}
 
         # Equivalent to zeros!(pool, Bit, ...)
         f4 = falses!(pool, 50)
         f5 = zeros!(pool, Bit, 50)
         @test all(f4 .== f5)
+        @test f4 isa BitVector
+        @test f5 isa BitVector
     end
 
     @testset "State management" begin
@@ -405,14 +426,14 @@
     @testset "Mixed Bool types" begin
         pool = AdaptiveArrayPool()
 
-        # Vector{Bool} via acquire! with Bool
+        # Vector{Bool} via acquire! with Bool - returns SubArray (view)
         vb = acquire!(pool, Bool, 100)
         @test vb isa SubArray{Bool, 1, Vector{Bool}}
         @test pool.bool.n_active == 1
 
-        # BitVector via acquire! with Bit
+        # BitVector via acquire! with Bit - returns BitVector (for SIMD)
         bv = acquire!(pool, Bit, 100)
-        @test bv isa SubArray{Bool, 1, BitVector}
+        @test bv isa BitVector  # Note: Bit returns BitVector, not SubArray
         @test pool.bits.n_active == 1
 
         # Both should work independently
@@ -477,28 +498,28 @@
         end
     end
 
-    @testset "unsafe_acquire! SIMD performance" begin
-        # Verify that unsafe_acquire! preserves SIMD-optimized operations
+    @testset "Unified BitVector API - both acquire! and unsafe_acquire! return BitVector" begin
+        # Both acquire! and unsafe_acquire! return BitVector for Bit type
+        # This is a deliberate design choice for SIMD performance
         pool = AdaptiveArrayPool()
 
         @with_pool pool begin
             n = 10000
 
-            # Setup: fill with known pattern
+            # unsafe_acquire! returns BitVector
             bv_unsafe = unsafe_acquire!(pool, Bit, n)
             fill!(bv_unsafe, true)
-
-            # count() should work correctly
             @test count(bv_unsafe) == n
-
-            # Verify it's using the fast path (type check)
             @test bv_unsafe isa BitVector
 
-            # Compare with acquire! (SubArray)
-            bv_view = acquire!(pool, Bit, n)
-            fill!(bv_view, true)
-            @test count(bv_view) == n
-            @test bv_view isa SubArray
+            # acquire! ALSO returns BitVector (not SubArray)
+            bv_acquire = acquire!(pool, Bit, n)
+            fill!(bv_acquire, true)
+            @test count(bv_acquire) == n
+            @test bv_acquire isa BitVector  # Same type as unsafe_acquire!
+
+            # Both benefit from SIMD-optimized count()
+            # (No performance difference since both return BitVector)
         end
     end
 
@@ -517,6 +538,12 @@
         @test eltype(v_bool) == Bool
         @test eltype(v_bit) == Bool
 
+        # Note: acquire! returns SubArray for most types, but BitVector for Bit
+        @test v_f64 isa SubArray
+        @test v_i32 isa SubArray
+        @test v_bool isa SubArray
+        @test v_bit isa BitVector  # Special case for SIMD performance
+
         # zeros!/ones! work consistently
         z_f64 = zeros!(pool, Float64, 10)
         z_bit = zeros!(pool, Bit, 10)
@@ -527,29 +554,37 @@
         @test !any(z_bit)
         @test all(o_f64 .== 1.0)
         @test all(o_bit)
+
+        # Type consistency for convenience functions
+        @test z_bit isa BitVector
+        @test o_bit isa BitVector
     end
 
-    @testset "NTuple form coverage" begin
+    @testset "NTuple form coverage (all return BitArray types)" begin
         pool = AdaptiveArrayPool()
 
         # Test NTuple forms for trues!/falses! (covers _trues_impl! and _falses_impl! NTuple overloads)
         t_tuple = trues!(pool, (5, 5))
         @test size(t_tuple) == (5, 5)
         @test all(t_tuple)
+        @test t_tuple isa BitMatrix
 
         f_tuple = falses!(pool, (5, 5))
         @test size(f_tuple) == (5, 5)
         @test !any(f_tuple)
+        @test f_tuple isa BitMatrix
 
         # Test NTuple forms for zeros!/ones! with Bit type
         # (covers _zeros_impl! and _ones_impl! with Bit NTuple overloads)
         z_bit_tuple = zeros!(pool, Bit, (4, 4))
         @test size(z_bit_tuple) == (4, 4)
         @test !any(z_bit_tuple)
+        @test z_bit_tuple isa BitMatrix
 
         o_bit_tuple = ones!(pool, Bit, (4, 4))
         @test size(o_bit_tuple) == (4, 4)
         @test all(o_bit_tuple)
+        @test o_bit_tuple isa BitMatrix
     end
 
     @testset "Generic DisabledPool fallback for unknown backend" begin
@@ -600,10 +635,17 @@
         z = AdaptiveArrayPools._zeros_impl!(pool, Bit, (3, 3))
         @test size(z) == (3, 3)
         @test !any(z)
+        @test z isa BitMatrix
 
         o = AdaptiveArrayPools._ones_impl!(pool, Bit, (3, 3))
         @test size(o) == (3, 3)
         @test all(o)
+        @test o isa BitMatrix
+
+        # Test _acquire_impl! returns BitVector (not SubArray)
+        bv = AdaptiveArrayPools._acquire_impl!(pool, Bit, 100)
+        @test bv isa BitVector
+        @test length(bv) == 100
     end
 
 end # BitArray Support

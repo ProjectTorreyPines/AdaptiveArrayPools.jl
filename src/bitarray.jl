@@ -1,5 +1,5 @@
 # ==============================================================================
-# BitArray Acquisition (SIMD-Optimized BitVector Operations)
+# BitArray Acquisition (Unified BitVector API)
 # ==============================================================================
 #
 # This file contains BitArray-specific pool operations, separated from the
@@ -9,14 +9,34 @@
 # - allocate_vector(::BitTypedPool, n) - BitVector allocation dispatch
 # - Base.zero/one(::Type{Bit}) - Fill value dispatch for Bit sentinel type
 # - get_bitvector_wrapper! - SIMD-optimized BitVector with shared chunks
+# - _acquire_impl! for Bit - Delegates to _unsafe_acquire_impl! for performance
 # - _unsafe_acquire_impl! for Bit - Raw BitVector/BitArray acquisition
 # - DisabledPool fallbacks for Bit type
 #
-# Design rationale:
-# - BitVector cannot use unsafe_wrap like Array, so it needs a different
-#   strategy for returning native BitVector instances.
-# - The "chunks sharing" approach creates a new BitVector shell and replaces
-#   its internal chunks field, preserving ~140x faster SIMD operations.
+# Design Decision: Unified BitVector Return Type
+# =============================================
+# Unlike regular types where acquire! returns SubArray and unsafe_acquire!
+# returns Array, for Bit type BOTH return BitVector. This design choice is
+# intentional for several reasons:
+#
+# 1. **SIMD Performance**: BitVector operations like `count()`, `sum()`, and
+#    bitwise operations are ~140x faster than their SubArray equivalents
+#    because they use SIMD-optimized chunked algorithms.
+#
+# 2. **API Simplicity**: Users always get BitVector regardless of which API
+#    they call. No need to remember "use unsafe_acquire! for performance".
+#
+# 3. **Semantic Clarity**: The "unsafe" in unsafe_acquire! refers to memory
+#    safety concerns (use-after-free risk). BitVector already handles memory
+#    efficiently (1 bit per element), so the naming would be misleading.
+#
+# 4. **Backwards Compatibility**: Code using trues!/falses! just works with
+#    optimal performance - these convenience functions now return BitVector.
+#
+# Implementation:
+# - _acquire_impl!(pool, Bit, ...) delegates to _unsafe_acquire_impl!
+# - get_bitvector_wrapper! creates BitVector shells sharing pool's chunks
+# - N-D requests return reshaped BitArrays (reshape preserves chunk sharing)
 # ==============================================================================
 
 # ==============================================================================
@@ -118,8 +138,11 @@ function get_bitvector_wrapper!(tp::BitTypedPool, n::Int)
         end
     end
 
-    # 3. Cache miss - resize pool_bv if needed and create new wrapper
-    if length(pool_bv) < n
+    # 3. Cache miss - resize pool_bv to EXACTLY n elements and create new wrapper
+    # Unlike regular arrays where we only grow, BitVector wrappers MUST have exactly
+    # the right number of chunks. Otherwise fill!()/count() iterate over all chunks,
+    # not just the bits within wrapper.len, causing incorrect behavior.
+    if length(pool_bv) != n
         resize!(pool_bv, n)
         @inbounds tp.views[idx] = view(pool_bv, 1:n)
         @inbounds tp.view_lengths[idx] = n
@@ -140,6 +163,31 @@ function get_bitvector_wrapper!(tp::BitTypedPool, n::Int)
 end
 
 # ==============================================================================
+# Acquire Implementation (Bit type → delegates to unsafe_acquire for performance)
+# ==============================================================================
+#
+# Unlike other types where acquire! returns SubArray (view-based) and
+# unsafe_acquire! returns Array (raw), Bit type always returns BitVector.
+# This is because BitVector's SIMD-optimized operations (count, sum, etc.)
+# are ~140x faster than SubArray equivalents.
+#
+# The delegation is transparent: users calling acquire!(pool, Bit, n) get
+# BitVector without needing to know about unsafe_acquire!.
+
+# Bit type: delegates to _unsafe_acquire_impl! for SIMD performance
+@inline function _acquire_impl!(pool::AbstractArrayPool, ::Type{Bit}, n::Int)
+    return _unsafe_acquire_impl!(pool, Bit, n)
+end
+
+@inline function _acquire_impl!(pool::AbstractArrayPool, ::Type{Bit}, dims::Vararg{Int,N}) where {N}
+    return _unsafe_acquire_impl!(pool, Bit, dims...)
+end
+
+@inline function _acquire_impl!(pool::AbstractArrayPool, ::Type{Bit}, dims::NTuple{N,Int}) where {N}
+    return _unsafe_acquire_impl!(pool, Bit, dims...)
+end
+
+# ==============================================================================
 # Unsafe Acquire Implementation (Bit type)
 # ==============================================================================
 
@@ -152,7 +200,7 @@ end
 @inline function _unsafe_acquire_impl!(pool::AbstractArrayPool, ::Type{Bit}, dims::Vararg{Int,N}) where {N}
     total = prod(dims)
     bv = _unsafe_acquire_impl!(pool, Bit, total)
-    return reshape(bv, dims)  # ReshapedArray{Bool,N,BitVector,...}
+    return reshape(bv, dims)  # BitArray{N} (Julia's reshape on BitVector returns BitArray)
 end
 
 @inline function _unsafe_acquire_impl!(pool::AbstractArrayPool, ::Type{Bit}, dims::NTuple{N,Int}) where {N}

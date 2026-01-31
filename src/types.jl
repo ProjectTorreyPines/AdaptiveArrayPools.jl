@@ -225,28 +225,45 @@ bit-packed arrays (1 bit per element vs 1 byte for `Vector{Bool}`).
 ## Usage
 ```julia
 @with_pool pool begin
-    # BitVector view (1 bit per element, ~8x memory savings)
+    # BitVector (1 bit per element, ~8x memory savings)
     bv = acquire!(pool, Bit, 1000)
 
     # vs Vector{Bool} (1 byte per element)
     vb = acquire!(pool, Bool, 1000)
 
     # Convenience functions work too
-    mask = zeros!(pool, Bit, 100)   # BitVector filled with false
-    flags = ones!(pool, Bit, 100)   # BitVector filled with true
+    mask = falses!(pool, 100)       # BitVector filled with false
+    flags = trues!(pool, 100)       # BitVector filled with true
 end
 ```
 
-## Return Types
-- **1D**: `SubArray{Bool,1,BitVector,...}`
-- **N-D**: `ReshapedArray{Bool,N,...}` (reshaped view of 1D BitVector)
+## Return Types (Unified for Performance)
+Unlike other types, `Bit` always returns native `BitVector`/`BitArray`:
+- **1D**: `BitVector` (both `acquire!` and `unsafe_acquire!`)
+- **N-D**: `BitArray{N}` (reshaped, preserves SIMD optimization)
 
-## Performance Note
-`unsafe_acquire!(pool, Bit, n)` returns a real `BitVector` with shared chunks,
-preserving SIMD-optimized operations like `count()` (~140x faster than SubArray).
-Use this when you need native BitVector performance.
+This design ensures users always get SIMD-optimized performance without
+needing to remember which API to use.
 
-See also: [`acquire!`](@ref), [`BitTypedPool`](@ref)
+## Performance
+`BitVector` operations like `count()`, `sum()`, and bitwise operations are
+~140x faster than equivalent operations on `SubArray{Bool}` because they
+use SIMD-optimized algorithms on packed 64-bit chunks.
+
+```julia
+@with_pool pool begin
+    bv = acquire!(pool, Bit, 10000)
+    fill!(bv, true)
+    count(bv)  # Uses fast SIMD path automatically
+end
+```
+
+## Memory Safety
+The returned `BitVector` shares its internal `chunks` array with the pool.
+It is only valid within the `@with_pool` scope - using it after the scope
+ends leads to undefined behavior (use-after-free risk).
+
+See also: [`trues!`](@ref), [`falses!`](@ref), [`BitTypedPool`](@ref)
 """
 struct Bit end
 
@@ -262,18 +279,21 @@ Specialized pool for `BitVector` arrays with memory reuse.
 Unlike `TypedPool{Bool}` which stores `Vector{Bool}` (1 byte per element),
 this pool stores `BitVector` (1 bit per element, ~8x memory efficiency).
 
-## Acquisition Methods
-- `acquire!(pool, Bit, n)` → `SubArray{Bool,1,BitVector,...}` (view-based)
-- `unsafe_acquire!(pool, Bit, n)` → `BitVector` (chunks-sharing, SIMD optimized)
+## Unified API (Always Returns BitVector)
+Unlike other types, both `acquire!` and `unsafe_acquire!` return `BitVector`
+for the `Bit` type. This design ensures users always get SIMD-optimized
+performance without needing to choose between APIs.
 
-Use `unsafe_acquire!` when you need native BitVector operations like `count()`,
-`sum()`, or bitwise operations - these are ~140x faster than SubArray equivalents.
+- `acquire!(pool, Bit, n)` → `BitVector` (SIMD optimized)
+- `unsafe_acquire!(pool, Bit, n)` → `BitVector` (same behavior)
+- `trues!(pool, n)` → `BitVector` filled with `true`
+- `falses!(pool, n)` → `BitVector` filled with `false`
 
 ## Fields
 - `vectors`: Backing `BitVector` storage
-- `views`: Cached `SubArray` views for `acquire!`
+- `views`: Cached `SubArray` views (legacy, maintained for compatibility)
 - `view_lengths`: Cached lengths for fast comparison
-- `nd_arrays`: Cached wrapper BitVectors for `unsafe_acquire!` (chunks sharing)
+- `nd_arrays`: Cached wrapper BitVectors (chunks sharing)
 - `nd_dims`: Cached lengths for wrapper cache validation
 - `nd_ptrs`: Cached chunk pointers for invalidation detection
 - `nd_next_way`: Round-robin counter for N-way cache
@@ -283,18 +303,20 @@ Use `unsafe_acquire!` when you need native BitVector operations like `count()`,
 ## Usage
 ```julia
 @with_pool pool begin
-    # View-based (standard)
-    bv = acquire!(pool, Bit, 100)              # SubArray{Bool,1,BitVector,...}
-
-    # SIMD-optimized (for performance-critical code)
-    bv_fast = unsafe_acquire!(pool, Bit, 100)  # BitVector (real)
-    count(bv_fast)                             # ~140x faster than count(bv)
+    # All return BitVector with SIMD performance
+    bv = acquire!(pool, Bit, 100)              # BitVector
+    count(bv)                                  # Fast SIMD path
 
     # Convenience functions
-    t = trues!(pool, 50)                       # Filled with true
-    f = falses!(pool, 50)                      # Filled with false
+    t = trues!(pool, 50)                       # BitVector filled with true
+    f = falses!(pool, 50)                      # BitVector filled with false
 end
 ```
+
+## Performance
+Operations like `count()`, `sum()`, and bitwise operations are ~140x faster
+than equivalent operations on `SubArray{Bool}` because `BitVector` uses
+SIMD-optimized algorithms on packed 64-bit chunks.
 
 See also: [`trues!`](@ref), [`falses!`](@ref), [`Bit`](@ref)
 """
