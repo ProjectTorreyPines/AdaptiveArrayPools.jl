@@ -266,6 +266,54 @@ end
         @test occursin("empty", output)
     end
 
+    @testset "pool_stats for BitTypedPool" begin
+        import AdaptiveArrayPools: BitTypedPool
+
+        # Empty BitTypedPool
+        btp = BitTypedPool()
+        output = @capture_out pool_stats(btp)
+        @test occursin("Bit", output)
+        @test occursin("empty", output)
+
+        # BitTypedPool with content (via AdaptiveArrayPool)
+        pool = AdaptiveArrayPool()
+        checkpoint!(pool)
+
+        # Acquire some BitVectors
+        bv1 = acquire!(pool, Bit, 100)
+        bv2 = acquire!(pool, Bit, 200)
+
+        output = @capture_out pool_stats(pool)
+        @test occursin("Bit (fixed)", output)
+        @test occursin("slots: 2", output)
+        @test occursin("active: 2", output)
+        @test occursin("bits:", output)  # BitTypedPool uses "bits" label, not "elements"
+        @test occursin("300", output)     # Total bits: 100 + 200
+
+        rewind!(pool)
+
+        # Test direct BitTypedPool stats
+        btp2 = BitTypedPool()
+        # Manually add vectors for testing
+        push!(btp2.vectors, BitVector(undef, 64))
+        btp2.n_active = 1
+
+        output = @capture_out pool_stats(btp2)
+        @test occursin("Bit", output)
+        @test occursin("slots: 1", output)
+        @test occursin("bits: 64", output)
+    end
+
+    @testset "direct call of internal helpers" begin
+        import AdaptiveArrayPools: _default_type_name, _vector_bytes, _count_label, TypedPool, BitTypedPool
+        @test _default_type_name(TypedPool{Float64}()) == "Float64"
+        @test _default_type_name(BitTypedPool()) == "Bit"
+        @test _vector_bytes([1, 2, 3]) == Base.summarysize([1, 2, 3])
+        @test _vector_bytes(BitVector(undef, 100)) == sizeof(BitVector(undef, 100).chunks)
+        @test _count_label(TypedPool{Int}()) == "elements"
+        @test _count_label(BitTypedPool()) == "bits"
+    end
+
     @testset "_validate_pool_return with N-D arrays" begin
         pool = AdaptiveArrayPool()
         checkpoint!(pool)

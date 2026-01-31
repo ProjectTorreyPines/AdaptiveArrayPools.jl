@@ -6,7 +6,6 @@
 # generic Array acquisition code in acquire.jl for maintainability.
 #
 # Key components:
-# - allocate_vector(::BitTypedPool, n) - BitVector allocation dispatch
 # - Base.zero/one(::Type{Bit}) - Fill value dispatch for Bit sentinel type
 # - get_bitvector_wrapper! - SIMD-optimized BitVector with shared chunks
 # - _acquire_impl! for Bit - Delegates to _unsafe_acquire_impl! for performance
@@ -40,11 +39,8 @@
 # ==============================================================================
 
 # ==============================================================================
-# Allocation Dispatch Points (BitArray-specific)
+# Fill Value Dispatch (BitArray-specific)
 # ==============================================================================
-
-# BitTypedPool allocates BitVector (used when acquiring with Bit type)
-@inline allocate_vector(::BitTypedPool, n::Int) = BitVector(undef, n)
 
 # Bit type returns Bool element type for fill operations (zero/one)
 @inline Base.zero(::Type{Bit}) = false
@@ -109,22 +105,9 @@ function get_bitvector_wrapper!(tp::BitTypedPool, n::Int)
         return wrapper
     end
 
-    # 2. Check N-way cache for hit
+    # 2. Check N-way cache for hit (cache slots always exist - created with vector slot above)
     @inbounds pool_bv = tp.vectors[idx]
     current_ptr = UInt(pointer(pool_bv.chunks))
-
-    # Ensure cache slots exist for this index
-    n_slots_cached = length(tp.nd_next_way)
-    while idx > n_slots_cached
-        for _ in 1:CACHE_WAYS
-            push!(tp.nd_arrays, nothing)
-            push!(tp.nd_dims, nothing)
-            push!(tp.nd_ptrs, UInt(0))
-        end
-        push!(tp.nd_next_way, 0)
-        n_slots_cached += 1
-    end
-
     base = (idx - 1) * CACHE_WAYS
 
     # Linear search across all ways
@@ -204,7 +187,7 @@ end
 end
 
 @inline function _unsafe_acquire_impl!(pool::AbstractArrayPool, ::Type{Bit}, dims::NTuple{N,Int}) where {N}
-    _unsafe_acquire_impl!(pool, Bit, dims...)
+    return _unsafe_acquire_impl!(pool, Bit, dims...)
 end
 
 # ==============================================================================

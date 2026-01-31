@@ -258,7 +258,7 @@
     end
 
     @testset "DisabledPool fallback" begin
-        # acquire! with Bit
+        # --- acquire! with Bit ---
         bv = acquire!(DISABLED_CPU, Bit, 100)
         @test bv isa BitVector
         @test length(bv) == 100
@@ -272,6 +272,21 @@
         ba_tuple = acquire!(DISABLED_CPU, Bit, (5, 5))
         @test ba_tuple isa BitArray{2}
         @test size(ba_tuple) == (5, 5)
+
+        # --- unsafe_acquire! with Bit (covers bitarray.jl:206-208) ---
+        ubv = unsafe_acquire!(DISABLED_CPU, Bit, 100)
+        @test ubv isa BitVector
+        @test length(ubv) == 100
+
+        # N-D
+        uba = unsafe_acquire!(DISABLED_CPU, Bit, 10, 10)
+        @test uba isa BitArray{2}
+        @test size(uba) == (10, 10)
+
+        # Tuple form
+        uba_tuple = unsafe_acquire!(DISABLED_CPU, Bit, (5, 5))
+        @test uba_tuple isa BitArray{2}
+        @test size(uba_tuple) == (5, 5)
 
         # ones! with Bit (like trues)
         t = ones!(DISABLED_CPU, Bit, 50)
