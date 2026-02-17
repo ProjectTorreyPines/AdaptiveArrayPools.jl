@@ -708,3 +708,76 @@ end
     end
 
 end # Source Location Preservation
+
+# ==============================================================================
+# Phase 3: Bitmask-aware checkpoint/rewind in macro expansion
+# ==============================================================================
+
+@testset "Bitmask-aware typed path in expansion" begin
+    @testset "@with_pool typed expansion uses _can_use_typed_path" begin
+        expr = @macroexpand @with_pool pool begin
+            v = acquire!(pool, Float64, 10)
+            sum(v)
+        end
+
+        expr_str = string(expr)
+
+        # Should use _can_use_typed_path instead of _untracked_flags
+        @test occursin("_can_use_typed_path", expr_str)
+        @test !occursin("_untracked_flags", expr_str)
+
+        # Should use _tracked_mask_for_types
+        @test occursin("_tracked_mask_for_types", expr_str)
+    end
+
+    @testset "@with_pool full path (dynamic types) has no bitmask" begin
+        expr = @macroexpand @with_pool pool begin
+            local_arr = rand(10)
+            v = acquire!(pool, local_arr)
+            sum(v)
+        end
+
+        expr_str = string(expr)
+
+        # Full path (dynamic type) → no _can_use_typed_path
+        @test !occursin("_can_use_typed_path", expr_str)
+        @test !occursin("_tracked_mask_for_types", expr_str)
+    end
+
+    @testset "@maybe_with_pool typed expansion uses _can_use_typed_path" begin
+        expr = @macroexpand @maybe_with_pool pool begin
+            v = acquire!(pool, Float64, 10)
+            sum(v)
+        end
+
+        expr_str = string(expr)
+
+        @test occursin("_can_use_typed_path", expr_str)
+        @test !occursin("_untracked_flags", expr_str)
+    end
+
+    @testset "@with_pool :cpu backend uses _can_use_typed_path" begin
+        expr = @macroexpand @with_pool :cpu pool begin
+            v = acquire!(pool, Float64, 10)
+            sum(v)
+        end
+
+        expr_str = string(expr)
+
+        @test occursin("_can_use_typed_path", expr_str)
+        @test !occursin("_untracked_flags", expr_str)
+    end
+
+    @testset "@with_pool function def uses _can_use_typed_path" begin
+        expr = @macroexpand @with_pool pool function test_fn(x)
+            v = acquire!(pool, Float64, length(x))
+            v .= x
+            sum(v)
+        end
+
+        expr_str = string(expr)
+
+        @test occursin("_can_use_typed_path", expr_str)
+        @test !occursin("_untracked_flags", expr_str)
+    end
+end

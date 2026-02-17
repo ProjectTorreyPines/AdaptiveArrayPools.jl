@@ -13,9 +13,10 @@ After warmup, this function has **zero allocation**.
 See also: [`rewind!`](@ref), [`@with_pool`](@ref)
 """
 function checkpoint!(pool::AdaptiveArrayPool)
-    # Increment depth and initialize untracked flag
+    # Increment depth and initialize untracked bitmask state
     pool._current_depth += 1
-    push!(pool._untracked_flags, false)
+    push!(pool._untracked_fixed_masks, UInt16(0))
+    push!(pool._untracked_has_others, false)
     depth = pool._current_depth
 
     # Fixed slots - zero allocation via @generated iteration
@@ -37,13 +38,14 @@ end
 Save state for a specific type only. Used by optimized macros that know
 which types will be used at compile time.
 
-Also updates _current_depth and _untracked_flags for untracked acquire detection.
+Also updates _current_depth and bitmask state for untracked acquire detection.
 
 ~77% faster than full checkpoint! when only one type is used.
 """
 @inline function checkpoint!(pool::AdaptiveArrayPool, ::Type{T}) where T
     pool._current_depth += 1
-    push!(pool._untracked_flags, false)
+    push!(pool._untracked_fixed_masks, UInt16(0))
+    push!(pool._untracked_has_others, false)
     _checkpoint_typed_pool!(get_typed_pool!(pool, T), pool._current_depth)
     nothing
 end
@@ -67,7 +69,8 @@ compile-time unrolling. Increments _current_depth once for all types.
     checkpoint_exprs = [:(_checkpoint_typed_pool!(get_typed_pool!(pool, types[$i]), pool._current_depth)) for i in unique_indices]
     quote
         pool._current_depth += 1
-        push!(pool._untracked_flags, false)
+        push!(pool._untracked_fixed_masks, UInt16(0))
+        push!(pool._untracked_has_others, false)
         $(checkpoint_exprs...)
         nothing
     end
@@ -118,7 +121,8 @@ function rewind!(pool::AdaptiveArrayPool)
         _rewind_typed_pool!(tp, cur_depth)
     end
 
-    pop!(pool._untracked_flags)
+    pop!(pool._untracked_fixed_masks)
+    pop!(pool._untracked_has_others)
     pool._current_depth -= 1
 
     return nothing
@@ -128,7 +132,7 @@ end
     rewind!(pool::AdaptiveArrayPool, ::Type{T})
 
 Restore state for a specific type only.
-Also updates _current_depth and _untracked_flags.
+Also updates _current_depth and bitmask state.
 """
 @inline function rewind!(pool::AdaptiveArrayPool, ::Type{T}) where T
     # Safety guard: at global scope (depth=1), delegate to reset!
@@ -137,7 +141,8 @@ Also updates _current_depth and _untracked_flags.
         return nothing
     end
     _rewind_typed_pool!(get_typed_pool!(pool, T), pool._current_depth)
-    pop!(pool._untracked_flags)
+    pop!(pool._untracked_fixed_masks)
+    pop!(pool._untracked_has_others)
     pool._current_depth -= 1
     nothing
 end
@@ -167,7 +172,8 @@ Decrements _current_depth once after all types are rewound.
             return nothing
         end
         $(rewind_exprs...)
-        pop!(pool._untracked_flags)
+        pop!(pool._untracked_fixed_masks)
+        pop!(pool._untracked_has_others)
         pool._current_depth -= 1
         nothing
     end
@@ -284,8 +290,10 @@ function Base.empty!(pool::AdaptiveArrayPool)
 
     # Reset untracked detection state (1-based sentinel pattern)
     pool._current_depth = 1                   # 1 = global scope (sentinel)
-    empty!(pool._untracked_flags)
-    push!(pool._untracked_flags, false)       # Sentinel: global scope starts with false
+    empty!(pool._untracked_fixed_masks)
+    push!(pool._untracked_fixed_masks, UInt16(0))   # Sentinel: no bits set
+    empty!(pool._untracked_has_others)
+    push!(pool._untracked_has_others, false)         # Sentinel: no others
 
     return pool
 end
@@ -318,7 +326,7 @@ Reset pool state without clearing allocated storage.
 This function:
 - Resets all `n_active` counters to 0
 - Restores all checkpoint stacks to sentinel state
-- Resets `_current_depth` and `_untracked_flags`
+- Resets `_current_depth` and untracked bitmask state
 
 Unlike `empty!`, this **preserves** all allocated vectors, views, and N-D arrays
 for reuse, avoiding reallocation costs.
@@ -363,8 +371,10 @@ function reset!(pool::AdaptiveArrayPool)
 
     # Reset untracked detection state (1-based sentinel pattern)
     pool._current_depth = 1                   # 1 = global scope (sentinel)
-    empty!(pool._untracked_flags)
-    push!(pool._untracked_flags, false)       # Sentinel: global scope starts with false
+    empty!(pool._untracked_fixed_masks)
+    push!(pool._untracked_fixed_masks, UInt16(0))   # Sentinel: no bits set
+    empty!(pool._untracked_has_others)
+    push!(pool._untracked_has_others, false)         # Sentinel: no others
 
     return pool
 end
@@ -396,6 +406,46 @@ See also: [`reset!(::AdaptiveArrayPool)`](@ref), [`rewind!`](@ref)
         $(reset_exprs...)
         pool
     end
+end
+
+# ==============================================================================
+# Bitmask Helpers for Typed Path Decisions
+# ==============================================================================
+
+"""
+    _tracked_mask_for_types(types::Type...) -> UInt16
+
+Compute compile-time bitmask for the types tracked by a typed checkpoint/rewind.
+Uses `@generated` for zero-overhead constant folding.
+
+Returns `UInt16(0)` when called with no arguments.
+Non-fixed-slot types contribute `UInt16(0)` (their bit is 0).
+"""
+@generated function _tracked_mask_for_types(types::Type...)
+    mask = UInt16(0)
+    for i in 1:length(types)
+        T = types[i].parameters[1]
+        mask |= _fixed_slot_bit(T)
+    end
+    return :(UInt16($mask))
+end
+
+"""
+    _can_use_typed_path(pool::AbstractArrayPool, tracked_mask::UInt16) -> Bool
+
+Check if the typed (fast) checkpoint/rewind path is safe to use.
+
+Returns `true` when all untracked acquires at the current depth are a subset
+of the tracked types (bitmask subset check) AND no non-fixed-slot types were used.
+
+The subset check: `(untracked_mask & ~tracked_mask) == 0` means every bit set
+in `untracked_mask` is also set in `tracked_mask`.
+"""
+@inline function _can_use_typed_path(pool::AbstractArrayPool, tracked_mask::UInt16)
+    depth = pool._current_depth
+    untracked_mask = @inbounds pool._untracked_fixed_masks[depth]
+    has_others = @inbounds pool._untracked_has_others[depth]
+    return (untracked_mask & ~tracked_mask) == UInt16(0) && !has_others
 end
 
 # ==============================================================================

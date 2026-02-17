@@ -367,6 +367,22 @@ Tests verify synchronization automatically.
 const FIXED_SLOT_FIELDS = (:float64, :float32, :int64, :int32, :complexf64, :complexf32, :bool, :bits)
 
 # ==============================================================================
+# Fixed-Slot Bit Mapping (for typed untracked tracking)
+# ==============================================================================
+# Maps each fixed-slot type to a unique bit in a UInt16 bitmask.
+# Bit ordering matches FIXED_SLOT_FIELDS. Non-fixed types return UInt16(0).
+
+@inline _fixed_slot_bit(::Type{Float64})    = UInt16(1) << 0
+@inline _fixed_slot_bit(::Type{Float32})    = UInt16(1) << 1
+@inline _fixed_slot_bit(::Type{Int64})      = UInt16(1) << 2
+@inline _fixed_slot_bit(::Type{Int32})      = UInt16(1) << 3
+@inline _fixed_slot_bit(::Type{ComplexF64}) = UInt16(1) << 4
+@inline _fixed_slot_bit(::Type{ComplexF32}) = UInt16(1) << 5
+@inline _fixed_slot_bit(::Type{Bool})       = UInt16(1) << 6
+@inline _fixed_slot_bit(::Type{Bit})        = UInt16(1) << 7
+@inline _fixed_slot_bit(::Type)             = UInt16(0)  # non-fixed-slot → triggers has_others
+
+# ==============================================================================
 # AdaptiveArrayPool
 # ==============================================================================
 
@@ -392,7 +408,8 @@ mutable struct AdaptiveArrayPool <: AbstractArrayPool
 
     # Untracked acquire detection (1-based sentinel pattern)
     _current_depth::Int             # Current scope depth (1 = global scope)
-    _untracked_flags::Vector{Bool}  # Per-depth flag: true if untracked acquire occurred
+    _untracked_fixed_masks::Vector{UInt16}  # Per-depth: which fixed slots had untracked acquires
+    _untracked_has_others::Vector{Bool}     # Per-depth: any non-fixed-slot untracked acquire?
 end
 
 function AdaptiveArrayPool()
@@ -407,7 +424,8 @@ function AdaptiveArrayPool()
         BitTypedPool(),
         IdDict{DataType, Any}(),
         1,              # _current_depth: 1 = global scope (sentinel)
-        [false]         # _untracked_flags: sentinel for global scope
+        [UInt16(0)],    # _untracked_fixed_masks: sentinel (no bits set)
+        [false]         # _untracked_has_others: sentinel (no others)
     )
 end
 

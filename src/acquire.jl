@@ -164,17 +164,23 @@ end
 # ==============================================================================
 
 """
-    _mark_untracked!(pool::AbstractArrayPool)
+    _mark_untracked!(pool::AbstractArrayPool, ::Type{T})
 
-Mark that an untracked acquire has occurred at the current checkpoint depth.
+Mark that an untracked acquire of type `T` has occurred at the current checkpoint depth.
 Called by `acquire!` wrapper; macro-transformed calls use `_acquire_impl!` directly.
 
-With 1-indexed _current_depth (starting at 1 for global scope), this always marks
-the current scope's _untracked_flags.
+For fixed-slot types, sets the corresponding bit in `_untracked_fixed_masks`.
+For non-fixed-slot types, sets `_untracked_has_others` flag.
 """
-@inline function _mark_untracked!(pool::AbstractArrayPool)
-    # Always mark (_current_depth >= 1 guaranteed by sentinel)
-    @inbounds pool._untracked_flags[pool._current_depth] = true
+@inline function _mark_untracked!(pool::AbstractArrayPool, ::Type{T}) where {T}
+    depth = pool._current_depth
+    b = _fixed_slot_bit(T)
+    if b == UInt16(0)
+        @inbounds pool._untracked_has_others[depth] = true
+    else
+        @inbounds pool._untracked_fixed_masks[depth] |= b
+    end
+    nothing
 end
 
 # ==============================================================================
@@ -265,19 +271,19 @@ end
 See also: [`unsafe_acquire!`](@ref) for native array access.
 """
 @inline function acquire!(pool::AbstractArrayPool, ::Type{T}, n::Int) where {T}
-    _mark_untracked!(pool)
+    _mark_untracked!(pool, T)
     _acquire_impl!(pool, T, n)
 end
 
 # Multi-dimensional support (zero-allocation with N-D cache)
 @inline function acquire!(pool::AbstractArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
-    _mark_untracked!(pool)
+    _mark_untracked!(pool, T)
     _acquire_impl!(pool, T, dims...)
 end
 
 # Tuple support: allows acquire!(pool, T, size(A)) where size(A) returns NTuple{N,Int}
 @inline function acquire!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
-    _mark_untracked!(pool)
+    _mark_untracked!(pool, T)
     _acquire_impl!(pool, T, dims...)
 end
 
@@ -297,7 +303,7 @@ end
 ```
 """
 @inline function acquire!(pool::AbstractArrayPool, x::AbstractArray)
-    _mark_untracked!(pool)
+    _mark_untracked!(pool, eltype(x))
     _acquire_impl!(pool, eltype(x), size(x))
 end
 
@@ -352,18 +358,18 @@ end
 See also: [`acquire!`](@ref) for view-based access.
 """
 @inline function unsafe_acquire!(pool::AbstractArrayPool, ::Type{T}, n::Int) where {T}
-    _mark_untracked!(pool)
+    _mark_untracked!(pool, T)
     _unsafe_acquire_impl!(pool, T, n)
 end
 
 @inline function unsafe_acquire!(pool::AbstractArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
-    _mark_untracked!(pool)
+    _mark_untracked!(pool, T)
     _unsafe_acquire_impl!(pool, T, dims...)
 end
 
 # Tuple support
 @inline function unsafe_acquire!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
-    _mark_untracked!(pool)
+    _mark_untracked!(pool, T)
     _unsafe_acquire_impl!(pool, T, dims)
 end
 
@@ -383,7 +389,7 @@ end
 ```
 """
 @inline function unsafe_acquire!(pool::AbstractArrayPool, x::AbstractArray)
-    _mark_untracked!(pool)
+    _mark_untracked!(pool, eltype(x))
     _unsafe_acquire_impl!(pool, eltype(x), size(x))
 end
 
