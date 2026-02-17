@@ -419,6 +419,46 @@ See also: [`reset!(::AdaptiveArrayPool)`](@ref), [`rewind!`](@ref)
 end
 
 # ==============================================================================
+# Bitmask Helpers for Typed Path Decisions
+# ==============================================================================
+
+"""
+    _tracked_mask_for_types(types::Type...) -> UInt16
+
+Compute compile-time bitmask for the types tracked by a typed checkpoint/rewind.
+Uses `@generated` for zero-overhead constant folding.
+
+Returns `UInt16(0)` when called with no arguments.
+Non-fixed-slot types contribute `UInt16(0)` (their bit is 0).
+"""
+@generated function _tracked_mask_for_types(types::Type...)
+    mask = UInt16(0)
+    for i in 1:length(types)
+        T = types[i].parameters[1]
+        mask |= _fixed_slot_bit(T)
+    end
+    return :(UInt16($mask))
+end
+
+"""
+    _can_use_typed_path(pool::AbstractArrayPool, tracked_mask::UInt16) -> Bool
+
+Check if the typed (fast) checkpoint/rewind path is safe to use.
+
+Returns `true` when all untracked acquires at the current depth are a subset
+of the tracked types (bitmask subset check) AND no non-fixed-slot types were used.
+
+The subset check: `(untracked_mask & ~tracked_mask) == 0` means every bit set
+in `untracked_mask` is also set in `tracked_mask`.
+"""
+@inline function _can_use_typed_path(pool::AbstractArrayPool, tracked_mask::UInt16)
+    depth = pool._current_depth
+    untracked_mask = @inbounds pool._untracked_fixed_masks[depth]
+    has_others = @inbounds pool._untracked_has_others[depth]
+    return (untracked_mask & ~tracked_mask) == UInt16(0) && !has_others
+end
+
+# ==============================================================================
 # DisabledPool State Management (no-ops)
 # ==============================================================================
 # DisabledPool doesn't track state, so all operations are no-ops.

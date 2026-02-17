@@ -340,31 +340,14 @@ function _generate_pool_code(pool_name, expr, force_enable; source::Union{LineNu
     # Transform acquire! calls to _acquire_impl! (bypasses untracked marking)
     transformed_expr = _transform_acquire_calls(expr, pool_name)
 
-    # For typed checkpoint, add _untracked_flags check for fallback to full checkpoint
-    # This protects parent scope arrays when entering nested @with_pool
     if use_typed
-        typed_checkpoint_call = _generate_typed_checkpoint_call(esc(pool_name), static_types)
-        checkpoint_call = quote
-            if @inbounds $(esc(pool_name))._untracked_flags[$(esc(pool_name))._current_depth]
-                $checkpoint!($(esc(pool_name)))  # Full checkpoint (parent had untracked)
-            else
-                $typed_checkpoint_call  # Fast typed checkpoint
-            end
-        end
+        checkpoint_call = _generate_typed_checkpoint_call(esc(pool_name), static_types)
     else
         checkpoint_call = :($checkpoint!($(esc(pool_name))))
     end
 
-    # For typed checkpoint, add _untracked_flags check for fallback to full rewind
     if use_typed
-        typed_rewind_call = _generate_typed_rewind_call(esc(pool_name), static_types)
-        rewind_call = quote
-            if @inbounds $(esc(pool_name))._untracked_flags[$(esc(pool_name))._current_depth]
-                $rewind!($(esc(pool_name)))  # Full rewind (untracked detected)
-            else
-                $typed_rewind_call  # Fast typed rewind
-            end
-        end
+        rewind_call = _generate_typed_rewind_call(esc(pool_name), static_types)
     else
         rewind_call = :($rewind!($(esc(pool_name))))
     end
@@ -449,22 +432,8 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, forc
         pool_getter = :($_get_pool_for_backend($(Val{backend}())))
 
         if use_typed
-            typed_checkpoint_call = _generate_typed_checkpoint_call(esc(pool_name), static_types)
-            checkpoint_call = quote
-                if @inbounds $(esc(pool_name))._untracked_flags[$(esc(pool_name))._current_depth]
-                    $checkpoint!($(esc(pool_name)))
-                else
-                    $typed_checkpoint_call
-                end
-            end
-            typed_rewind_call = _generate_typed_rewind_call(esc(pool_name), static_types)
-            rewind_call = quote
-                if @inbounds $(esc(pool_name))._untracked_flags[$(esc(pool_name))._current_depth]
-                    $rewind!($(esc(pool_name)))
-                else
-                    $typed_rewind_call
-                end
-            end
+            checkpoint_call = _generate_typed_checkpoint_call(esc(pool_name), static_types)
+            rewind_call = _generate_typed_rewind_call(esc(pool_name), static_types)
         else
             checkpoint_call = :($checkpoint!($(esc(pool_name))))
             rewind_call = :($rewind!($(esc(pool_name))))
@@ -509,30 +478,14 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, forc
     # Use Val{backend}() for compile-time dispatch - fully inlinable
     pool_getter = :($_get_pool_for_backend($(Val{backend}())))
 
-    # Generate checkpoint call (typed or full)
     if use_typed
-        typed_checkpoint_call = _generate_typed_checkpoint_call(esc(pool_name), static_types)
-        checkpoint_call = quote
-            if @inbounds $(esc(pool_name))._untracked_flags[$(esc(pool_name))._current_depth]
-                $checkpoint!($(esc(pool_name)))  # Full checkpoint (parent had untracked)
-            else
-                $typed_checkpoint_call  # Fast typed checkpoint
-            end
-        end
+        checkpoint_call = _generate_typed_checkpoint_call(esc(pool_name), static_types)
     else
         checkpoint_call = :($checkpoint!($(esc(pool_name))))
     end
 
-    # Generate rewind call (typed or full)
     if use_typed
-        typed_rewind_call = _generate_typed_rewind_call(esc(pool_name), static_types)
-        rewind_call = quote
-            if @inbounds $(esc(pool_name))._untracked_flags[$(esc(pool_name))._current_depth]
-                $rewind!($(esc(pool_name)))  # Full rewind (untracked detected)
-            else
-                $typed_rewind_call  # Fast typed rewind
-            end
-        end
+        rewind_call = _generate_typed_rewind_call(esc(pool_name), static_types)
     else
         rewind_call = :($rewind!($(esc(pool_name))))
     end
@@ -586,30 +539,14 @@ function _generate_function_pool_code_with_backend(backend::Symbol, pool_name, f
     # Use Val{backend}() for compile-time dispatch
     pool_getter = :($_get_pool_for_backend($(Val{backend}())))
 
-    # Generate checkpoint call (typed or full)
     if use_typed
-        typed_checkpoint_call = _generate_typed_checkpoint_call(esc(pool_name), static_types)
-        checkpoint_call = quote
-            if @inbounds $(esc(pool_name))._untracked_flags[$(esc(pool_name))._current_depth]
-                $checkpoint!($(esc(pool_name)))
-            else
-                $typed_checkpoint_call
-            end
-        end
+        checkpoint_call = _generate_typed_checkpoint_call(esc(pool_name), static_types)
     else
         checkpoint_call = :($checkpoint!($(esc(pool_name))))
     end
 
-    # Generate rewind call (typed or full)
     if use_typed
-        typed_rewind_call = _generate_typed_rewind_call(esc(pool_name), static_types)
-        rewind_call = quote
-            if @inbounds $(esc(pool_name))._untracked_flags[$(esc(pool_name))._current_depth]
-                $rewind!($(esc(pool_name)))
-            else
-                $typed_rewind_call
-            end
-        end
+        rewind_call = _generate_typed_rewind_call(esc(pool_name), static_types)
     else
         rewind_call = :($rewind!($(esc(pool_name))))
     end
@@ -655,31 +592,14 @@ function _generate_function_pool_code(pool_name, func_def, force_enable, disable
     # Transform acquire! calls to _acquire_impl! (bypasses untracked marking)
     transformed_body = _transform_acquire_calls(body, pool_name)
 
-    # For typed checkpoint, add _untracked_flags check for fallback to full checkpoint
-    # This protects parent scope arrays when entering nested @with_pool
     if use_typed
-        typed_checkpoint_call = _generate_typed_checkpoint_call(esc(pool_name), static_types)
-        checkpoint_call = quote
-            if @inbounds $(esc(pool_name))._untracked_flags[$(esc(pool_name))._current_depth]
-                $checkpoint!($(esc(pool_name)))  # Full checkpoint (parent had untracked)
-            else
-                $typed_checkpoint_call  # Fast typed checkpoint
-            end
-        end
+        checkpoint_call = _generate_typed_checkpoint_call(esc(pool_name), static_types)
     else
         checkpoint_call = :($checkpoint!($(esc(pool_name))))
     end
 
-    # For typed checkpoint, add _untracked_flags check for fallback to full rewind
     if use_typed
-        typed_rewind_call = _generate_typed_rewind_call(esc(pool_name), static_types)
-        rewind_call = quote
-            if @inbounds $(esc(pool_name))._untracked_flags[$(esc(pool_name))._current_depth]
-                $rewind!($(esc(pool_name)))  # Full rewind (untracked detected)
-            else
-                $typed_rewind_call  # Fast typed rewind
-            end
-        end
+        rewind_call = _generate_typed_rewind_call(esc(pool_name), static_types)
     else
         rewind_call = :($rewind!($(esc(pool_name))))
     end
@@ -982,30 +902,48 @@ end
 """
     _generate_typed_checkpoint_call(pool_expr, types)
 
-Generate checkpoint!(pool, T1, T2, ...) call expression.
+Generate bitmask-aware checkpoint call. When types are known at compile time,
+emits a conditional: if untracked types ⊆ tracked types → typed checkpoint,
+otherwise → full checkpoint.
 """
 function _generate_typed_checkpoint_call(pool_expr, types)
     if isempty(types)
         return :($checkpoint!($pool_expr))
     else
-        # esc types so they resolve in caller's namespace (Float64, not AdaptiveArrayPools.Float64)
         escaped_types = [esc(t) for t in types]
-        return :($checkpoint!($pool_expr, $(escaped_types...)))
+        typed_call = :($checkpoint!($pool_expr, $(escaped_types...)))
+        full_call = :($checkpoint!($pool_expr))
+        return quote
+            if $_can_use_typed_path($pool_expr, $_tracked_mask_for_types($(escaped_types...)))
+                $typed_call
+            else
+                $full_call
+            end
+        end
     end
 end
 
 """
     _generate_typed_rewind_call(pool_expr, types)
 
-Generate rewind!(pool, T1, T2, ...) call expression.
-Types are passed in original order; rewind! handles reversal internally.
+Generate bitmask-aware rewind call. When types are known at compile time,
+emits a conditional: if untracked types ⊆ tracked types → typed rewind,
+otherwise → full rewind.
 """
 function _generate_typed_rewind_call(pool_expr, types)
     if isempty(types)
         return :($rewind!($pool_expr))
     else
         escaped_types = [esc(t) for t in types]
-        return :($rewind!($pool_expr, $(escaped_types...)))
+        typed_call = :($rewind!($pool_expr, $(escaped_types...)))
+        full_call = :($rewind!($pool_expr))
+        return quote
+            if $_can_use_typed_path($pool_expr, $_tracked_mask_for_types($(escaped_types...)))
+                $typed_call
+            else
+                $full_call
+            end
+        end
     end
 end
 

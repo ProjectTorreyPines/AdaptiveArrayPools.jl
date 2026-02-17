@@ -1670,4 +1670,206 @@
         rewind!(pool)
     end
 
+    # ==================================================================
+    # Phase 3: _tracked_mask_for_types and _can_use_typed_path
+    # ==================================================================
+
+    @testset "_tracked_mask_for_types: computes correct mask" begin
+        using AdaptiveArrayPools: _tracked_mask_for_types
+
+        # No args → zero mask
+        @test _tracked_mask_for_types() == UInt16(0)
+
+        # Single types
+        @test _tracked_mask_for_types(Float64) == _fixed_slot_bit(Float64)
+        @test _tracked_mask_for_types(Float32) == _fixed_slot_bit(Float32)
+        @test _tracked_mask_for_types(Bit) == _fixed_slot_bit(Bit)
+
+        # Multiple types → OR combination
+        @test _tracked_mask_for_types(Float64, Float32) == (_fixed_slot_bit(Float64) | _fixed_slot_bit(Float32))
+        @test _tracked_mask_for_types(Float64, Int32) == (_fixed_slot_bit(Float64) | _fixed_slot_bit(Int32))
+
+        # All 8 fixed types
+        all_mask = _tracked_mask_for_types(Float64, Float32, Int64, Int32, ComplexF64, ComplexF32, Bool, Bit)
+        expected = UInt16(0)
+        for T in (Float64, Float32, Int64, Int32, ComplexF64, ComplexF32, Bool, Bit)
+            expected |= _fixed_slot_bit(T)
+        end
+        @test all_mask == expected
+
+        # Non-fixed-slot types contribute UInt16(0)
+        @test _tracked_mask_for_types(UInt8) == UInt16(0)
+        @test _tracked_mask_for_types(Float64, UInt8) == _fixed_slot_bit(Float64)
+
+        # Duplicate types → idempotent
+        @test _tracked_mask_for_types(Float64, Float64) == _fixed_slot_bit(Float64)
+    end
+
+    @testset "_can_use_typed_path: truth table" begin
+        using AdaptiveArrayPools: _can_use_typed_path, _tracked_mask_for_types
+
+        pool = AdaptiveArrayPool()
+        checkpoint!(pool)  # depth = 2
+
+        # Case 1: no untracked at all → typed path OK
+        @test _can_use_typed_path(pool, _tracked_mask_for_types(Float64)) == true
+
+        # Case 2: untracked Float64, tracked includes Float64 → subset → OK
+        pool._untracked_fixed_masks[2] = _fixed_slot_bit(Float64)
+        @test _can_use_typed_path(pool, _tracked_mask_for_types(Float64)) == true
+
+        # Case 3: untracked Float64, tracked is Float32 only → NOT subset → full
+        @test _can_use_typed_path(pool, _tracked_mask_for_types(Float32)) == false
+
+        # Case 4: untracked Float64|Float32, tracked Float64 only → partial → full
+        pool._untracked_fixed_masks[2] = _fixed_slot_bit(Float64) | _fixed_slot_bit(Float32)
+        @test _can_use_typed_path(pool, _tracked_mask_for_types(Float64)) == false
+
+        # Case 5: untracked Float64|Float32, tracked Float64|Float32 → exact match → OK
+        @test _can_use_typed_path(pool, _tracked_mask_for_types(Float64, Float32)) == true
+
+        # Case 6: untracked Float64 + has_others → always full
+        pool._untracked_fixed_masks[2] = _fixed_slot_bit(Float64)
+        pool._untracked_has_others[2] = true
+        @test _can_use_typed_path(pool, _tracked_mask_for_types(Float64)) == false
+
+        # Case 7: no fixed untracked but has_others → always full
+        pool._untracked_fixed_masks[2] = UInt16(0)
+        pool._untracked_has_others[2] = true
+        @test _can_use_typed_path(pool, _tracked_mask_for_types(Float64)) == false
+
+        rewind!(pool)
+    end
+
+    # ==================================================================
+    # Phase 3: End-to-end runtime scenarios
+    # ==================================================================
+
+    @testset "Scenario A: typed rewind preserved when untracked ⊆ tracked" begin
+        # Helper function acquires Float64 OUTSIDE @with_pool → untracked
+        function _scenario_a_helper!(pool)
+            acquire!(pool, Float64, 5)
+        end
+
+        pool = AdaptiveArrayPool()
+        checkpoint!(pool)  # outer scope
+
+        # Macro scope uses Float64 → tracked set = {Float64}
+        @with_pool pool begin
+            v = acquire!(pool, Float64, 10)
+            v .= 1.0
+            _scenario_a_helper!(pool)  # untracked Float64 → subset of tracked
+        end
+
+        # Pool state should be correct after rewind
+        @test pool.float64.n_active == 0  # all rewound (outer had no acquires)
+        rewind!(pool)
+    end
+
+    @testset "Scenario B: full rewind when untracked NOT ⊆ tracked" begin
+        # Helper acquires Float32 while @with_pool only tracks Float64
+        function _scenario_b_helper!(pool)
+            acquire!(pool, Float32, 5)
+        end
+
+        pool = AdaptiveArrayPool()
+        checkpoint!(pool)
+
+        @with_pool pool begin
+            v = acquire!(pool, Float64, 10)
+            v .= 1.0
+            _scenario_b_helper!(pool)  # untracked Float32 → NOT subset of {Float64}
+        end
+
+        # Both types should be correctly rewound
+        @test pool.float64.n_active == 0
+        @test pool.float32.n_active == 0
+        rewind!(pool)
+    end
+
+    @testset "Scenario C: others triggers full rewind" begin
+        # Helper acquires UInt8 (non-fixed-slot) → has_others = true
+        function _scenario_c_helper!(pool)
+            acquire!(pool, UInt8, 5)
+        end
+
+        pool = AdaptiveArrayPool()
+        checkpoint!(pool)
+
+        @with_pool pool begin
+            v = acquire!(pool, Float64, 10)
+            v .= 1.0
+            _scenario_c_helper!(pool)  # untracked UInt8 → has_others → full
+        end
+
+        @test pool.float64.n_active == 0
+        @test get_typed_pool!(pool, UInt8).n_active == 0
+        rewind!(pool)
+    end
+
+    @testset "Scenario D: nested checkpoint with parent untracked ⊆ child tracked" begin
+        # Helper acquires Float64 OUTSIDE @with_pool → untracked
+        function _scenario_d_helper!(pool)
+            acquire!(pool, Float64, 3)
+        end
+
+        # Inner scope as function to avoid Julia scoping conflict:
+        # nested `local pool` in same try-block soft scope causes UndefVarError
+        function _scenario_d_inner!()
+            @with_pool pool begin
+                v2 = acquire!(pool, Float64, 5)
+                v2 .= 2.0
+                @test pool.float64.n_active >= 3  # v1 + helper + v2
+            end
+        end
+
+        pool = AdaptiveArrayPool()
+
+        # Parent @with_pool uses Float64
+        @with_pool pool begin
+            v1 = acquire!(pool, Float64, 10)
+            v1 .= 1.0
+            _scenario_d_helper!(pool)  # marks untracked Float64 in parent scope
+
+            # Nested @with_pool also uses Float64 → can use typed checkpoint
+            _scenario_d_inner!()
+
+            # After nested rewind, v1 and helper should still be active
+            @test v1[1] == 1.0  # v1 still valid
+        end
+
+        @test pool.float64.n_active == 0
+    end
+
+    @testset "Scenario E: nested checkpoint with parent untracked has_others → full" begin
+        # Helper acquires UInt8 (non-fixed-slot) → has_others = true
+        function _scenario_e_helper!(pool)
+            acquire!(pool, UInt8, 3)
+        end
+
+        # Inner scope as function (avoids Julia scoping conflict with same-name local)
+        function _scenario_e_inner!()
+            @with_pool pool begin
+                v2 = acquire!(pool, Float64, 5)
+                v2 .= 2.0
+            end
+        end
+
+        pool = AdaptiveArrayPool()
+
+        @with_pool pool begin
+            v1 = acquire!(pool, Float64, 10)
+            v1 .= 1.0
+            _scenario_e_helper!(pool)  # marks has_others in parent scope
+
+            # Nested @with_pool: parent had has_others → must use full checkpoint
+            _scenario_e_inner!()
+
+            @test v1[1] == 1.0  # v1 still valid after nested rewind
+        end
+
+        @test pool.float64.n_active == 0
+        @test get_typed_pool!(pool, UInt8).n_active == 0
+    end
+
 end # State Management
