@@ -408,9 +408,6 @@ mutable struct AdaptiveArrayPool <: AbstractArrayPool
 
     # Untracked acquire detection (1-based sentinel pattern)
     _current_depth::Int             # Current scope depth (1 = global scope)
-    _untracked_flags::Vector{Bool}  # Per-depth flag: true if untracked acquire occurred
-
-    # Typed untracked tracking (Phase 1: bitmask metadata, dual-track with _untracked_flags)
     _untracked_fixed_masks::Vector{UInt16}  # Per-depth: which fixed slots had untracked acquires
     _untracked_has_others::Vector{Bool}     # Per-depth: any non-fixed-slot untracked acquire?
 end
@@ -427,7 +424,6 @@ function AdaptiveArrayPool()
         BitTypedPool(),
         IdDict{DataType, Any}(),
         1,              # _current_depth: 1 = global scope (sentinel)
-        [false],        # _untracked_flags: sentinel for global scope
         [UInt16(0)],    # _untracked_fixed_masks: sentinel (no bits set)
         [false]         # _untracked_has_others: sentinel (no others)
     )

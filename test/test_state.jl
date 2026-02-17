@@ -306,7 +306,8 @@
             reset!(pool)
 
             @test pool._current_depth == 1
-            @test pool._untracked_flags == [false]
+            @test pool._untracked_fixed_masks == [UInt16(0)]
+            @test pool._untracked_has_others == [false]
             @test pool.float64._checkpoint_n_active == [0]  # Sentinel only
             @test pool.float64._checkpoint_depths == [0]    # Sentinel only
         end
@@ -493,7 +494,7 @@
             rewind!(pool)
             @test pool.float64.n_active == 0
             @test pool._current_depth == 1
-            @test pool._untracked_flags == [false]
+            @test pool._untracked_fixed_masks == [UInt16(0)]
         end
 
         @testset "rewind! after reset!" begin
@@ -734,25 +735,24 @@
 
     @testset "Parent scope protection via full checkpoint" begin
         # Test: Parent scope arrays are protected by automatic full checkpoint
-        # when entering @with_pool with _untracked_flags[_current_depth] = true
+        # when untracked acquire occurred at current depth
 
         # Helper function that acquires Int64 (called from inside @with_pool)
         # Since it's defined outside the macro, acquire! won't be transformed
         function untracked_helper(p)
-            acquire!(p, Int64, 5)  # This will mark _untracked_flags = true
+            acquire!(p, Int64, 5)  # This will mark untracked bitmask
         end
 
         pool = get_task_local_pool()
         empty!(pool)  # Start fresh
 
-        # Acquire Int64 array OUTSIDE @with_pool - marks global _untracked_flags
+        # Acquire Int64 array OUTSIDE @with_pool - marks untracked bitmask
         v_parent = acquire!(pool, Int64, 10)
         v_parent .= 42  # Initialize
         @test pool.int64.n_active == 1
-        @test pool._untracked_flags[1] == true  # Global scope marked
+        @test pool._untracked_fixed_masks[1] == AdaptiveArrayPools._fixed_slot_bit(Int64)
 
-        # Enter @with_pool - should do FULL checkpoint (because _untracked_flags[1] = true)
-        # This protects the parent's Int64 arrays
+        # Enter @with_pool - full checkpoint protects parent's Int64 arrays
         @with_pool pool begin
             v_float = acquire!(pool, Float64, 100)  # Tracked
             untracked_helper(pool)                   # Untracked Int64 acquire!
@@ -776,7 +776,7 @@
         v_parent = acquire!(pool, Int32, 7)
         v_parent .= Int32(123)
         @test pool.int32.n_active == 1
-        @test pool._untracked_flags[1] == true
+        @test pool._untracked_fixed_masks[1] == AdaptiveArrayPools._fixed_slot_bit(Int32)
 
         # Helper for Int32
         function int32_helper(p)
@@ -827,7 +827,7 @@
         pool = AdaptiveArrayPool()
 
         # No global untracked acquire
-        @test pool._untracked_flags[1] == false
+        @test pool._untracked_fixed_masks[1] == UInt16(0)
 
         # Checkpoint/rewind with typed - should work normally
         checkpoint!(pool)
@@ -1002,7 +1002,7 @@
         @test pool.bool.n_active == 0
         @test pool.complexf64.n_active == 0
         @test pool._current_depth == 1
-        @test pool._untracked_flags == [false]
+        @test pool._untracked_fixed_masks == [UInt16(0)]
 
         empty!(pool)
     end
@@ -1527,9 +1527,6 @@
         _mark_untracked!(pool, Float64)
         @test pool._untracked_fixed_masks[2] == _fixed_slot_bit(Float64) | _fixed_slot_bit(Float32)
 
-        # Legacy bridge: _untracked_flags also set
-        @test pool._untracked_flags[2] == true
-
         rewind!(pool)
     end
 
@@ -1543,9 +1540,6 @@
         _mark_untracked!(pool, UInt8)
         @test pool._untracked_fixed_masks[2] == UInt16(0)  # mask unchanged
         @test pool._untracked_has_others[2] == true
-
-        # Legacy bridge
-        @test pool._untracked_flags[2] == true
 
         rewind!(pool)
     end
@@ -1870,6 +1864,67 @@
 
         @test pool.float64.n_active == 0
         @test get_typed_pool!(pool, UInt8).n_active == 0
+    end
+
+    # ==================================================================
+    # Phase 4: Legacy _untracked_flags removal verification
+    # ==================================================================
+    @testset "Phase 4: _untracked_flags field removed from AdaptiveArrayPool" begin
+        # The legacy boolean _untracked_flags field has been replaced by
+        # bitmask-based tracking (_untracked_fixed_masks + _untracked_has_others).
+        # Verify it no longer exists as a struct field.
+        @test !(:_untracked_flags in fieldnames(AdaptiveArrayPool))
+
+        # Verify the bitmask fields ARE present (they are the replacement)
+        @test :_untracked_fixed_masks in fieldnames(AdaptiveArrayPool)
+        @test :_untracked_has_others in fieldnames(AdaptiveArrayPool)
+    end
+
+    @testset "Phase 4: bitmask stacks have no stale state after lifecycle ops" begin
+        pool = AdaptiveArrayPool()
+
+        # Initial sentinel state
+        @test pool._untracked_fixed_masks == [UInt16(0)]
+        @test pool._untracked_has_others == [false]
+
+        # Checkpoint → mark → rewind cycle leaves no stale bits
+        checkpoint!(pool)
+        _mark_untracked!(pool, Float64)
+        @test pool._untracked_fixed_masks[2] == _fixed_slot_bit(Float64)
+        rewind!(pool)
+        @test pool._untracked_fixed_masks == [UInt16(0)]  # back to sentinel
+        @test pool._untracked_has_others == [false]
+
+        # Nested checkpoint → mark others → rewind cleans up
+        checkpoint!(pool)  # depth 2
+        checkpoint!(pool)  # depth 3
+        _mark_untracked!(pool, UInt8)  # others at depth 3
+        @test pool._untracked_has_others[3] == true
+        rewind!(pool)  # back to depth 2
+        @test length(pool._untracked_has_others) == 2
+        @test pool._untracked_has_others[2] == false  # depth 2 clean
+        rewind!(pool)  # back to depth 1
+        @test pool._untracked_fixed_masks == [UInt16(0)]
+        @test pool._untracked_has_others == [false]
+
+        # reset! restores sentinel state after deep nesting
+        checkpoint!(pool)
+        checkpoint!(pool)
+        _mark_untracked!(pool, Float32)
+        _mark_untracked!(pool, Int64)
+        reset!(pool)
+        @test pool._untracked_fixed_masks == [UInt16(0)]
+        @test pool._untracked_has_others == [false]
+        @test pool._current_depth == 1
+
+        # empty! also restores sentinel state
+        checkpoint!(pool)
+        _mark_untracked!(pool, ComplexF64)
+        _mark_untracked!(pool, UInt16)
+        empty!(pool)
+        @test pool._untracked_fixed_masks == [UInt16(0)]
+        @test pool._untracked_has_others == [false]
+        @test pool._current_depth == 1
     end
 
 end # State Management

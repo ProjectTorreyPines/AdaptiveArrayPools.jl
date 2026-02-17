@@ -33,7 +33,7 @@ end
 function AdaptiveArrayPools.checkpoint!(pool::CuAdaptiveArrayPool)
     # Increment depth and initialize untracked flag
     pool._current_depth += 1
-    push!(pool._untracked_flags, false)
+
     depth = pool._current_depth
 
     # Fixed slots - zero allocation via @generated iteration
@@ -52,7 +52,7 @@ end
 # Type-specific checkpoint (single type)
 @inline function AdaptiveArrayPools.checkpoint!(pool::CuAdaptiveArrayPool, ::Type{T}) where {T}
     pool._current_depth += 1
-    push!(pool._untracked_flags, false)
+
     _checkpoint_typed_pool!(AdaptiveArrayPools.get_typed_pool!(pool, T), pool._current_depth)
     nothing
 end
@@ -62,7 +62,7 @@ end
     checkpoint_exprs = [:(_checkpoint_typed_pool!(AdaptiveArrayPools.get_typed_pool!(pool, types[$i]), pool._current_depth)) for i in 1:length(types)]
     quote
         pool._current_depth += 1
-        push!(pool._untracked_flags, false)
+    
         $(checkpoint_exprs...)
         nothing
     end
@@ -91,7 +91,7 @@ function AdaptiveArrayPools.rewind!(pool::CuAdaptiveArrayPool)
         _rewind_typed_pool!(tp, cur_depth)
     end
 
-    pop!(pool._untracked_flags)
+
     pool._current_depth -= 1
 
     return nothing
@@ -104,7 +104,7 @@ end
         return nothing
     end
     _rewind_typed_pool!(AdaptiveArrayPools.get_typed_pool!(pool, T), pool._current_depth)
-    pop!(pool._untracked_flags)
+
     pool._current_depth -= 1
     nothing
 end
@@ -119,7 +119,7 @@ end
             return nothing
         end
         $(rewind_exprs...)
-        pop!(pool._untracked_flags)
+    
         pool._current_depth -= 1
         nothing
     end
@@ -142,8 +142,6 @@ function AdaptiveArrayPools.reset!(pool::CuAdaptiveArrayPool)
 
     # Reset untracked detection state
     pool._current_depth = 1
-    empty!(pool._untracked_flags)
-    push!(pool._untracked_flags, false)
 
     return pool
 end
@@ -199,8 +197,6 @@ function Base.empty!(pool::CuAdaptiveArrayPool)
 
     # Reset state
     pool._current_depth = 1
-    empty!(pool._untracked_flags)
-    push!(pool._untracked_flags, false)
 
     return pool
 end

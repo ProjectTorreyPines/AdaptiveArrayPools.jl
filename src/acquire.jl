@@ -171,7 +171,6 @@ Called by `acquire!` wrapper; macro-transformed calls use `_acquire_impl!` direc
 
 For fixed-slot types, sets the corresponding bit in `_untracked_fixed_masks`.
 For non-fixed-slot types, sets `_untracked_has_others` flag.
-Also maintains legacy `_untracked_flags` for bridge compatibility (removed in Phase 4).
 """
 @inline function _mark_untracked!(pool::AbstractArrayPool, ::Type{T}) where {T}
     depth = pool._current_depth
@@ -181,8 +180,6 @@ Also maintains legacy `_untracked_flags` for bridge compatibility (removed in Ph
     else
         @inbounds pool._untracked_fixed_masks[depth] |= b
     end
-    # Bridge: keep legacy bool for dual-track transition (Phase 4 removes this)
-    @inbounds pool._untracked_flags[depth] = true
     nothing
 end
 

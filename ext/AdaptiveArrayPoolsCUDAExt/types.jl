@@ -112,7 +112,6 @@ mutable struct CuAdaptiveArrayPool <: AbstractArrayPool
 
     # State management (same as CPU)
     _current_depth::Int
-    _untracked_flags::Vector{Bool}
 
     # Device tracking (safety)
     device_id::Int
@@ -131,7 +130,6 @@ function CuAdaptiveArrayPool()
         CuTypedPool{Bool}(),
         IdDict{DataType, Any}(),
         1,              # _current_depth (1 = global scope)
-        [false],        # _untracked_flags sentinel
         CUDA.deviceid(dev)  # Use public API
     )
 end

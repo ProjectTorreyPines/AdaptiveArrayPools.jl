@@ -115,50 +115,56 @@ end
 # If only checkpoint!(pool, Int64), Float64 arrays won't be rewound!
 ```
 
-### The Solution: `_untracked_flags`
+### The Solution: Bitmask-Based Untracked Tracking
 
-Every `acquire!` call (and convenience functions) marks itself as "untracked":
+Every `acquire!` call (and convenience functions) marks itself as "untracked" with type-specific bitmask information:
 
 ```julia
 # Public API (called from user code outside macro)
 @inline function acquire!(pool, ::Type{T}, n::Int) where {T}
-    _mark_untracked!(pool)              # ← Sets flag!
+    _mark_untracked!(pool, T)           # ← Sets type-specific bitmask!
     _acquire_impl!(pool, T, n)
 end
 
 # Macro-transformed calls skip the marking
 # (because macro already knows about them)
-_acquire_impl!(pool, T, n)               # ← No flag
+_acquire_impl!(pool, T, n)               # ← No marking
 ```
+
+Each fixed-slot type maps to a bit in a `UInt16` bitmask via `_fixed_slot_bit(T)`.
+Non-fixed-slot types set a separate `_untracked_has_others` flag.
 
 ### Flow Diagram
 
 ```
-@with_pool pool begin                    State of pool._untracked_flags
-    │                                    ─────────────────────────────────
-    ├─► checkpoint!(pool, Int64)         depth=2, flag[2]=false
+@with_pool pool begin                    Bitmask state at depth 2
+    │                                    ─────────────────────────────
+    ├─► checkpoint!(pool, Int64)         masks[2]=0x0000, others[2]=false
     │
-    │   A = _acquire_impl!(...)          (macro-transformed, no flag set)
+    │   A = _acquire_impl!(...)          (macro-transformed, no mark)
     │   B = helper!(pool)
     │       └─► zeros!(pool, Float64, N)
-    │           └─► _mark_untracked!(pool)  flag[2]=TRUE ←──┐
-    │                                                        │
-    │   ... more code ...                                    │
-    │                                                        │
-    └─► rewind! check:                                       │
-        if pool._untracked_flags[2]  ─────────────────────────┘
-            rewind!(pool)            # Full rewind (safe)
-        else
+    │           └─► _mark_untracked!(pool, Float64)
+    │               masks[2] |= 0x0001 (Float64 bit) ←───┐
+    │                                                      │
+    │   ... more code ...                                  │
+    │                                                      │
+    └─► rewind! check:                                     │
+        tracked_mask = _tracked_mask_for_types(Int64)      │
+        if _can_use_typed_path(pool, tracked_mask) ────────┘
             rewind!(pool, Int64)     # Typed rewind (fast)
+        else                         # Float64 not in {Int64} → full
+            rewind!(pool)            # Full rewind (safe)
         end
 end
 ```
 
 ### Why This Works
 
-1. **Macro-tracked calls**: Transformed to `_acquire_impl!` → no flag → typed rewind
-2. **Untracked calls**: Use public API → sets flag → triggers full rewind
-3. **Result**: Always safe, with optimization when possible
+1. **Macro-tracked calls**: Transformed to `_acquire_impl!` → no bitmask mark → typed path
+2. **Untracked calls**: Use public API → sets type-specific bitmask → subset check at rewind
+3. **Subset optimization**: If untracked types are a subset of tracked types, the typed path is still safe
+4. **Result**: Always safe, with finer-grained optimization than a single boolean flag
 
 ## Nested `@with_pool` Handling
 
@@ -170,13 +176,13 @@ Each `@with_pool` maintains its own checkpoint depth:
     │
     ├─► @with_pool p2 begin              depth: 2 → 3
     │       v2 = acquire!(p2, Int64, 5)
-    │       helper!(p2)                  # sets flag[3]=true
+    │       helper!(p2)                  # marks bitmask at depth 3
     │       sum(v2)
-    │   end                              depth: 3 → 2, flag[3] checked
+    │   end                              depth: 3 → 2, bitmask checked
     │
     │   # v1 still valid here!
     sum(v1)
-end                                      depth: 2 → 1, flag[2] checked
+end                                      depth: 2 → 1, bitmask checked
 ```
 
 ### Depth Tracking Data Structures
@@ -184,13 +190,15 @@ end                                      depth: 2 → 1, flag[2] checked
 ```julia
 struct AdaptiveArrayPool
     # ... type pools ...
-    _current_depth::Int              # Current scope depth (1 = global)
-    _untracked_flags::Vector{Bool}   # Per-depth flag array
+    _current_depth::Int                     # Current scope depth (1 = global)
+    _untracked_fixed_masks::Vector{UInt16}  # Per-depth: which fixed slots untracked
+    _untracked_has_others::Vector{Bool}     # Per-depth: any non-fixed-slot untracked
 end
 
 # Initialized with sentinel:
-_current_depth = 1                   # Global scope
-_untracked_flags = [false]           # Sentinel for depth=1
+_current_depth = 1                          # Global scope
+_untracked_fixed_masks = [UInt16(0)]        # Sentinel for depth=1
+_untracked_has_others = [false]             # Sentinel for depth=1
 ```
 
 ## Performance Impact
@@ -199,9 +207,12 @@ _untracked_flags = [false]           # Sentinel for depth=1
 |----------|-------------------|----------------|
 | 1 type, no untracked | `checkpoint!(pool, T)` | **~77% faster** |
 | Multiple types, no untracked | `checkpoint!(pool, T1, T2, ...)` | **~50% faster** |
-| Any untracked acquire | `checkpoint!(pool)` | Baseline |
+| Untracked subset of tracked | `checkpoint!(pool, T...)` | **~77% faster** |
+| Unknown untracked types | `checkpoint!(pool)` | Baseline |
 
-The optimization matters most in tight loops with many iterations.
+The optimization matters most in tight loops with many iterations. The bitmask subset
+check allows the typed path even when untracked acquires occur, as long as those types
+are already covered by the macro's tracked set.
 
 ## Code Generation Summary
 
@@ -217,11 +228,11 @@ end
 function compute(data)
     pool = get_task_local_pool()
 
-    # Check if parent scope had untracked (for nested pools)
-    if pool._untracked_flags[pool._current_depth]
-        checkpoint!(pool)                    # Full checkpoint
+    # Bitmask subset check: can typed path handle any untracked acquires?
+    if _can_use_typed_path(pool, _tracked_mask_for_types(Float64))
+        checkpoint!(pool, Float64)           # Typed checkpoint (fast)
     else
-        checkpoint!(pool, Float64)           # Typed checkpoint
+        checkpoint!(pool)                    # Full checkpoint (safe)
     end
 
     try
@@ -229,11 +240,10 @@ function compute(data)
         result = helper!(pool, A)
         return result
     finally
-        # Check if untracked acquires occurred in this scope
-        if pool._untracked_flags[pool._current_depth]
-            rewind!(pool)                    # Full rewind
+        if _can_use_typed_path(pool, _tracked_mask_for_types(Float64))
+            rewind!(pool, Float64)           # Typed rewind (fast)
         else
-            rewind!(pool, Float64)           # Typed rewind
+            rewind!(pool)                    # Full rewind (safe)
         end
     end
 end
@@ -246,8 +256,10 @@ end
 | `_extract_acquire_types(expr, pool_name)` | AST walk to find types |
 | `_filter_static_types(types, local_vars)` | Filter out locally-defined types |
 | `_transform_acquire_calls(expr, pool_name)` | Replace `acquire!` → `_acquire_impl!` |
-| `_mark_untracked!(pool)` | Set untracked flag for current depth |
-| `_generate_typed_checkpoint_call(pool, types)` | Generate `checkpoint!(pool, T...)` |
+| `_mark_untracked!(pool, T)` | Set type-specific bitmask for current depth |
+| `_can_use_typed_path(pool, mask)` | Bitmask subset check for typed vs full path |
+| `_tracked_mask_for_types(T...)` | Compile-time bitmask for tracked types |
+| `_generate_typed_checkpoint_call(pool, types)` | Generate bitmask-aware checkpoint |
 
 ## See Also
 
