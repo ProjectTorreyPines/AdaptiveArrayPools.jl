@@ -31,9 +31,10 @@ end
 # ==============================================================================
 
 function AdaptiveArrayPools.checkpoint!(pool::CuAdaptiveArrayPool)
-    # Increment depth and initialize untracked flag
+    # Increment depth and initialize untracked bitmask state
     pool._current_depth += 1
-
+    push!(pool._untracked_fixed_masks, UInt16(0))
+    push!(pool._untracked_has_others, false)
     depth = pool._current_depth
 
     # Fixed slots - zero allocation via @generated iteration
@@ -52,17 +53,28 @@ end
 # Type-specific checkpoint (single type)
 @inline function AdaptiveArrayPools.checkpoint!(pool::CuAdaptiveArrayPool, ::Type{T}) where {T}
     pool._current_depth += 1
-
+    push!(pool._untracked_fixed_masks, UInt16(0))
+    push!(pool._untracked_has_others, false)
     _checkpoint_typed_pool!(AdaptiveArrayPools.get_typed_pool!(pool, T), pool._current_depth)
     nothing
 end
 
 # Type-specific checkpoint (multiple types)
 @generated function AdaptiveArrayPools.checkpoint!(pool::CuAdaptiveArrayPool, types::Type...)
-    checkpoint_exprs = [:(_checkpoint_typed_pool!(AdaptiveArrayPools.get_typed_pool!(pool, types[$i]), pool._current_depth)) for i in 1:length(types)]
+    seen = Set{Any}()
+    unique_indices = Int[]
+    for i in eachindex(types)
+        T = types[i].parameters[1]
+        if !(T in seen)
+            push!(seen, T)
+            push!(unique_indices, i)
+        end
+    end
+    checkpoint_exprs = [:(_checkpoint_typed_pool!(AdaptiveArrayPools.get_typed_pool!(pool, types[$i]), pool._current_depth)) for i in unique_indices]
     quote
         pool._current_depth += 1
-    
+        push!(pool._untracked_fixed_masks, UInt16(0))
+        push!(pool._untracked_has_others, false)
         $(checkpoint_exprs...)
         nothing
     end
@@ -91,7 +103,8 @@ function AdaptiveArrayPools.rewind!(pool::CuAdaptiveArrayPool)
         _rewind_typed_pool!(tp, cur_depth)
     end
 
-
+    pop!(pool._untracked_fixed_masks)
+    pop!(pool._untracked_has_others)
     pool._current_depth -= 1
 
     return nothing
@@ -104,22 +117,33 @@ end
         return nothing
     end
     _rewind_typed_pool!(AdaptiveArrayPools.get_typed_pool!(pool, T), pool._current_depth)
-
+    pop!(pool._untracked_fixed_masks)
+    pop!(pool._untracked_has_others)
     pool._current_depth -= 1
     nothing
 end
 
 # Type-specific rewind (multiple types)
 @generated function AdaptiveArrayPools.rewind!(pool::CuAdaptiveArrayPool, types::Type...)
-    rewind_exprs = [:(_rewind_typed_pool!(AdaptiveArrayPools.get_typed_pool!(pool, types[$i]), pool._current_depth)) for i in length(types):-1:1]
-    reset_exprs = [:(reset!(AdaptiveArrayPools.get_typed_pool!(pool, types[$i]))) for i in 1:length(types)]
+    seen = Set{Any}()
+    unique_indices = Int[]
+    for i in eachindex(types)
+        T = types[i].parameters[1]
+        if !(T in seen)
+            push!(seen, T)
+            push!(unique_indices, i)
+        end
+    end
+    rewind_exprs = [:(_rewind_typed_pool!(AdaptiveArrayPools.get_typed_pool!(pool, types[$i]), pool._current_depth)) for i in reverse(unique_indices)]
+    reset_exprs = [:(reset!(AdaptiveArrayPools.get_typed_pool!(pool, types[$i]))) for i in unique_indices]
     quote
         if pool._current_depth == 1
             $(reset_exprs...)
             return nothing
         end
         $(rewind_exprs...)
-    
+        pop!(pool._untracked_fixed_masks)
+        pop!(pool._untracked_has_others)
         pool._current_depth -= 1
         nothing
     end
@@ -140,8 +164,12 @@ function AdaptiveArrayPools.reset!(pool::CuAdaptiveArrayPool)
         reset!(tp)
     end
 
-    # Reset untracked detection state
+    # Reset depth and bitmask sentinel state
     pool._current_depth = 1
+    empty!(pool._untracked_fixed_masks)
+    push!(pool._untracked_fixed_masks, UInt16(0))   # Sentinel: no bits set
+    empty!(pool._untracked_has_others)
+    push!(pool._untracked_has_others, false)         # Sentinel: no others
 
     return pool
 end
@@ -195,8 +223,12 @@ function Base.empty!(pool::CuAdaptiveArrayPool)
     end
     empty!(pool.others)
 
-    # Reset state
+    # Reset depth and bitmask sentinel state
     pool._current_depth = 1
+    empty!(pool._untracked_fixed_masks)
+    push!(pool._untracked_fixed_masks, UInt16(0))   # Sentinel: no bits set
+    empty!(pool._untracked_has_others)
+    push!(pool._untracked_has_others, false)         # Sentinel: no others
 
     return pool
 end
