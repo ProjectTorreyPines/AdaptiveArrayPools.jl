@@ -64,9 +64,8 @@ end
     seen = Set{Any}()
     unique_indices = Int[]
     for i in eachindex(types)
-        T = types[i].parameters[1]
-        if !(T in seen)
-            push!(seen, T)
+        if !(types[i] in seen)
+            push!(seen, types[i])
             push!(unique_indices, i)
         end
     end
@@ -128,9 +127,8 @@ end
     seen = Set{Any}()
     unique_indices = Int[]
     for i in eachindex(types)
-        T = types[i].parameters[1]
-        if !(T in seen)
-            push!(seen, T)
+        if !(types[i] in seen)
+            push!(seen, types[i])
             push!(unique_indices, i)
         end
     end
