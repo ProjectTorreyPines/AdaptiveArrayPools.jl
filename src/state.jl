@@ -238,6 +238,32 @@ end
 end
 
 """
+    _dynamic_selective_rewind!(pool::AdaptiveArrayPool)
+
+Complete rewind for dynamic-selective mode (`use_typed=false` macro path).
+
+Reads the combined mask at the current depth, rewinds only the fixed-slot pools
+whose bits are set, handles any `others` entries, then pops the depth metadata.
+
+Called directly from the macro-generated `finally` clause as a single function call
+(matching the structure of `_depth_only_checkpoint!` for symmetry and performance).
+"""
+@inline function _dynamic_selective_rewind!(pool::AdaptiveArrayPool)
+    d    = pool._current_depth
+    bits = @inbounds(pool._untracked_fixed_masks[d]) & UInt16(0x00FF)
+    _selective_rewind_fixed_slots!(pool, bits)
+    if @inbounds(pool._untracked_has_others[d])
+        for tp in values(pool.others)
+            _rewind_typed_pool!(tp, d)
+        end
+    end
+    pop!(pool._untracked_fixed_masks)
+    pop!(pool._untracked_has_others)
+    pool._current_depth -= 1
+    nothing
+end
+
+"""
     _selective_rewind_fixed_slots!(pool::AdaptiveArrayPool, mask::UInt16)
 
 Rewind only the fixed-slot typed pools whose bits are set in `mask`.
