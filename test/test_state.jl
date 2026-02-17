@@ -1478,4 +1478,196 @@
         @test length(pool._untracked_fixed_masks) == 1
     end
 
+    # ==========================================================================
+    # Typed-Aware Untracked Tracking — Phase 2: _fixed_slot_bit + typed marking
+    # ==========================================================================
+
+    @testset "_fixed_slot_bit dispatch" begin
+        using AdaptiveArrayPools: _fixed_slot_bit, Bit
+
+        # Each fixed slot returns a unique nonzero bit
+        @test _fixed_slot_bit(Float64)    == UInt16(1) << 0
+        @test _fixed_slot_bit(Float32)    == UInt16(1) << 1
+        @test _fixed_slot_bit(Int64)      == UInt16(1) << 2
+        @test _fixed_slot_bit(Int32)      == UInt16(1) << 3
+        @test _fixed_slot_bit(ComplexF64) == UInt16(1) << 4
+        @test _fixed_slot_bit(ComplexF32) == UInt16(1) << 5
+        @test _fixed_slot_bit(Bool)       == UInt16(1) << 6
+        @test _fixed_slot_bit(Bit)        == UInt16(1) << 7
+
+        # Non-fixed-slot types return 0
+        @test _fixed_slot_bit(UInt8)    == UInt16(0)
+        @test _fixed_slot_bit(UInt16)   == UInt16(0)
+        @test _fixed_slot_bit(Float16)  == UInt16(0)
+        @test _fixed_slot_bit(String)   == UInt16(0)
+
+        # All 8 bits are unique (no collisions)
+        bits = [_fixed_slot_bit(T) for T in (Float64, Float32, Int64, Int32, ComplexF64, ComplexF32, Bool, Bit)]
+        @test length(unique(bits)) == 8
+        @test all(b -> b != UInt16(0), bits)
+    end
+
+    @testset "Typed _mark_untracked!: fixed-slot types set mask bits" begin
+        using AdaptiveArrayPools: _mark_untracked!, _fixed_slot_bit
+
+        pool = AdaptiveArrayPool()
+        checkpoint!(pool)  # depth=2
+
+        # Mark Float64 untracked
+        _mark_untracked!(pool, Float64)
+        @test pool._untracked_fixed_masks[2] == _fixed_slot_bit(Float64)
+        @test pool._untracked_has_others[2] == false
+
+        # Mark Float32 additionally — bits accumulate
+        _mark_untracked!(pool, Float32)
+        @test pool._untracked_fixed_masks[2] == _fixed_slot_bit(Float64) | _fixed_slot_bit(Float32)
+        @test pool._untracked_has_others[2] == false
+
+        # Mark Float64 again — idempotent
+        _mark_untracked!(pool, Float64)
+        @test pool._untracked_fixed_masks[2] == _fixed_slot_bit(Float64) | _fixed_slot_bit(Float32)
+
+        # Legacy bridge: _untracked_flags also set
+        @test pool._untracked_flags[2] == true
+
+        rewind!(pool)
+    end
+
+    @testset "Typed _mark_untracked!: non-fixed-slot types set has_others" begin
+        using AdaptiveArrayPools: _mark_untracked!, _fixed_slot_bit
+
+        pool = AdaptiveArrayPool()
+        checkpoint!(pool)  # depth=2
+
+        # Mark UInt8 (not a fixed slot)
+        _mark_untracked!(pool, UInt8)
+        @test pool._untracked_fixed_masks[2] == UInt16(0)  # mask unchanged
+        @test pool._untracked_has_others[2] == true
+
+        # Legacy bridge
+        @test pool._untracked_flags[2] == true
+
+        rewind!(pool)
+    end
+
+    @testset "Typed _mark_untracked!: mixed fixed + others" begin
+        using AdaptiveArrayPools: _mark_untracked!, _fixed_slot_bit
+
+        pool = AdaptiveArrayPool()
+        checkpoint!(pool)
+
+        _mark_untracked!(pool, Float64)
+        _mark_untracked!(pool, UInt8)  # others
+        _mark_untracked!(pool, Int64)
+
+        @test pool._untracked_fixed_masks[2] == _fixed_slot_bit(Float64) | _fixed_slot_bit(Int64)
+        @test pool._untracked_has_others[2] == true
+
+        rewind!(pool)
+    end
+
+    @testset "Typed _mark_untracked!: nested depth isolation" begin
+        using AdaptiveArrayPools: _mark_untracked!, _fixed_slot_bit
+
+        pool = AdaptiveArrayPool()
+
+        # Depth 2
+        checkpoint!(pool)
+        _mark_untracked!(pool, Float64)
+
+        # Depth 3
+        checkpoint!(pool)
+        _mark_untracked!(pool, Int32)
+
+        # Depth 3 has only Int32
+        @test pool._untracked_fixed_masks[3] == _fixed_slot_bit(Int32)
+        @test pool._untracked_fixed_masks[2] == _fixed_slot_bit(Float64)
+
+        # Depth 1 (sentinel) untouched
+        @test pool._untracked_fixed_masks[1] == UInt16(0)
+
+        rewind!(pool)
+        rewind!(pool)
+    end
+
+    @testset "Public acquire! sets typed bitmask" begin
+        using AdaptiveArrayPools: _fixed_slot_bit
+
+        pool = AdaptiveArrayPool()
+        checkpoint!(pool)  # depth=2
+
+        # acquire! outside @with_pool calls _mark_untracked!(pool, T)
+        acquire!(pool, Float64, 10)
+        @test pool._untracked_fixed_masks[2] == _fixed_slot_bit(Float64)
+
+        acquire!(pool, Int64, 5)
+        @test pool._untracked_fixed_masks[2] == _fixed_slot_bit(Float64) | _fixed_slot_bit(Int64)
+
+        rewind!(pool)
+    end
+
+    @testset "Public unsafe_acquire! sets typed bitmask" begin
+        using AdaptiveArrayPools: _fixed_slot_bit
+
+        pool = AdaptiveArrayPool()
+        checkpoint!(pool)
+
+        unsafe_acquire!(pool, Float32, 10)
+        @test pool._untracked_fixed_masks[2] == _fixed_slot_bit(Float32)
+
+        rewind!(pool)
+    end
+
+    @testset "Convenience functions set typed bitmask" begin
+        using AdaptiveArrayPools: _fixed_slot_bit, Bit
+
+        pool = AdaptiveArrayPool()
+
+        # zeros! with explicit type
+        checkpoint!(pool)
+        zeros!(pool, Float64, 10)
+        @test pool._untracked_fixed_masks[2] == _fixed_slot_bit(Float64)
+        rewind!(pool)
+
+        # zeros! without type → default_eltype → Float64
+        checkpoint!(pool)
+        zeros!(pool, 10)
+        @test pool._untracked_fixed_masks[2] == _fixed_slot_bit(Float64)
+        rewind!(pool)
+
+        # ones! with type
+        checkpoint!(pool)
+        ones!(pool, Int32, 10)
+        @test pool._untracked_fixed_masks[2] == _fixed_slot_bit(Int32)
+        rewind!(pool)
+
+        # trues! → Bit type
+        checkpoint!(pool)
+        trues!(pool, 10)
+        @test pool._untracked_fixed_masks[2] == _fixed_slot_bit(Bit)
+        rewind!(pool)
+
+        # falses! → Bit type
+        checkpoint!(pool)
+        falses!(pool, 10)
+        @test pool._untracked_fixed_masks[2] == _fixed_slot_bit(Bit)
+        rewind!(pool)
+
+        # similar! with template array
+        checkpoint!(pool)
+        similar!(pool, rand(Float32, 5))
+        @test pool._untracked_fixed_masks[2] == _fixed_slot_bit(Float32)
+        rewind!(pool)
+    end
+
+    @testset "Convenience functions: non-fixed-slot type sets has_others" begin
+        pool = AdaptiveArrayPool()
+
+        checkpoint!(pool)
+        zeros!(pool, UInt8, 10)
+        @test pool._untracked_has_others[2] == true
+        @test pool._untracked_fixed_masks[2] == UInt16(0)
+        rewind!(pool)
+    end
+
 end # State Management

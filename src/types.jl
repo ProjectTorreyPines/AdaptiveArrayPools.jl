@@ -367,6 +367,22 @@ Tests verify synchronization automatically.
 const FIXED_SLOT_FIELDS = (:float64, :float32, :int64, :int32, :complexf64, :complexf32, :bool, :bits)
 
 # ==============================================================================
+# Fixed-Slot Bit Mapping (for typed untracked tracking)
+# ==============================================================================
+# Maps each fixed-slot type to a unique bit in a UInt16 bitmask.
+# Bit ordering matches FIXED_SLOT_FIELDS. Non-fixed types return UInt16(0).
+
+@inline _fixed_slot_bit(::Type{Float64})    = UInt16(1) << 0
+@inline _fixed_slot_bit(::Type{Float32})    = UInt16(1) << 1
+@inline _fixed_slot_bit(::Type{Int64})      = UInt16(1) << 2
+@inline _fixed_slot_bit(::Type{Int32})      = UInt16(1) << 3
+@inline _fixed_slot_bit(::Type{ComplexF64}) = UInt16(1) << 4
+@inline _fixed_slot_bit(::Type{ComplexF32}) = UInt16(1) << 5
+@inline _fixed_slot_bit(::Type{Bool})       = UInt16(1) << 6
+@inline _fixed_slot_bit(::Type{Bit})        = UInt16(1) << 7
+@inline _fixed_slot_bit(::Type)             = UInt16(0)  # non-fixed-slot → triggers has_others
+
+# ==============================================================================
 # AdaptiveArrayPool
 # ==============================================================================
 
