@@ -1318,4 +1318,164 @@
         empty!(pool)
     end
 
+    # ==========================================================================
+    # Typed-Aware Untracked Tracking — Phase 1: Bitmask Metadata Lifecycle
+    # ==========================================================================
+
+    @testset "Bitmask metadata: constructor sentinel" begin
+        pool = AdaptiveArrayPool()
+
+        # New fields exist
+        @test hasfield(AdaptiveArrayPool, :_untracked_fixed_masks)
+        @test hasfield(AdaptiveArrayPool, :_untracked_has_others)
+
+        # Sentinel values at depth=1 (global scope)
+        @test pool._untracked_fixed_masks == [UInt16(0)]
+        @test pool._untracked_has_others == [false]
+        @test length(pool._untracked_fixed_masks) == 1
+        @test length(pool._untracked_has_others) == 1
+    end
+
+    @testset "Bitmask metadata: checkpoint! pushes sentinels" begin
+        pool = AdaptiveArrayPool()
+
+        # Full checkpoint
+        checkpoint!(pool)
+        @test length(pool._untracked_fixed_masks) == 2
+        @test length(pool._untracked_has_others) == 2
+        @test pool._untracked_fixed_masks[2] == UInt16(0)
+        @test pool._untracked_has_others[2] == false
+
+        # Another checkpoint
+        checkpoint!(pool)
+        @test length(pool._untracked_fixed_masks) == 3
+        @test length(pool._untracked_has_others) == 3
+
+        # Cleanup
+        rewind!(pool)
+        rewind!(pool)
+    end
+
+    @testset "Bitmask metadata: typed checkpoint! pushes sentinels" begin
+        pool = AdaptiveArrayPool()
+
+        # Single-type checkpoint
+        checkpoint!(pool, Float64)
+        @test length(pool._untracked_fixed_masks) == 2
+        @test length(pool._untracked_has_others) == 2
+        @test pool._untracked_fixed_masks[2] == UInt16(0)
+        @test pool._untracked_has_others[2] == false
+        rewind!(pool, Float64)
+
+        # Multi-type checkpoint
+        checkpoint!(pool, Float64, Float32)
+        @test length(pool._untracked_fixed_masks) == 2
+        @test length(pool._untracked_has_others) == 2
+        @test pool._untracked_fixed_masks[2] == UInt16(0)
+        @test pool._untracked_has_others[2] == false
+        rewind!(pool, Float64, Float32)
+    end
+
+    @testset "Bitmask metadata: rewind! pops" begin
+        pool = AdaptiveArrayPool()
+
+        checkpoint!(pool)
+        @test length(pool._untracked_fixed_masks) == 2
+        @test length(pool._untracked_has_others) == 2
+
+        rewind!(pool)
+        @test length(pool._untracked_fixed_masks) == 1
+        @test length(pool._untracked_has_others) == 1
+        # Sentinel preserved
+        @test pool._untracked_fixed_masks[1] == UInt16(0)
+        @test pool._untracked_has_others[1] == false
+    end
+
+    @testset "Bitmask metadata: typed rewind! pops" begin
+        pool = AdaptiveArrayPool()
+
+        checkpoint!(pool, Float64)
+        @test length(pool._untracked_fixed_masks) == 2
+
+        rewind!(pool, Float64)
+        @test length(pool._untracked_fixed_masks) == 1
+        @test length(pool._untracked_has_others) == 1
+
+        # Multi-type
+        checkpoint!(pool, Float64, Int64)
+        @test length(pool._untracked_fixed_masks) == 2
+
+        rewind!(pool, Float64, Int64)
+        @test length(pool._untracked_fixed_masks) == 1
+    end
+
+    @testset "Bitmask metadata: reset! restores sentinel" begin
+        pool = AdaptiveArrayPool()
+
+        # Build up state
+        checkpoint!(pool)
+        checkpoint!(pool)
+        @test length(pool._untracked_fixed_masks) == 3
+
+        reset!(pool)
+        @test pool._untracked_fixed_masks == [UInt16(0)]
+        @test pool._untracked_has_others == [false]
+        @test pool._current_depth == 1
+    end
+
+    @testset "Bitmask metadata: empty! restores sentinel" begin
+        pool = AdaptiveArrayPool()
+
+        # Build up state
+        checkpoint!(pool)
+        acquire!(pool, Float64, 10)
+        checkpoint!(pool)
+        @test length(pool._untracked_fixed_masks) == 3
+
+        empty!(pool)
+        @test pool._untracked_fixed_masks == [UInt16(0)]
+        @test pool._untracked_has_others == [false]
+        @test pool._current_depth == 1
+    end
+
+    @testset "Bitmask metadata: multiple checkpoint/rewind cycles" begin
+        pool = AdaptiveArrayPool()
+
+        for _ in 1:5
+            checkpoint!(pool)
+            rewind!(pool)
+        end
+
+        # No stack leaks — should be back to sentinel only
+        @test length(pool._untracked_fixed_masks) == 1
+        @test length(pool._untracked_has_others) == 1
+        @test pool._current_depth == 1
+    end
+
+    @testset "Bitmask metadata: nested depth tracking" begin
+        pool = AdaptiveArrayPool()
+
+        # Depth 2
+        checkpoint!(pool)
+        @test length(pool._untracked_fixed_masks) == 2
+
+        # Depth 3
+        checkpoint!(pool)
+        @test length(pool._untracked_fixed_masks) == 3
+
+        # Depth 4
+        checkpoint!(pool)
+        @test length(pool._untracked_fixed_masks) == 4
+
+        # Pop back
+        rewind!(pool)
+        @test length(pool._untracked_fixed_masks) == 3
+
+        rewind!(pool)
+        @test length(pool._untracked_fixed_masks) == 2
+
+        rewind!(pool)
+        @test length(pool._untracked_fixed_masks) == 1
+    end
+
 end # State Management

@@ -16,6 +16,8 @@ function checkpoint!(pool::AdaptiveArrayPool)
     # Increment depth and initialize untracked flag
     pool._current_depth += 1
     push!(pool._untracked_flags, false)
+    push!(pool._untracked_fixed_masks, UInt16(0))
+    push!(pool._untracked_has_others, false)
     depth = pool._current_depth
 
     # Fixed slots - zero allocation via @generated iteration
@@ -44,6 +46,8 @@ Also updates _current_depth and _untracked_flags for untracked acquire detection
 @inline function checkpoint!(pool::AdaptiveArrayPool, ::Type{T}) where T
     pool._current_depth += 1
     push!(pool._untracked_flags, false)
+    push!(pool._untracked_fixed_masks, UInt16(0))
+    push!(pool._untracked_has_others, false)
     _checkpoint_typed_pool!(get_typed_pool!(pool, T), pool._current_depth)
     nothing
 end
@@ -68,6 +72,8 @@ compile-time unrolling. Increments _current_depth once for all types.
     quote
         pool._current_depth += 1
         push!(pool._untracked_flags, false)
+        push!(pool._untracked_fixed_masks, UInt16(0))
+        push!(pool._untracked_has_others, false)
         $(checkpoint_exprs...)
         nothing
     end
@@ -119,6 +125,8 @@ function rewind!(pool::AdaptiveArrayPool)
     end
 
     pop!(pool._untracked_flags)
+    pop!(pool._untracked_fixed_masks)
+    pop!(pool._untracked_has_others)
     pool._current_depth -= 1
 
     return nothing
@@ -138,6 +146,8 @@ Also updates _current_depth and _untracked_flags.
     end
     _rewind_typed_pool!(get_typed_pool!(pool, T), pool._current_depth)
     pop!(pool._untracked_flags)
+    pop!(pool._untracked_fixed_masks)
+    pop!(pool._untracked_has_others)
     pool._current_depth -= 1
     nothing
 end
@@ -168,6 +178,8 @@ Decrements _current_depth once after all types are rewound.
         end
         $(rewind_exprs...)
         pop!(pool._untracked_flags)
+        pop!(pool._untracked_fixed_masks)
+        pop!(pool._untracked_has_others)
         pool._current_depth -= 1
         nothing
     end
@@ -286,6 +298,10 @@ function Base.empty!(pool::AdaptiveArrayPool)
     pool._current_depth = 1                   # 1 = global scope (sentinel)
     empty!(pool._untracked_flags)
     push!(pool._untracked_flags, false)       # Sentinel: global scope starts with false
+    empty!(pool._untracked_fixed_masks)
+    push!(pool._untracked_fixed_masks, UInt16(0))   # Sentinel: no bits set
+    empty!(pool._untracked_has_others)
+    push!(pool._untracked_has_others, false)         # Sentinel: no others
 
     return pool
 end
@@ -365,6 +381,10 @@ function reset!(pool::AdaptiveArrayPool)
     pool._current_depth = 1                   # 1 = global scope (sentinel)
     empty!(pool._untracked_flags)
     push!(pool._untracked_flags, false)       # Sentinel: global scope starts with false
+    empty!(pool._untracked_fixed_masks)
+    push!(pool._untracked_fixed_masks, UInt16(0))   # Sentinel: no bits set
+    empty!(pool._untracked_has_others)
+    push!(pool._untracked_has_others, false)         # Sentinel: no others
 
     return pool
 end
