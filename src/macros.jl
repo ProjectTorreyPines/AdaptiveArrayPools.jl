@@ -916,7 +916,7 @@ emits a conditional:
 """
 function _generate_typed_checkpoint_call(pool_expr, types)
     if isempty(types)
-        return :($checkpoint!($pool_expr))   # unreachable in practice (use_typed=true requires types)
+        return :($checkpoint!($pool_expr))   # fallback for direct external calls (unreachable via macro)
     else
         escaped_types = [esc(t) for t in types]
         typed_call = :($checkpoint!($pool_expr, $(escaped_types...)))
@@ -942,7 +942,7 @@ emits a conditional:
 """
 function _generate_typed_rewind_call(pool_expr, types)
     if isempty(types)
-        return :($rewind!($pool_expr))       # unreachable in practice (use_typed=true requires types)
+        return :($rewind!($pool_expr))       # fallback for direct external calls (unreachable via macro)
     else
         escaped_types = [esc(t) for t in types]
         typed_call     = :($rewind!($pool_expr, $(escaped_types...)))

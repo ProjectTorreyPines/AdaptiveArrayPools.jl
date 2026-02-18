@@ -1,3 +1,6 @@
+# Phase 5 internal functions used in tests below
+import AdaptiveArrayPools: _typed_checkpoint_with_lazy!, _typed_selective_rewind!, _tracked_mask_for_types
+
 @testset "State Management" begin
 
     @testset "Rewind and reuse" begin
@@ -2091,12 +2094,11 @@
     end
 
     # ==================================================================
-    # Phase 5: Typed-Fallback Optimization (RED tests)
+    # Phase 5: Typed-Fallback Optimization
     # ==================================================================
 
     @testset "Phase 5: _typed_checkpoint_with_lazy! sets bit 14 and checkpoints known types" begin
         # _typed_checkpoint_with_lazy! must checkpoint known types AND set bit 14 for lazy mode.
-        import AdaptiveArrayPools: _typed_checkpoint_with_lazy!
         pool = AdaptiveArrayPool()
         _typed_checkpoint_with_lazy!(pool, Float64)
         d = pool._current_depth
@@ -2117,9 +2119,6 @@
         #
         # Without bit 14 lazy mode: Case B fires → int64.n_active wiped to 0 (BUG).
         # With bit 14 lazy mode: first-touch checkpoint saves n_active=1 → Case A → correct.
-        import AdaptiveArrayPools: _typed_checkpoint_with_lazy!, _typed_selective_rewind!,
-                                   _tracked_mask_for_types
-
         function _p0_helper_int64!(pool)
             acquire!(pool, Int64, 3)   # helper touches Int64 (untracked by macro)
         end
@@ -2153,8 +2152,6 @@
     @testset "Phase 5: bit 14 enables lazy first-touch checkpoint for extra types" begin
         # _mark_untracked! condition is (current_mask & 0xC000) != 0.
         # With bit 14 set (typed lazy mode), extra-type first touch triggers _checkpoint_typed_pool!.
-        import AdaptiveArrayPools: _typed_checkpoint_with_lazy!
-
         pool = AdaptiveArrayPool()
         _typed_checkpoint_with_lazy!(pool, Float64)  # typed chk + set bit 14
         d = pool._current_depth
@@ -2170,6 +2167,43 @@
 
         rewind!(pool)
         @test pool.int64.n_active == 0
+    end
+
+    @testset "Phase 5 (Issue #3): typed lazy mode preserves parent n_active for others types" begin
+        # If a parent scope has an active others-type (UInt8) and a child uses
+        # _typed_checkpoint_with_lazy!, helpers touching the same type must NOT corrupt
+        # the parent's n_active. _typed_checkpoint_with_lazy! eagerly snapshots pool.others
+        # so Case A fires at rewind (not Case B with the wrong sentinel value).
+        function _p5_helper_uint8!(pool)
+            acquire!(pool, UInt8, 7)
+        end
+
+        pool = AdaptiveArrayPool()
+
+        # Parent scope: acquire UInt8 (goes to pool.others on CPU)
+        checkpoint!(pool, Float32)       # parent checkpoint for cleanup
+        parent_uint8 = acquire!(pool, UInt8, 1)
+        parent_others_pool = pool.others[UInt8]
+        @test parent_others_pool.n_active == 1
+
+        # Child scope: typed checkpoint for Float64 only; helper touches UInt8 (others)
+        # Without the fix: _typed_checkpoint_with_lazy! doesn't snapshot pool.others →
+        # rewind hits Case B → parent UInt8.n_active corrupted to 0.
+        _typed_checkpoint_with_lazy!(pool, Float64)
+        try
+            acquire!(pool, Float64, 5)         # tracked type
+            _p5_helper_uint8!(pool)            # untracked others type
+            @test pool.others[UInt8].n_active == 2  # parent's 1 + helper's 1
+        finally
+            tracked_mask = _tracked_mask_for_types(Float64)
+            _typed_selective_rewind!(pool, tracked_mask)
+        end
+
+        # Parent's UInt8 count must be preserved (= 1, NOT 0)
+        @test pool.others[UInt8].n_active == 1
+        @test pool.float64.n_active == 0
+
+        rewind!(pool, Float32)
     end
 
 end # State Management

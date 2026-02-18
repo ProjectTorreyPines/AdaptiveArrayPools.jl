@@ -280,6 +280,22 @@ lazy first-touch checkpoint for each extra type on first acquire, ensuring Case 
     checkpoint!(pool, types...)
     d = pool._current_depth
     @inbounds pool._untracked_fixed_masks[d] |= UInt16(0x4000)   # set bit 14
+    # Eagerly snapshot pre-existing others entries — mirrors _depth_only_checkpoint!.
+    # _mark_untracked! cannot lazy-checkpoint others types (b==0 branch, no per-type bit).
+    # Without this, a helper that re-acquires an already-active others type triggers Case B
+    # at rewind and restores the wrong parent n_active value.
+    #
+    # Also set has_others=true when pool.others is non-empty, so _typed_selective_rewind!
+    # enters the others loop even for tracked non-fixed-slot types (e.g. CPU Float16) that
+    # used _acquire_impl! (bypassing _mark_untracked!, leaving has_others=false otherwise).
+    # Skip re-snapshot for entries already checkpointed at d by checkpoint!(pool, types...)
+    # (e.g. Float16 in types... was just checkpointed above — avoid double-push).
+    for p in values(pool.others)
+        if @inbounds(p._checkpoint_depths[end]) != d
+            _checkpoint_typed_pool!(p, d)
+        end
+        @inbounds pool._untracked_has_others[d] = true
+    end
     nothing
 end
 
