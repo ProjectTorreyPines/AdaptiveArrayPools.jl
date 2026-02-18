@@ -112,8 +112,8 @@ mutable struct CuAdaptiveArrayPool <: AbstractArrayPool
 
     # State management (same as CPU)
     _current_depth::Int
-    _untracked_fixed_masks::Vector{UInt16}  # Per-depth: which fixed slots had untracked acquires
-    _untracked_has_others::Vector{Bool}     # Per-depth: any non-fixed-slot untracked acquire?
+    _touched_type_masks::Vector{UInt16}  # Per-depth: which fixed slots were touched + mode flags
+    _touched_has_others::Vector{Bool}    # Per-depth: any non-fixed-slot type touched?
 
     # Device tracking (safety)
     device_id::Int
@@ -132,8 +132,8 @@ function CuAdaptiveArrayPool()
         CuTypedPool{Bool}(),
         IdDict{DataType, Any}(),
         1,              # _current_depth (1 = global scope)
-        [UInt16(0)],    # _untracked_fixed_masks: sentinel (no bits set)
-        [false],        # _untracked_has_others: sentinel (no others)
+        [UInt16(0)],    # _touched_type_masks: sentinel (no bits set)
+        [false],        # _touched_has_others: sentinel (no others)
         CUDA.deviceid(dev)  # Use public API
     )
 end

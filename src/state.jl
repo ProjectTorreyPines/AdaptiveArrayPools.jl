@@ -13,10 +13,10 @@ After warmup, this function has **zero allocation**.
 See also: [`rewind!`](@ref), [`@with_pool`](@ref)
 """
 function checkpoint!(pool::AdaptiveArrayPool)
-    # Increment depth and initialize untracked bitmask state
+    # Increment depth and initialize type touch tracking state
     pool._current_depth += 1
-    push!(pool._untracked_fixed_masks, UInt16(0))
-    push!(pool._untracked_has_others, false)
+    push!(pool._touched_type_masks, UInt16(0))
+    push!(pool._touched_has_others, false)
     depth = pool._current_depth
 
     # Fixed slots - zero allocation via @generated iteration
@@ -38,14 +38,14 @@ end
 Save state for a specific type only. Used by optimized macros that know
 which types will be used at compile time.
 
-Also updates _current_depth and bitmask state for untracked acquire detection.
+Also updates _current_depth and bitmask state for type touch tracking.
 
 ~77% faster than full checkpoint! when only one type is used.
 """
 @inline function checkpoint!(pool::AdaptiveArrayPool, ::Type{T}) where T
     pool._current_depth += 1
-    push!(pool._untracked_fixed_masks, UInt16(0))
-    push!(pool._untracked_has_others, false)
+    push!(pool._touched_type_masks, UInt16(0))
+    push!(pool._touched_has_others, false)
     _checkpoint_typed_pool!(get_typed_pool!(pool, T), pool._current_depth)
     nothing
 end
@@ -69,8 +69,8 @@ compile-time unrolling. Increments _current_depth once for all types.
     checkpoint_exprs = [:(_checkpoint_typed_pool!(get_typed_pool!(pool, types[$i]), pool._current_depth)) for i in unique_indices]
     quote
         pool._current_depth += 1
-        push!(pool._untracked_fixed_masks, UInt16(0))
-        push!(pool._untracked_has_others, false)
+        push!(pool._touched_type_masks, UInt16(0))
+        push!(pool._touched_has_others, false)
         $(checkpoint_exprs...)
         nothing
     end
@@ -84,14 +84,14 @@ end
 end
 
 """
-    _depth_only_checkpoint!(pool::AdaptiveArrayPool)
+    _lazy_checkpoint!(pool::AdaptiveArrayPool)
 
-Lightweight checkpoint for dynamic-selective mode (`use_typed=false` macro path).
+Lightweight checkpoint for lazy mode (`use_typed=false` macro path).
 
 Increments `_current_depth` and pushes bitmask sentinels — but does **not** save
-`n_active` for any fixed-slot typed pool. The mode flag (bit 15) in
-`_untracked_fixed_masks` marks this depth as dynamic-selective so that
-`_mark_untracked!` can trigger lazy first-touch checkpoints.
+`n_active` for any fixed-slot typed pool. The `_LAZY_MODE_BIT` (bit 15) in
+`_touched_type_masks` marks this depth as lazy mode so that
+`_record_type_touch!` can trigger lazy first-touch checkpoints.
 
 Existing `others` entries are eagerly checkpointed since there is no per-type
 tracking for non-fixed-slot pools; Case B in `_rewind_typed_pool!` handles any
@@ -99,17 +99,17 @@ new `others` entries created during the scope (n_active starts at 0 = sentinel).
 
 Performance: ~2ns vs ~540ns for full `checkpoint!`.
 """
-@inline function _depth_only_checkpoint!(pool::AdaptiveArrayPool)
+@inline function _lazy_checkpoint!(pool::AdaptiveArrayPool)
     pool._current_depth += 1
-    # Bit 15 = dynamic-selective mode flag (bits 0–7 are fixed-slot bits)
-    push!(pool._untracked_fixed_masks, UInt16(0x8000))
-    push!(pool._untracked_has_others, false)
+    # _LAZY_MODE_BIT = lazy mode flag (bits 0–7 are fixed-slot type bits)
+    push!(pool._touched_type_masks, _LAZY_MODE_BIT)
+    push!(pool._touched_has_others, false)
     depth = pool._current_depth
     # Eagerly checkpoint any pre-existing others entries.
     # New others types created during the scope start at n_active=0 (sentinel covers them).
     for p in values(pool.others)
         _checkpoint_typed_pool!(p, depth)
-        @inbounds pool._untracked_has_others[depth] = true
+        @inbounds pool._touched_has_others[depth] = true
     end
     nothing
 end
@@ -125,7 +125,7 @@ Restore the pool state (n_active counters) from internal stacks.
 Uses _checkpoint_depths to accurately determine which entries to pop vs restore.
 
 Only the counters are restored; allocated memory remains for reuse.
-Handles untracked acquires by checking _checkpoint_depths for accurate restoration.
+Handles touched types by checking _checkpoint_depths for accurate restoration.
 
 **Safety**: If called at global scope (depth=1, no pending checkpoints),
 automatically delegates to `reset!` to safely clear all n_active counters.
@@ -152,8 +152,8 @@ function rewind!(pool::AdaptiveArrayPool)
         _rewind_typed_pool!(tp, cur_depth)
     end
 
-    pop!(pool._untracked_fixed_masks)
-    pop!(pool._untracked_has_others)
+    pop!(pool._touched_type_masks)
+    pop!(pool._touched_has_others)
     pool._current_depth -= 1
 
     return nothing
@@ -172,8 +172,8 @@ Also updates _current_depth and bitmask state.
         return nothing
     end
     _rewind_typed_pool!(get_typed_pool!(pool, T), pool._current_depth)
-    pop!(pool._untracked_fixed_masks)
-    pop!(pool._untracked_has_others)
+    pop!(pool._touched_type_masks)
+    pop!(pool._touched_has_others)
     pool._current_depth -= 1
     nothing
 end
@@ -203,8 +203,8 @@ Decrements _current_depth once after all types are rewound.
             return nothing
         end
         $(rewind_exprs...)
-        pop!(pool._untracked_fixed_masks)
-        pop!(pool._untracked_has_others)
+        pop!(pool._touched_type_masks)
+        pop!(pool._touched_has_others)
         pool._current_depth -= 1
         nothing
     end
@@ -239,89 +239,89 @@ end
 end
 
 """
-    _dynamic_selective_rewind!(pool::AdaptiveArrayPool)
+    _lazy_rewind!(pool::AdaptiveArrayPool)
 
-Complete rewind for dynamic-selective mode (`use_typed=false` macro path).
+Complete rewind for lazy mode (`use_typed=false` macro path).
 
 Reads the combined mask at the current depth, rewinds only the fixed-slot pools
 whose bits are set, handles any `others` entries, then pops the depth metadata.
 
 Called directly from the macro-generated `finally` clause as a single function call
-(matching the structure of `_depth_only_checkpoint!` for symmetry and performance).
+(matching the structure of `_lazy_checkpoint!` for symmetry and performance).
 """
-@inline function _dynamic_selective_rewind!(pool::AdaptiveArrayPool)
+@inline function _lazy_rewind!(pool::AdaptiveArrayPool)
     d    = pool._current_depth
-    bits = @inbounds(pool._untracked_fixed_masks[d]) & UInt16(0x00FF)
+    bits = @inbounds(pool._touched_type_masks[d]) & _TYPE_BITS_MASK
     _selective_rewind_fixed_slots!(pool, bits)
-    if @inbounds(pool._untracked_has_others[d])
+    if @inbounds(pool._touched_has_others[d])
         for tp in values(pool.others)
             _rewind_typed_pool!(tp, d)
         end
     end
-    pop!(pool._untracked_fixed_masks)
-    pop!(pool._untracked_has_others)
+    pop!(pool._touched_type_masks)
+    pop!(pool._touched_has_others)
     pool._current_depth -= 1
     nothing
 end
 
 """
-    _typed_checkpoint_with_lazy!(pool::AdaptiveArrayPool, types::Type...)
+    _typed_lazy_checkpoint!(pool::AdaptiveArrayPool, types::Type...)
 
 Typed checkpoint that enables lazy first-touch checkpointing for extra types touched
 by helpers (`use_typed=true`, `_can_use_typed_path=false` path).
 
 Calls `checkpoint!(pool, types...)` (checkpoints only the statically-known types),
-then sets bit 14 (`0x4000`) in `_untracked_fixed_masks[depth]` to signal typed lazy mode.
+then sets `_TYPED_LAZY_BIT` (bit 14) in `_touched_type_masks[depth]` to signal typed lazy mode.
 
-`_mark_untracked!` checks `(mask & 0xC000) != 0` (bit 14 OR bit 15) to trigger a
+`_record_type_touch!` checks `(mask & _MODE_BITS_MASK) != 0` (bit 14 OR bit 15) to trigger a
 lazy first-touch checkpoint for each extra type on first acquire, ensuring Case A
 (not Case B) applies at rewind and parent `n_active` is preserved correctly.
 """
-@inline function _typed_checkpoint_with_lazy!(pool::AdaptiveArrayPool, types::Type...)
+@inline function _typed_lazy_checkpoint!(pool::AdaptiveArrayPool, types::Type...)
     checkpoint!(pool, types...)
     d = pool._current_depth
-    @inbounds pool._untracked_fixed_masks[d] |= UInt16(0x4000)   # set bit 14
-    # Eagerly snapshot pre-existing others entries — mirrors _depth_only_checkpoint!.
-    # _mark_untracked! cannot lazy-checkpoint others types (b==0 branch, no per-type bit).
+    @inbounds pool._touched_type_masks[d] |= _TYPED_LAZY_BIT
+    # Eagerly snapshot pre-existing others entries — mirrors _lazy_checkpoint!.
+    # _record_type_touch! cannot lazy-checkpoint others types (b==0 branch, no per-type bit).
     # Without this, a helper that re-acquires an already-active others type triggers Case B
     # at rewind and restores the wrong parent n_active value.
     #
-    # Also set has_others=true when pool.others is non-empty, so _typed_selective_rewind!
+    # Also set has_others=true when pool.others is non-empty, so _typed_lazy_rewind!
     # enters the others loop even for tracked non-fixed-slot types (e.g. CPU Float16) that
-    # used _acquire_impl! (bypassing _mark_untracked!, leaving has_others=false otherwise).
+    # used _acquire_impl! (bypassing _record_type_touch!, leaving has_others=false otherwise).
     # Skip re-snapshot for entries already checkpointed at d by checkpoint!(pool, types...)
     # (e.g. Float16 in types... was just checkpointed above — avoid double-push).
     for p in values(pool.others)
         if @inbounds(p._checkpoint_depths[end]) != d
             _checkpoint_typed_pool!(p, d)
         end
-        @inbounds pool._untracked_has_others[d] = true
+        @inbounds pool._touched_has_others[d] = true
     end
     nothing
 end
 
 """
-    _typed_selective_rewind!(pool::AdaptiveArrayPool, tracked_mask::UInt16)
+    _typed_lazy_rewind!(pool::AdaptiveArrayPool, tracked_mask::UInt16)
 
 Selective rewind for typed mode (`use_typed=true`) fallback path.
 
 Called when `_can_use_typed_path` returns false (helpers touched types beyond the
 statically-tracked set). Rewinds only pools whose bits are set in
-`tracked_mask | untracked_mask`. All touched types have Case A checkpoints,
-guaranteed by the bit 14 lazy mode set in `_typed_checkpoint_with_lazy!`.
+`tracked_mask | touched_mask`. All touched types have Case A checkpoints,
+guaranteed by the `_TYPED_LAZY_BIT` mode set in `_typed_lazy_checkpoint!`.
 """
-@inline function _typed_selective_rewind!(pool::AdaptiveArrayPool, tracked_mask::UInt16)
+@inline function _typed_lazy_rewind!(pool::AdaptiveArrayPool, tracked_mask::UInt16)
     d = pool._current_depth
-    untracked = @inbounds(pool._untracked_fixed_masks[d]) & UInt16(0x00FF)
-    combined = tracked_mask | untracked
+    touched = @inbounds(pool._touched_type_masks[d]) & _TYPE_BITS_MASK
+    combined = tracked_mask | touched
     _selective_rewind_fixed_slots!(pool, combined)
-    if @inbounds(pool._untracked_has_others[d])
+    if @inbounds(pool._touched_has_others[d])
         for tp in values(pool.others)
             _rewind_typed_pool!(tp, d)
         end
     end
-    pop!(pool._untracked_fixed_masks)
-    pop!(pool._untracked_has_others)
+    pop!(pool._touched_type_masks)
+    pop!(pool._touched_has_others)
     pool._current_depth -= 1
     nothing
 end
@@ -333,7 +333,7 @@ Rewind only the fixed-slot typed pools whose bits are set in `mask`.
 
 Each of the 8 fixed-slot pools maps to bits 0–7 (same encoding as `_fixed_slot_bit`).
 Bits 8–15 (mode flags) are **not** checked here — callers must strip them
-before passing the mask (e.g. `mask & UInt16(0x00FF)`).
+before passing the mask (e.g. `mask & _TYPE_BITS_MASK`).
 
 Unset bits are skipped entirely: for pools that were acquired without a matching
 checkpoint, `_rewind_typed_pool!` Case B safely restores from the parent checkpoint.
@@ -432,12 +432,12 @@ function Base.empty!(pool::AdaptiveArrayPool)
     end
     empty!(pool.others)
 
-    # Reset untracked detection state (1-based sentinel pattern)
+    # Reset type touch tracking state (1-based sentinel pattern)
     pool._current_depth = 1                   # 1 = global scope (sentinel)
-    empty!(pool._untracked_fixed_masks)
-    push!(pool._untracked_fixed_masks, UInt16(0))   # Sentinel: no bits set
-    empty!(pool._untracked_has_others)
-    push!(pool._untracked_has_others, false)         # Sentinel: no others
+    empty!(pool._touched_type_masks)
+    push!(pool._touched_type_masks, UInt16(0))   # Sentinel: no bits set
+    empty!(pool._touched_has_others)
+    push!(pool._touched_has_others, false)         # Sentinel: no others
 
     return pool
 end
@@ -470,7 +470,7 @@ Reset pool state without clearing allocated storage.
 This function:
 - Resets all `n_active` counters to 0
 - Restores all checkpoint stacks to sentinel state
-- Resets `_current_depth` and untracked bitmask state
+- Resets `_current_depth` and type touch tracking state
 
 Unlike `empty!`, this **preserves** all allocated vectors, views, and N-D arrays
 for reuse, avoiding reallocation costs.
@@ -513,12 +513,12 @@ function reset!(pool::AdaptiveArrayPool)
         reset!(tp)
     end
 
-    # Reset untracked detection state (1-based sentinel pattern)
+    # Reset type touch tracking state (1-based sentinel pattern)
     pool._current_depth = 1                   # 1 = global scope (sentinel)
-    empty!(pool._untracked_fixed_masks)
-    push!(pool._untracked_fixed_masks, UInt16(0))   # Sentinel: no bits set
-    empty!(pool._untracked_has_others)
-    push!(pool._untracked_has_others, false)         # Sentinel: no others
+    empty!(pool._touched_type_masks)
+    push!(pool._touched_type_masks, UInt16(0))   # Sentinel: no bits set
+    empty!(pool._touched_has_others)
+    push!(pool._touched_has_others, false)         # Sentinel: no others
 
     return pool
 end
@@ -579,17 +579,17 @@ end
 
 Check if the typed (fast) checkpoint/rewind path is safe to use.
 
-Returns `true` when all untracked acquires at the current depth are a subset
-of the tracked types (bitmask subset check) AND no non-fixed-slot types were used.
+Returns `true` when all touched types at the current depth are a subset
+of the tracked types (bitmask subset check) AND no non-fixed-slot types were touched.
 
-The subset check: `(untracked_mask & ~tracked_mask) == 0` means every bit set
-in `untracked_mask` is also set in `tracked_mask`.
+The subset check: `(touched_mask & ~tracked_mask) == 0` means every bit set
+in `touched_mask` is also set in `tracked_mask`.
 """
 @inline function _can_use_typed_path(pool::AbstractArrayPool, tracked_mask::UInt16)
     depth = pool._current_depth
-    untracked_mask = @inbounds pool._untracked_fixed_masks[depth]
-    has_others = @inbounds pool._untracked_has_others[depth]
-    return (untracked_mask & ~tracked_mask) == UInt16(0) && !has_others
+    touched_mask = @inbounds(pool._touched_type_masks[depth]) & _TYPE_BITS_MASK
+    has_others = @inbounds pool._touched_has_others[depth]
+    return (touched_mask & ~tracked_mask) == UInt16(0) && !has_others
 end
 
 # ==============================================================================

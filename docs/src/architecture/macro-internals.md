@@ -115,24 +115,24 @@ end
 # If only checkpoint!(pool, Int64), Float64 arrays won't be rewound!
 ```
 
-### The Solution: Bitmask-Based Untracked Tracking
+### The Solution: Bitmask-Based Type Touch Tracking
 
-Every `acquire!` call (and convenience functions) marks itself as "untracked" with type-specific bitmask information:
+Every `acquire!` call (and convenience functions) records the type touch with type-specific bitmask information:
 
 ```julia
 # Public API (called from user code outside macro)
 @inline function acquire!(pool, ::Type{T}, n::Int) where {T}
-    _mark_untracked!(pool, T)           # ← Sets type-specific bitmask!
+    _record_type_touch!(pool, T)         # ← Records type-specific bitmask!
     _acquire_impl!(pool, T, n)
 end
 
-# Macro-transformed calls skip the marking
+# Macro-transformed calls skip the recording
 # (because macro already knows about them)
-_acquire_impl!(pool, T, n)               # ← No marking
+_acquire_impl!(pool, T, n)               # ← No recording
 ```
 
 Each fixed-slot type maps to a bit in a `UInt16` bitmask via `_fixed_slot_bit(T)`.
-Non-fixed-slot types set a separate `_untracked_has_others` flag.
+Non-fixed-slot types set a separate `_touched_has_others` flag.
 
 ### Flow Diagram
 
@@ -144,7 +144,7 @@ Non-fixed-slot types set a separate `_untracked_has_others` flag.
     │   A = _acquire_impl!(...)          (macro-transformed, no mark)
     │   B = helper!(pool)
     │       └─► zeros!(pool, Float64, N)
-    │           └─► _mark_untracked!(pool, Float64)
+    │           └─► _record_type_touch!(pool, Float64)
     │               masks[2] |= 0x0001 (Float64 bit) ←───┐
     │                                                      │
     │   ... more code ...                                  │
@@ -161,9 +161,9 @@ end
 
 ### Why This Works
 
-1. **Macro-tracked calls**: Transformed to `_acquire_impl!` → no bitmask mark → typed path
-2. **Untracked calls**: Use public API → sets type-specific bitmask → subset check at rewind
-3. **Subset optimization**: If untracked types are a subset of tracked types, the typed path is still safe
+1. **Macro-tracked calls**: Transformed to `_acquire_impl!` → no bitmask touch → typed path
+2. **External calls**: Use public API → records type-specific bitmask → subset check at rewind
+3. **Subset optimization**: If touched types are a subset of tracked types, the typed path is still safe
 4. **Result**: Always safe, with finer-grained optimization than a single boolean flag
 
 ## Nested `@with_pool` Handling
@@ -191,14 +191,14 @@ end                                      depth: 2 → 1, bitmask checked
 struct AdaptiveArrayPool
     # ... type pools ...
     _current_depth::Int                     # Current scope depth (1 = global)
-    _untracked_fixed_masks::Vector{UInt16}  # Per-depth: which fixed slots untracked
-    _untracked_has_others::Vector{Bool}     # Per-depth: any non-fixed-slot untracked
+    _touched_type_masks::Vector{UInt16}     # Per-depth: which fixed slots were touched
+    _touched_has_others::Vector{Bool}       # Per-depth: any non-fixed-slot type touched
 end
 
 # Initialized with sentinel:
 _current_depth = 1                          # Global scope
-_untracked_fixed_masks = [UInt16(0)]        # Sentinel for depth=1
-_untracked_has_others = [false]             # Sentinel for depth=1
+_touched_type_masks = [UInt16(0)]           # Sentinel for depth=1
+_touched_has_others = [false]               # Sentinel for depth=1
 ```
 
 ## Performance Impact
@@ -256,7 +256,7 @@ end
 | `_extract_acquire_types(expr, pool_name)` | AST walk to find types |
 | `_filter_static_types(types, local_vars)` | Filter out locally-defined types |
 | `_transform_acquire_calls(expr, pool_name)` | Replace `acquire!` → `_acquire_impl!` |
-| `_mark_untracked!(pool, T)` | Set type-specific bitmask for current depth |
+| `_record_type_touch!(pool, T)` | Record type touch in bitmask for current depth |
 | `_can_use_typed_path(pool, mask)` | Bitmask subset check for typed vs full path |
 | `_tracked_mask_for_types(T...)` | Compile-time bitmask for tracked types |
 | `_generate_typed_checkpoint_call(pool, types)` | Generate bitmask-aware checkpoint |

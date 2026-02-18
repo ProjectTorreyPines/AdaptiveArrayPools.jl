@@ -367,7 +367,18 @@ Tests verify synchronization automatically.
 const FIXED_SLOT_FIELDS = (:float64, :float32, :int64, :int32, :complexf64, :complexf32, :bool, :bits)
 
 # ==============================================================================
-# Fixed-Slot Bit Mapping (for typed untracked tracking)
+# Bitmask Mode Constants
+# ==============================================================================
+# Bits 0-7: fixed-slot type touch tracking (one bit per type)
+# Bits 14-15: mode flags set during checkpoint to control lazy behavior
+
+const _LAZY_MODE_BIT   = UInt16(0x8000)  # bit 15: lazy (dynamic-selective) checkpoint mode
+const _TYPED_LAZY_BIT  = UInt16(0x4000)  # bit 14: typed lazy-fallback mode
+const _MODE_BITS_MASK  = UInt16(0xC000)  # bits 14-15: all mode flags
+const _TYPE_BITS_MASK  = UInt16(0x00FF)  # bits 0-7: fixed-slot type bits
+
+# ==============================================================================
+# Fixed-Slot Bit Mapping (for type touch tracking)
 # ==============================================================================
 # Maps each fixed-slot type to a unique bit in a UInt16 bitmask.
 # Bit ordering matches FIXED_SLOT_FIELDS. Non-fixed types return UInt16(0).
@@ -382,7 +393,7 @@ const FIXED_SLOT_FIELDS = (:float64, :float32, :int64, :int32, :complexf64, :com
 @inline _fixed_slot_bit(::Type{Bit})        = UInt16(1) << 7
 @inline _fixed_slot_bit(::Type)             = UInt16(0)  # non-fixed-slot → triggers has_others
 
-# Check whether a type's bit is set in a bitmask (e.g. _untracked_fixed_masks or combined).
+# Check whether a type's bit is set in a bitmask (e.g. _touched_type_masks or combined).
 @inline _has_bit(mask::UInt16, ::Type{T}) where {T} = (mask & _fixed_slot_bit(T)) != 0
 
 # ==============================================================================
@@ -409,10 +420,10 @@ mutable struct AdaptiveArrayPool <: AbstractArrayPool
     # Fallback: rare types
     others::IdDict{DataType, Any}
 
-    # Untracked acquire detection (1-based sentinel pattern)
+    # Type touch tracking (1-based sentinel pattern)
     _current_depth::Int             # Current scope depth (1 = global scope)
-    _untracked_fixed_masks::Vector{UInt16}  # Per-depth: which fixed slots had untracked acquires
-    _untracked_has_others::Vector{Bool}     # Per-depth: any non-fixed-slot untracked acquire?
+    _touched_type_masks::Vector{UInt16}  # Per-depth: which fixed slots were touched + mode flags
+    _touched_has_others::Vector{Bool}    # Per-depth: any non-fixed-slot type touched?
 end
 
 function AdaptiveArrayPool()
@@ -427,8 +438,8 @@ function AdaptiveArrayPool()
         BitTypedPool(),
         IdDict{DataType, Any}(),
         1,              # _current_depth: 1 = global scope (sentinel)
-        [UInt16(0)],    # _untracked_fixed_masks: sentinel (no bits set)
-        [false]         # _untracked_has_others: sentinel (no others)
+        [UInt16(0)],    # _touched_type_masks: sentinel (no bits set)
+        [false]         # _touched_has_others: sentinel (no others)
     )
 end
 

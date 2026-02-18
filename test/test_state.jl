@@ -1,5 +1,5 @@
 # Phase 5 internal functions used in tests below
-import AdaptiveArrayPools: _typed_checkpoint_with_lazy!, _typed_selective_rewind!, _tracked_mask_for_types
+import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracked_mask_for_types
 
 @testset "State Management" begin
 
@@ -309,8 +309,8 @@ import AdaptiveArrayPools: _typed_checkpoint_with_lazy!, _typed_selective_rewind
             reset!(pool)
 
             @test pool._current_depth == 1
-            @test pool._untracked_fixed_masks == [UInt16(0)]
-            @test pool._untracked_has_others == [false]
+            @test pool._touched_type_masks == [UInt16(0)]
+            @test pool._touched_has_others == [false]
             @test pool.float64._checkpoint_n_active == [0]  # Sentinel only
             @test pool.float64._checkpoint_depths == [0]    # Sentinel only
         end
@@ -497,7 +497,7 @@ import AdaptiveArrayPools: _typed_checkpoint_with_lazy!, _typed_selective_rewind
             rewind!(pool)
             @test pool.float64.n_active == 0
             @test pool._current_depth == 1
-            @test pool._untracked_fixed_masks == [UInt16(0)]
+            @test pool._touched_type_masks == [UInt16(0)]
         end
 
         @testset "rewind! after reset!" begin
@@ -753,7 +753,7 @@ import AdaptiveArrayPools: _typed_checkpoint_with_lazy!, _typed_selective_rewind
         v_parent = acquire!(pool, Int64, 10)
         v_parent .= 42  # Initialize
         @test pool.int64.n_active == 1
-        @test pool._untracked_fixed_masks[1] == AdaptiveArrayPools._fixed_slot_bit(Int64)
+        @test pool._touched_type_masks[1] == AdaptiveArrayPools._fixed_slot_bit(Int64)
 
         # Enter @with_pool - full checkpoint protects parent's Int64 arrays
         @with_pool pool begin
@@ -779,7 +779,7 @@ import AdaptiveArrayPools: _typed_checkpoint_with_lazy!, _typed_selective_rewind
         v_parent = acquire!(pool, Int32, 7)
         v_parent .= Int32(123)
         @test pool.int32.n_active == 1
-        @test pool._untracked_fixed_masks[1] == AdaptiveArrayPools._fixed_slot_bit(Int32)
+        @test pool._touched_type_masks[1] == AdaptiveArrayPools._fixed_slot_bit(Int32)
 
         # Helper for Int32
         function int32_helper(p)
@@ -830,7 +830,7 @@ import AdaptiveArrayPools: _typed_checkpoint_with_lazy!, _typed_selective_rewind
         pool = AdaptiveArrayPool()
 
         # No global untracked acquire
-        @test pool._untracked_fixed_masks[1] == UInt16(0)
+        @test pool._touched_type_masks[1] == UInt16(0)
 
         # Checkpoint/rewind with typed - should work normally
         checkpoint!(pool)
@@ -1005,7 +1005,7 @@ import AdaptiveArrayPools: _typed_checkpoint_with_lazy!, _typed_selective_rewind
         @test pool.bool.n_active == 0
         @test pool.complexf64.n_active == 0
         @test pool._current_depth == 1
-        @test pool._untracked_fixed_masks == [UInt16(0)]
+        @test pool._touched_type_masks == [UInt16(0)]
 
         empty!(pool)
     end
@@ -1329,14 +1329,14 @@ import AdaptiveArrayPools: _typed_checkpoint_with_lazy!, _typed_selective_rewind
         pool = AdaptiveArrayPool()
 
         # New fields exist
-        @test hasfield(AdaptiveArrayPool, :_untracked_fixed_masks)
-        @test hasfield(AdaptiveArrayPool, :_untracked_has_others)
+        @test hasfield(AdaptiveArrayPool, :_touched_type_masks)
+        @test hasfield(AdaptiveArrayPool, :_touched_has_others)
 
         # Sentinel values at depth=1 (global scope)
-        @test pool._untracked_fixed_masks == [UInt16(0)]
-        @test pool._untracked_has_others == [false]
-        @test length(pool._untracked_fixed_masks) == 1
-        @test length(pool._untracked_has_others) == 1
+        @test pool._touched_type_masks == [UInt16(0)]
+        @test pool._touched_has_others == [false]
+        @test length(pool._touched_type_masks) == 1
+        @test length(pool._touched_has_others) == 1
     end
 
     @testset "Bitmask metadata: checkpoint! pushes sentinels" begin
@@ -1344,15 +1344,15 @@ import AdaptiveArrayPools: _typed_checkpoint_with_lazy!, _typed_selective_rewind
 
         # Full checkpoint
         checkpoint!(pool)
-        @test length(pool._untracked_fixed_masks) == 2
-        @test length(pool._untracked_has_others) == 2
-        @test pool._untracked_fixed_masks[2] == UInt16(0)
-        @test pool._untracked_has_others[2] == false
+        @test length(pool._touched_type_masks) == 2
+        @test length(pool._touched_has_others) == 2
+        @test pool._touched_type_masks[2] == UInt16(0)
+        @test pool._touched_has_others[2] == false
 
         # Another checkpoint
         checkpoint!(pool)
-        @test length(pool._untracked_fixed_masks) == 3
-        @test length(pool._untracked_has_others) == 3
+        @test length(pool._touched_type_masks) == 3
+        @test length(pool._touched_has_others) == 3
 
         # Cleanup
         rewind!(pool)
@@ -1364,18 +1364,18 @@ import AdaptiveArrayPools: _typed_checkpoint_with_lazy!, _typed_selective_rewind
 
         # Single-type checkpoint
         checkpoint!(pool, Float64)
-        @test length(pool._untracked_fixed_masks) == 2
-        @test length(pool._untracked_has_others) == 2
-        @test pool._untracked_fixed_masks[2] == UInt16(0)
-        @test pool._untracked_has_others[2] == false
+        @test length(pool._touched_type_masks) == 2
+        @test length(pool._touched_has_others) == 2
+        @test pool._touched_type_masks[2] == UInt16(0)
+        @test pool._touched_has_others[2] == false
         rewind!(pool, Float64)
 
         # Multi-type checkpoint
         checkpoint!(pool, Float64, Float32)
-        @test length(pool._untracked_fixed_masks) == 2
-        @test length(pool._untracked_has_others) == 2
-        @test pool._untracked_fixed_masks[2] == UInt16(0)
-        @test pool._untracked_has_others[2] == false
+        @test length(pool._touched_type_masks) == 2
+        @test length(pool._touched_has_others) == 2
+        @test pool._touched_type_masks[2] == UInt16(0)
+        @test pool._touched_has_others[2] == false
         rewind!(pool, Float64, Float32)
     end
 
@@ -1383,33 +1383,33 @@ import AdaptiveArrayPools: _typed_checkpoint_with_lazy!, _typed_selective_rewind
         pool = AdaptiveArrayPool()
 
         checkpoint!(pool)
-        @test length(pool._untracked_fixed_masks) == 2
-        @test length(pool._untracked_has_others) == 2
+        @test length(pool._touched_type_masks) == 2
+        @test length(pool._touched_has_others) == 2
 
         rewind!(pool)
-        @test length(pool._untracked_fixed_masks) == 1
-        @test length(pool._untracked_has_others) == 1
+        @test length(pool._touched_type_masks) == 1
+        @test length(pool._touched_has_others) == 1
         # Sentinel preserved
-        @test pool._untracked_fixed_masks[1] == UInt16(0)
-        @test pool._untracked_has_others[1] == false
+        @test pool._touched_type_masks[1] == UInt16(0)
+        @test pool._touched_has_others[1] == false
     end
 
     @testset "Bitmask metadata: typed rewind! pops" begin
         pool = AdaptiveArrayPool()
 
         checkpoint!(pool, Float64)
-        @test length(pool._untracked_fixed_masks) == 2
+        @test length(pool._touched_type_masks) == 2
 
         rewind!(pool, Float64)
-        @test length(pool._untracked_fixed_masks) == 1
-        @test length(pool._untracked_has_others) == 1
+        @test length(pool._touched_type_masks) == 1
+        @test length(pool._touched_has_others) == 1
 
         # Multi-type
         checkpoint!(pool, Float64, Int64)
-        @test length(pool._untracked_fixed_masks) == 2
+        @test length(pool._touched_type_masks) == 2
 
         rewind!(pool, Float64, Int64)
-        @test length(pool._untracked_fixed_masks) == 1
+        @test length(pool._touched_type_masks) == 1
     end
 
     @testset "Bitmask metadata: reset! restores sentinel" begin
@@ -1418,11 +1418,11 @@ import AdaptiveArrayPools: _typed_checkpoint_with_lazy!, _typed_selective_rewind
         # Build up state
         checkpoint!(pool)
         checkpoint!(pool)
-        @test length(pool._untracked_fixed_masks) == 3
+        @test length(pool._touched_type_masks) == 3
 
         reset!(pool)
-        @test pool._untracked_fixed_masks == [UInt16(0)]
-        @test pool._untracked_has_others == [false]
+        @test pool._touched_type_masks == [UInt16(0)]
+        @test pool._touched_has_others == [false]
         @test pool._current_depth == 1
     end
 
@@ -1433,11 +1433,11 @@ import AdaptiveArrayPools: _typed_checkpoint_with_lazy!, _typed_selective_rewind
         checkpoint!(pool)
         acquire!(pool, Float64, 10)
         checkpoint!(pool)
-        @test length(pool._untracked_fixed_masks) == 3
+        @test length(pool._touched_type_masks) == 3
 
         empty!(pool)
-        @test pool._untracked_fixed_masks == [UInt16(0)]
-        @test pool._untracked_has_others == [false]
+        @test pool._touched_type_masks == [UInt16(0)]
+        @test pool._touched_has_others == [false]
         @test pool._current_depth == 1
     end
 
@@ -1450,8 +1450,8 @@ import AdaptiveArrayPools: _typed_checkpoint_with_lazy!, _typed_selective_rewind
         end
 
         # No stack leaks — should be back to sentinel only
-        @test length(pool._untracked_fixed_masks) == 1
-        @test length(pool._untracked_has_others) == 1
+        @test length(pool._touched_type_masks) == 1
+        @test length(pool._touched_has_others) == 1
         @test pool._current_depth == 1
     end
 
@@ -1460,25 +1460,25 @@ import AdaptiveArrayPools: _typed_checkpoint_with_lazy!, _typed_selective_rewind
 
         # Depth 2
         checkpoint!(pool)
-        @test length(pool._untracked_fixed_masks) == 2
+        @test length(pool._touched_type_masks) == 2
 
         # Depth 3
         checkpoint!(pool)
-        @test length(pool._untracked_fixed_masks) == 3
+        @test length(pool._touched_type_masks) == 3
 
         # Depth 4
         checkpoint!(pool)
-        @test length(pool._untracked_fixed_masks) == 4
+        @test length(pool._touched_type_masks) == 4
 
         # Pop back
         rewind!(pool)
-        @test length(pool._untracked_fixed_masks) == 3
+        @test length(pool._touched_type_masks) == 3
 
         rewind!(pool)
-        @test length(pool._untracked_fixed_masks) == 2
+        @test length(pool._touched_type_masks) == 2
 
         rewind!(pool)
-        @test length(pool._untracked_fixed_masks) == 1
+        @test length(pool._touched_type_masks) == 1
     end
 
     # ==========================================================================
@@ -1510,78 +1510,78 @@ import AdaptiveArrayPools: _typed_checkpoint_with_lazy!, _typed_selective_rewind
         @test all(b -> b != UInt16(0), bits)
     end
 
-    @testset "Typed _mark_untracked!: fixed-slot types set mask bits" begin
-        using AdaptiveArrayPools: _mark_untracked!, _fixed_slot_bit
+    @testset "Typed _record_type_touch!: fixed-slot types set mask bits" begin
+        using AdaptiveArrayPools: _record_type_touch!, _fixed_slot_bit
 
         pool = AdaptiveArrayPool()
         checkpoint!(pool)  # depth=2
 
         # Mark Float64 untracked
-        _mark_untracked!(pool, Float64)
-        @test pool._untracked_fixed_masks[2] == _fixed_slot_bit(Float64)
-        @test pool._untracked_has_others[2] == false
+        _record_type_touch!(pool, Float64)
+        @test pool._touched_type_masks[2] == _fixed_slot_bit(Float64)
+        @test pool._touched_has_others[2] == false
 
         # Mark Float32 additionally — bits accumulate
-        _mark_untracked!(pool, Float32)
-        @test pool._untracked_fixed_masks[2] == _fixed_slot_bit(Float64) | _fixed_slot_bit(Float32)
-        @test pool._untracked_has_others[2] == false
+        _record_type_touch!(pool, Float32)
+        @test pool._touched_type_masks[2] == _fixed_slot_bit(Float64) | _fixed_slot_bit(Float32)
+        @test pool._touched_has_others[2] == false
 
         # Mark Float64 again — idempotent
-        _mark_untracked!(pool, Float64)
-        @test pool._untracked_fixed_masks[2] == _fixed_slot_bit(Float64) | _fixed_slot_bit(Float32)
+        _record_type_touch!(pool, Float64)
+        @test pool._touched_type_masks[2] == _fixed_slot_bit(Float64) | _fixed_slot_bit(Float32)
 
         rewind!(pool)
     end
 
-    @testset "Typed _mark_untracked!: non-fixed-slot types set has_others" begin
-        using AdaptiveArrayPools: _mark_untracked!, _fixed_slot_bit
+    @testset "Typed _record_type_touch!: non-fixed-slot types set has_others" begin
+        using AdaptiveArrayPools: _record_type_touch!, _fixed_slot_bit
 
         pool = AdaptiveArrayPool()
         checkpoint!(pool)  # depth=2
 
         # Mark UInt8 (not a fixed slot)
-        _mark_untracked!(pool, UInt8)
-        @test pool._untracked_fixed_masks[2] == UInt16(0)  # mask unchanged
-        @test pool._untracked_has_others[2] == true
+        _record_type_touch!(pool, UInt8)
+        @test pool._touched_type_masks[2] == UInt16(0)  # mask unchanged
+        @test pool._touched_has_others[2] == true
 
         rewind!(pool)
     end
 
-    @testset "Typed _mark_untracked!: mixed fixed + others" begin
-        using AdaptiveArrayPools: _mark_untracked!, _fixed_slot_bit
+    @testset "Typed _record_type_touch!: mixed fixed + others" begin
+        using AdaptiveArrayPools: _record_type_touch!, _fixed_slot_bit
 
         pool = AdaptiveArrayPool()
         checkpoint!(pool)
 
-        _mark_untracked!(pool, Float64)
-        _mark_untracked!(pool, UInt8)  # others
-        _mark_untracked!(pool, Int64)
+        _record_type_touch!(pool, Float64)
+        _record_type_touch!(pool, UInt8)  # others
+        _record_type_touch!(pool, Int64)
 
-        @test pool._untracked_fixed_masks[2] == _fixed_slot_bit(Float64) | _fixed_slot_bit(Int64)
-        @test pool._untracked_has_others[2] == true
+        @test pool._touched_type_masks[2] == _fixed_slot_bit(Float64) | _fixed_slot_bit(Int64)
+        @test pool._touched_has_others[2] == true
 
         rewind!(pool)
     end
 
-    @testset "Typed _mark_untracked!: nested depth isolation" begin
-        using AdaptiveArrayPools: _mark_untracked!, _fixed_slot_bit
+    @testset "Typed _record_type_touch!: nested depth isolation" begin
+        using AdaptiveArrayPools: _record_type_touch!, _fixed_slot_bit
 
         pool = AdaptiveArrayPool()
 
         # Depth 2
         checkpoint!(pool)
-        _mark_untracked!(pool, Float64)
+        _record_type_touch!(pool, Float64)
 
         # Depth 3
         checkpoint!(pool)
-        _mark_untracked!(pool, Int32)
+        _record_type_touch!(pool, Int32)
 
         # Depth 3 has only Int32
-        @test pool._untracked_fixed_masks[3] == _fixed_slot_bit(Int32)
-        @test pool._untracked_fixed_masks[2] == _fixed_slot_bit(Float64)
+        @test pool._touched_type_masks[3] == _fixed_slot_bit(Int32)
+        @test pool._touched_type_masks[2] == _fixed_slot_bit(Float64)
 
         # Depth 1 (sentinel) untouched
-        @test pool._untracked_fixed_masks[1] == UInt16(0)
+        @test pool._touched_type_masks[1] == UInt16(0)
 
         rewind!(pool)
         rewind!(pool)
@@ -1593,12 +1593,12 @@ import AdaptiveArrayPools: _typed_checkpoint_with_lazy!, _typed_selective_rewind
         pool = AdaptiveArrayPool()
         checkpoint!(pool)  # depth=2
 
-        # acquire! outside @with_pool calls _mark_untracked!(pool, T)
+        # acquire! outside @with_pool calls _record_type_touch!(pool, T)
         acquire!(pool, Float64, 10)
-        @test pool._untracked_fixed_masks[2] == _fixed_slot_bit(Float64)
+        @test pool._touched_type_masks[2] == _fixed_slot_bit(Float64)
 
         acquire!(pool, Int64, 5)
-        @test pool._untracked_fixed_masks[2] == _fixed_slot_bit(Float64) | _fixed_slot_bit(Int64)
+        @test pool._touched_type_masks[2] == _fixed_slot_bit(Float64) | _fixed_slot_bit(Int64)
 
         rewind!(pool)
     end
@@ -1610,7 +1610,7 @@ import AdaptiveArrayPools: _typed_checkpoint_with_lazy!, _typed_selective_rewind
         checkpoint!(pool)
 
         unsafe_acquire!(pool, Float32, 10)
-        @test pool._untracked_fixed_masks[2] == _fixed_slot_bit(Float32)
+        @test pool._touched_type_masks[2] == _fixed_slot_bit(Float32)
 
         rewind!(pool)
     end
@@ -1623,37 +1623,37 @@ import AdaptiveArrayPools: _typed_checkpoint_with_lazy!, _typed_selective_rewind
         # zeros! with explicit type
         checkpoint!(pool)
         zeros!(pool, Float64, 10)
-        @test pool._untracked_fixed_masks[2] == _fixed_slot_bit(Float64)
+        @test pool._touched_type_masks[2] == _fixed_slot_bit(Float64)
         rewind!(pool)
 
         # zeros! without type → default_eltype → Float64
         checkpoint!(pool)
         zeros!(pool, 10)
-        @test pool._untracked_fixed_masks[2] == _fixed_slot_bit(Float64)
+        @test pool._touched_type_masks[2] == _fixed_slot_bit(Float64)
         rewind!(pool)
 
         # ones! with type
         checkpoint!(pool)
         ones!(pool, Int32, 10)
-        @test pool._untracked_fixed_masks[2] == _fixed_slot_bit(Int32)
+        @test pool._touched_type_masks[2] == _fixed_slot_bit(Int32)
         rewind!(pool)
 
         # trues! → Bit type
         checkpoint!(pool)
         trues!(pool, 10)
-        @test pool._untracked_fixed_masks[2] == _fixed_slot_bit(Bit)
+        @test pool._touched_type_masks[2] == _fixed_slot_bit(Bit)
         rewind!(pool)
 
         # falses! → Bit type
         checkpoint!(pool)
         falses!(pool, 10)
-        @test pool._untracked_fixed_masks[2] == _fixed_slot_bit(Bit)
+        @test pool._touched_type_masks[2] == _fixed_slot_bit(Bit)
         rewind!(pool)
 
         # similar! with template array
         checkpoint!(pool)
         similar!(pool, rand(Float32, 5))
-        @test pool._untracked_fixed_masks[2] == _fixed_slot_bit(Float32)
+        @test pool._touched_type_masks[2] == _fixed_slot_bit(Float32)
         rewind!(pool)
     end
 
@@ -1662,8 +1662,8 @@ import AdaptiveArrayPools: _typed_checkpoint_with_lazy!, _typed_selective_rewind
 
         checkpoint!(pool)
         zeros!(pool, UInt8, 10)
-        @test pool._untracked_has_others[2] == true
-        @test pool._untracked_fixed_masks[2] == UInt16(0)
+        @test pool._touched_has_others[2] == true
+        @test pool._touched_type_masks[2] == UInt16(0)
         rewind!(pool)
     end
 
@@ -1712,30 +1712,92 @@ import AdaptiveArrayPools: _typed_checkpoint_with_lazy!, _typed_selective_rewind
         @test _can_use_typed_path(pool, _tracked_mask_for_types(Float64)) == true
 
         # Case 2: untracked Float64, tracked includes Float64 → subset → OK
-        pool._untracked_fixed_masks[2] = _fixed_slot_bit(Float64)
+        pool._touched_type_masks[2] = _fixed_slot_bit(Float64)
         @test _can_use_typed_path(pool, _tracked_mask_for_types(Float64)) == true
 
         # Case 3: untracked Float64, tracked is Float32 only → NOT subset → full
         @test _can_use_typed_path(pool, _tracked_mask_for_types(Float32)) == false
 
         # Case 4: untracked Float64|Float32, tracked Float64 only → partial → full
-        pool._untracked_fixed_masks[2] = _fixed_slot_bit(Float64) | _fixed_slot_bit(Float32)
+        pool._touched_type_masks[2] = _fixed_slot_bit(Float64) | _fixed_slot_bit(Float32)
         @test _can_use_typed_path(pool, _tracked_mask_for_types(Float64)) == false
 
         # Case 5: untracked Float64|Float32, tracked Float64|Float32 → exact match → OK
         @test _can_use_typed_path(pool, _tracked_mask_for_types(Float64, Float32)) == true
 
         # Case 6: untracked Float64 + has_others → always full
-        pool._untracked_fixed_masks[2] = _fixed_slot_bit(Float64)
-        pool._untracked_has_others[2] = true
+        pool._touched_type_masks[2] = _fixed_slot_bit(Float64)
+        pool._touched_has_others[2] = true
         @test _can_use_typed_path(pool, _tracked_mask_for_types(Float64)) == false
 
         # Case 7: no fixed untracked but has_others → always full
-        pool._untracked_fixed_masks[2] = UInt16(0)
-        pool._untracked_has_others[2] = true
+        pool._touched_type_masks[2] = UInt16(0)
+        pool._touched_has_others[2] = true
         @test _can_use_typed_path(pool, _tracked_mask_for_types(Float64)) == false
 
         rewind!(pool)
+    end
+
+    @testset "_can_use_typed_path: mode bits do not pollute subset check" begin
+        # Issue: _can_use_typed_path reads raw _touched_type_masks[depth] which may
+        # contain mode bits (14-15) from _lazy_checkpoint! or _typed_lazy_checkpoint!.
+        # These mode bits leak into the subset check `(touched_mask & ~tracked_mask) == 0`,
+        # causing false negatives: the typed fast path is rejected even when only
+        # tracked types were touched.
+        using AdaptiveArrayPools: _can_use_typed_path, _tracked_mask_for_types,
+              _lazy_checkpoint!, _lazy_rewind!, _LAZY_MODE_BIT, _TYPED_LAZY_BIT,
+              _acquire_impl!
+
+        # --- Case 1: _LAZY_MODE_BIT (bit 15) should be ignored ---
+        pool = AdaptiveArrayPool()
+        checkpoint!(pool)  # depth 2
+        pool._touched_type_masks[2] = _LAZY_MODE_BIT  # simulate lazy parent scope
+        # Only mode bit set, no type bits → typed path should be safe
+        @test _can_use_typed_path(pool, _tracked_mask_for_types(Float64)) == true
+
+        # Mode bit + tracked type bit → still safe (type is tracked)
+        pool._touched_type_masks[2] = _LAZY_MODE_BIT | _fixed_slot_bit(Float64)
+        @test _can_use_typed_path(pool, _tracked_mask_for_types(Float64)) == true
+
+        # Mode bit + untracked type bit → correctly fails
+        pool._touched_type_masks[2] = _LAZY_MODE_BIT | _fixed_slot_bit(Int32)
+        @test _can_use_typed_path(pool, _tracked_mask_for_types(Float64)) == false
+        rewind!(pool)
+
+        # --- Case 2: _TYPED_LAZY_BIT (bit 14) should be ignored ---
+        pool2 = AdaptiveArrayPool()
+        checkpoint!(pool2)
+        pool2._touched_type_masks[2] = _TYPED_LAZY_BIT
+        @test _can_use_typed_path(pool2, _tracked_mask_for_types(Float64)) == true
+
+        pool2._touched_type_masks[2] = _TYPED_LAZY_BIT | _fixed_slot_bit(Float64)
+        @test _can_use_typed_path(pool2, _tracked_mask_for_types(Float64)) == true
+        rewind!(pool2)
+
+        # --- Case 3: Both mode bits set (bits 14+15) should be ignored ---
+        pool3 = AdaptiveArrayPool()
+        checkpoint!(pool3)
+        pool3._touched_type_masks[2] = _LAZY_MODE_BIT | _TYPED_LAZY_BIT
+        @test _can_use_typed_path(pool3, _tracked_mask_for_types(Float64)) == true
+        rewind!(pool3)
+
+        # --- Case 4: End-to-end — nested typed scope inside lazy scope ---
+        pool4 = AdaptiveArrayPool()
+        _lazy_checkpoint!(pool4)  # outer lazy scope (depth 2, mask has _LAZY_MODE_BIT)
+
+        # Before entering inner typed scope, macro calls _can_use_typed_path at parent depth
+        tracked_mask = _tracked_mask_for_types(Float64)
+        @test _can_use_typed_path(pool4, tracked_mask) == true  # parent has no extra type bits
+
+        # Enter inner typed scope
+        checkpoint!(pool4, Float64)  # depth 3
+        a = _acquire_impl!(pool4, Float64, 10)
+        a .= 1.0
+        # At rewind time: inner mask is clean (no mode bits from checkpoint!)
+        @test _can_use_typed_path(pool4, tracked_mask) == true
+
+        rewind!(pool4, Float64)
+        _lazy_rewind!(pool4)
     end
 
     # ==================================================================
@@ -1765,7 +1827,7 @@ import AdaptiveArrayPools: _typed_checkpoint_with_lazy!, _typed_selective_rewind
 
     @testset "Scenario B: selective rewind when untracked NOT ⊆ tracked" begin
         # Helper acquires Float32 while @with_pool only tracks Float64.
-        # Phase 5: _can_use_typed_path=false → _typed_selective_rewind! covers
+        # Phase 5: _can_use_typed_path=false → _typed_lazy_rewind! covers
         # tracked (Float64) | untracked (Float32), so both are rewound correctly.
         function _scenario_b_helper!(pool)
             acquire!(pool, Float32, 5)
@@ -1876,59 +1938,59 @@ import AdaptiveArrayPools: _typed_checkpoint_with_lazy!, _typed_selective_rewind
     # ==================================================================
     @testset "Phase 4: _untracked_flags field removed from AdaptiveArrayPool" begin
         # The legacy boolean _untracked_flags field has been replaced by
-        # bitmask-based tracking (_untracked_fixed_masks + _untracked_has_others).
+        # bitmask-based tracking (_touched_type_masks + _touched_has_others).
         # Verify it no longer exists as a struct field.
         @test !(:_untracked_flags in fieldnames(AdaptiveArrayPool))
 
         # Verify the bitmask fields ARE present (they are the replacement)
-        @test :_untracked_fixed_masks in fieldnames(AdaptiveArrayPool)
-        @test :_untracked_has_others in fieldnames(AdaptiveArrayPool)
+        @test :_touched_type_masks in fieldnames(AdaptiveArrayPool)
+        @test :_touched_has_others in fieldnames(AdaptiveArrayPool)
     end
 
     @testset "Phase 4: bitmask stacks have no stale state after lifecycle ops" begin
         pool = AdaptiveArrayPool()
 
         # Initial sentinel state
-        @test pool._untracked_fixed_masks == [UInt16(0)]
-        @test pool._untracked_has_others == [false]
+        @test pool._touched_type_masks == [UInt16(0)]
+        @test pool._touched_has_others == [false]
 
         # Checkpoint → mark → rewind cycle leaves no stale bits
         checkpoint!(pool)
-        _mark_untracked!(pool, Float64)
-        @test pool._untracked_fixed_masks[2] == _fixed_slot_bit(Float64)
+        _record_type_touch!(pool, Float64)
+        @test pool._touched_type_masks[2] == _fixed_slot_bit(Float64)
         rewind!(pool)
-        @test pool._untracked_fixed_masks == [UInt16(0)]  # back to sentinel
-        @test pool._untracked_has_others == [false]
+        @test pool._touched_type_masks == [UInt16(0)]  # back to sentinel
+        @test pool._touched_has_others == [false]
 
         # Nested checkpoint → mark others → rewind cleans up
         checkpoint!(pool)  # depth 2
         checkpoint!(pool)  # depth 3
-        _mark_untracked!(pool, UInt8)  # others at depth 3
-        @test pool._untracked_has_others[3] == true
+        _record_type_touch!(pool, UInt8)  # others at depth 3
+        @test pool._touched_has_others[3] == true
         rewind!(pool)  # back to depth 2
-        @test length(pool._untracked_has_others) == 2
-        @test pool._untracked_has_others[2] == false  # depth 2 clean
+        @test length(pool._touched_has_others) == 2
+        @test pool._touched_has_others[2] == false  # depth 2 clean
         rewind!(pool)  # back to depth 1
-        @test pool._untracked_fixed_masks == [UInt16(0)]
-        @test pool._untracked_has_others == [false]
+        @test pool._touched_type_masks == [UInt16(0)]
+        @test pool._touched_has_others == [false]
 
         # reset! restores sentinel state after deep nesting
         checkpoint!(pool)
         checkpoint!(pool)
-        _mark_untracked!(pool, Float32)
-        _mark_untracked!(pool, Int64)
+        _record_type_touch!(pool, Float32)
+        _record_type_touch!(pool, Int64)
         reset!(pool)
-        @test pool._untracked_fixed_masks == [UInt16(0)]
-        @test pool._untracked_has_others == [false]
+        @test pool._touched_type_masks == [UInt16(0)]
+        @test pool._touched_has_others == [false]
         @test pool._current_depth == 1
 
         # empty! also restores sentinel state
         checkpoint!(pool)
-        _mark_untracked!(pool, ComplexF64)
-        _mark_untracked!(pool, UInt16)
+        _record_type_touch!(pool, ComplexF64)
+        _record_type_touch!(pool, UInt16)
         empty!(pool)
-        @test pool._untracked_fixed_masks == [UInt16(0)]
-        @test pool._untracked_has_others == [false]
+        @test pool._touched_type_masks == [UInt16(0)]
+        @test pool._touched_has_others == [false]
         @test pool._current_depth == 1
     end
 
@@ -1936,21 +1998,21 @@ import AdaptiveArrayPools: _typed_checkpoint_with_lazy!, _typed_selective_rewind
     # Dynamic Selective Mode — Phase 1: Characterization & Safety Locks
     # ==================================================================
 
-    @testset "Dynamic selective mode: _acquire_impl! bypasses _mark_untracked!" begin
+    @testset "Dynamic selective mode: _acquire_impl! bypasses _record_type_touch!" begin
         using AdaptiveArrayPools: _acquire_impl!, _fixed_slot_bit
         pool = AdaptiveArrayPool()
         checkpoint!(pool)
         depth = pool._current_depth  # = 2
 
-        # Internal _acquire_impl! does NOT call _mark_untracked! (by design).
+        # Internal _acquire_impl! does NOT call _record_type_touch! (by design).
         # This is the key reason a simple "combined mask" approach is insufficient:
         # macro-transformed calls won't appear in untracked bitmasks.
         _acquire_impl!(pool, Float64, 5)
-        @test pool._untracked_fixed_masks[depth] == UInt16(0)  # mask unchanged
+        @test pool._touched_type_masks[depth] == UInt16(0)  # mask unchanged
 
-        # Public acquire! DOES call _mark_untracked!
+        # Public acquire! DOES call _record_type_touch!
         acquire!(pool, Float32, 5)
-        @test pool._untracked_fixed_masks[depth] == _fixed_slot_bit(Float32)
+        @test pool._touched_type_masks[depth] == _fixed_slot_bit(Float32)
 
         rewind!(pool)
     end
@@ -2000,8 +2062,8 @@ import AdaptiveArrayPools: _typed_checkpoint_with_lazy!, _typed_selective_rewind
         depth = pool._current_depth
 
         acquire!(pool, UInt8, 5)
-        @test pool._untracked_has_others[depth] == true
-        @test pool._untracked_fixed_masks[depth] == UInt16(0)
+        @test pool._touched_has_others[depth] == true
+        @test pool._touched_type_masks[depth] == UInt16(0)
 
         rewind!(pool)
         @test get_typed_pool!(pool, UInt8).n_active == 0
@@ -2016,7 +2078,7 @@ import AdaptiveArrayPools: _typed_checkpoint_with_lazy!, _typed_selective_rewind
 
         # Record the stack length BEFORE entering the inner scope.
         # (global-scope bitmask at index 1 may be non-zero due to the acquire above.)
-        mask_before = pool._untracked_fixed_masks[1]
+        mask_before = pool._touched_type_masks[1]
 
         checkpoint!(pool)
         # no acquires in scope
@@ -2025,10 +2087,10 @@ import AdaptiveArrayPools: _typed_checkpoint_with_lazy!, _typed_selective_rewind
         @test pool.float64.n_active == n_before
         @test pool._current_depth == 1
         # Stack has returned to exactly the sentinel (length 1)
-        @test length(pool._untracked_fixed_masks) == 1
-        @test length(pool._untracked_has_others) == 1
+        @test length(pool._touched_type_masks) == 1
+        @test length(pool._touched_has_others) == 1
         # Global-scope bitmask is unchanged from before we entered/exited the scope
-        @test pool._untracked_fixed_masks[1] == mask_before
+        @test pool._touched_type_masks[1] == mask_before
     end
 
     # ——————————————————————————————————————————————————————————————
@@ -2036,22 +2098,22 @@ import AdaptiveArrayPools: _typed_checkpoint_with_lazy!, _typed_selective_rewind
     # These will FAIL until Phase 2 is complete.
     # ——————————————————————————————————————————————————————————————
 
-    @testset "DESIRED [RED]: _depth_only_checkpoint! is exported/defined" begin
-        # Phase 2 will add _depth_only_checkpoint! to src/state.jl.
+    @testset "DESIRED [RED]: _lazy_checkpoint! is exported/defined" begin
+        # Phase 2 will add _lazy_checkpoint! to src/state.jl.
         # This test explicitly signals the missing implementation.
-        @test isdefined(AdaptiveArrayPools, :_depth_only_checkpoint!)
+        @test isdefined(AdaptiveArrayPools, :_lazy_checkpoint!)
     end
 
-    @testset "DESIRED [RED]: _depth_only_checkpoint! does not eagerly checkpoint typed pools" begin
+    @testset "DESIRED [RED]: _lazy_checkpoint! does not eagerly checkpoint typed pools" begin
         # A depth-only checkpoint should increment _current_depth and push bitmask
         # sentinels, but NOT save n_active for any typed pool.
         # The sentinel in _checkpoint_depths is always depth=0, so if no checkpoint
         # was saved at the current depth, _checkpoint_depths[end] will be < current_depth.
-        if !isdefined(AdaptiveArrayPools, :_depth_only_checkpoint!)
+        if !isdefined(AdaptiveArrayPools, :_lazy_checkpoint!)
             @test false  # RED: function not yet defined
         else
             pool = AdaptiveArrayPool()
-            AdaptiveArrayPools._depth_only_checkpoint!(pool)
+            AdaptiveArrayPools._lazy_checkpoint!(pool)
             depth = pool._current_depth  # = 2
 
             # No typed pool should have an eager checkpoint at this depth
@@ -2062,21 +2124,21 @@ import AdaptiveArrayPools: _typed_checkpoint_with_lazy!, _typed_selective_rewind
 
             # But depth metadata IS updated
             @test pool._current_depth == 2
-            @test length(pool._untracked_fixed_masks) == 2
-            @test length(pool._untracked_has_others) == 2
+            @test length(pool._touched_type_masks) == 2
+            @test length(pool._touched_has_others) == 2
         end
     end
 
     @testset "DESIRED [RED]: lazy first-touch checkpoint on acquire! in dynamic mode" begin
-        # In dynamic-selective mode, _mark_untracked! should lazily call
+        # In dynamic-selective mode, _record_type_touch! should lazily call
         # _checkpoint_typed_pool! on the FIRST acquire of each type per depth.
         # Only the touched pool gets checkpointed; others remain untouched.
-        if !isdefined(AdaptiveArrayPools, :_depth_only_checkpoint!)
+        if !isdefined(AdaptiveArrayPools, :_lazy_checkpoint!)
             @test false  # RED: prerequisite not implemented
         else
-            using AdaptiveArrayPools: _depth_only_checkpoint!
+            using AdaptiveArrayPools: _lazy_checkpoint!
             pool = AdaptiveArrayPool()
-            _depth_only_checkpoint!(pool)   # lightweight enter
+            _lazy_checkpoint!(pool)   # lightweight enter
             depth = pool._current_depth     # = 2
 
             # Before any acquire: no checkpoint for any pool at this depth
@@ -2097,14 +2159,14 @@ import AdaptiveArrayPools: _typed_checkpoint_with_lazy!, _typed_selective_rewind
     # Phase 5: Typed-Fallback Optimization
     # ==================================================================
 
-    @testset "Phase 5: _typed_checkpoint_with_lazy! sets bit 14 and checkpoints known types" begin
-        # _typed_checkpoint_with_lazy! must checkpoint known types AND set bit 14 for lazy mode.
+    @testset "Phase 5: _typed_lazy_checkpoint! sets bit 14 and checkpoints known types" begin
+        # _typed_lazy_checkpoint! must checkpoint known types AND set bit 14 for lazy mode.
         pool = AdaptiveArrayPool()
-        _typed_checkpoint_with_lazy!(pool, Float64)
+        _typed_lazy_checkpoint!(pool, Float64)
         d = pool._current_depth
         # Bit 14 (0x4000) must be set; bits 0-7 must be 0 (no acquires yet)
-        @test (pool._untracked_fixed_masks[d] & UInt16(0x4000)) != 0
-        @test (pool._untracked_fixed_masks[d] & UInt16(0x00FF)) == 0
+        @test (pool._touched_type_masks[d] & UInt16(0x4000)) != 0
+        @test (pool._touched_type_masks[d] & UInt16(0x00FF)) == 0
         # Float64 should be checkpointed at this depth
         @test pool.float64._checkpoint_depths[end] == d
         # Float32 should NOT be checkpointed at this depth
@@ -2132,14 +2194,14 @@ import AdaptiveArrayPools: _typed_checkpoint_with_lazy!, _typed_selective_rewind
 
         # Child scope: typed checkpoint for Float64 only, but helper touches Int64
         # Simulates @with_pool with static type Float64 but _can_use_typed_path = false
-        _typed_checkpoint_with_lazy!(pool, Float64)
+        _typed_lazy_checkpoint!(pool, Float64)
         acquire!(pool, Float64, 5)        # tracked type
         _p0_helper_int64!(pool)           # untracked Int64 → triggers lazy first-touch checkpoint
         @test pool.int64.n_active == 2    # parent's 1 + helper's 1
 
         # Child scope exits via selective rewind
         tracked_mask = _tracked_mask_for_types(Float64)
-        _typed_selective_rewind!(pool, tracked_mask)
+        _typed_lazy_rewind!(pool, tracked_mask)
 
         # Parent's Int64 count must be restored to 1 (NOT 0)
         @test pool.int64.n_active == 1
@@ -2150,10 +2212,10 @@ import AdaptiveArrayPools: _typed_checkpoint_with_lazy!, _typed_selective_rewind
     end
 
     @testset "Phase 5: bit 14 enables lazy first-touch checkpoint for extra types" begin
-        # _mark_untracked! condition is (current_mask & 0xC000) != 0.
+        # _record_type_touch! condition is (current_mask & 0xC000) != 0.
         # With bit 14 set (typed lazy mode), extra-type first touch triggers _checkpoint_typed_pool!.
         pool = AdaptiveArrayPool()
-        _typed_checkpoint_with_lazy!(pool, Float64)  # typed chk + set bit 14
+        _typed_lazy_checkpoint!(pool, Float64)  # typed chk + set bit 14
         d = pool._current_depth
 
         # Before acquiring Int64: no Int64 checkpoint at this depth
@@ -2171,8 +2233,8 @@ import AdaptiveArrayPools: _typed_checkpoint_with_lazy!, _typed_selective_rewind
 
     @testset "Phase 5 (Issue #3): typed lazy mode preserves parent n_active for others types" begin
         # If a parent scope has an active others-type (UInt8) and a child uses
-        # _typed_checkpoint_with_lazy!, helpers touching the same type must NOT corrupt
-        # the parent's n_active. _typed_checkpoint_with_lazy! eagerly snapshots pool.others
+        # _typed_lazy_checkpoint!, helpers touching the same type must NOT corrupt
+        # the parent's n_active. _typed_lazy_checkpoint! eagerly snapshots pool.others
         # so Case A fires at rewind (not Case B with the wrong sentinel value).
         function _p5_helper_uint8!(pool)
             acquire!(pool, UInt8, 7)
@@ -2187,16 +2249,16 @@ import AdaptiveArrayPools: _typed_checkpoint_with_lazy!, _typed_selective_rewind
         @test parent_others_pool.n_active == 1
 
         # Child scope: typed checkpoint for Float64 only; helper touches UInt8 (others)
-        # Without the fix: _typed_checkpoint_with_lazy! doesn't snapshot pool.others →
+        # Without the fix: _typed_lazy_checkpoint! doesn't snapshot pool.others →
         # rewind hits Case B → parent UInt8.n_active corrupted to 0.
-        _typed_checkpoint_with_lazy!(pool, Float64)
+        _typed_lazy_checkpoint!(pool, Float64)
         try
             acquire!(pool, Float64, 5)         # tracked type
             _p5_helper_uint8!(pool)            # untracked others type
             @test pool.others[UInt8].n_active == 2  # parent's 1 + helper's 1
         finally
             tracked_mask = _tracked_mask_for_types(Float64)
-            _typed_selective_rewind!(pool, tracked_mask)
+            _typed_lazy_rewind!(pool, tracked_mask)
         end
 
         # Parent's UInt8 count must be preserved (= 1, NOT 0)
@@ -2212,12 +2274,12 @@ import AdaptiveArrayPools: _typed_checkpoint_with_lazy!, _typed_selective_rewind
     # They should FAIL before the fix and PASS after.
     # ==================================================================
 
-    @testset "Issue #1: _depth_only_checkpoint! orphaned others stack leak" begin
-        # Bug: _depth_only_checkpoint! eagerly checkpoints pool.others entries,
-        # but sets _untracked_has_others[depth] = false. On _dynamic_selective_rewind!,
+    @testset "Issue #1: _lazy_checkpoint! orphaned others stack leak" begin
+        # Bug: _lazy_checkpoint! eagerly checkpoints pool.others entries,
+        # but sets _touched_has_others[depth] = false. On _lazy_rewind!,
         # the others loop is skipped (flag is false), leaving orphaned checkpoint entries.
         # In a loop, each iteration pushes one more stale entry → unbounded stack growth.
-        using AdaptiveArrayPools: _depth_only_checkpoint!, _dynamic_selective_rewind!
+        using AdaptiveArrayPools: _lazy_checkpoint!, _lazy_rewind!
 
         pool = AdaptiveArrayPool()
 
@@ -2231,8 +2293,8 @@ import AdaptiveArrayPools: _typed_checkpoint_with_lazy!, _typed_selective_rewind
 
         # Run 10 iterations of dynamic-selective scope without acquiring any others type
         for _ in 1:10
-            _depth_only_checkpoint!(pool)         # pushes checkpoint for others entries
-            _dynamic_selective_rewind!(pool)       # should pop it back
+            _lazy_checkpoint!(pool)         # pushes checkpoint for others entries
+            _lazy_rewind!(pool)       # should pop it back
         end
 
         # Checkpoint stack must NOT have grown (each entry should be popped by rewind)
@@ -2243,14 +2305,14 @@ import AdaptiveArrayPools: _typed_checkpoint_with_lazy!, _typed_selective_rewind
 
     @testset "Issue #2: double-checkpoint hazard when tracked type used by helper" begin
         # Bug: In typed-lazy mode (bit 14), when a tracked type T is:
-        #   1. Checkpointed by _typed_checkpoint_with_lazy!(pool, T) (saves n_active=0)
-        #   2. Acquired by macro-transformed _acquire_impl! (n_active → 1, no _mark_untracked!)
-        #   3. Re-acquired by a helper via acquire! → _mark_untracked!
+        #   1. Checkpointed by _typed_lazy_checkpoint!(pool, T) (saves n_active=0)
+        #   2. Acquired by macro-transformed _acquire_impl! (n_active → 1, no _record_type_touch!)
+        #   3. Re-acquired by a helper via acquire! → _record_type_touch!
         # Step 3 sees bit 14 set + T's bit unset → calls _checkpoint_typed_pool! again
         # with n_active=1 (wrong!). On rewind, restores n_active=1 instead of 0.
         using AdaptiveArrayPools: _acquire_impl!
 
-        # Helper that uses acquire! (goes through _mark_untracked!)
+        # Helper that uses acquire! (goes through _record_type_touch!)
         function _issue2_helper!(pool)
             acquire!(pool, Float64, 3)
         end
@@ -2258,20 +2320,20 @@ import AdaptiveArrayPools: _typed_checkpoint_with_lazy!, _typed_selective_rewind
         pool = AdaptiveArrayPool()
 
         # Enter typed-lazy mode for Float64
-        _typed_checkpoint_with_lazy!(pool, Float64)
+        _typed_lazy_checkpoint!(pool, Float64)
         try
-            # Simulate macro-transformed code: bypasses _mark_untracked!
+            # Simulate macro-transformed code: bypasses _record_type_touch!
             _acquire_impl!(pool, Float64, 5)
             @test pool.float64.n_active == 1
 
-            # Helper: goes through acquire! → _mark_untracked!
-            # BUG: _mark_untracked! sees bit 14 + Float64 bit not yet set
+            # Helper: goes through acquire! → _record_type_touch!
+            # BUG: _record_type_touch! sees bit 14 + Float64 bit not yet set
             #      → redundant _checkpoint_typed_pool! with n_active=1
             _issue2_helper!(pool)
             @test pool.float64.n_active == 2
         finally
             tracked_mask = _tracked_mask_for_types(Float64)
-            _typed_selective_rewind!(pool, tracked_mask)
+            _typed_lazy_rewind!(pool, tracked_mask)
         end
 
         # After rewind, n_active should be 0 (parent state before scope entry)
@@ -2292,13 +2354,13 @@ import AdaptiveArrayPools: _typed_checkpoint_with_lazy!, _typed_selective_rewind
         pool = AdaptiveArrayPool()
         initial_f32_stack = length(pool.float32._checkpoint_depths)  # 1 (sentinel)
 
-        _typed_checkpoint_with_lazy!(pool, Float32)
+        _typed_lazy_checkpoint!(pool, Float32)
         try
-            _acquire_impl!(pool, Float32, 5)     # n_active=1, no _mark_untracked!
-            _issue2b_helper!(pool)                # acquire! → _mark_untracked! → double checkpoint
+            _acquire_impl!(pool, Float32, 5)     # n_active=1, no _record_type_touch!
+            _issue2b_helper!(pool)                # acquire! → _record_type_touch! → double checkpoint
         finally
             tracked_mask = _tracked_mask_for_types(Float32)
-            _typed_selective_rewind!(pool, tracked_mask)
+            _typed_lazy_rewind!(pool, tracked_mask)
         end
 
         # The checkpoint stack should return to its initial length (sentinel only)
@@ -2325,25 +2387,25 @@ import AdaptiveArrayPools: _typed_checkpoint_with_lazy!, _typed_selective_rewind
         end
     end
 
-    @testset "Issue #4: CUDA _depth_only_checkpoint! parity (has_others flag)" begin
-        # Bug: CUDA _depth_only_checkpoint! eagerly checkpoints pool.others but
-        # does NOT set _untracked_has_others = true, same as CPU Issue #1.
+    @testset "Issue #4: CUDA _lazy_checkpoint! parity (has_others flag)" begin
+        # Bug: CUDA _lazy_checkpoint! eagerly checkpoints pool.others but
+        # does NOT set _touched_has_others = true, same as CPU Issue #1.
         # Verify via source code inspection (no GPU needed).
         cuda_state_path = joinpath(@__DIR__, "..", "ext", "AdaptiveArrayPoolsCUDAExt", "state.jl")
         if isfile(cuda_state_path)
             code = read(cuda_state_path, String)
-            # Extract _depth_only_checkpoint! function body
+            # Extract _lazy_checkpoint! function body
             func_match = match(
-                r"function\s+AdaptiveArrayPools\._depth_only_checkpoint!\(pool::CuAdaptiveArrayPool\).*?^end"ms,
+                r"function\s+AdaptiveArrayPools\._lazy_checkpoint!\(pool::CuAdaptiveArrayPool\).*?^end"ms,
                 code
             )
             @test func_match !== nothing
             if func_match !== nothing
                 func_body = func_match.match
                 # If it eagerly checkpoints others (has `for p in values(pool.others)`),
-                # then it MUST also set _untracked_has_others[...] = true within the loop
+                # then it MUST also set _touched_has_others[...] = true within the loop
                 if contains(func_body, "values(pool.others)")
-                    @test occursin(r"_untracked_has_others\[.*\]\s*=\s*true", func_body)
+                    @test occursin(r"_touched_has_others\[.*\]\s*=\s*true", func_body)
                 end
             end
         else
@@ -2351,15 +2413,15 @@ import AdaptiveArrayPools: _typed_checkpoint_with_lazy!, _typed_selective_rewind
         end
     end
 
-    @testset "Issue #5: CUDA _typed_checkpoint_with_lazy! parity" begin
+    @testset "Issue #5: CUDA _typed_lazy_checkpoint! parity" begin
         # Bug: CUDA version is missing two features present in CPU version:
         # 1. Double-checkpoint guard: `_checkpoint_depths[end] != d`
-        # 2. has_others flag: `_untracked_has_others[d] = true`
+        # 2. has_others flag: `_touched_has_others[d] = true`
         cuda_state_path = joinpath(@__DIR__, "..", "ext", "AdaptiveArrayPoolsCUDAExt", "state.jl")
         if isfile(cuda_state_path)
             code = read(cuda_state_path, String)
             func_match = match(
-                r"function\s+AdaptiveArrayPools\._typed_checkpoint_with_lazy!\(pool::CuAdaptiveArrayPool.*?^end"ms,
+                r"function\s+AdaptiveArrayPools\._typed_lazy_checkpoint!\(pool::CuAdaptiveArrayPool.*?^end"ms,
                 code
             )
             @test func_match !== nothing
@@ -2369,8 +2431,8 @@ import AdaptiveArrayPools: _typed_checkpoint_with_lazy!, _typed_selective_rewind
                 # Must have double-checkpoint guard (like CPU version)
                 @test contains(func_body, "_checkpoint_depths[end]")
 
-                # Must set _untracked_has_others flag (like CPU version)
-                @test contains(func_body, "_untracked_has_others")
+                # Must set _touched_has_others flag (like CPU version)
+                @test contains(func_body, "_touched_has_others")
             end
         else
             @warn "CUDA extension not found, skipping parity test"

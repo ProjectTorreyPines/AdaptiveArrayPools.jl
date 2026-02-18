@@ -337,20 +337,20 @@ function _generate_pool_code(pool_name, expr, force_enable; source::Union{LineNu
     # Use typed checkpoint/rewind if all types are static, otherwise fallback to full
     use_typed = !has_dynamic && !isempty(static_types)
 
-    # For typed path: transform acquire! → _acquire_impl! (bypasses untracked marking)
-    # For dynamic path: keep acquire! untransformed so _mark_untracked! is called
+    # For typed path: transform acquire! → _acquire_impl! (bypasses type touch recording)
+    # For dynamic path: keep acquire! untransformed so _record_type_touch! is called
     transformed_expr = use_typed ? _transform_acquire_calls(expr, pool_name) : expr
 
     if use_typed
         checkpoint_call = _generate_typed_checkpoint_call(esc(pool_name), static_types)
     else
-        checkpoint_call = _generate_dynamic_selective_checkpoint_call(esc(pool_name))
+        checkpoint_call = _generate_lazy_checkpoint_call(esc(pool_name))
     end
 
     if use_typed
         rewind_call = _generate_typed_rewind_call(esc(pool_name), static_types)
     else
-        rewind_call = _generate_dynamic_selective_rewind_call(esc(pool_name))
+        rewind_call = _generate_lazy_rewind_call(esc(pool_name))
     end
 
     if force_enable
@@ -429,8 +429,8 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, forc
         local_vars = _extract_local_assignments(expr)
         static_types, has_dynamic = _filter_static_types(all_types, local_vars)
         use_typed = !has_dynamic && !isempty(static_types)
-        # For typed path: transform acquire! → _acquire_impl! (bypasses untracked marking)
-        # For dynamic path: keep acquire! untransformed so _mark_untracked! is called
+        # For typed path: transform acquire! → _acquire_impl! (bypasses type touch recording)
+        # For dynamic path: keep acquire! untransformed so _record_type_touch! is called
         transformed_expr = use_typed ? _transform_acquire_calls(expr, pool_name) : expr
         pool_getter = :($_get_pool_for_backend($(Val{backend}())))
 
@@ -438,8 +438,8 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, forc
             checkpoint_call = _generate_typed_checkpoint_call(esc(pool_name), static_types)
             rewind_call = _generate_typed_rewind_call(esc(pool_name), static_types)
         else
-            checkpoint_call = _generate_dynamic_selective_checkpoint_call(esc(pool_name))
-            rewind_call = _generate_dynamic_selective_rewind_call(esc(pool_name))
+            checkpoint_call = _generate_lazy_checkpoint_call(esc(pool_name))
+            rewind_call = _generate_lazy_rewind_call(esc(pool_name))
         end
 
         return quote
@@ -475,8 +475,8 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, forc
     # Use typed checkpoint/rewind if all types are static, otherwise fallback to full
     use_typed = !has_dynamic && !isempty(static_types)
 
-    # For typed path: transform acquire! → _acquire_impl! (bypasses untracked marking)
-    # For dynamic path: keep acquire! untransformed so _mark_untracked! is called
+    # For typed path: transform acquire! → _acquire_impl! (bypasses type touch recording)
+    # For dynamic path: keep acquire! untransformed so _record_type_touch! is called
     transformed_expr = use_typed ? _transform_acquire_calls(expr, pool_name) : expr
 
     # Use Val{backend}() for compile-time dispatch - fully inlinable
@@ -485,13 +485,13 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, forc
     if use_typed
         checkpoint_call = _generate_typed_checkpoint_call(esc(pool_name), static_types)
     else
-        checkpoint_call = _generate_dynamic_selective_checkpoint_call(esc(pool_name))
+        checkpoint_call = _generate_lazy_checkpoint_call(esc(pool_name))
     end
 
     if use_typed
         rewind_call = _generate_typed_rewind_call(esc(pool_name), static_types)
     else
-        rewind_call = _generate_dynamic_selective_rewind_call(esc(pool_name))
+        rewind_call = _generate_lazy_rewind_call(esc(pool_name))
     end
 
     return quote
@@ -537,8 +537,8 @@ function _generate_function_pool_code_with_backend(backend::Symbol, pool_name, f
     static_types, has_dynamic = _filter_static_types(all_types, local_vars)
     use_typed = !has_dynamic && !isempty(static_types)
 
-    # For typed path: transform acquire! → _acquire_impl! (bypasses untracked marking)
-    # For dynamic path: keep acquire! untransformed so _mark_untracked! is called
+    # For typed path: transform acquire! → _acquire_impl! (bypasses type touch recording)
+    # For dynamic path: keep acquire! untransformed so _record_type_touch! is called
     transformed_body = use_typed ? _transform_acquire_calls(body, pool_name) : body
 
     # Use Val{backend}() for compile-time dispatch
@@ -547,13 +547,13 @@ function _generate_function_pool_code_with_backend(backend::Symbol, pool_name, f
     if use_typed
         checkpoint_call = _generate_typed_checkpoint_call(esc(pool_name), static_types)
     else
-        checkpoint_call = _generate_dynamic_selective_checkpoint_call(esc(pool_name))
+        checkpoint_call = _generate_lazy_checkpoint_call(esc(pool_name))
     end
 
     if use_typed
         rewind_call = _generate_typed_rewind_call(esc(pool_name), static_types)
     else
-        rewind_call = _generate_dynamic_selective_rewind_call(esc(pool_name))
+        rewind_call = _generate_lazy_rewind_call(esc(pool_name))
     end
 
     new_body = quote
@@ -594,20 +594,20 @@ function _generate_function_pool_code(pool_name, func_def, force_enable, disable
     static_types, has_dynamic = _filter_static_types(all_types, local_vars)
     use_typed = !has_dynamic && !isempty(static_types)
 
-    # For typed path: transform acquire! → _acquire_impl! (bypasses untracked marking)
-    # For dynamic path: keep acquire! untransformed so _mark_untracked! is called
+    # For typed path: transform acquire! → _acquire_impl! (bypasses type touch recording)
+    # For dynamic path: keep acquire! untransformed so _record_type_touch! is called
     transformed_body = use_typed ? _transform_acquire_calls(body, pool_name) : body
 
     if use_typed
         checkpoint_call = _generate_typed_checkpoint_call(esc(pool_name), static_types)
     else
-        checkpoint_call = _generate_dynamic_selective_checkpoint_call(esc(pool_name))
+        checkpoint_call = _generate_lazy_checkpoint_call(esc(pool_name))
     end
 
     if use_typed
         rewind_call = _generate_typed_rewind_call(esc(pool_name), static_types)
     else
-        rewind_call = _generate_dynamic_selective_rewind_call(esc(pool_name))
+        rewind_call = _generate_lazy_rewind_call(esc(pool_name))
     end
 
     if force_enable
@@ -910,8 +910,8 @@ end
 
 Generate bitmask-aware checkpoint call. When types are known at compile time,
 emits a conditional:
-- if untracked types ⊆ tracked types → typed checkpoint (fast path)
-- otherwise → `_typed_checkpoint_with_lazy!` (typed checkpoint + set bit 14 for
+- if touched types ⊆ tracked types → typed checkpoint (fast path)
+- otherwise → `_typed_lazy_checkpoint!` (typed checkpoint + set bit 14 for
   lazy first-touch checkpointing of extra types touched by helpers)
 """
 function _generate_typed_checkpoint_call(pool_expr, types)
@@ -920,7 +920,7 @@ function _generate_typed_checkpoint_call(pool_expr, types)
     else
         escaped_types = [esc(t) for t in types]
         typed_call = :($checkpoint!($pool_expr, $(escaped_types...)))
-        lazy_call  = :($_typed_checkpoint_with_lazy!($pool_expr, $(escaped_types...)))
+        lazy_call  = :($_typed_lazy_checkpoint!($pool_expr, $(escaped_types...)))
         return quote
             if $_can_use_typed_path($pool_expr, $_tracked_mask_for_types($(escaped_types...)))
                 $typed_call
@@ -936,8 +936,8 @@ end
 
 Generate bitmask-aware rewind call. When types are known at compile time,
 emits a conditional:
-- if untracked types ⊆ tracked types → typed rewind (fast path)
-- otherwise → `_typed_selective_rewind!` (rewinds tracked | untracked mask;
+- if touched types ⊆ tracked types → typed rewind (fast path)
+- otherwise → `_typed_lazy_rewind!` (rewinds tracked | touched mask;
   all touched types have Case A checkpoints via bit 14 lazy mode)
 """
 function _generate_typed_rewind_call(pool_expr, types)
@@ -946,7 +946,7 @@ function _generate_typed_rewind_call(pool_expr, types)
     else
         escaped_types = [esc(t) for t in types]
         typed_call     = :($rewind!($pool_expr, $(escaped_types...)))
-        selective_call = :($_typed_selective_rewind!($pool_expr,
+        selective_call = :($_typed_lazy_rewind!($pool_expr,
                               $_tracked_mask_for_types($(escaped_types...))))
         return quote
             if $_can_use_typed_path($pool_expr, $_tracked_mask_for_types($(escaped_types...)))
@@ -959,25 +959,25 @@ function _generate_typed_rewind_call(pool_expr, types)
 end
 
 """
-    _generate_dynamic_selective_checkpoint_call(pool_expr)
+    _generate_lazy_checkpoint_call(pool_expr)
 
 Generate a depth-only checkpoint call for dynamic-selective mode (`use_typed=false`).
 Much lighter than full `checkpoint!`: only increments depth and pushes bitmask sentinels.
 """
-function _generate_dynamic_selective_checkpoint_call(pool_expr)
-    return :($_depth_only_checkpoint!($pool_expr))
+function _generate_lazy_checkpoint_call(pool_expr)
+    return :($_lazy_checkpoint!($pool_expr))
 end
 
 """
-    _generate_dynamic_selective_rewind_call(pool_expr)
+    _generate_lazy_rewind_call(pool_expr)
 
 Generate selective rewind code for dynamic-selective mode (`use_typed=false`).
-Delegates to `_dynamic_selective_rewind!` — a single function call, symmetric
-with `_depth_only_checkpoint!` for checkpoint. This avoids `let`-block overhead
+Delegates to `_lazy_rewind!` — a single function call, symmetric
+with `_lazy_checkpoint!` for checkpoint. This avoids `let`-block overhead
 in `finally` clauses (which can impair Julia's type inference and cause boxing).
 """
-function _generate_dynamic_selective_rewind_call(pool_expr)
-    return :($_dynamic_selective_rewind!($pool_expr))
+function _generate_lazy_rewind_call(pool_expr)
+    return :($_lazy_rewind!($pool_expr))
 end
 
 
@@ -991,7 +991,7 @@ end
 Transform acquire!/unsafe_acquire!/convenience function calls to their _impl! counterparts.
 Only transforms calls where the first argument matches `pool_name`.
 
-This allows macro-transformed code to bypass the untracked marking overhead,
+This allows macro-transformed code to bypass the type touch recording overhead,
 since the macro already knows about these calls at compile time.
 
 Transformation rules:

@@ -160,53 +160,54 @@ Get an N-dimensional view via `reshape` (zero creation cost).
 end
 
 # ==============================================================================
-# Untracked Acquire Detection
+# Type Touch Recording (for selective rewind)
 # ==============================================================================
 
 """
-    _mark_untracked!(pool::AbstractArrayPool, ::Type{T})
+    _record_type_touch!(pool::AbstractArrayPool, ::Type{T})
 
-Mark that an untracked acquire of type `T` has occurred at the current checkpoint depth.
-Called by `acquire!` wrapper; macro-transformed calls use `_acquire_impl!` directly.
+Record that type `T` was touched (acquired) at the current checkpoint depth.
+Called by `acquire!` and convenience wrappers; macro-transformed calls use
+`_acquire_impl!` directly (bypassing this for zero overhead).
 
-For fixed-slot types, sets the corresponding bit in `_untracked_fixed_masks`.
-For non-fixed-slot types, sets `_untracked_has_others` flag.
+For fixed-slot types, sets the corresponding bit in `_touched_type_masks`.
+For non-fixed-slot types, sets `_touched_has_others` flag.
 """
-@inline function _mark_untracked!(pool::AbstractArrayPool, ::Type{T}) where {T}
+@inline function _record_type_touch!(pool::AbstractArrayPool, ::Type{T}) where {T}
     depth = pool._current_depth
     b = _fixed_slot_bit(T)
     if b == UInt16(0)
-        @inbounds pool._untracked_has_others[depth] = true
+        @inbounds pool._touched_has_others[depth] = true
     else
-        @inbounds pool._untracked_fixed_masks[depth] |= b
+        @inbounds pool._touched_type_masks[depth] |= b
     end
     nothing
 end
 
-# CPU-specific override: adds lazy first-touch checkpoint in dynamic-selective mode
+# CPU-specific override: adds lazy first-touch checkpoint in lazy mode
 # and typed-lazy mode.
-# Bit 15 of _untracked_fixed_masks[depth] == 1  ↔  depth entered via _depth_only_checkpoint!
-# Bit 14 of _untracked_fixed_masks[depth] == 1  ↔  depth entered via _typed_checkpoint_with_lazy!
+# _LAZY_MODE_BIT (bit 15) in _touched_type_masks[depth]  ↔  depth entered via _lazy_checkpoint!
+# _TYPED_LAZY_BIT (bit 14) in _touched_type_masks[depth]  ↔  depth entered via _typed_lazy_checkpoint!
 # On the first acquire of each fixed-slot type T at that depth, we retroactively save
 # n_active BEFORE the acquire (current value is still the parent's count), so that
 # the subsequent rewind can restore the parent's state correctly.
-@inline function _mark_untracked!(pool::AdaptiveArrayPool, ::Type{T}) where {T}
+@inline function _record_type_touch!(pool::AdaptiveArrayPool, ::Type{T}) where {T}
     depth = pool._current_depth
     b = _fixed_slot_bit(T)
     if b == UInt16(0)
-        @inbounds pool._untracked_has_others[depth] = true
+        @inbounds pool._touched_has_others[depth] = true
     else
-        current_mask = @inbounds pool._untracked_fixed_masks[depth]
-        # Lazy checkpoint: dynamic mode (bit 15) OR typed lazy mode (bit 14), AND first touch.
+        current_mask = @inbounds pool._touched_type_masks[depth]
+        # Lazy checkpoint: lazy mode (bit 15) OR typed lazy mode (bit 14), AND first touch.
         # Guard: skip if already checkpointed at this depth (prevents double-push when a
-        # tracked type is also acquired by a helper via acquire! → _mark_untracked!).
-        if (current_mask & 0xC000) != 0 && (current_mask & b) == 0
+        # tracked type is also acquired by a helper via acquire! → _record_type_touch!).
+        if (current_mask & _MODE_BITS_MASK) != 0 && (current_mask & b) == 0
             tp = get_typed_pool!(pool, T)
             if @inbounds(tp._checkpoint_depths[end]) != depth
                 _checkpoint_typed_pool!(tp, depth)
             end
         end
-        @inbounds pool._untracked_fixed_masks[depth] = current_mask | b
+        @inbounds pool._touched_type_masks[depth] = current_mask | b
     end
     nothing
 end
@@ -220,7 +221,7 @@ end
     _acquire_impl!(pool, Type{T}, dims...) -> ReshapedArray{T,N,...}
 
 Internal implementation of acquire!. Called directly by macro-transformed code
-(no untracked marking). User code calls `acquire!` which adds marking.
+(no type touch recording). User code calls `acquire!` which adds recording.
 """
 @inline function _acquire_impl!(pool::AbstractArrayPool, ::Type{T}, n::Int) where {T}
     tp = get_typed_pool!(pool, T)
@@ -263,7 +264,7 @@ end
 @inline _unsafe_acquire_impl!(pool::AbstractArrayPool, x::AbstractArray) = _unsafe_acquire_impl!(pool, eltype(x), size(x))
 
 # ==============================================================================
-# Acquisition API (User-facing with untracked marking)
+# Acquisition API (User-facing with type touch recording)
 # ==============================================================================
 
 """
@@ -299,19 +300,19 @@ end
 See also: [`unsafe_acquire!`](@ref) for native array access.
 """
 @inline function acquire!(pool::AbstractArrayPool, ::Type{T}, n::Int) where {T}
-    _mark_untracked!(pool, T)
+    _record_type_touch!(pool, T)
     _acquire_impl!(pool, T, n)
 end
 
 # Multi-dimensional support (zero-allocation with N-D cache)
 @inline function acquire!(pool::AbstractArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
-    _mark_untracked!(pool, T)
+    _record_type_touch!(pool, T)
     _acquire_impl!(pool, T, dims...)
 end
 
 # Tuple support: allows acquire!(pool, T, size(A)) where size(A) returns NTuple{N,Int}
 @inline function acquire!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
-    _mark_untracked!(pool, T)
+    _record_type_touch!(pool, T)
     _acquire_impl!(pool, T, dims...)
 end
 
@@ -331,7 +332,7 @@ end
 ```
 """
 @inline function acquire!(pool::AbstractArrayPool, x::AbstractArray)
-    _mark_untracked!(pool, eltype(x))
+    _record_type_touch!(pool, eltype(x))
     _acquire_impl!(pool, eltype(x), size(x))
 end
 
@@ -386,18 +387,18 @@ end
 See also: [`acquire!`](@ref) for view-based access.
 """
 @inline function unsafe_acquire!(pool::AbstractArrayPool, ::Type{T}, n::Int) where {T}
-    _mark_untracked!(pool, T)
+    _record_type_touch!(pool, T)
     _unsafe_acquire_impl!(pool, T, n)
 end
 
 @inline function unsafe_acquire!(pool::AbstractArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
-    _mark_untracked!(pool, T)
+    _record_type_touch!(pool, T)
     _unsafe_acquire_impl!(pool, T, dims...)
 end
 
 # Tuple support
 @inline function unsafe_acquire!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
-    _mark_untracked!(pool, T)
+    _record_type_touch!(pool, T)
     _unsafe_acquire_impl!(pool, T, dims)
 end
 
@@ -417,7 +418,7 @@ end
 ```
 """
 @inline function unsafe_acquire!(pool::AbstractArrayPool, x::AbstractArray)
-    _mark_untracked!(pool, eltype(x))
+    _record_type_touch!(pool, eltype(x))
     _unsafe_acquire_impl!(pool, eltype(x), size(x))
 end
 
