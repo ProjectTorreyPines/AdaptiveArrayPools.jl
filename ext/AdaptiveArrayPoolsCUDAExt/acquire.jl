@@ -181,8 +181,11 @@ end
             b16 = UInt16(1) << 7
             current_mask = @inbounds pool._untracked_fixed_masks[depth]
             # Lazy first-touch checkpoint: bit 14 (typed lazy) OR bit 15 (dynamic), first touch only.
+            # Guard: skip if already checkpointed at this depth (prevents double-push).
             if (current_mask & 0xC000) != 0 && (current_mask & b16) == 0
-                _checkpoint_typed_pool!(pool.float16, depth)
+                if @inbounds(pool.float16._checkpoint_depths[end]) != depth
+                    _checkpoint_typed_pool!(pool.float16, depth)
+                end
             end
             @inbounds pool._untracked_fixed_masks[depth] = current_mask | b16
         else
@@ -192,8 +195,12 @@ end
     else
         current_mask = @inbounds pool._untracked_fixed_masks[depth]
         # Lazy first-touch checkpoint for fixed-slot types in bit 14/15 modes.
+        # Guard: skip if already checkpointed at this depth (prevents double-push).
         if (current_mask & 0xC000) != 0 && (current_mask & b) == 0
-            _checkpoint_typed_pool!(AdaptiveArrayPools.get_typed_pool!(pool, T), depth)
+            tp = AdaptiveArrayPools.get_typed_pool!(pool, T)
+            if @inbounds(tp._checkpoint_depths[end]) != depth
+                _checkpoint_typed_pool!(tp, depth)
+            end
         end
         @inbounds pool._untracked_fixed_masks[depth] = current_mask | b
     end

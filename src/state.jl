@@ -109,6 +109,7 @@ Performance: ~2ns vs ~540ns for full `checkpoint!`.
     # New others types created during the scope start at n_active=0 (sentinel covers them).
     for p in values(pool.others)
         _checkpoint_typed_pool!(p, depth)
+        @inbounds pool._untracked_has_others[depth] = true
     end
     nothing
 end

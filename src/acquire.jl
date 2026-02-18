@@ -197,9 +197,14 @@ end
         @inbounds pool._untracked_has_others[depth] = true
     else
         current_mask = @inbounds pool._untracked_fixed_masks[depth]
-        # Lazy checkpoint: dynamic mode (bit 15) OR typed lazy mode (bit 14), AND first touch
+        # Lazy checkpoint: dynamic mode (bit 15) OR typed lazy mode (bit 14), AND first touch.
+        # Guard: skip if already checkpointed at this depth (prevents double-push when a
+        # tracked type is also acquired by a helper via acquire! → _mark_untracked!).
         if (current_mask & 0xC000) != 0 && (current_mask & b) == 0
-            _checkpoint_typed_pool!(get_typed_pool!(pool, T), depth)
+            tp = get_typed_pool!(pool, T)
+            if @inbounds(tp._checkpoint_depths[end]) != depth
+                _checkpoint_typed_pool!(tp, depth)
+            end
         end
         @inbounds pool._untracked_fixed_masks[depth] = current_mask | b
     end

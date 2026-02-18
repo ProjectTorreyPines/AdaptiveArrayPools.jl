@@ -2206,4 +2206,175 @@ import AdaptiveArrayPools: _typed_checkpoint_with_lazy!, _typed_selective_rewind
         rewind!(pool, Float32)
     end
 
+    # ==================================================================
+    # TDD Red-Phase: Copilot Review Issue Tests
+    # These tests expose latent bugs found by code review.
+    # They should FAIL before the fix and PASS after.
+    # ==================================================================
+
+    @testset "Issue #1: _depth_only_checkpoint! orphaned others stack leak" begin
+        # Bug: _depth_only_checkpoint! eagerly checkpoints pool.others entries,
+        # but sets _untracked_has_others[depth] = false. On _dynamic_selective_rewind!,
+        # the others loop is skipped (flag is false), leaving orphaned checkpoint entries.
+        # In a loop, each iteration pushes one more stale entry → unbounded stack growth.
+        using AdaptiveArrayPools: _depth_only_checkpoint!, _dynamic_selective_rewind!
+
+        pool = AdaptiveArrayPool()
+
+        # Pre-populate pool.others with a UInt8 entry
+        checkpoint!(pool)              # depth=2 (full checkpoint)
+        acquire!(pool, UInt8, 1)       # creates UInt8 TypedPool in pool.others
+        rewind!(pool)                  # depth back to 1; UInt8 pool persists in others
+
+        uint8_pool = pool.others[UInt8]
+        initial_stack_len = length(uint8_pool._checkpoint_depths)  # should be 1 (sentinel [0])
+
+        # Run 10 iterations of dynamic-selective scope without acquiring any others type
+        for _ in 1:10
+            _depth_only_checkpoint!(pool)         # pushes checkpoint for others entries
+            _dynamic_selective_rewind!(pool)       # should pop it back
+        end
+
+        # Checkpoint stack must NOT have grown (each entry should be popped by rewind)
+        @test length(uint8_pool._checkpoint_depths) == initial_stack_len
+        # Pool depth should be back to 1
+        @test pool._current_depth == 1
+    end
+
+    @testset "Issue #2: double-checkpoint hazard when tracked type used by helper" begin
+        # Bug: In typed-lazy mode (bit 14), when a tracked type T is:
+        #   1. Checkpointed by _typed_checkpoint_with_lazy!(pool, T) (saves n_active=0)
+        #   2. Acquired by macro-transformed _acquire_impl! (n_active → 1, no _mark_untracked!)
+        #   3. Re-acquired by a helper via acquire! → _mark_untracked!
+        # Step 3 sees bit 14 set + T's bit unset → calls _checkpoint_typed_pool! again
+        # with n_active=1 (wrong!). On rewind, restores n_active=1 instead of 0.
+        using AdaptiveArrayPools: _acquire_impl!
+
+        # Helper that uses acquire! (goes through _mark_untracked!)
+        function _issue2_helper!(pool)
+            acquire!(pool, Float64, 3)
+        end
+
+        pool = AdaptiveArrayPool()
+
+        # Enter typed-lazy mode for Float64
+        _typed_checkpoint_with_lazy!(pool, Float64)
+        try
+            # Simulate macro-transformed code: bypasses _mark_untracked!
+            _acquire_impl!(pool, Float64, 5)
+            @test pool.float64.n_active == 1
+
+            # Helper: goes through acquire! → _mark_untracked!
+            # BUG: _mark_untracked! sees bit 14 + Float64 bit not yet set
+            #      → redundant _checkpoint_typed_pool! with n_active=1
+            _issue2_helper!(pool)
+            @test pool.float64.n_active == 2
+        finally
+            tracked_mask = _tracked_mask_for_types(Float64)
+            _typed_selective_rewind!(pool, tracked_mask)
+        end
+
+        # After rewind, n_active should be 0 (parent state before scope entry)
+        # BUG: double-checkpoint causes restore to n_active=1 (the snapshot from step 3)
+        @test pool.float64.n_active == 0
+    end
+
+    @testset "Issue #2b: double-checkpoint leaves orphaned entry in checkpoint stack" begin
+        # Related to Issue #2: after the double-checkpoint + rewind, the first (correct)
+        # checkpoint entry is still on the stack as an orphan at the same depth.
+        # This corrupts future checkpoint/rewind cycles.
+        using AdaptiveArrayPools: _acquire_impl!
+
+        function _issue2b_helper!(pool)
+            acquire!(pool, Float32, 4)
+        end
+
+        pool = AdaptiveArrayPool()
+        initial_f32_stack = length(pool.float32._checkpoint_depths)  # 1 (sentinel)
+
+        _typed_checkpoint_with_lazy!(pool, Float32)
+        try
+            _acquire_impl!(pool, Float32, 5)     # n_active=1, no _mark_untracked!
+            _issue2b_helper!(pool)                # acquire! → _mark_untracked! → double checkpoint
+        finally
+            tracked_mask = _tracked_mask_for_types(Float32)
+            _typed_selective_rewind!(pool, tracked_mask)
+        end
+
+        # The checkpoint stack should return to its initial length (sentinel only)
+        # BUG: the double-push leaves an orphaned entry
+        @test length(pool.float32._checkpoint_depths) == initial_f32_stack
+    end
+
+    @testset "Issue #3: CUDA extension imports _has_bit" begin
+        # Bug: _has_bit is used 14 times in CUDA state.jl but not imported.
+        # This would cause UndefVarError at runtime on GPU.
+        cuda_state_path = joinpath(@__DIR__, "..", "ext", "AdaptiveArrayPoolsCUDAExt", "state.jl")
+        if isfile(cuda_state_path)
+            code = read(cuda_state_path, String)
+
+            # Verify _has_bit is used in the file
+            @test contains(code, "_has_bit(")
+
+            # Verify _has_bit is properly imported (in a `using` statement)
+            # Match full multi-line using blocks (handles continuation lines)
+            using_blocks = [m.match for m in eachmatch(r"using AdaptiveArrayPools\s*:.*?(?=\n\n|\nusing |\n[a-z#]|\z)"s, code)]
+            @test any(block -> contains(block, "_has_bit"), using_blocks)
+        else
+            @warn "CUDA extension not found, skipping import test"
+        end
+    end
+
+    @testset "Issue #4: CUDA _depth_only_checkpoint! parity (has_others flag)" begin
+        # Bug: CUDA _depth_only_checkpoint! eagerly checkpoints pool.others but
+        # does NOT set _untracked_has_others = true, same as CPU Issue #1.
+        # Verify via source code inspection (no GPU needed).
+        cuda_state_path = joinpath(@__DIR__, "..", "ext", "AdaptiveArrayPoolsCUDAExt", "state.jl")
+        if isfile(cuda_state_path)
+            code = read(cuda_state_path, String)
+            # Extract _depth_only_checkpoint! function body
+            func_match = match(
+                r"function\s+AdaptiveArrayPools\._depth_only_checkpoint!\(pool::CuAdaptiveArrayPool\).*?^end"ms,
+                code
+            )
+            @test func_match !== nothing
+            if func_match !== nothing
+                func_body = func_match.match
+                # If it eagerly checkpoints others (has `for p in values(pool.others)`),
+                # then it MUST also set _untracked_has_others[...] = true within the loop
+                if contains(func_body, "values(pool.others)")
+                    @test occursin(r"_untracked_has_others\[.*\]\s*=\s*true", func_body)
+                end
+            end
+        else
+            @warn "CUDA extension not found, skipping parity test"
+        end
+    end
+
+    @testset "Issue #5: CUDA _typed_checkpoint_with_lazy! parity" begin
+        # Bug: CUDA version is missing two features present in CPU version:
+        # 1. Double-checkpoint guard: `_checkpoint_depths[end] != d`
+        # 2. has_others flag: `_untracked_has_others[d] = true`
+        cuda_state_path = joinpath(@__DIR__, "..", "ext", "AdaptiveArrayPoolsCUDAExt", "state.jl")
+        if isfile(cuda_state_path)
+            code = read(cuda_state_path, String)
+            func_match = match(
+                r"function\s+AdaptiveArrayPools\._typed_checkpoint_with_lazy!\(pool::CuAdaptiveArrayPool.*?^end"ms,
+                code
+            )
+            @test func_match !== nothing
+            if func_match !== nothing
+                func_body = func_match.match
+
+                # Must have double-checkpoint guard (like CPU version)
+                @test contains(func_body, "_checkpoint_depths[end]")
+
+                # Must set _untracked_has_others flag (like CPU version)
+                @test contains(func_body, "_untracked_has_others")
+            end
+        else
+            @warn "CUDA extension not found, skipping parity test"
+        end
+    end
+
 end # State Management

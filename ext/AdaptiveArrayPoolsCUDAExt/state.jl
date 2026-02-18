@@ -6,7 +6,7 @@
 # AbstractTypedPool, so they work for CuTypedPool automatically.
 
 using AdaptiveArrayPools: checkpoint!, rewind!, reset!,
-                          _checkpoint_typed_pool!, _rewind_typed_pool!
+                          _checkpoint_typed_pool!, _rewind_typed_pool!, _has_bit
 
 # ==============================================================================
 # GPU Fixed Slot Iteration
@@ -170,6 +170,7 @@ end
     # Pre-existing types need their count saved now so Case A fires correctly at rewind.
     for p in values(pool.others)
         _checkpoint_typed_pool!(p, depth)
+        @inbounds pool._untracked_has_others[depth] = true
     end
     # Float16 uses lazy first-touch via bit 7 in _mark_untracked! — no eager checkpoint needed.
     nothing
@@ -209,8 +210,13 @@ end
     d = pool._current_depth
     @inbounds pool._untracked_fixed_masks[d] |= UInt16(0x4000)   # set bit 14
     # Eagerly snapshot pre-existing others entries — same reasoning as _depth_only_checkpoint!.
+    # Skip re-snapshot for entries already checkpointed at d by checkpoint!(pool, types...)
+    # (e.g. Float16 in types... was just checkpointed above — avoid double-push).
     for p in values(pool.others)
-        _checkpoint_typed_pool!(p, d)
+        if @inbounds(p._checkpoint_depths[end]) != d
+            _checkpoint_typed_pool!(p, d)
+        end
+        @inbounds pool._untracked_has_others[d] = true
     end
     # Float16 uses lazy first-touch via bit 7 in _mark_untracked! — no eager checkpoint needed.
     nothing
