@@ -1738,6 +1738,68 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
         rewind!(pool)
     end
 
+    @testset "_can_use_typed_path: mode bits do not pollute subset check" begin
+        # Issue: _can_use_typed_path reads raw _touched_type_masks[depth] which may
+        # contain mode bits (14-15) from _lazy_checkpoint! or _typed_lazy_checkpoint!.
+        # These mode bits leak into the subset check `(touched_mask & ~tracked_mask) == 0`,
+        # causing false negatives: the typed fast path is rejected even when only
+        # tracked types were touched.
+        using AdaptiveArrayPools: _can_use_typed_path, _tracked_mask_for_types,
+              _lazy_checkpoint!, _lazy_rewind!, _LAZY_MODE_BIT, _TYPED_LAZY_BIT,
+              _acquire_impl!
+
+        # --- Case 1: _LAZY_MODE_BIT (bit 15) should be ignored ---
+        pool = AdaptiveArrayPool()
+        checkpoint!(pool)  # depth 2
+        pool._touched_type_masks[2] = _LAZY_MODE_BIT  # simulate lazy parent scope
+        # Only mode bit set, no type bits → typed path should be safe
+        @test _can_use_typed_path(pool, _tracked_mask_for_types(Float64)) == true
+
+        # Mode bit + tracked type bit → still safe (type is tracked)
+        pool._touched_type_masks[2] = _LAZY_MODE_BIT | _fixed_slot_bit(Float64)
+        @test _can_use_typed_path(pool, _tracked_mask_for_types(Float64)) == true
+
+        # Mode bit + untracked type bit → correctly fails
+        pool._touched_type_masks[2] = _LAZY_MODE_BIT | _fixed_slot_bit(Int32)
+        @test _can_use_typed_path(pool, _tracked_mask_for_types(Float64)) == false
+        rewind!(pool)
+
+        # --- Case 2: _TYPED_LAZY_BIT (bit 14) should be ignored ---
+        pool2 = AdaptiveArrayPool()
+        checkpoint!(pool2)
+        pool2._touched_type_masks[2] = _TYPED_LAZY_BIT
+        @test _can_use_typed_path(pool2, _tracked_mask_for_types(Float64)) == true
+
+        pool2._touched_type_masks[2] = _TYPED_LAZY_BIT | _fixed_slot_bit(Float64)
+        @test _can_use_typed_path(pool2, _tracked_mask_for_types(Float64)) == true
+        rewind!(pool2)
+
+        # --- Case 3: Both mode bits set (bits 14+15) should be ignored ---
+        pool3 = AdaptiveArrayPool()
+        checkpoint!(pool3)
+        pool3._touched_type_masks[2] = _LAZY_MODE_BIT | _TYPED_LAZY_BIT
+        @test _can_use_typed_path(pool3, _tracked_mask_for_types(Float64)) == true
+        rewind!(pool3)
+
+        # --- Case 4: End-to-end — nested typed scope inside lazy scope ---
+        pool4 = AdaptiveArrayPool()
+        _lazy_checkpoint!(pool4)  # outer lazy scope (depth 2, mask has _LAZY_MODE_BIT)
+
+        # Before entering inner typed scope, macro calls _can_use_typed_path at parent depth
+        tracked_mask = _tracked_mask_for_types(Float64)
+        @test _can_use_typed_path(pool4, tracked_mask) == true  # parent has no extra type bits
+
+        # Enter inner typed scope
+        checkpoint!(pool4, Float64)  # depth 3
+        a = _acquire_impl!(pool4, Float64, 10)
+        a .= 1.0
+        # At rewind time: inner mask is clean (no mode bits from checkpoint!)
+        @test _can_use_typed_path(pool4, tracked_mask) == true
+
+        rewind!(pool4, Float64)
+        _lazy_rewind!(pool4)
+    end
+
     # ==================================================================
     # Phase 3: End-to-end runtime scenarios
     # ==================================================================

@@ -312,8 +312,8 @@ guaranteed by the `_TYPED_LAZY_BIT` mode set in `_typed_lazy_checkpoint!`.
 """
 @inline function _typed_lazy_rewind!(pool::AdaptiveArrayPool, tracked_mask::UInt16)
     d = pool._current_depth
-    untracked = @inbounds(pool._touched_type_masks[d]) & _TYPE_BITS_MASK
-    combined = tracked_mask | untracked
+    touched = @inbounds(pool._touched_type_masks[d]) & _TYPE_BITS_MASK
+    combined = tracked_mask | touched
     _selective_rewind_fixed_slots!(pool, combined)
     if @inbounds(pool._touched_has_others[d])
         for tp in values(pool.others)
@@ -587,7 +587,7 @@ in `touched_mask` is also set in `tracked_mask`.
 """
 @inline function _can_use_typed_path(pool::AbstractArrayPool, tracked_mask::UInt16)
     depth = pool._current_depth
-    touched_mask = @inbounds pool._touched_type_masks[depth]
+    touched_mask = @inbounds(pool._touched_type_masks[depth]) & _TYPE_BITS_MASK
     has_others = @inbounds pool._touched_has_others[depth]
     return (touched_mask & ~tracked_mask) == UInt16(0) && !has_others
 end

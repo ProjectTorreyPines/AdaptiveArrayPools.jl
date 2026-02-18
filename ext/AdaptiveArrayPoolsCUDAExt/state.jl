@@ -32,7 +32,7 @@ end
 # ==============================================================================
 
 function AdaptiveArrayPools.checkpoint!(pool::CuAdaptiveArrayPool)
-    # Increment depth and initialize untracked bitmask state
+    # Increment depth and initialize type-touch tracking state
     pool._current_depth += 1
     push!(pool._touched_type_masks, UInt16(0))
     push!(pool._touched_has_others, false)
@@ -223,14 +223,14 @@ end
     nothing
 end
 
-# _typed_lazy_rewind!: selective rewind of (tracked | untracked) mask.
+# _typed_lazy_rewind!: selective rewind of (tracked | touched) mask.
 # Uses direct field access with bit checks — foreach_fixed_slot is single-argument (no bit yield).
 # Bit 7: Float16 (CUDA-specific; lazy-checkpointed on first touch by _record_type_touch!).
 # has_others: genuine others types (UInt8, Int8, etc.) — eagerly checkpointed at scope entry.
 @inline function AdaptiveArrayPools._typed_lazy_rewind!(pool::CuAdaptiveArrayPool, tracked_mask::UInt16)
     d = pool._current_depth
-    untracked = @inbounds(pool._touched_type_masks[d]) & _TYPE_BITS_MASK
-    combined = tracked_mask | untracked
+    touched = @inbounds(pool._touched_type_masks[d]) & _TYPE_BITS_MASK
+    combined = tracked_mask | touched
     _has_bit(combined, Float64)    && _rewind_typed_pool!(pool.float64,    d)
     _has_bit(combined, Float32)    && _rewind_typed_pool!(pool.float32,    d)
     _has_bit(combined, Int64)      && _rewind_typed_pool!(pool.int64,      d)
@@ -238,7 +238,7 @@ end
     _has_bit(combined, ComplexF64) && _rewind_typed_pool!(pool.complexf64, d)
     _has_bit(combined, ComplexF32) && _rewind_typed_pool!(pool.complexf32, d)
     _has_bit(combined, Bool)       && _rewind_typed_pool!(pool.bool,       d)
-    # Float16: bit 7 is set by _record_type_touch! on first untracked touch (lazy first-touch).
+    # Float16: bit 7 is set by _record_type_touch! on first touch (lazy first-touch).
     # Also rewind when Float16 was a *tracked* type in the macro: _typed_lazy_checkpoint!
     # calls checkpoint!(pool, Float16) which pushes a checkpoint at depth d, but _acquire_impl!
     # (macro transform) bypasses _record_type_touch!, leaving bit 7 = 0.
