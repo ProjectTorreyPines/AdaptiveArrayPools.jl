@@ -870,4 +870,37 @@ end
         @test !occursin("AdaptiveArrayPools.rewind!", expr_str)
     end
 
+    # =========================================================================
+    # Phase 5: Typed-Fallback Optimization expansion tests (RED)
+    # =========================================================================
+
+    @testset "Phase 5: use_typed=true false-branch emits _typed_checkpoint_with_lazy!" begin
+        # After Phase 5: when _can_use_typed_path=false at runtime, the checkpoint
+        # side calls _typed_checkpoint_with_lazy! instead of full checkpoint!(pool).
+        expr = @macroexpand @with_pool pool begin
+            v = acquire!(pool, Float64, 10)  # static type Float64 → use_typed=true
+            v .= 1.0
+        end
+        expr_str = string(expr)
+
+        # Phase 5: else-branch uses lazy checkpoint
+        @test occursin("_typed_checkpoint_with_lazy!", expr_str)
+        # Full no-arg checkpoint!(pool) must NOT appear
+        @test !occursin("AdaptiveArrayPools.checkpoint!(pool)", expr_str)
+    end
+
+    @testset "Phase 5: use_typed=true false-branch emits _typed_selective_rewind!" begin
+        # After Phase 5: the rewind else-branch uses _typed_selective_rewind! instead of full rewind!(pool).
+        expr = @macroexpand @with_pool pool begin
+            v = acquire!(pool, Float64, 10)
+            v .= 1.0
+        end
+        expr_str = string(expr)
+
+        # Phase 5: else-branch uses selective rewind
+        @test occursin("_typed_selective_rewind!", expr_str)
+        # Full no-arg rewind!(pool) must NOT appear
+        @test !occursin("AdaptiveArrayPools.rewind!(pool)", expr_str)
+    end
+
 end # Dynamic selective mode expansion

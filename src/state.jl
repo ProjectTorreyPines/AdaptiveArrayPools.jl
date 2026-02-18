@@ -264,12 +264,58 @@ Called directly from the macro-generated `finally` clause as a single function c
 end
 
 """
+    _typed_checkpoint_with_lazy!(pool::AdaptiveArrayPool, types::Type...)
+
+Typed checkpoint that enables lazy first-touch checkpointing for extra types touched
+by helpers (`use_typed=true`, `_can_use_typed_path=false` path).
+
+Calls `checkpoint!(pool, types...)` (checkpoints only the statically-known types),
+then sets bit 14 (`0x4000`) in `_untracked_fixed_masks[depth]` to signal typed lazy mode.
+
+`_mark_untracked!` checks `(mask & 0xC000) != 0` (bit 14 OR bit 15) to trigger a
+lazy first-touch checkpoint for each extra type on first acquire, ensuring Case A
+(not Case B) applies at rewind and parent `n_active` is preserved correctly.
+"""
+@inline function _typed_checkpoint_with_lazy!(pool::AdaptiveArrayPool, types::Type...)
+    checkpoint!(pool, types...)
+    d = pool._current_depth
+    @inbounds pool._untracked_fixed_masks[d] |= UInt16(0x4000)   # set bit 14
+    nothing
+end
+
+"""
+    _typed_selective_rewind!(pool::AdaptiveArrayPool, tracked_mask::UInt16)
+
+Selective rewind for typed mode (`use_typed=true`) fallback path.
+
+Called when `_can_use_typed_path` returns false (helpers touched types beyond the
+statically-tracked set). Rewinds only pools whose bits are set in
+`tracked_mask | untracked_mask`. All touched types have Case A checkpoints,
+guaranteed by the bit 14 lazy mode set in `_typed_checkpoint_with_lazy!`.
+"""
+@inline function _typed_selective_rewind!(pool::AdaptiveArrayPool, tracked_mask::UInt16)
+    d = pool._current_depth
+    untracked = @inbounds(pool._untracked_fixed_masks[d]) & UInt16(0x00FF)
+    combined = tracked_mask | untracked
+    _selective_rewind_fixed_slots!(pool, combined)
+    if @inbounds(pool._untracked_has_others[d])
+        for tp in values(pool.others)
+            _rewind_typed_pool!(tp, d)
+        end
+    end
+    pop!(pool._untracked_fixed_masks)
+    pop!(pool._untracked_has_others)
+    pool._current_depth -= 1
+    nothing
+end
+
+"""
     _selective_rewind_fixed_slots!(pool::AdaptiveArrayPool, mask::UInt16)
 
 Rewind only the fixed-slot typed pools whose bits are set in `mask`.
 
 Each of the 8 fixed-slot pools maps to bits 0–7 (same encoding as `_fixed_slot_bit`).
-Bit 15 (dynamic-selective mode flag) is **not** checked here — callers must strip it
+Bits 8–15 (mode flags) are **not** checked here — callers must strip them
 before passing the mask (e.g. `mask & UInt16(0x00FF)`).
 
 Unset bits are skipped entirely: for pools that were acquired without a matching

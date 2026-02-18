@@ -909,21 +909,23 @@ end
     _generate_typed_checkpoint_call(pool_expr, types)
 
 Generate bitmask-aware checkpoint call. When types are known at compile time,
-emits a conditional: if untracked types ⊆ tracked types → typed checkpoint,
-otherwise → full checkpoint.
+emits a conditional:
+- if untracked types ⊆ tracked types → typed checkpoint (fast path)
+- otherwise → `_typed_checkpoint_with_lazy!` (typed checkpoint + set bit 14 for
+  lazy first-touch checkpointing of extra types touched by helpers)
 """
 function _generate_typed_checkpoint_call(pool_expr, types)
     if isempty(types)
-        return :($checkpoint!($pool_expr))
+        return :($checkpoint!($pool_expr))   # unreachable in practice (use_typed=true requires types)
     else
         escaped_types = [esc(t) for t in types]
         typed_call = :($checkpoint!($pool_expr, $(escaped_types...)))
-        full_call = :($checkpoint!($pool_expr))
+        lazy_call  = :($_typed_checkpoint_with_lazy!($pool_expr, $(escaped_types...)))
         return quote
             if $_can_use_typed_path($pool_expr, $_tracked_mask_for_types($(escaped_types...)))
                 $typed_call
             else
-                $full_call
+                $lazy_call
             end
         end
     end
@@ -933,21 +935,24 @@ end
     _generate_typed_rewind_call(pool_expr, types)
 
 Generate bitmask-aware rewind call. When types are known at compile time,
-emits a conditional: if untracked types ⊆ tracked types → typed rewind,
-otherwise → full rewind.
+emits a conditional:
+- if untracked types ⊆ tracked types → typed rewind (fast path)
+- otherwise → `_typed_selective_rewind!` (rewinds tracked | untracked mask;
+  all touched types have Case A checkpoints via bit 14 lazy mode)
 """
 function _generate_typed_rewind_call(pool_expr, types)
     if isempty(types)
-        return :($rewind!($pool_expr))
+        return :($rewind!($pool_expr))       # unreachable in practice (use_typed=true requires types)
     else
         escaped_types = [esc(t) for t in types]
-        typed_call = :($rewind!($pool_expr, $(escaped_types...)))
-        full_call = :($rewind!($pool_expr))
+        typed_call     = :($rewind!($pool_expr, $(escaped_types...)))
+        selective_call = :($_typed_selective_rewind!($pool_expr,
+                              $_tracked_mask_for_types($(escaped_types...))))
         return quote
             if $_can_use_typed_path($pool_expr, $_tracked_mask_for_types($(escaped_types...)))
                 $typed_call
             else
-                $full_call
+                $selective_call
             end
         end
     end

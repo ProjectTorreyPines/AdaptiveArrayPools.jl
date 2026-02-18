@@ -7,6 +7,7 @@
 
 import AdaptiveArrayPools: _extract_local_assignments, _filter_static_types, _extract_acquire_types, _uses_local_var
 import AdaptiveArrayPools: _depth_only_checkpoint!, _dynamic_selective_rewind!
+import AdaptiveArrayPools: _typed_checkpoint_with_lazy!, _typed_selective_rewind!, _tracked_mask_for_types
 
 @testset "Macro Internals" begin
 
@@ -1523,5 +1524,45 @@ import AdaptiveArrayPools: _depth_only_checkpoint!, _dynamic_selective_rewind!
         end
 
     end # Dynamic selective mode: runtime n_active cleanup
+
+    # ==================================================================
+    # Phase 5: Typed-Fallback Optimization runtime tests (RED)
+    # ==================================================================
+
+    @testset "DESIRED [RED]: typed lazy mode: parent Int64 n_active=1 preserved after child scope" begin
+        # Simulates the @with_pool codegen for: use_typed=true, _can_use_typed_path=false.
+        # Child scope: tracked Float64 + helper touches extra Int64.
+        # Parent scope: Int64 active. After child exits, parent's Int64 must be unchanged.
+        function _phase5_extra_int64_helper!(pool)
+            acquire!(pool, Int64, 7)
+        end
+
+        pool = AdaptiveArrayPool()
+
+        # Parent scope: Int64 acquired and active
+        checkpoint!(pool, Int64)
+        parent_int64 = acquire!(pool, Int64, 1)
+        @test pool.int64.n_active == 1
+
+        # Child scope: typed lazy checkpoint (Float64 tracked, but helper touches Int64)
+        # Simulates: _can_use_typed_path=false, macro emits _typed_checkpoint_with_lazy!
+        _typed_checkpoint_with_lazy!(pool, Float64)
+        try
+            child_float = acquire!(pool, Float64, 5)
+            _phase5_extra_int64_helper!(pool)  # touches Int64 (untracked in child)
+            @test pool.int64.n_active == 2     # parent's 1 + helper's 1
+            @test pool.float64.n_active >= 1
+        finally
+            tracked_mask = _tracked_mask_for_types(Float64)
+            _typed_selective_rewind!(pool, tracked_mask)
+        end
+
+        # Parent's Int64 must be intact (= 1)
+        @test pool.int64.n_active == 1   # Phase 5 target
+        @test pool.float64.n_active == 0 # Float64 correctly rewound
+
+        rewind!(pool, Int64)
+        @test pool.int64.n_active == 0
+    end
 
 end # Macro Internals

@@ -148,6 +148,45 @@ end
 end
 
 # ==============================================================================
+# Typed-Fallback Helpers for CuAdaptiveArrayPool (Phase 5 parity)
+# ==============================================================================
+
+# _typed_checkpoint_with_lazy!: typed checkpoint + set bit 14 for lazy extra-type tracking.
+# Mirrors CPU _typed_checkpoint_with_lazy! in src/state.jl.
+@inline function AdaptiveArrayPools._typed_checkpoint_with_lazy!(pool::CuAdaptiveArrayPool, types::Type...)
+    checkpoint!(pool, types...)
+    d = pool._current_depth
+    @inbounds pool._untracked_fixed_masks[d] |= UInt16(0x4000)   # set bit 14
+    nothing
+end
+
+# _typed_selective_rewind!: selective rewind of (tracked | untracked) mask.
+# Uses direct field access with bit checks — foreach_fixed_slot is single-argument (no bit yield).
+# Bit encoding matches _fixed_slot_bit in src/types.jl.
+# Note: Float16 has _fixed_slot_bit = 0 → tracked via has_others, not bitmask.
+@inline function AdaptiveArrayPools._typed_selective_rewind!(pool::CuAdaptiveArrayPool, tracked_mask::UInt16)
+    d = pool._current_depth
+    untracked = @inbounds(pool._untracked_fixed_masks[d]) & UInt16(0x00FF)
+    combined = tracked_mask | untracked
+    combined & (UInt16(1) << 0) != 0 && _rewind_typed_pool!(pool.float64,    d)
+    combined & (UInt16(1) << 1) != 0 && _rewind_typed_pool!(pool.float32,    d)
+    combined & (UInt16(1) << 2) != 0 && _rewind_typed_pool!(pool.int64,      d)
+    combined & (UInt16(1) << 3) != 0 && _rewind_typed_pool!(pool.int32,      d)
+    combined & (UInt16(1) << 4) != 0 && _rewind_typed_pool!(pool.complexf64, d)
+    combined & (UInt16(1) << 5) != 0 && _rewind_typed_pool!(pool.complexf32, d)
+    combined & (UInt16(1) << 6) != 0 && _rewind_typed_pool!(pool.bool,       d)
+    if @inbounds(pool._untracked_has_others[d])
+        for tp in values(pool.others)
+            _rewind_typed_pool!(tp, d)
+        end
+    end
+    pop!(pool._untracked_fixed_masks)
+    pop!(pool._untracked_has_others)
+    pool._current_depth -= 1
+    nothing
+end
+
+# ==============================================================================
 # reset! for CuAdaptiveArrayPool
 # ==============================================================================
 

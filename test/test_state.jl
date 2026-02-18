@@ -1760,8 +1760,10 @@
         rewind!(pool)
     end
 
-    @testset "Scenario B: full rewind when untracked NOT ⊆ tracked" begin
-        # Helper acquires Float32 while @with_pool only tracks Float64
+    @testset "Scenario B: selective rewind when untracked NOT ⊆ tracked" begin
+        # Helper acquires Float32 while @with_pool only tracks Float64.
+        # Phase 5: _can_use_typed_path=false → _typed_selective_rewind! covers
+        # tracked (Float64) | untracked (Float32), so both are rewound correctly.
         function _scenario_b_helper!(pool)
             acquire!(pool, Float32, 5)
         end
@@ -1775,7 +1777,7 @@
             _scenario_b_helper!(pool)  # untracked Float32 → NOT subset of {Float64}
         end
 
-        # Both types should be correctly rewound
+        # Both types should be correctly rewound via selective rewind
         @test pool.float64.n_active == 0
         @test pool.float32.n_active == 0
         rewind!(pool)
@@ -2086,6 +2088,88 @@
             rewind!(pool)
             @test pool.float64.n_active == 0
         end
+    end
+
+    # ==================================================================
+    # Phase 5: Typed-Fallback Optimization (RED tests)
+    # ==================================================================
+
+    @testset "Phase 5: _typed_checkpoint_with_lazy! sets bit 14 and checkpoints known types" begin
+        # _typed_checkpoint_with_lazy! must checkpoint known types AND set bit 14 for lazy mode.
+        import AdaptiveArrayPools: _typed_checkpoint_with_lazy!
+        pool = AdaptiveArrayPool()
+        _typed_checkpoint_with_lazy!(pool, Float64)
+        d = pool._current_depth
+        # Bit 14 (0x4000) must be set; bits 0-7 must be 0 (no acquires yet)
+        @test (pool._untracked_fixed_masks[d] & UInt16(0x4000)) != 0
+        @test (pool._untracked_fixed_masks[d] & UInt16(0x00FF)) == 0
+        # Float64 should be checkpointed at this depth
+        @test pool.float64._checkpoint_depths[end] == d
+        # Float32 should NOT be checkpointed at this depth
+        @test pool.float32._checkpoint_depths[end] < d
+        rewind!(pool)
+    end
+
+    @testset "Phase 5 P0 safety: typed lazy mode preserves parent n_active for extra types" begin
+        # P0 safety scenario: parent scope has int64.n_active=1 (no Int64 checkpoint above).
+        # Child scope does typed checkpoint (Float64 only). Helper acquires Int64.
+        # After child scope exits, parent's int64.n_active MUST still be 1.
+        #
+        # Without bit 14 lazy mode: Case B fires → int64.n_active wiped to 0 (BUG).
+        # With bit 14 lazy mode: first-touch checkpoint saves n_active=1 → Case A → correct.
+        import AdaptiveArrayPools: _typed_checkpoint_with_lazy!, _typed_selective_rewind!,
+                                   _tracked_mask_for_types
+
+        function _p0_helper_int64!(pool)
+            acquire!(pool, Int64, 3)   # helper touches Int64 (untracked by macro)
+        end
+
+        pool = AdaptiveArrayPool()
+
+        # Parent scope: acquire Int64 (simulates parent @with_pool that tracks Int64)
+        checkpoint!(pool, Int64)          # parent typed checkpoint
+        acquire!(pool, Int64, 1)          # parent's Int64 is active
+        @test pool.int64.n_active == 1
+
+        # Child scope: typed checkpoint for Float64 only, but helper touches Int64
+        # Simulates @with_pool with static type Float64 but _can_use_typed_path = false
+        _typed_checkpoint_with_lazy!(pool, Float64)
+        acquire!(pool, Float64, 5)        # tracked type
+        _p0_helper_int64!(pool)           # untracked Int64 → triggers lazy first-touch checkpoint
+        @test pool.int64.n_active == 2    # parent's 1 + helper's 1
+
+        # Child scope exits via selective rewind
+        tracked_mask = _tracked_mask_for_types(Float64)
+        _typed_selective_rewind!(pool, tracked_mask)
+
+        # Parent's Int64 count must be restored to 1 (NOT 0)
+        @test pool.int64.n_active == 1
+        @test pool.float64.n_active == 0
+
+        rewind!(pool, Int64)              # clean up parent scope
+        @test pool.int64.n_active == 0
+    end
+
+    @testset "Phase 5: bit 14 enables lazy first-touch checkpoint for extra types" begin
+        # _mark_untracked! condition is (current_mask & 0xC000) != 0.
+        # With bit 14 set (typed lazy mode), extra-type first touch triggers _checkpoint_typed_pool!.
+        import AdaptiveArrayPools: _typed_checkpoint_with_lazy!
+
+        pool = AdaptiveArrayPool()
+        _typed_checkpoint_with_lazy!(pool, Float64)  # typed chk + set bit 14
+        d = pool._current_depth
+
+        # Before acquiring Int64: no Int64 checkpoint at this depth
+        @test pool.int64._checkpoint_depths[end] < d
+
+        # First acquire of Int64 (untracked) → should trigger lazy first-touch checkpoint
+        acquire!(pool, Int64, 3)
+
+        # After first touch: Int64 must be checkpointed at depth d (Case A guaranteed)
+        @test pool.int64._checkpoint_depths[end] == d
+
+        rewind!(pool)
+        @test pool.int64.n_active == 0
     end
 
 end # State Management
