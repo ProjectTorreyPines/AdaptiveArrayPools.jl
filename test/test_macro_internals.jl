@@ -6,6 +6,8 @@
 # to ensure correct type extraction and filtering for optimized checkpoint/rewind.
 
 import AdaptiveArrayPools: _extract_local_assignments, _filter_static_types, _extract_acquire_types, _uses_local_var
+import AdaptiveArrayPools: _depth_only_checkpoint!, _dynamic_selective_rewind!
+import AdaptiveArrayPools: _typed_checkpoint_with_lazy!, _typed_selective_rewind!, _tracked_mask_for_types
 
 @testset "Macro Internals" begin
 
@@ -1414,6 +1416,153 @@ import AdaptiveArrayPools: _extract_local_assignments, _filter_static_types, _ex
                 @test occursin("not available", e.msg)
             end
         end
+    end
+
+    # ==========================================================================
+    # Dynamic selective mode: runtime correctness
+    # Phase 3: ensure n_active == 0 after _dynamic_selective_rewind! exits scope.
+    #
+    # NOTE: Uses _depth_only_checkpoint! + _dynamic_selective_rewind! directly
+    # with explicit fresh AdaptiveArrayPool() instances to avoid task-local pool
+    # contamination from other tests. This mirrors what the macro generates for
+    # the use_typed=false path, testing the state layer in isolation.
+    # ==========================================================================
+
+    @testset "Dynamic selective mode: runtime n_active cleanup" begin
+
+        @testset "Single type (Float64): n_active restored after dynamic scope" begin
+            # Simulates: @with_pool pool begin; v = acquire!(pool, eltype(arr), 10); end
+            # where arr is a local var → macro emits _depth_only_checkpoint! +
+            # _dynamic_selective_rewind! (no _acquire_impl! transformation).
+            pool = AdaptiveArrayPool()
+            local_arr = rand(Float64, 10)
+            _depth_only_checkpoint!(pool)
+            try
+                v = acquire!(pool, eltype(local_arr), 10)  # _mark_untracked!(pool, Float64)
+                v .= 1.0
+                @test pool.float64.n_active == 1
+            finally
+                _dynamic_selective_rewind!(pool)
+            end
+            @test pool.float64.n_active == 0
+        end
+
+        @testset "similar!(pool, Float32 ref): n_active restored after dynamic scope" begin
+            # similar! calls _mark_untracked!(pool, eltype(ref)) directly, so the
+            # dynamic selective rewind sees the type even without acquire! wrapping.
+            pool = AdaptiveArrayPool()
+            ref = rand(Float32, 5, 5)
+            _depth_only_checkpoint!(pool)
+            try
+                m = similar!(pool, ref)  # _mark_untracked!(pool, Float32) + _acquire_impl!
+                m .= 0.0f0
+                @test pool.float32.n_active == 1
+            finally
+                _dynamic_selective_rewind!(pool)
+            end
+            @test pool.float32.n_active == 0
+        end
+
+        @testset "Mixed types (Float64 + Float32): both n_active restored" begin
+            # Simulates dynamic-mode block with two types: macro does NOT transform
+            # acquire! calls, so _mark_untracked! is called for each type via acquire!.
+            pool = AdaptiveArrayPool()
+            local_arr = rand(Float32, 8)
+            _depth_only_checkpoint!(pool)
+            try
+                v1 = acquire!(pool, Float64, 10)           # _mark_untracked!(pool, Float64)
+                v2 = acquire!(pool, eltype(local_arr), 8)  # _mark_untracked!(pool, Float32)
+                v1 .= 0.0; v2 .= 0.0f0
+            finally
+                _dynamic_selective_rewind!(pool)
+            end
+            @test pool.float64.n_active == 0
+            @test pool.float32.n_active == 0
+        end
+
+        @testset "Nested dynamic scopes: parent arrays survive inner scope" begin
+            # Inner scope must only rewind its own depth entry, leaving the parent
+            # scope's n_active intact until the outer scope calls its own rewind.
+            pool = AdaptiveArrayPool()
+            _depth_only_checkpoint!(pool)                  # outer scope, depth 2
+            try
+                outer_v = acquire!(pool, Float64, 10)      # lazy checkpoint for float64
+                outer_v .= 3.14
+                @test pool.float64.n_active == 1
+
+                _depth_only_checkpoint!(pool)              # inner scope, depth 3
+                try
+                    inner_v = acquire!(pool, Float64, 5)   # lazy checkpoint (first touch at depth 3)
+                    inner_v .= 0.0
+                    @test all(outer_v .== 3.14)            # parent array must survive
+                    @test pool.float64.n_active == 2
+                finally
+                    _dynamic_selective_rewind!(pool)       # inner rewind: depth 3 → 2
+                end
+
+                @test all(outer_v .== 3.14)                # outer_v survives inner rewind
+                @test pool.float64.n_active == 1           # only outer_v remains
+            finally
+                _dynamic_selective_rewind!(pool)           # outer rewind: depth 2 → 1
+            end
+            @test pool.float64.n_active == 0
+        end
+
+        @testset "Convenience API (similar! on Bool ref): pool.bool.n_active restored" begin
+            # similar!(pool, trues(n)) → eltype(BitVector) = Bool → touches pool.bool
+            # (NOT pool.bits, which is for BitArrays acquired via acquire!(pool, Bit, ...))
+            pool = AdaptiveArrayPool()
+            ref_bv = trues(64)  # BitVector, eltype = Bool
+            _depth_only_checkpoint!(pool)
+            try
+                v = similar!(pool, ref_bv)   # _mark_untracked!(pool, Bool)
+                v .= false
+            finally
+                _dynamic_selective_rewind!(pool)
+            end
+            @test pool.bool.n_active == 0
+        end
+
+    end # Dynamic selective mode: runtime n_active cleanup
+
+    # ==================================================================
+    # Phase 5: Typed-Fallback Optimization runtime tests (RED)
+    # ==================================================================
+
+    @testset "DESIRED [RED]: typed lazy mode: parent Int64 n_active=1 preserved after child scope" begin
+        # Simulates the @with_pool codegen for: use_typed=true, _can_use_typed_path=false.
+        # Child scope: tracked Float64 + helper touches extra Int64.
+        # Parent scope: Int64 active. After child exits, parent's Int64 must be unchanged.
+        function _phase5_extra_int64_helper!(pool)
+            acquire!(pool, Int64, 7)
+        end
+
+        pool = AdaptiveArrayPool()
+
+        # Parent scope: Int64 acquired and active
+        checkpoint!(pool, Int64)
+        parent_int64 = acquire!(pool, Int64, 1)
+        @test pool.int64.n_active == 1
+
+        # Child scope: typed lazy checkpoint (Float64 tracked, but helper touches Int64)
+        # Simulates: _can_use_typed_path=false, macro emits _typed_checkpoint_with_lazy!
+        _typed_checkpoint_with_lazy!(pool, Float64)
+        try
+            child_float = acquire!(pool, Float64, 5)
+            _phase5_extra_int64_helper!(pool)  # touches Int64 (untracked in child)
+            @test pool.int64.n_active == 2     # parent's 1 + helper's 1
+            @test pool.float64.n_active >= 1
+        finally
+            tracked_mask = _tracked_mask_for_types(Float64)
+            _typed_selective_rewind!(pool, tracked_mask)
+        end
+
+        # Parent's Int64 must be intact (= 1)
+        @test pool.int64.n_active == 1   # Phase 5 target
+        @test pool.float64.n_active == 0 # Float64 correctly rewound
+
+        rewind!(pool, Int64)
+        @test pool.int64.n_active == 0
     end
 
 end # Macro Internals

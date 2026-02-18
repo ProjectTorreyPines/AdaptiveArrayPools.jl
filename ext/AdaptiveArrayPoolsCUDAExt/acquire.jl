@@ -27,7 +27,8 @@
 #   - Could track recent N sizes to make smarter decisions (avoid shrink if sizes fluctuate)
 # ==============================================================================
 
-using AdaptiveArrayPools: get_view!, get_nd_view!, get_nd_array!, allocate_vector, safe_prod
+using AdaptiveArrayPools: get_view!, get_nd_view!, get_nd_array!, allocate_vector, safe_prod,
+                          _mark_untracked!, _fixed_slot_bit, _checkpoint_typed_pool!
 
 """
     get_view!(tp::CuTypedPool{T}, n::Int) -> CuVector{T}
@@ -161,4 +162,47 @@ Used by `unsafe_acquire!` - same zero-allocation behavior as `acquire!`.
 """
 @inline function AdaptiveArrayPools.get_nd_array!(tp::CuTypedPool{T}, dims::NTuple{N, Int}) where {T, N}
     return get_view!(tp, dims)
+end
+
+# ==============================================================================
+# CUDA _mark_untracked! override (Issue #2 / #2a fix)
+# ==============================================================================
+# Float16 on CUDA: direct struct field with _fixed_slot_bit(Float16)=0.
+# We track Float16 via bit 7 (CUDA reassignment; CPU uses bit 7 for Bit type, absent on GPU).
+# This gives Float16 lazy first-touch checkpointing in bit-14 (typed lazy) and bit-15 (dynamic)
+# modes, ensuring Case A (not Case B) fires at rewind and parent n_active is preserved.
+
+@inline function AdaptiveArrayPools._mark_untracked!(pool::CuAdaptiveArrayPool, ::Type{T}) where {T}
+    depth = pool._current_depth
+    b = _fixed_slot_bit(T)
+    if b == UInt16(0)
+        if T === Float16
+            # Float16: CUDA direct field tracked via bit 7 (not in pool.others dict).
+            b16 = UInt16(1) << 7
+            current_mask = @inbounds pool._untracked_fixed_masks[depth]
+            # Lazy first-touch checkpoint: bit 14 (typed lazy) OR bit 15 (dynamic), first touch only.
+            # Guard: skip if already checkpointed at this depth (prevents double-push).
+            if (current_mask & 0xC000) != 0 && (current_mask & b16) == 0
+                if @inbounds(pool.float16._checkpoint_depths[end]) != depth
+                    _checkpoint_typed_pool!(pool.float16, depth)
+                end
+            end
+            @inbounds pool._untracked_fixed_masks[depth] = current_mask | b16
+        else
+            # Genuine others type (UInt8, Int8, etc.) — eagerly snapshotted at scope entry.
+            @inbounds pool._untracked_has_others[depth] = true
+        end
+    else
+        current_mask = @inbounds pool._untracked_fixed_masks[depth]
+        # Lazy first-touch checkpoint for fixed-slot types in bit 14/15 modes.
+        # Guard: skip if already checkpointed at this depth (prevents double-push).
+        if (current_mask & 0xC000) != 0 && (current_mask & b) == 0
+            tp = AdaptiveArrayPools.get_typed_pool!(pool, T)
+            if @inbounds(tp._checkpoint_depths[end]) != depth
+                _checkpoint_typed_pool!(tp, depth)
+            end
+        end
+        @inbounds pool._untracked_fixed_masks[depth] = current_mask | b
+    end
+    nothing
 end

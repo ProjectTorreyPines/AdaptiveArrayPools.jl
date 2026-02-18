@@ -6,7 +6,7 @@
 # AbstractTypedPool, so they work for CuTypedPool automatically.
 
 using AdaptiveArrayPools: checkpoint!, rewind!, reset!,
-                          _checkpoint_typed_pool!, _rewind_typed_pool!
+                          _checkpoint_typed_pool!, _rewind_typed_pool!, _has_bit
 
 # ==============================================================================
 # GPU Fixed Slot Iteration
@@ -145,6 +145,117 @@ end
         pool._current_depth -= 1
         nothing
     end
+end
+
+# ==============================================================================
+# Dynamic-Selective Mode for CuAdaptiveArrayPool (use_typed=false path)
+# ==============================================================================
+# Mirrors CPU _depth_only_checkpoint! / _dynamic_selective_rewind! in src/state.jl.
+#
+# Float16 on CUDA: direct struct field (not in pool.others dict), but _fixed_slot_bit(Float16)=0.
+# We reassign Float16 to bit 7 (unused on CUDA; CPU uses bit 7 for Bit type which has no GPU equivalent).
+# This gives Float16 the same lazy-first-touch checkpoint treatment as other fixed-slot types,
+# avoiding the unsafe unconditional-rewind issue (Option B) and the has_others confusion.
+
+# Bit 7 on CUDA is reserved for Float16 (CPU uses it for Bit; Bit type does not exist on GPU).
+@inline _cuda_float16_bit() = UInt16(1) << 7
+
+@inline function AdaptiveArrayPools._depth_only_checkpoint!(pool::CuAdaptiveArrayPool)
+    pool._current_depth += 1
+    push!(pool._untracked_fixed_masks, UInt16(0x8000))  # bit 15: dynamic-selective mode
+    push!(pool._untracked_has_others, false)
+    depth = pool._current_depth
+    # Eagerly checkpoint pre-existing others entries — same as CPU _depth_only_checkpoint!.
+    # New types created during the scope start at n_active=0 (sentinel covers them, Case B safe).
+    # Pre-existing types need their count saved now so Case A fires correctly at rewind.
+    for p in values(pool.others)
+        _checkpoint_typed_pool!(p, depth)
+        @inbounds pool._untracked_has_others[depth] = true
+    end
+    # Float16 uses lazy first-touch via bit 7 in _mark_untracked! — no eager checkpoint needed.
+    nothing
+end
+
+@inline function AdaptiveArrayPools._dynamic_selective_rewind!(pool::CuAdaptiveArrayPool)
+    d = pool._current_depth
+    mask = @inbounds(pool._untracked_fixed_masks[d]) & UInt16(0x00FF)
+    _has_bit(mask, Float64)    && _rewind_typed_pool!(pool.float64,    d)
+    _has_bit(mask, Float32)    && _rewind_typed_pool!(pool.float32,    d)
+    _has_bit(mask, Int64)      && _rewind_typed_pool!(pool.int64,      d)
+    _has_bit(mask, Int32)      && _rewind_typed_pool!(pool.int32,      d)
+    _has_bit(mask, ComplexF64) && _rewind_typed_pool!(pool.complexf64, d)
+    _has_bit(mask, ComplexF32) && _rewind_typed_pool!(pool.complexf32, d)
+    _has_bit(mask, Bool)       && _rewind_typed_pool!(pool.bool,       d)
+    # Bit 7: Float16 (CUDA reassignment — _fixed_slot_bit(Float16)==0, must use explicit bit check)
+    mask & _cuda_float16_bit() != 0 && _rewind_typed_pool!(pool.float16, d)
+    if @inbounds(pool._untracked_has_others[d])
+        for tp in values(pool.others)
+            _rewind_typed_pool!(tp, d)
+        end
+    end
+    pop!(pool._untracked_fixed_masks)
+    pop!(pool._untracked_has_others)
+    pool._current_depth -= 1
+    nothing
+end
+
+# ==============================================================================
+# Typed-Fallback Helpers for CuAdaptiveArrayPool (Phase 5 parity)
+# ==============================================================================
+
+# _typed_checkpoint_with_lazy!: typed checkpoint + set bit 14 for lazy extra-type tracking.
+# Also eagerly snapshots pre-existing others entries (mirrors CPU fix for Issue #3).
+@inline function AdaptiveArrayPools._typed_checkpoint_with_lazy!(pool::CuAdaptiveArrayPool, types::Type...)
+    checkpoint!(pool, types...)
+    d = pool._current_depth
+    @inbounds pool._untracked_fixed_masks[d] |= UInt16(0x4000)   # set bit 14
+    # Eagerly snapshot pre-existing others entries — same reasoning as _depth_only_checkpoint!.
+    # Skip re-snapshot for entries already checkpointed at d by checkpoint!(pool, types...)
+    # (e.g. Float16 in types... was just checkpointed above — avoid double-push).
+    for p in values(pool.others)
+        if @inbounds(p._checkpoint_depths[end]) != d
+            _checkpoint_typed_pool!(p, d)
+        end
+        @inbounds pool._untracked_has_others[d] = true
+    end
+    # Float16 uses lazy first-touch via bit 7 in _mark_untracked! — no eager checkpoint needed.
+    nothing
+end
+
+# _typed_selective_rewind!: selective rewind of (tracked | untracked) mask.
+# Uses direct field access with bit checks — foreach_fixed_slot is single-argument (no bit yield).
+# Bit 7: Float16 (CUDA-specific; lazy-checkpointed on first touch by _mark_untracked!).
+# has_others: genuine others types (UInt8, Int8, etc.) — eagerly checkpointed at scope entry.
+@inline function AdaptiveArrayPools._typed_selective_rewind!(pool::CuAdaptiveArrayPool, tracked_mask::UInt16)
+    d = pool._current_depth
+    untracked = @inbounds(pool._untracked_fixed_masks[d]) & UInt16(0x00FF)
+    combined = tracked_mask | untracked
+    _has_bit(combined, Float64)    && _rewind_typed_pool!(pool.float64,    d)
+    _has_bit(combined, Float32)    && _rewind_typed_pool!(pool.float32,    d)
+    _has_bit(combined, Int64)      && _rewind_typed_pool!(pool.int64,      d)
+    _has_bit(combined, Int32)      && _rewind_typed_pool!(pool.int32,      d)
+    _has_bit(combined, ComplexF64) && _rewind_typed_pool!(pool.complexf64, d)
+    _has_bit(combined, ComplexF32) && _rewind_typed_pool!(pool.complexf32, d)
+    _has_bit(combined, Bool)       && _rewind_typed_pool!(pool.bool,       d)
+    # Float16: bit 7 is set by _mark_untracked! on first untracked touch (lazy first-touch).
+    # Also rewind when Float16 was a *tracked* type in the macro: _typed_checkpoint_with_lazy!
+    # calls checkpoint!(pool, Float16) which pushes a checkpoint at depth d, but _acquire_impl!
+    # (macro transform) bypasses _mark_untracked!, leaving bit 7 = 0.
+    # _tracked_mask_for_types(Float16) == 0 (since _fixed_slot_bit(Float16) == 0), so
+    # tracked_mask carries no bit for Float16 either.
+    # Solution: check _checkpoint_depths to detect "Float16 was checkpointed at this depth".
+    if combined & _cuda_float16_bit() != 0 || @inbounds(pool.float16._checkpoint_depths[end]) == d
+        _rewind_typed_pool!(pool.float16, d)
+    end
+    if @inbounds(pool._untracked_has_others[d])
+        for tp in values(pool.others)
+            _rewind_typed_pool!(tp, d)
+        end
+    end
+    pop!(pool._untracked_fixed_masks)
+    pop!(pool._untracked_has_others)
+    pool._current_depth -= 1
+    nothing
 end
 
 # ==============================================================================

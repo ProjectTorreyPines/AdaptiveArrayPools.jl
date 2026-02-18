@@ -183,6 +183,34 @@ For non-fixed-slot types, sets `_untracked_has_others` flag.
     nothing
 end
 
+# CPU-specific override: adds lazy first-touch checkpoint in dynamic-selective mode
+# and typed-lazy mode.
+# Bit 15 of _untracked_fixed_masks[depth] == 1  ↔  depth entered via _depth_only_checkpoint!
+# Bit 14 of _untracked_fixed_masks[depth] == 1  ↔  depth entered via _typed_checkpoint_with_lazy!
+# On the first acquire of each fixed-slot type T at that depth, we retroactively save
+# n_active BEFORE the acquire (current value is still the parent's count), so that
+# the subsequent rewind can restore the parent's state correctly.
+@inline function _mark_untracked!(pool::AdaptiveArrayPool, ::Type{T}) where {T}
+    depth = pool._current_depth
+    b = _fixed_slot_bit(T)
+    if b == UInt16(0)
+        @inbounds pool._untracked_has_others[depth] = true
+    else
+        current_mask = @inbounds pool._untracked_fixed_masks[depth]
+        # Lazy checkpoint: dynamic mode (bit 15) OR typed lazy mode (bit 14), AND first touch.
+        # Guard: skip if already checkpointed at this depth (prevents double-push when a
+        # tracked type is also acquired by a helper via acquire! → _mark_untracked!).
+        if (current_mask & 0xC000) != 0 && (current_mask & b) == 0
+            tp = get_typed_pool!(pool, T)
+            if @inbounds(tp._checkpoint_depths[end]) != depth
+                _checkpoint_typed_pool!(tp, depth)
+            end
+        end
+        @inbounds pool._untracked_fixed_masks[depth] = current_mask | b
+    end
+    nothing
+end
+
 # ==============================================================================
 # Internal Implementation Functions (called by macro-transformed code)
 # ==============================================================================

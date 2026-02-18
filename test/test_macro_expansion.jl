@@ -99,10 +99,11 @@
 
             expr_str = string(expr)
 
-            # Should still have pool management (with gensym name)
+            # Should still have pool management (with gensym name).
+            # Empty body → no acquire types → use_typed=false → dynamic selective mode.
             @test occursin("get_task_local_pool", expr_str)
-            @test occursin("checkpoint!", expr_str)
-            @test occursin("rewind!", expr_str)
+            @test occursin("_depth_only_checkpoint!", expr_str)
+            @test occursin("_dynamic_selective_rewind!", expr_str)
         end
 
         # Test @maybe_with_pool 1-arg
@@ -147,12 +148,12 @@
 
             expr_str = string(expr)
 
-            # Should use full checkpoint (no type argument)
-            # When local_arr is detected as local, it falls back
-            # The checkpoint call should NOT have eltype
-            # Check that checkpoint! is called (it will be full checkpoint)
-            @test occursin("checkpoint!", expr_str)
-            @test occursin("rewind!", expr_str)
+            # local_arr is detected as local → falls back to dynamic selective mode.
+            # Checkpoint is lightweight (_depth_only_checkpoint!), rewind is selective.
+            @test occursin("_depth_only_checkpoint!", expr_str)
+            @test occursin("_dynamic_selective_rewind!", expr_str)
+            # In dynamic mode acquire! is NOT transformed to _acquire_impl!
+            @test !occursin("_acquire_impl!", expr_str)
         end
 
         @testset "unsafe_acquire! type extraction" begin
@@ -781,3 +782,125 @@ end # Source Location Preservation
         @test !occursin("_untracked_flags", expr_str)
     end
 end
+
+# ==============================================================================
+# Dynamic Selective Mode — Phase 3: Behavior verification tests
+# ==============================================================================
+
+@testset "Dynamic selective mode: macro expansion" begin
+
+    @testset "use_typed=false generates _depth_only_checkpoint! (dynamic selective)" begin
+        # Phase 3: when the macro cannot extract static types (local var), it uses
+        # _depth_only_checkpoint! instead of a full checkpoint of all 8 slots.
+        expr = @macroexpand @with_pool pool begin
+            local_arr = rand(10)
+            v = acquire!(pool, local_arr)  # eltype(local_arr) is dynamic → use_typed=false
+            sum(v)
+        end
+
+        expr_str = string(expr)
+
+        # Phase 3 behavior: depth-only checkpoint, selective rewind
+        @test occursin("_depth_only_checkpoint!", expr_str)
+        @test !occursin("_can_use_typed_path", expr_str)       # only in typed path
+    end
+
+    @testset "use_typed=false does NOT transform acquire! → _acquire_impl! (dynamic mode)" begin
+        # Phase 3: _transform_acquire_calls is skipped for dynamic-selective mode.
+        # acquire! stays as-is so _mark_untracked! is called and the selective rewind
+        # can see which types were actually touched.
+        expr = @macroexpand @with_pool pool begin
+            local_arr = rand(10)
+            v = acquire!(pool, local_arr)
+            sum(v)
+        end
+
+        expr_str = string(expr)
+
+        # Phase 3 behavior: acquire! is NOT replaced by _acquire_impl!
+        @test !occursin("_acquire_impl!", expr_str)
+    end
+
+    @testset "use_typed=true still generates _can_use_typed_path (no regression)" begin
+        # Typed path must remain unchanged through all phases.
+        expr = @macroexpand @with_pool pool begin
+            v = acquire!(pool, Float64, 10)
+            sum(v)
+        end
+
+        expr_str = string(expr)
+
+        @test occursin("_can_use_typed_path", expr_str)
+        @test occursin("_tracked_mask_for_types", expr_str)
+    end
+
+    # ——————————————————————————————————————————————————————————————
+    # RED tests: desired macro behavior after Phase 3.
+    # ——————————————————————————————————————————————————————————————
+
+    @testset "GREEN: use_typed=false uses _depth_only_checkpoint!" begin
+        # Phase 3 complete: dynamic path emits _depth_only_checkpoint! instead of
+        # the full checkpoint!(pool). This avoids the ~540ns full checkpoint cost.
+        expr = @macroexpand @with_pool pool begin
+            local_arr = rand(10)
+            v = acquire!(pool, local_arr)
+            sum(v)
+        end
+
+        expr_str = string(expr)
+
+        @test occursin("_depth_only_checkpoint!", expr_str)
+        # Full (eager) checkpoint must NOT appear; depth-only is the entry point
+        @test !occursin("AdaptiveArrayPools.checkpoint!", expr_str)
+    end
+
+    @testset "GREEN: use_typed=false uses _dynamic_selective_rewind!" begin
+        # Phase 3 complete: dynamic rewind path uses _dynamic_selective_rewind!,
+        # which selectively rewinds only typed pools that were actually touched.
+        expr = @macroexpand @with_pool pool begin
+            local_arr = rand(10)
+            v = acquire!(pool, local_arr)
+            sum(v)
+        end
+
+        expr_str = string(expr)
+
+        @test occursin("_dynamic_selective_rewind!", expr_str)
+        # Full rewind must NOT appear; selective rewind is the only rewind call
+        @test !occursin("AdaptiveArrayPools.rewind!", expr_str)
+    end
+
+    # =========================================================================
+    # Phase 5: Typed-Fallback Optimization expansion tests (RED)
+    # =========================================================================
+
+    @testset "Phase 5: use_typed=true false-branch emits _typed_checkpoint_with_lazy!" begin
+        # After Phase 5: when _can_use_typed_path=false at runtime, the checkpoint
+        # side calls _typed_checkpoint_with_lazy! instead of full checkpoint!(pool).
+        expr = @macroexpand @with_pool pool begin
+            v = acquire!(pool, Float64, 10)  # static type Float64 → use_typed=true
+            v .= 1.0
+        end
+        expr_str = string(expr)
+
+        # Phase 5: else-branch uses lazy checkpoint
+        @test occursin("_typed_checkpoint_with_lazy!", expr_str)
+        # Full no-arg checkpoint!(pool) must NOT appear
+        @test !occursin("AdaptiveArrayPools.checkpoint!(pool)", expr_str)
+    end
+
+    @testset "Phase 5: use_typed=true false-branch emits _typed_selective_rewind!" begin
+        # After Phase 5: the rewind else-branch uses _typed_selective_rewind! instead of full rewind!(pool).
+        expr = @macroexpand @with_pool pool begin
+            v = acquire!(pool, Float64, 10)
+            v .= 1.0
+        end
+        expr_str = string(expr)
+
+        # Phase 5: else-branch uses selective rewind
+        @test occursin("_typed_selective_rewind!", expr_str)
+        # Full no-arg rewind!(pool) must NOT appear
+        @test !occursin("AdaptiveArrayPools.rewind!(pool)", expr_str)
+    end
+
+end # Dynamic selective mode expansion

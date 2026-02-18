@@ -57,8 +57,9 @@
             expr_str = string(expr)
             @test occursin("_get_pool_for_backend", expr_str)
             @test occursin("Val{:cuda}", expr_str)
-            @test occursin("checkpoint!", expr_str)
-            @test occursin("rewind!", expr_str)
+            # Empty body → use_typed=false → dynamic selective mode
+            @test occursin("_depth_only_checkpoint!", expr_str)
+            @test occursin("_dynamic_selective_rewind!", expr_str)
         end
 
         @testset "Type extraction" begin
