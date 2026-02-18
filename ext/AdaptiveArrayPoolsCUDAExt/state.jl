@@ -178,15 +178,15 @@ end
 @inline function AdaptiveArrayPools._dynamic_selective_rewind!(pool::CuAdaptiveArrayPool)
     d = pool._current_depth
     mask = @inbounds(pool._untracked_fixed_masks[d]) & UInt16(0x00FF)
-    mask & (UInt16(1) << 0) != 0 && _rewind_typed_pool!(pool.float64,    d)
-    mask & (UInt16(1) << 1) != 0 && _rewind_typed_pool!(pool.float32,    d)
-    mask & (UInt16(1) << 2) != 0 && _rewind_typed_pool!(pool.int64,      d)
-    mask & (UInt16(1) << 3) != 0 && _rewind_typed_pool!(pool.int32,      d)
-    mask & (UInt16(1) << 4) != 0 && _rewind_typed_pool!(pool.complexf64, d)
-    mask & (UInt16(1) << 5) != 0 && _rewind_typed_pool!(pool.complexf32, d)
-    mask & (UInt16(1) << 6) != 0 && _rewind_typed_pool!(pool.bool,       d)
-    # Bit 7: Float16 (CUDA reassignment — lazy-checkpointed by _mark_untracked! on first touch)
-    mask & (UInt16(1) << 7) != 0 && _rewind_typed_pool!(pool.float16,    d)
+    _has_bit(mask, Float64)    && _rewind_typed_pool!(pool.float64,    d)
+    _has_bit(mask, Float32)    && _rewind_typed_pool!(pool.float32,    d)
+    _has_bit(mask, Int64)      && _rewind_typed_pool!(pool.int64,      d)
+    _has_bit(mask, Int32)      && _rewind_typed_pool!(pool.int32,      d)
+    _has_bit(mask, ComplexF64) && _rewind_typed_pool!(pool.complexf64, d)
+    _has_bit(mask, ComplexF32) && _rewind_typed_pool!(pool.complexf32, d)
+    _has_bit(mask, Bool)       && _rewind_typed_pool!(pool.bool,       d)
+    # Bit 7: Float16 (CUDA reassignment — _fixed_slot_bit(Float16)==0, must use explicit bit check)
+    mask & _cuda_float16_bit() != 0 && _rewind_typed_pool!(pool.float16, d)
     if @inbounds(pool._untracked_has_others[d])
         for tp in values(pool.others)
             _rewind_typed_pool!(tp, d)
@@ -224,13 +224,13 @@ end
     d = pool._current_depth
     untracked = @inbounds(pool._untracked_fixed_masks[d]) & UInt16(0x00FF)
     combined = tracked_mask | untracked
-    combined & (UInt16(1) << 0) != 0 && _rewind_typed_pool!(pool.float64,    d)
-    combined & (UInt16(1) << 1) != 0 && _rewind_typed_pool!(pool.float32,    d)
-    combined & (UInt16(1) << 2) != 0 && _rewind_typed_pool!(pool.int64,      d)
-    combined & (UInt16(1) << 3) != 0 && _rewind_typed_pool!(pool.int32,      d)
-    combined & (UInt16(1) << 4) != 0 && _rewind_typed_pool!(pool.complexf64, d)
-    combined & (UInt16(1) << 5) != 0 && _rewind_typed_pool!(pool.complexf32, d)
-    combined & (UInt16(1) << 6) != 0 && _rewind_typed_pool!(pool.bool,       d)
+    _has_bit(combined, Float64)    && _rewind_typed_pool!(pool.float64,    d)
+    _has_bit(combined, Float32)    && _rewind_typed_pool!(pool.float32,    d)
+    _has_bit(combined, Int64)      && _rewind_typed_pool!(pool.int64,      d)
+    _has_bit(combined, Int32)      && _rewind_typed_pool!(pool.int32,      d)
+    _has_bit(combined, ComplexF64) && _rewind_typed_pool!(pool.complexf64, d)
+    _has_bit(combined, ComplexF32) && _rewind_typed_pool!(pool.complexf32, d)
+    _has_bit(combined, Bool)       && _rewind_typed_pool!(pool.bool,       d)
     # Float16: bit 7 is set by _mark_untracked! on first untracked touch (lazy first-touch).
     # Also rewind when Float16 was a *tracked* type in the macro: _typed_checkpoint_with_lazy!
     # calls checkpoint!(pool, Float16) which pushes a checkpoint at depth d, but _acquire_impl!
@@ -238,7 +238,7 @@ end
     # _tracked_mask_for_types(Float16) == 0 (since _fixed_slot_bit(Float16) == 0), so
     # tracked_mask carries no bit for Float16 either.
     # Solution: check _checkpoint_depths to detect "Float16 was checkpointed at this depth".
-    if combined & (UInt16(1) << 7) != 0 || @inbounds(pool.float16._checkpoint_depths[end]) == d
+    if combined & _cuda_float16_bit() != 0 || @inbounds(pool.float16._checkpoint_depths[end]) == d
         _rewind_typed_pool!(pool.float16, d)
     end
     if @inbounds(pool._untracked_has_others[d])

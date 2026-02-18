@@ -339,14 +339,14 @@ checkpoint, `_rewind_typed_pool!` Case B safely restores from the parent checkpo
 """
 @inline function _selective_rewind_fixed_slots!(pool::AdaptiveArrayPool, mask::UInt16)
     d = pool._current_depth
-    mask & (UInt16(1) << 0) != 0 && _rewind_typed_pool!(pool.float64,    d)
-    mask & (UInt16(1) << 1) != 0 && _rewind_typed_pool!(pool.float32,    d)
-    mask & (UInt16(1) << 2) != 0 && _rewind_typed_pool!(pool.int64,      d)
-    mask & (UInt16(1) << 3) != 0 && _rewind_typed_pool!(pool.int32,      d)
-    mask & (UInt16(1) << 4) != 0 && _rewind_typed_pool!(pool.complexf64, d)
-    mask & (UInt16(1) << 5) != 0 && _rewind_typed_pool!(pool.complexf32, d)
-    mask & (UInt16(1) << 6) != 0 && _rewind_typed_pool!(pool.bool,       d)
-    mask & (UInt16(1) << 7) != 0 && _rewind_typed_pool!(pool.bits,       d)
+    _has_bit(mask, Float64)    && _rewind_typed_pool!(pool.float64,    d)
+    _has_bit(mask, Float32)    && _rewind_typed_pool!(pool.float32,    d)
+    _has_bit(mask, Int64)      && _rewind_typed_pool!(pool.int64,      d)
+    _has_bit(mask, Int32)      && _rewind_typed_pool!(pool.int32,      d)
+    _has_bit(mask, ComplexF64) && _rewind_typed_pool!(pool.complexf64, d)
+    _has_bit(mask, ComplexF32) && _rewind_typed_pool!(pool.complexf32, d)
+    _has_bit(mask, Bool)       && _rewind_typed_pool!(pool.bool,       d)
+    _has_bit(mask, Bit)        && _rewind_typed_pool!(pool.bits,       d)
     nothing
 end
 

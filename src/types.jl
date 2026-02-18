@@ -382,6 +382,9 @@ const FIXED_SLOT_FIELDS = (:float64, :float32, :int64, :int32, :complexf64, :com
 @inline _fixed_slot_bit(::Type{Bit})        = UInt16(1) << 7
 @inline _fixed_slot_bit(::Type)             = UInt16(0)  # non-fixed-slot → triggers has_others
 
+# Check whether a type's bit is set in a bitmask (e.g. _untracked_fixed_masks or combined).
+@inline _has_bit(mask::UInt16, ::Type{T}) where {T} = (mask & _fixed_slot_bit(T)) != 0
+
 # ==============================================================================
 # AdaptiveArrayPool
 # ==============================================================================
