@@ -19,3 +19,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           ssh: ${{ secrets.DOCUMENTER_KEY }}
           dispatch: true
+          dispatch_delay: 0
+          # Keep GitHub release body exactly as provided in Registrator custom notes.
+          changelog: |
+            {% if custom %}{{ custom }}{% endif %}

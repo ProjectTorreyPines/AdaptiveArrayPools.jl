@@ -8,6 +8,8 @@ on:
   pull_request:
     branches:
       - master
+  repository_dispatch:
+    types: [TagBot]
   workflow_dispatch:
 
 concurrency:
@@ -22,7 +24,34 @@ jobs:
     name: Documentation
     runs-on: ubuntu-latest
     steps:
+      - name: Resolve ref for docs build
+        id: release_ref
+        shell: bash
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "repository_dispatch" ]; then
+            # TagBot payload is a mapping from version tag -> commit SHA.
+            TAG="$(jq -r '.client_payload | keys[0] // empty' "$GITHUB_EVENT_PATH")"
+            SHA="$(jq -r --arg tag "$TAG" '.client_payload[$tag] // empty' "$GITHUB_EVENT_PATH")"
+
+            if [ -z "$TAG" ] || [ -z "$SHA" ]; then
+              echo "Failed to resolve TagBot payload (tag/sha missing)."
+              cat "$GITHUB_EVENT_PATH"
+              exit 1
+            fi
+
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+            echo "ref=$SHA" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=$GITHUB_REF" >> "$GITHUB_OUTPUT"
+            if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+              echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
       - uses: actions/checkout@v4
+        with:
+          # For repository_dispatch from TagBot, checkout the tagged SHA.
+          ref: ${{ steps.release_ref.outputs.ref || github.ref }}
 
       - uses: julia-actions/setup-julia@latest
 
@@ -45,4 +74,21 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DOCUMENTER_KEY: ${{ secrets.DOCUMENTER_KEY }}
-        run: julia --project=docs/ docs/make.jl
+          TAGBOT_DOCS_TAG: ${{ steps.release_ref.outputs.tag }}
+          TAGBOT_DOCS_SHA: ${{ steps.release_ref.outputs.ref }}
+        run: |
+          julia --project=docs/ -e '
+            if get(ENV, "GITHUB_EVENT_NAME", "") == "repository_dispatch"
+              tag = get(ENV, "TAGBOT_DOCS_TAG", "")
+              sha = get(ENV, "TAGBOT_DOCS_SHA", "")
+              isempty(tag) && error("TAGBOT_DOCS_TAG is required for repository_dispatch.")
+              isempty(sha) && error("TAGBOT_DOCS_SHA is required for repository_dispatch.")
+
+              # Documenter deploy checks require push-like env for tag deployments.
+              ENV["GITHUB_EVENT_NAME"] = "push"
+              ENV["GITHUB_REF"] = "refs/tags/$(tag)"
+              ENV["GITHUB_SHA"] = sha
+            end
+
+            include("docs/make.jl")
+          '
