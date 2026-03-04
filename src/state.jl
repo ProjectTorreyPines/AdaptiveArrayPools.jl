@@ -92,7 +92,7 @@ end
     # Guard: skip if already checkpointed at this depth (prevents double-push
     # when get_typed_pool! auto-checkpoints a new fallback type and then
     # checkpoint!(pool, types...) calls _checkpoint_typed_pool! for the same type).
-    if isempty(tp._checkpoint_depths) || @inbounds(tp._checkpoint_depths[end]) != depth
+    if @inbounds(tp._checkpoint_depths[end]) != depth
         push!(tp._checkpoint_n_active, tp.n_active)
         push!(tp._checkpoint_depths, depth)
     end
