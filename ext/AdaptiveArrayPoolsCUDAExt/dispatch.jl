@@ -46,6 +46,9 @@ using AdaptiveArrayPools: allocate_vector, wrap_array, get_typed_pool!
         if p._current_depth > 1
             push!(tp._checkpoint_n_active, 0)  # n_active starts at 0
             push!(tp._checkpoint_depths, p._current_depth)
+            # Signal that a fallback type was touched so lazy/typed-lazy rewind
+            # iterates pool.others (same fix as CPU get_typed_pool!)
+            @inbounds p._touched_has_others[p._current_depth] = true
         end
         tp
     end::CuTypedPool{T}
