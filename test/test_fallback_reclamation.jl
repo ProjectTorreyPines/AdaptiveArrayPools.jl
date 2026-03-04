@@ -1409,4 +1409,111 @@ end
     @test others_n_active(pool, Dual_f1_11) == 0
 end
 
+# ==============================================================================
+# 29. Repeated typed checkpoint with existing fallback + extra touched types
+# ==============================================================================
+# Reproduces the real-world ForwardDiff.gradient scenario:
+# - @with_pool extracts Tv (Dual) as static type → use_typed=true
+# - Macro transforms acquire!(pool, Tv, ...) → _acquire_impl!(pool, Tv, ...)
+# - Helper function (not in @with_pool body) acquires Float64 via normal acquire!
+#   → _record_type_touch! sets touched_type_masks for Float64
+# - At rewind: _can_use_typed_path returns false (Float64 was extra-touched)
+#   → falls to _typed_lazy_rewind! which checks has_others
+# - BUG: has_others was false on 2nd+ calls because get_typed_pool! closure only
+#   runs for NEW types. checkpoint!(pool, Dual) always pushed has_others=false.
+# - FIX: checkpoint!(pool, types...) now pushes has_others=true when any type
+#   is a fallback (compile-time check via _fixed_slot_bit).
+
+@testset "29. Repeated typed checkpoint: existing fallback + extra touched types" begin
+    pool = AdaptiveArrayPool()
+    using AdaptiveArrayPools: _acquire_impl!, _typed_lazy_checkpoint!, _typed_lazy_rewind!,
+                              _tracked_mask_for_types, _can_use_typed_path
+
+    # Simulate 3 iterations of ForwardDiff.gradient calling cubic_interp
+    for iter in 1:3
+        # 1. Typed checkpoint for Dual (the macro fast path if _can_use_typed_path)
+        #    On iter=1: Dual is new → get_typed_pool! creates it
+        #    On iter≥2: Dual exists → get_typed_pool! returns immediately
+        if _can_use_typed_path(pool, _tracked_mask_for_types(Dual_f1_11))
+            checkpoint!(pool, Dual_f1_11)
+        else
+            _typed_lazy_checkpoint!(pool, Dual_f1_11)
+        end
+
+        # 2. Helper function acquires Float64 via normal acquire! (NOT transformed)
+        #    This sets touched_type_masks for Float64, causing _can_use_typed_path=false at rewind
+        acquire!(pool, Float64, 10)
+
+        # 3. _acquire_impl! for Dual (macro-transformed, no _record_type_touch!)
+        _acquire_impl!(pool, Dual_f1_11, 44)
+        @test others_n_active(pool, Dual_f1_11) == 1
+
+        # 4. Rewind — same conditional as the macro generates
+        if _can_use_typed_path(pool, _tracked_mask_for_types(Dual_f1_11))
+            rewind!(pool, Dual_f1_11)
+        else
+            _typed_lazy_rewind!(pool, _tracked_mask_for_types(Dual_f1_11))
+        end
+
+        # Key assertion: Dual must be rewound on EVERY iteration, not just the first
+        @test others_n_active(pool, Dual_f1_11) == 0
+        @test pool.float64.n_active == 0
+    end
+end
+
+@testset "29b. Repeated typed checkpoint: multiple Dual variants + helpers" begin
+    pool = AdaptiveArrayPool()
+    using AdaptiveArrayPools: _acquire_impl!, _unsafe_acquire_impl!,
+                              _typed_lazy_checkpoint!, _typed_lazy_rewind!,
+                              _tracked_mask_for_types, _can_use_typed_path
+
+    for iter in 1:5
+        # Simulate @with_pool with Tv=Dual_f1_11, Tg=Float64
+        tracked_mask = _tracked_mask_for_types(Dual_f1_11, Float64)
+
+        if _can_use_typed_path(pool, tracked_mask)
+            checkpoint!(pool, Dual_f1_11, Float64)
+        else
+            _typed_lazy_checkpoint!(pool, Dual_f1_11, Float64)
+        end
+
+        # Outer scope: multi-dim Dual acquire (unsafe_acquire, macro-transformed)
+        _unsafe_acquire_impl!(pool, Dual_f1_11, 4, 11, 11)
+        @test others_n_active(pool, Dual_f1_11) == 1
+
+        # Helper function: normal acquire! for Float64 + Int32 (extra touched types)
+        acquire!(pool, Float64, 20)
+        acquire!(pool, Int32, 5)
+
+        # Inner scope: nested @with_pool for solver
+        if _can_use_typed_path(pool, tracked_mask)
+            checkpoint!(pool, Dual_f1_11, Float64)
+        else
+            _typed_lazy_checkpoint!(pool, Dual_f1_11, Float64)
+        end
+        _acquire_impl!(pool, Dual_f1_11, 11)
+        @test others_n_active(pool, Dual_f1_11) == 2  # outer + inner
+        _acquire_impl!(pool, Float64, 11)
+
+        # Inner rewind
+        if _can_use_typed_path(pool, tracked_mask)
+            rewind!(pool, Dual_f1_11, Float64)
+        else
+            _typed_lazy_rewind!(pool, tracked_mask)
+        end
+        @test others_n_active(pool, Dual_f1_11) == 1  # back to outer's count
+
+        # Outer rewind
+        if _can_use_typed_path(pool, tracked_mask)
+            rewind!(pool, Dual_f1_11, Float64)
+        else
+            _typed_lazy_rewind!(pool, tracked_mask)
+        end
+
+        @test others_n_active(pool, Dual_f1_11) == 0
+        @test pool.float64.n_active == 0
+        @test pool.int32.n_active == 0
+    end
+end
+
 end  # top-level @testset
