@@ -55,7 +55,7 @@ end
 @inline function AdaptiveArrayPools.checkpoint!(pool::CuAdaptiveArrayPool, ::Type{T}) where {T}
     pool._current_depth += 1
     push!(pool._touched_type_masks, UInt16(0))
-    push!(pool._touched_has_others, false)
+    push!(pool._touched_has_others, AdaptiveArrayPools._fixed_slot_bit(T) == UInt16(0))
     _checkpoint_typed_pool!(AdaptiveArrayPools.get_typed_pool!(pool, T), pool._current_depth)
     nothing
 end
@@ -70,11 +70,12 @@ end
             push!(unique_indices, i)
         end
     end
+    has_any_fallback = any(i -> AdaptiveArrayPools._fixed_slot_bit(types[i].parameters[1]) == UInt16(0), unique_indices)
     checkpoint_exprs = [:(_checkpoint_typed_pool!(AdaptiveArrayPools.get_typed_pool!(pool, types[$i]), pool._current_depth)) for i in unique_indices]
     quote
         pool._current_depth += 1
         push!(pool._touched_type_masks, UInt16(0))
-        push!(pool._touched_has_others, false)
+        push!(pool._touched_has_others, $has_any_fallback)
         $(checkpoint_exprs...)
         nothing
     end

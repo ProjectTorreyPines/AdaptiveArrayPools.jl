@@ -466,6 +466,11 @@ end
         if p._current_depth > 1
             push!(tp._checkpoint_n_active, 0)  # n_active starts at 0
             push!(tp._checkpoint_depths, p._current_depth)
+            # Signal that a fallback type was touched so lazy/typed-lazy rewind
+            # iterates pool.others. Without this, _acquire_impl! (which bypasses
+            # _record_type_touch!) would leave has_others=false, causing the
+            # rewind to skip pool.others entirely and leak this new type's n_active.
+            @inbounds p._touched_has_others[p._current_depth] = true
         end
         tp
     end::TypedPool{T}

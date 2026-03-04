@@ -28,6 +28,7 @@ else
     include("test_bitarray.jl")
     include("test_coverage.jl")
     include("test_allocation.jl")
+    include("test_fallback_reclamation.jl")
 
     # CUDA extension tests (auto-detect, skip with TEST_CUDA=false)
     if get(ENV, "TEST_CUDA", "true") != "false"

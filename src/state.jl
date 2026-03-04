@@ -13,6 +13,7 @@ After warmup, this function has **zero allocation**.
 See also: [`rewind!`](@ref), [`@with_pool`](@ref)
 """
 function checkpoint!(pool::AdaptiveArrayPool)
+
     # Increment depth and initialize type touch tracking state
     pool._current_depth += 1
     push!(pool._touched_type_masks, UInt16(0))
@@ -43,9 +44,13 @@ Also updates _current_depth and bitmask state for type touch tracking.
 ~77% faster than full checkpoint! when only one type is used.
 """
 @inline function checkpoint!(pool::AdaptiveArrayPool, ::Type{T}) where T
+
     pool._current_depth += 1
     push!(pool._touched_type_masks, UInt16(0))
-    push!(pool._touched_has_others, false)
+    # Push true when T is a fallback type (non-fixed-slot) so that
+    # _typed_lazy_rewind! iterates pool.others even if _acquire_impl!
+    # (which bypasses _record_type_touch!) is the only acquire path.
+    push!(pool._touched_has_others, _fixed_slot_bit(T) == UInt16(0))
     _checkpoint_typed_pool!(get_typed_pool!(pool, T), pool._current_depth)
     nothing
 end
@@ -57,6 +62,7 @@ Save state for multiple specific types. Uses @generated for zero-overhead
 compile-time unrolling. Increments _current_depth once for all types.
 """
 @generated function checkpoint!(pool::AdaptiveArrayPool, types::Type...)
+
     # Deduplicate types at compile time (e.g., Float64, Float64 → Float64)
     seen = Set{Any}()
     unique_indices = Int[]
@@ -66,11 +72,15 @@ compile-time unrolling. Increments _current_depth once for all types.
             push!(unique_indices, i)
         end
     end
+    # Check at compile time if any type is a fallback (non-fixed-slot).
+    # If so, push has_others=true so _typed_lazy_rewind! iterates pool.others
+    # even when _acquire_impl! (bypassing _record_type_touch!) is used.
+    has_any_fallback = any(i -> _fixed_slot_bit(types[i].parameters[1]) == UInt16(0), unique_indices)
     checkpoint_exprs = [:(_checkpoint_typed_pool!(get_typed_pool!(pool, types[$i]), pool._current_depth)) for i in unique_indices]
     quote
         pool._current_depth += 1
         push!(pool._touched_type_masks, UInt16(0))
-        push!(pool._touched_has_others, false)
+        push!(pool._touched_has_others, $has_any_fallback)
         $(checkpoint_exprs...)
         nothing
     end
@@ -78,8 +88,14 @@ end
 
 # Internal helper for checkpoint (works for any AbstractTypedPool)
 @inline function _checkpoint_typed_pool!(tp::AbstractTypedPool, depth::Int)
-    push!(tp._checkpoint_n_active, tp.n_active)
-    push!(tp._checkpoint_depths, depth)
+
+    # Guard: skip if already checkpointed at this depth (prevents double-push
+    # when get_typed_pool! auto-checkpoints a new fallback type and then
+    # checkpoint!(pool, types...) calls _checkpoint_typed_pool! for the same type).
+    if @inbounds(tp._checkpoint_depths[end]) != depth
+        push!(tp._checkpoint_n_active, tp.n_active)
+        push!(tp._checkpoint_depths, depth)
+    end
     nothing
 end
 
@@ -100,6 +116,7 @@ new `others` entries created during the scope (n_active starts at 0 = sentinel).
 Performance: ~2ns vs ~540ns for full `checkpoint!`.
 """
 @inline function _lazy_checkpoint!(pool::AdaptiveArrayPool)
+
     pool._current_depth += 1
     # _LAZY_MODE_BIT = lazy mode flag (bits 0–7 are fixed-slot type bits)
     push!(pool._touched_type_masks, _LAZY_MODE_BIT)
@@ -133,6 +150,7 @@ automatically delegates to `reset!` to safely clear all n_active counters.
 See also: [`checkpoint!`](@ref), [`reset!`](@ref), [`@with_pool`](@ref)
 """
 function rewind!(pool::AdaptiveArrayPool)
+
     cur_depth = pool._current_depth
 
     # Safety guard: at global scope (depth=1), no checkpoint to rewind to
@@ -166,6 +184,7 @@ Restore state for a specific type only.
 Also updates _current_depth and bitmask state.
 """
 @inline function rewind!(pool::AdaptiveArrayPool, ::Type{T}) where T
+
     # Safety guard: at global scope (depth=1), delegate to reset!
     if pool._current_depth == 1
         reset!(get_typed_pool!(pool, T))
@@ -185,6 +204,7 @@ Restore state for multiple specific types in reverse order.
 Decrements _current_depth once after all types are rewound.
 """
 @generated function rewind!(pool::AdaptiveArrayPool, types::Type...)
+
     # Deduplicate types at compile time (e.g., Float64, Float64 → Float64)
     seen = Set{Any}()
     unique_indices = Int[]
@@ -213,6 +233,7 @@ end
 # Internal helper for rewind with orphan cleanup (works for any AbstractTypedPool)
 # Uses 1-based sentinel pattern: no isempty checks needed (sentinel [0] guarantees non-empty)
 @inline function _rewind_typed_pool!(tp::AbstractTypedPool, current_depth::Int)
+
     # 1. Orphaned Checkpoints Cleanup
     # If there are checkpoints from deeper scopes (depth > current), pop them first.
     # This happens when a nested scope did full checkpoint but typed rewind,
@@ -250,6 +271,7 @@ Called directly from the macro-generated `finally` clause as a single function c
 (matching the structure of `_lazy_checkpoint!` for symmetry and performance).
 """
 @inline function _lazy_rewind!(pool::AdaptiveArrayPool)
+
     d    = pool._current_depth
     bits = @inbounds(pool._touched_type_masks[d]) & _TYPE_BITS_MASK
     _selective_rewind_fixed_slots!(pool, bits)
@@ -281,6 +303,7 @@ lazy first-touch checkpoint for each extra type on first acquire, ensuring Case 
     checkpoint!(pool, types...)
     d = pool._current_depth
     @inbounds pool._touched_type_masks[d] |= _TYPED_LAZY_BIT
+
     # Eagerly snapshot pre-existing others entries — mirrors _lazy_checkpoint!.
     # _record_type_touch! cannot lazy-checkpoint others types (b==0 branch, no per-type bit).
     # Without this, a helper that re-acquires an already-active others type triggers Case B
@@ -311,6 +334,7 @@ statically-tracked set). Rewinds only pools whose bits are set in
 guaranteed by the `_TYPED_LAZY_BIT` mode set in `_typed_lazy_checkpoint!`.
 """
 @inline function _typed_lazy_rewind!(pool::AdaptiveArrayPool, tracked_mask::UInt16)
+
     d = pool._current_depth
     touched = @inbounds(pool._touched_type_masks[d]) & _TYPE_BITS_MASK
     combined = tracked_mask | touched
@@ -339,6 +363,7 @@ Unset bits are skipped entirely: for pools that were acquired without a matching
 checkpoint, `_rewind_typed_pool!` Case B safely restores from the parent checkpoint.
 """
 @inline function _selective_rewind_fixed_slots!(pool::AdaptiveArrayPool, mask::UInt16)
+
     d = pool._current_depth
     _has_bit(mask, Float64)    && _rewind_typed_pool!(pool.float64,    d)
     _has_bit(mask, Float32)    && _rewind_typed_pool!(pool.float32,    d)
