@@ -10,6 +10,7 @@ if !isempty(ARGS)
         include(testfile)
     end
 else
+    include("test_aqua.jl")
     include("test_basic.jl")
     include("test_state.jl")
     include("test_multidimensional.jl")
