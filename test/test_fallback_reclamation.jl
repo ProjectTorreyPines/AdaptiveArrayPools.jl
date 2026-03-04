@@ -169,9 +169,10 @@ end
     end
     @test result == 1
 
-    # After scope: get a fresh pool and verify it's clean
-    fresh_pool = AdaptiveArrayPool()
-    @test isempty(fresh_pool.others)
+    # After scope: verify task-local pool rewound fallback allocations
+    task_pool = AdaptiveArrayPools.get_task_local_pool()
+    @test others_n_active(task_pool, UInt8) == 0
+    @test others_n_active(task_pool, Float16) == 0
 end
 
 @testset "3b. @with_pool with static fallback type" begin
