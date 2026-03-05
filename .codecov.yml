@@ -10,7 +10,6 @@ coverage:
 
 ignore:
   - "ext/**/*"
-  - "src/legacy/**/*"
 
 comment:
   layout: "reach,diff,flags,files"
