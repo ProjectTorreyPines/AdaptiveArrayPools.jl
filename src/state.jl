@@ -388,11 +388,8 @@ Restores sentinel values for 1-based sentinel pattern.
 """
 function Base.empty!(tp::BitTypedPool)
     empty!(tp.vectors)
-    # Clear N-way wrapper cache
-    empty!(tp.nd_arrays)
-    empty!(tp.nd_dims)
-    empty!(tp.nd_ptrs)
-    empty!(tp.nd_next_way)
+    # Clear N-D wrapper cache
+    empty!(tp.nd_wrappers)
     tp.n_active = 0
     # Restore sentinel values (1-based sentinel pattern)
     empty!(tp._checkpoint_n_active)
@@ -412,11 +409,8 @@ function Base.empty!(tp::TypedPool)
     empty!(tp.vectors)
     empty!(tp.views)
     empty!(tp.view_lengths)
-    # Clear N-D Array cache (N-way)
-    empty!(tp.nd_arrays)
-    empty!(tp.nd_dims)
-    empty!(tp.nd_ptrs)
-    empty!(tp.nd_next_way)
+    # Clear N-D wrapper cache
+    empty!(tp.nd_wrappers)
     tp.n_active = 0
     # Restore sentinel values (1-based sentinel pattern)
     empty!(tp._checkpoint_n_active)

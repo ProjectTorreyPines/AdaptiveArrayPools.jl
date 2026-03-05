@@ -101,8 +101,8 @@ end
         @test allocs == 0
     end
 
-    @testset "N-D unsafe_acquire!: 5-way causes allocation (cache eviction)" begin
-        # unsafe_acquire! uses N-way cache → 5-way exceeds CACHE_WAYS=4
+    @testset "N-D unsafe_acquire!: 5-way is zero-alloc (setfield! reuse)" begin
+        # setfield!-based wrapper reuse: unlimited dim patterns per slot (Julia 1.11+)
         pool = AdaptiveArrayPool()
 
         function test_nd_5way_unsafe!(p)
@@ -110,19 +110,45 @@ end
             for _ in 1:100
                 for dims in dims_list
                     @with_pool p begin
-                        unsafe_acquire!(p, Float64, dims...)  # Array with cache
+                        unsafe_acquire!(p, Float64, dims...)  # Array with setfield! reuse
                     end
                 end
             end
         end
 
-        # Warmup (fills cache with 4 patterns, 5th evicts one)
+        # Warmup
         test_nd_5way_unsafe!(pool)
         test_nd_5way_unsafe!(pool)
 
-        # 5-way exceeds 4-way cache → eviction → unsafe_wrap allocation
+        # 5+ patterns: zero-alloc via setfield!(:size) — no eviction limit
         allocs = @allocated test_nd_5way_unsafe!(pool)
-        @test allocs > 0
+        allocs > 0 && @warn "N-D 5-way unsafe: $allocs bytes (expected 0)"
+        @test allocs == 0
+    end
+
+    @testset "N-D unsafe_acquire!: 10+ patterns per slot is zero-alloc" begin
+        # Demonstrates removal of CACHE_WAYS limit for CPU pools
+        pool = AdaptiveArrayPool()
+
+        function test_nd_many_patterns!(p)
+            dims_list = ((2, 50), (5, 20), (10, 10), (20, 5), (50, 2),
+                         (1, 100), (100, 1), (4, 25), (25, 4))
+            for _ in 1:50
+                for dims in dims_list
+                    @with_pool p begin
+                        unsafe_acquire!(p, Float64, dims...)
+                    end
+                end
+            end
+        end
+
+        # Warmup
+        test_nd_many_patterns!(pool)
+        test_nd_many_patterns!(pool)
+
+        allocs = @allocated test_nd_many_patterns!(pool)
+        allocs > 0 && @warn "N-D 10+ patterns: $allocs bytes (expected 0)"
+        @test allocs == 0
     end
 
     @testset "Cache invalidation on resize" begin

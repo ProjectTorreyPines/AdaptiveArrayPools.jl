@@ -158,11 +158,11 @@ Internal structure managing pooled vectors for a specific element type `T`.
 - `views`: Cached `SubArray` views for zero-allocation 1D access
 - `view_lengths`: Cached lengths for fast Int comparison (SoA pattern)
 
-### N-D Array Cache (for `unsafe_acquire!` only, N-way set associative)
-- `nd_arrays`: Cached N-D `Array` objects (length = slots × CACHE_WAYS)
-- `nd_dims`: Cached dimension tuples for cache hit validation
-- `nd_ptrs`: Cached pointer values to detect backing vector resize
-- `nd_next_way`: Round-robin counter per slot (length = slots)
+### N-D Wrapper Cache (for `unsafe_acquire!`, setfield!-based reuse)
+- `nd_wrappers`: `Dict{Int, Vector{Any}}` — key is N (dimensionality), value is
+  per-slot cached `Array{T,N}` wrapper. On cache hit, `setfield!(:size, dims)` mutates
+  the wrapper in-place (0 allocation). On pointer change (resize), `setfield!(:ref, ...)`
+  updates the backing memory reference (0 allocation in compiled code).
 
 ### State Management (1-based sentinel pattern)
 - `n_active`: Count of currently active (checked-out) arrays
@@ -171,7 +171,8 @@ Internal structure managing pooled vectors for a specific element type `T`.
 
 ## Note
 `acquire!` for N-D returns `ReshapedArray` (zero creation cost), so no caching needed.
-Only `unsafe_acquire!` benefits from N-D caching since `unsafe_wrap` allocates 112 bytes.
+`unsafe_acquire!` uses `setfield!` (Julia 1.11+) to reuse cached `Array` wrappers with
+zero allocation for any number of dimension patterns, as long as N (dimensionality) matches.
 """
 mutable struct TypedPool{T} <: AbstractTypedPool{T, Vector{T}}
     # --- Storage ---
@@ -181,11 +182,8 @@ mutable struct TypedPool{T} <: AbstractTypedPool{T, Vector{T}}
     views::Vector{SubArray{T, 1, Vector{T}, Tuple{UnitRange{Int64}}, true}}
     view_lengths::Vector{Int}
 
-    # --- N-D Array Cache (N-way set associative) ---
-    nd_arrays::Vector{Any}      # length = slots × CACHE_WAYS
-    nd_dims::Vector{Any}        # dimension tuples
-    nd_ptrs::Vector{UInt}       # pointer validation
-    nd_next_way::Vector{Int}    # round-robin counter per slot
+    # --- N-D Wrapper Cache (setfield!-based reuse, Julia 1.11+) ---
+    nd_wrappers::Dict{Int, Vector{Any}}  # key=N (dimensionality), value=per-slot Array{T,N}
 
     # --- State Management (1-based sentinel pattern) ---
     n_active::Int
@@ -199,11 +197,8 @@ TypedPool{T}() where {T} = TypedPool{T}(
     # 1D Cache
     SubArray{T, 1, Vector{T}, Tuple{UnitRange{Int64}}, true}[],
     Int[],
-    # N-D Array Cache (N-way)
-    Any[],
-    Any[],
-    UInt[],
-    Int[],
+    # N-D Wrapper Cache
+    Dict{Int, Vector{Any}}(),
     # State Management (1-based sentinel pattern: guaranteed non-empty)
     0,          # n_active
     [0],        # _checkpoint_n_active: sentinel (n_active=0 at depth=0)
@@ -291,10 +286,9 @@ performance without needing to choose between APIs.
 
 ## Fields
 - `vectors`: Backing `BitVector` storage
-- `nd_arrays`: Cached wrapper BitVectors (chunks sharing)
-- `nd_dims`: Cached lengths for wrapper cache validation
-- `nd_ptrs`: Cached chunk pointers for invalidation detection
-- `nd_next_way`: Round-robin counter for N-way cache
+- `nd_wrappers`: `Dict{Int, Vector{Any}}` — key is N (dimensionality), value is
+  per-slot cached `BitArray{N}` wrapper. Uses `setfield!` on `dims`/`len`/`chunks`
+  for zero-allocation reuse across different dimension patterns.
 - `n_active`: Count of currently active arrays
 - `_checkpoint_*`: State management stacks (1-based sentinel pattern)
 
@@ -322,15 +316,12 @@ mutable struct BitTypedPool <: AbstractTypedPool{Bool, BitVector}
     # --- Storage ---
     vectors::Vector{BitVector}
 
-    # --- N-D BitArray Cache (N-way set associative) ---
-    # Unlike TypedPool which uses views for 1D and nd_* for N-D,
-    # BitTypedPool uses nd_* for ALL dimensions (1D, 2D, 3D, etc.).
+    # --- N-D Wrapper Cache (setfield!-based reuse, Julia 1.11+) ---
+    # Unlike TypedPool which uses views for 1D and nd_wrappers for N-D,
+    # BitTypedPool uses nd_wrappers for ALL dimensions (1D, 2D, 3D, etc.).
     # No views needed since we always return BitArray{N}, not SubArray.
-    # BitArray.dims is mutable, enabling 0-alloc reuse for same-ndims requests.
-    nd_arrays::Vector{Any}      # Cached BitArray{N} instances
-    nd_dims::Vector{Any}        # Cached dims (NTuple{N,Int})
-    nd_ptrs::Vector{UInt}       # pointer validation
-    nd_next_way::Vector{Int}    # round-robin counter per slot
+    # BitArray.dims/len/chunks are mutable, enabling 0-alloc reuse.
+    nd_wrappers::Dict{Int, Vector{Any}}  # key=N (dimensionality), value=per-slot BitArray{N}
 
     # --- State Management (1-based sentinel pattern) ---
     n_active::Int
@@ -341,11 +332,8 @@ end
 BitTypedPool() = BitTypedPool(
     # Storage
     BitVector[],
-    # 1D BitVector Wrapper Cache (N-way)
-    Any[],
-    Any[],
-    UInt[],
-    Int[],
+    # N-D Wrapper Cache
+    Dict{Int, Vector{Any}}(),
     # State Management (1-based sentinel pattern)
     0,          # n_active
     [0],        # _checkpoint_n_active: sentinel

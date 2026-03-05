@@ -55,14 +55,13 @@
 
 Get a BitArray{N} that shares `chunks` with the pooled BitVector.
 
-Uses N-way cache for BitArray reuse. Unlike Array which requires unsafe_wrap
-for each shape, BitArray can reuse cached entries by modifying `dims`/`len`
-fields when ndims matches (0 bytes allocation).
+Uses `setfield!`-based wrapper reuse (Julia 1.11+). Cached `BitArray{N}` wrappers
+are mutated in-place via `setfield!(:dims)`, `setfield!(:len)`, and `setfield!(:chunks)`,
+achieving zero allocation for any dimension pattern after warmup.
 
 ## Cache Strategy
-- **Exact match**: Return cached BitArray directly (0 bytes)
-- **Same ndims**: Modify dims/len/chunks of cached entry (0 bytes)
-- **Different ndims**: Create new BitArray{N} and cache it (~944 bytes)
+- **Wrapper exists**: Mutate dims/len/chunks fields in-place (0 bytes)
+- **First call per (slot, N)**: Create new BitArray{N}, cache it (~944 bytes)
 
 ## Implementation Notes
 - BitVector (N=1): `size()` uses `len` field, `dims` is ignored
@@ -87,19 +86,8 @@ function get_bitarray!(tp::BitTypedPool, dims::NTuple{N,Int}) where {N}
         ba = BitArray{N}(undef, dims)
         ba.chunks = pool_bv.chunks
 
-        # Expand N-way cache (CACHE_WAYS entries per slot)
-        for _ in 1:CACHE_WAYS
-            push!(tp.nd_arrays, nothing)
-            push!(tp.nd_dims, nothing)
-            push!(tp.nd_ptrs, UInt(0))
-        end
-        push!(tp.nd_next_way, 0)
-
-        # Cache in first way
-        base = (idx - 1) * CACHE_WAYS + 1
-        @inbounds tp.nd_arrays[base] = ba
-        @inbounds tp.nd_dims[base] = dims
-        @inbounds tp.nd_ptrs[base] = UInt(pointer(pool_bv.chunks))
+        # Cache the wrapper
+        _store_nd_wrapper!(tp, N, idx, ba)
 
         # Warn at powers of 2 (possible missing rewind!)
         if idx >= 512 && (idx & (idx - 1)) == 0
@@ -115,44 +103,25 @@ function get_bitarray!(tp::BitTypedPool, dims::NTuple{N,Int}) where {N}
     if length(pool_bv) != total_len
         resize!(pool_bv, total_len)
     end
-    current_ptr = UInt(pointer(pool_bv.chunks))
-    base = (idx - 1) * CACHE_WAYS
 
-    # 3. Check N-way cache for hit
-    for k in 1:CACHE_WAYS
-        cache_idx = base + k
-        @inbounds cached_dims = tp.nd_dims[cache_idx]
-        @inbounds cached_ptr = tp.nd_ptrs[cache_idx]
-
-        # Must check isa FIRST for type stability (avoids boxing in == comparison)
-        if cached_dims isa NTuple{N,Int} && cached_ptr == current_ptr
-            if cached_dims == dims
-                # Exact match - return cached BitArray directly (0 alloc)
-                return @inbounds tp.nd_arrays[cache_idx]::BitArray{N}
-            else
-                # Same ndims but different dims - reuse by modifying fields (0 alloc!)
-                ba = @inbounds tp.nd_arrays[cache_idx]::BitArray{N}
-                ba.len = total_len
-                ba.dims = dims
-                ba.chunks = pool_bv.chunks
-                # Update cache metadata
-                @inbounds tp.nd_dims[cache_idx] = dims
-                return ba
-            end
+    # 3. Check wrapper cache
+    wrappers = get(tp.nd_wrappers, N, nothing)
+    if wrappers !== nothing && idx <= length(wrappers)
+        wrapper = @inbounds wrappers[idx]
+        if wrapper !== nothing
+            ba = wrapper::BitArray{N}
+            # Update fields in-place (all 0-alloc via setfield!)
+            setfield!(ba, :len, total_len)
+            setfield!(ba, :dims, dims)
+            setfield!(ba, :chunks, pool_bv.chunks)
+            return ba
         end
     end
 
-    # 4. Cache miss - create new BitArray{N}
+    # 4. Cache miss: first call for this (slot, N)
     ba = BitArray{N}(undef, dims)
     ba.chunks = pool_bv.chunks
-
-    # Round-robin replacement
-    @inbounds way_offset = tp.nd_next_way[idx]
-    target_idx = base + way_offset + 1
-    @inbounds tp.nd_arrays[target_idx] = ba
-    @inbounds tp.nd_dims[target_idx] = dims
-    @inbounds tp.nd_ptrs[target_idx] = current_ptr
-    @inbounds tp.nd_next_way[idx] = (way_offset + 1) % CACHE_WAYS
+    _store_nd_wrapper!(tp, N, idx, ba)
 
     return ba
 end

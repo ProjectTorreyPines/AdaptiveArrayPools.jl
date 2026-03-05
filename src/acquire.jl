@@ -91,60 +91,65 @@ function get_view!(tp::AbstractTypedPool{T}, n::Int) where {T}
 end
 
 # ==============================================================================
-# Get N-D Array/View (Internal - Zero-Allocation Cache)
+# Get N-D Array (Internal - setfield!-based Zero-Allocation Wrapper Reuse)
 # ==============================================================================
 
 """
-    get_nd_array!(tp::AbstractTypedPool{T}, dims::NTuple{N,Int}) -> Array{T,N}
+    _store_nd_wrapper!(tp::AbstractTypedPool, N::Int, slot::Int, wrapper)
 
-Get an N-dimensional `Array` from the pool with N-way caching.
+Store a cached N-D wrapper for the given slot. Creates the per-N Vector if needed.
 """
-@inline function get_nd_array!(tp::AbstractTypedPool{T}, dims::NTuple{N, Int}) where {T, N}
+function _store_nd_wrapper!(tp::AbstractTypedPool, N::Int, slot::Int, wrapper)
+    wrappers = get(tp.nd_wrappers, N, nothing)
+    if wrappers === nothing
+        wrappers = Vector{Any}(nothing, slot)
+        tp.nd_wrappers[N] = wrappers
+    end
+    while slot > length(wrappers)
+        push!(wrappers, nothing)
+    end
+    @inbounds wrappers[slot] = wrapper
+    nothing
+end
+
+"""
+    get_nd_array!(tp::AbstractTypedPool{T,Vector{T}}, dims::NTuple{N,Int}) -> Array{T,N}
+
+Get an N-dimensional `Array` from the pool with `setfield!`-based wrapper reuse.
+
+Uses Julia 1.11+ `setfield!` to mutate cached `Array` wrappers in-place:
+- Same N (dimensionality): `setfield!(:size, dims)` — 0 allocation
+- Backing memory: `setfield!(:ref, ...)` — always updated, 0 allocation in compiled code
+- First call per (slot, N): `unsafe_wrap` once, then cached forever
+
+Unlike the previous N-way cache, this has no eviction limit — unlimited dimension
+patterns per slot are supported with zero allocation after warmup.
+"""
+@inline function get_nd_array!(tp::AbstractTypedPool{T, Vector{T}}, dims::NTuple{N, Int}) where {T, N}
     total_len = safe_prod(dims)
-    flat_view = get_view!(tp, total_len) # Increments n_active
+    flat_view = get_view!(tp, total_len) # Increments n_active, ensures backing vec
     slot = tp.n_active
-
     @inbounds vec = tp.vectors[slot]
-    current_ptr = UInt(pointer(vec))
 
-    # Expand cache slots if needed (CACHE_WAYS entries per slot)
-    n_slots_cached = length(tp.nd_next_way)
-    while slot > n_slots_cached
-        for _ in 1:CACHE_WAYS
-            push!(tp.nd_arrays, nothing)
-            push!(tp.nd_dims, nothing)
-            push!(tp.nd_ptrs, UInt(0))
-        end
-        push!(tp.nd_next_way, 0)
-        n_slots_cached += 1
-    end
-
-    base = (slot - 1) * CACHE_WAYS
-
-    # Linear Search across all ways (Cache hit = 0 bytes)
-    for k in 1:CACHE_WAYS
-        cache_idx = base + k
-        @inbounds cached_dims = tp.nd_dims[cache_idx]
-        @inbounds cached_ptr = tp.nd_ptrs[cache_idx]
-
-        if cached_dims isa NTuple{N, Int} && cached_dims == dims && cached_ptr == current_ptr
-            return @inbounds tp.nd_arrays[cache_idx]::Array{T, N}
+    # Look up cached wrapper for this dimensionality
+    wrappers = get(tp.nd_wrappers, N, nothing)
+    if wrappers !== nothing && slot <= length(wrappers)
+        wrapper = @inbounds wrappers[slot]
+        if wrapper !== nothing
+            arr = wrapper::Array{T, N}
+            # Always update ref: resize! can grow in-place without changing pointer,
+            # but the old MemoryRef still has the old (smaller) Memory length.
+            # setfield!(:ref) is 0-alloc in compiled code (only 32B at REPL top-level).
+            setfield!(arr, :ref, getfield(vec, :ref))
+            # Update dimensions (0-alloc: NTuple stored inline in mutable Array)
+            setfield!(arr, :size, dims)
+            return arr
         end
     end
 
-    # Cache Miss - Round-Robin Replacement
-    @inbounds way_offset = tp.nd_next_way[slot]
-    target_idx = base + way_offset + 1
-
+    # Cache miss: first call for this (slot, N) — unsafe_wrap once
     arr = wrap_array(tp, flat_view, dims)
-
-    @inbounds tp.nd_arrays[target_idx] = arr
-    @inbounds tp.nd_dims[target_idx] = dims
-    @inbounds tp.nd_ptrs[target_idx] = current_ptr
-
-    # Update round-robin counter
-    @inbounds tp.nd_next_way[slot] = (way_offset + 1) % CACHE_WAYS
-
+    _store_nd_wrapper!(tp, N, slot, arr)
     return arr
 end
 
