@@ -105,8 +105,12 @@ Store a cached N-D wrapper for the given slot. Creates the per-N Vector if neede
 """
 function _store_nd_wrapper!(tp::AbstractTypedPool, N::Int, slot::Int, wrapper)
     # Grow nd_wrappers vector so index N is valid
-    while N > length(tp.nd_wrappers)
-        push!(tp.nd_wrappers, nothing)
+    if N > length(tp.nd_wrappers)
+        old_len = length(tp.nd_wrappers)
+        resize!(tp.nd_wrappers, N)
+        for i in (old_len+1):N
+            @inbounds tp.nd_wrappers[i] = nothing
+        end
     end
     wrappers = @inbounds tp.nd_wrappers[N]
     if wrappers === nothing
