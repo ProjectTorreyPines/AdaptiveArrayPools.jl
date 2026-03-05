@@ -104,13 +104,20 @@ end
 Store a cached N-D wrapper for the given slot. Creates the per-N Vector if needed.
 """
 function _store_nd_wrapper!(tp::AbstractTypedPool, N::Int, slot::Int, wrapper)
-    wrappers = get(tp.nd_wrappers, N, nothing)
+    # Grow nd_wrappers vector so index N is valid
+    while N > length(tp.nd_wrappers)
+        push!(tp.nd_wrappers, nothing)
+    end
+    wrappers = @inbounds tp.nd_wrappers[N]
     if wrappers === nothing
         wrappers = Vector{Any}(nothing, slot)
-        tp.nd_wrappers[N] = wrappers
-    end
-    while slot > length(wrappers)
-        push!(wrappers, nothing)
+        @inbounds tp.nd_wrappers[N] = wrappers
+    elseif slot > length(wrappers)
+        old_len = length(wrappers)
+        resize!(wrappers, slot)
+        for i in (old_len+1):slot
+            @inbounds wrappers[i] = nothing
+        end
     end
     @inbounds wrappers[slot] = wrapper
     nothing
@@ -135,8 +142,8 @@ patterns per slot are supported with zero allocation after warmup.
     slot = tp.n_active
     @inbounds vec = tp.vectors[slot]
 
-    # Look up cached wrapper for this dimensionality
-    wrappers = get(tp.nd_wrappers, N, nothing)
+    # Look up cached wrapper for this dimensionality (direct index, no hash)
+    wrappers = N <= length(tp.nd_wrappers) ? (@inbounds tp.nd_wrappers[N]) : nothing
     if wrappers !== nothing && slot <= length(wrappers)
         wrapper = @inbounds wrappers[slot]
         if wrapper !== nothing

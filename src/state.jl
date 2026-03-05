@@ -388,7 +388,7 @@ Restores sentinel values for 1-based sentinel pattern.
 """
 function Base.empty!(tp::BitTypedPool)
     empty!(tp.vectors)
-    empty!(tp.nd_wrappers)
+    empty!(tp.nd_wrappers)  # Vector{Union{Nothing, Vector{Any}}}
     tp.n_active = 0
     # Restore sentinel values (1-based sentinel pattern)
     empty!(tp._checkpoint_n_active)
@@ -408,7 +408,7 @@ function Base.empty!(tp::TypedPool)
     empty!(tp.vectors)
     empty!(tp.views)
     empty!(tp.view_lengths)
-    empty!(tp.nd_wrappers)
+    empty!(tp.nd_wrappers)  # Vector{Union{Nothing, Vector{Any}}}
     tp.n_active = 0
     # Restore sentinel values (1-based sentinel pattern)
     empty!(tp._checkpoint_n_active)

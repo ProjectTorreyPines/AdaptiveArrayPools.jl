@@ -159,9 +159,9 @@ Internal structure managing pooled vectors for a specific element type `T`.
 - `view_lengths`: Cached lengths for fast Int comparison (SoA pattern)
 
 ### N-D Wrapper Cache (Julia 1.11+, setfield!-based reuse)
-- `nd_wrappers`: `Dict{Int, Vector{Any}}` — key is N (dimensionality), value is
-  per-slot cached `Array{T,N}` wrapper. Uses `setfield!(:size, dims)` and
-  `setfield!(:ref, ...)` for zero-allocation reuse of unlimited dim patterns.
+- `nd_wrappers`: `Vector{Union{Nothing, Vector{Any}}}` — indexed by N (dimensionality),
+  each entry is a per-slot cached `Array{T,N}` wrapper. Uses `setfield!(:size, dims)`
+  and `setfield!(:ref, ...)` for zero-allocation reuse of unlimited dim patterns.
 
 ### State Management (1-based sentinel pattern)
 - `n_active`: Count of currently active (checked-out) arrays
@@ -181,7 +181,7 @@ mutable struct TypedPool{T} <: AbstractTypedPool{T, Vector{T}}
     view_lengths::Vector{Int}
 
     # --- N-D Wrapper Cache (setfield!-based reuse) ---
-    nd_wrappers::Dict{Int, Vector{Any}}  # key=N (dimensionality), value=per-slot Array{T,N}
+    nd_wrappers::Vector{Union{Nothing, Vector{Any}}}  # index=N (dimensionality), value=per-slot Array{T,N}
 
     # --- State Management (1-based sentinel pattern) ---
     n_active::Int
@@ -196,7 +196,7 @@ TypedPool{T}() where {T} = TypedPool{T}(
     SubArray{T, 1, Vector{T}, Tuple{UnitRange{Int64}}, true}[],
     Int[],
     # N-D Wrapper Cache
-    Dict{Int, Vector{Any}}(),
+    Union{Nothing, Vector{Any}}[],
     # State Management (1-based sentinel pattern: guaranteed non-empty)
     0,          # n_active
     [0],        # _checkpoint_n_active: sentinel (n_active=0 at depth=0)
@@ -284,7 +284,7 @@ performance without needing to choose between APIs.
 
 ## Fields
 - `vectors`: Backing `BitVector` storage
-- `nd_wrappers`: `Dict{Int, Vector{Any}}` — setfield!-based cache (Julia 1.11+)
+- `nd_wrappers`: `Vector{Union{Nothing, Vector{Any}}}` — setfield!-based cache (Julia 1.11+)
 - `n_active`: Count of currently active arrays
 - `_checkpoint_*`: State management stacks (1-based sentinel pattern)
 
@@ -300,7 +300,7 @@ mutable struct BitTypedPool <: AbstractTypedPool{Bool, BitVector}
     vectors::Vector{BitVector}
 
     # --- N-D Wrapper Cache (setfield!-based reuse) ---
-    nd_wrappers::Dict{Int, Vector{Any}}  # key=N (dimensionality), value=per-slot BitArray{N}
+    nd_wrappers::Vector{Union{Nothing, Vector{Any}}}  # index=N (dimensionality), value=per-slot BitArray{N}
 
     # --- State Management (1-based sentinel pattern) ---
     n_active::Int
@@ -312,7 +312,7 @@ BitTypedPool() = BitTypedPool(
     # Storage
     BitVector[],
     # N-D Wrapper Cache
-    Dict{Int, Vector{Any}}(),
+    Union{Nothing, Vector{Any}}[],
     # State Management (1-based sentinel pattern)
     0,          # n_active
     [0],        # _checkpoint_n_active: sentinel

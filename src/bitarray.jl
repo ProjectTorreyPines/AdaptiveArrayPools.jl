@@ -79,8 +79,8 @@ function get_bitarray!(tp::BitTypedPool, dims::NTuple{N,Int}) where {N}
         resize!(pool_bv, total_len)
     end
 
-    # 3. Check wrapper cache (setfield!-based)
-    wrappers = get(tp.nd_wrappers, N, nothing)
+    # 3. Check wrapper cache (direct index, no hash)
+    wrappers = N <= length(tp.nd_wrappers) ? (@inbounds tp.nd_wrappers[N]) : nothing
     if wrappers !== nothing && idx <= length(wrappers)
         wrapper = @inbounds wrappers[idx]
         if wrapper !== nothing
