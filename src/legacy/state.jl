@@ -1,4 +1,10 @@
 # ==============================================================================
+# State Management — Legacy (Julia ≤1.10)
+# ==============================================================================
+# Identical to v1.11+ state.jl except empty! clears legacy N-way cache fields
+# (nd_arrays, nd_dims, nd_ptrs, nd_next_way) instead of nd_wrappers.
+
+# ==============================================================================
 # State Management - checkpoint!
 # ==============================================================================
 
@@ -358,9 +364,6 @@ Rewind only the fixed-slot typed pools whose bits are set in `mask`.
 Each of the 8 fixed-slot pools maps to bits 0–7 (same encoding as `_fixed_slot_bit`).
 Bits 8–15 (mode flags) are **not** checked here — callers must strip them
 before passing the mask (e.g. `mask & _TYPE_BITS_MASK`).
-
-Unset bits are skipped entirely: for pools that were acquired without a matching
-checkpoint, `_rewind_typed_pool!` Case B safely restores from the parent checkpoint.
 """
 @inline function _selective_rewind_fixed_slots!(pool::AdaptiveArrayPool, mask::UInt16)
 
@@ -377,7 +380,7 @@ checkpoint, `_rewind_typed_pool!` Case B safely restores from the parent checkpo
 end
 
 # ==============================================================================
-# State Management - empty!
+# State Management - empty! (Legacy: N-way cache fields)
 # ==============================================================================
 
 """
@@ -388,7 +391,11 @@ Restores sentinel values for 1-based sentinel pattern.
 """
 function Base.empty!(tp::BitTypedPool)
     empty!(tp.vectors)
-    empty!(tp.nd_wrappers)
+    # Clear N-way cache
+    empty!(tp.nd_arrays)
+    empty!(tp.nd_dims)
+    empty!(tp.nd_ptrs)
+    empty!(tp.nd_next_way)
     tp.n_active = 0
     # Restore sentinel values (1-based sentinel pattern)
     empty!(tp._checkpoint_n_active)
@@ -408,7 +415,11 @@ function Base.empty!(tp::TypedPool)
     empty!(tp.vectors)
     empty!(tp.views)
     empty!(tp.view_lengths)
-    empty!(tp.nd_wrappers)
+    # Clear N-way cache
+    empty!(tp.nd_arrays)
+    empty!(tp.nd_dims)
+    empty!(tp.nd_ptrs)
+    empty!(tp.nd_next_way)
     tp.n_active = 0
     # Restore sentinel values (1-based sentinel pattern)
     empty!(tp._checkpoint_n_active)

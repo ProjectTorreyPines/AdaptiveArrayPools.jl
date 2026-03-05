@@ -287,7 +287,11 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
             @test pool.float64.n_active == 0
             @test length(pool.float64.vectors) >= 3    # Vectors preserved
             @test length(pool.float64.views) >= 1      # 1D cache preserved
-            @test !isempty(pool.float64.nd_wrappers)    # N-D wrapper cache preserved
+            @static if VERSION >= v"1.11-"
+                @test !isempty(pool.float64.nd_wrappers)    # N-D wrapper cache preserved
+            else
+                @test length(pool.float64.nd_arrays) >= 1   # N-D cache preserved
+            end
         end
 
         @testset "reset! restores checkpoint stacks to sentinel" begin

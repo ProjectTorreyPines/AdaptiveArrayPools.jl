@@ -101,8 +101,7 @@ end
         @test allocs == 0
     end
 
-    @testset "N-D unsafe_acquire!: 5-way is zero-alloc (setfield! reuse)" begin
-        # setfield!-based wrapper reuse: unlimited dim patterns per slot (Julia 1.11+)
+    @testset "N-D unsafe_acquire!: 5-way behavior" begin
         pool = AdaptiveArrayPool()
 
         function test_nd_5way_unsafe!(p)
@@ -110,7 +109,7 @@ end
             for _ in 1:100
                 for dims in dims_list
                     @with_pool p begin
-                        unsafe_acquire!(p, Float64, dims...)  # Array with setfield! reuse
+                        unsafe_acquire!(p, Float64, dims...)
                     end
                 end
             end
@@ -120,14 +119,20 @@ end
         test_nd_5way_unsafe!(pool)
         test_nd_5way_unsafe!(pool)
 
-        # 5+ patterns: zero-alloc via setfield!(:size) — no eviction limit
         allocs = @allocated test_nd_5way_unsafe!(pool)
-        allocs > 0 && @warn "N-D 5-way unsafe: $allocs bytes (expected 0)"
-        @test allocs == 0
+        @static if VERSION >= v"1.11-"
+            # setfield! reuse: unlimited dim patterns, 0-alloc
+            allocs > 0 && @warn "N-D 5-way unsafe: $allocs bytes (expected 0)"
+            @test allocs == 0
+        else
+            # N-way eviction: 5 patterns > CACHE_WAYS=4
+            @test allocs > 0
+        end
     end
 
+    @static if VERSION >= v"1.11-"
     @testset "N-D unsafe_acquire!: 10+ patterns per slot is zero-alloc" begin
-        # Demonstrates removal of CACHE_WAYS limit for CPU pools
+        # Demonstrates removal of CACHE_WAYS limit via setfield! (Julia 1.11+)
         pool = AdaptiveArrayPool()
 
         function test_nd_many_patterns!(p)
@@ -150,6 +155,7 @@ end
         allocs > 0 && @warn "N-D 10+ patterns: $allocs bytes (expected 0)"
         @test allocs == 0
     end
+    end # @static if
 
     @testset "Cache invalidation on resize" begin
         pool = AdaptiveArrayPool()
