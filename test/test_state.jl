@@ -863,7 +863,7 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
             v_bool .= true
             l3_results[] = (
                 bool_n_active = pool.bool.n_active,
-                depth = pool._current_depth
+                depth = pool._current_depth,
             )
         end
 
@@ -885,7 +885,7 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
             l2_results[] = (
                 int64_n_active = pool.int64.n_active,
                 float32_n_active = pool.float32.n_active,
-                l3_bool_after = pool.bool.n_active
+                l3_bool_after = pool.bool.n_active,
             )
         end
 
@@ -962,7 +962,7 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
                 bool_after_l3 = p.bool.n_active,      # Cleaned by L3
                 complexf64_after_l3 = p.complexf64.n_active,  # Cleaned by L3
                 l3_bool_was = l3_active[1],
-                l3_cf64_was = l3_active[2]
+                l3_cf64_was = l3_active[2],
             )
         end
 
@@ -1028,7 +1028,7 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
             v_bool .= true
             l3_results[] = (
                 bool_n_active = pool.bool.n_active,
-                depth = pool._current_depth
+                depth = pool._current_depth,
             )
         end
 
@@ -1050,7 +1050,7 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
             l2_results[] = (
                 int64_n_active = p.int64.n_active,
                 float32_n_active = p.float32.n_active,
-                l3_bool_after = p.bool.n_active
+                l3_bool_after = p.bool.n_active,
             )
         end
 
@@ -1182,7 +1182,7 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
                 l3_complexf64 = l3_active[3],
                 bool_after = p.bool.n_active,
                 int32_after = p.int32.n_active,
-                complexf64_after = p.complexf64.n_active
+                complexf64_after = p.complexf64.n_active,
             )
         end
 
@@ -1489,20 +1489,20 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
         using AdaptiveArrayPools: _fixed_slot_bit, Bit
 
         # Each fixed slot returns a unique nonzero bit
-        @test _fixed_slot_bit(Float64)    == UInt16(1) << 0
-        @test _fixed_slot_bit(Float32)    == UInt16(1) << 1
-        @test _fixed_slot_bit(Int64)      == UInt16(1) << 2
-        @test _fixed_slot_bit(Int32)      == UInt16(1) << 3
+        @test _fixed_slot_bit(Float64) == UInt16(1) << 0
+        @test _fixed_slot_bit(Float32) == UInt16(1) << 1
+        @test _fixed_slot_bit(Int64) == UInt16(1) << 2
+        @test _fixed_slot_bit(Int32) == UInt16(1) << 3
         @test _fixed_slot_bit(ComplexF64) == UInt16(1) << 4
         @test _fixed_slot_bit(ComplexF32) == UInt16(1) << 5
-        @test _fixed_slot_bit(Bool)       == UInt16(1) << 6
-        @test _fixed_slot_bit(Bit)        == UInt16(1) << 7
+        @test _fixed_slot_bit(Bool) == UInt16(1) << 6
+        @test _fixed_slot_bit(Bit) == UInt16(1) << 7
 
         # Non-fixed-slot types return 0
-        @test _fixed_slot_bit(UInt8)    == UInt16(0)
-        @test _fixed_slot_bit(UInt16)   == UInt16(0)
-        @test _fixed_slot_bit(Float16)  == UInt16(0)
-        @test _fixed_slot_bit(String)   == UInt16(0)
+        @test _fixed_slot_bit(UInt8) == UInt16(0)
+        @test _fixed_slot_bit(UInt16) == UInt16(0)
+        @test _fixed_slot_bit(Float16) == UInt16(0)
+        @test _fixed_slot_bit(String) == UInt16(0)
 
         # All 8 bits are unique (no collisions)
         bits = [_fixed_slot_bit(T) for T in (Float64, Float32, Int64, Int32, ComplexF64, ComplexF32, Bool, Bit)]
@@ -1745,8 +1745,8 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
         # causing false negatives: the typed fast path is rejected even when only
         # tracked types were touched.
         using AdaptiveArrayPools: _can_use_typed_path, _tracked_mask_for_types,
-              _lazy_checkpoint!, _lazy_rewind!, _LAZY_MODE_BIT, _TYPED_LAZY_BIT,
-              _acquire_impl!
+            _lazy_checkpoint!, _lazy_rewind!, _LAZY_MODE_BIT, _TYPED_LAZY_BIT,
+            _acquire_impl!
 
         # --- Case 1: _LAZY_MODE_BIT (bit 15) should be ignored ---
         pool = AdaptiveArrayPool()
@@ -2024,14 +2024,14 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
         checkpoint!(pool)
         depth = pool._current_depth  # = 2
 
-        @test pool.float64._checkpoint_depths[end]    == depth
-        @test pool.float32._checkpoint_depths[end]    == depth
-        @test pool.int64._checkpoint_depths[end]      == depth
-        @test pool.int32._checkpoint_depths[end]      == depth
+        @test pool.float64._checkpoint_depths[end] == depth
+        @test pool.float32._checkpoint_depths[end] == depth
+        @test pool.int64._checkpoint_depths[end] == depth
+        @test pool.int32._checkpoint_depths[end] == depth
         @test pool.complexf64._checkpoint_depths[end] == depth
         @test pool.complexf32._checkpoint_depths[end] == depth
-        @test pool.bool._checkpoint_depths[end]       == depth
-        @test pool.bits._checkpoint_depths[end]       == depth
+        @test pool.bool._checkpoint_depths[end] == depth
+        @test pool.bits._checkpoint_depths[end] == depth
 
         rewind!(pool)
     end
@@ -2117,10 +2117,10 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
             depth = pool._current_depth  # = 2
 
             # No typed pool should have an eager checkpoint at this depth
-            @test pool.float64._checkpoint_depths[end]    < depth
-            @test pool.float32._checkpoint_depths[end]    < depth
-            @test pool.int64._checkpoint_depths[end]      < depth
-            @test pool.bool._checkpoint_depths[end]       < depth
+            @test pool.float64._checkpoint_depths[end] < depth
+            @test pool.float32._checkpoint_depths[end] < depth
+            @test pool.int64._checkpoint_depths[end] < depth
+            @test pool.bool._checkpoint_depths[end] < depth
 
             # But depth metadata IS updated
             @test pool._current_depth == 2
@@ -2148,7 +2148,7 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
             # First acquire triggers lazy checkpoint for Float64 only
             acquire!(pool, Float64, 5)
             @test pool.float64._checkpoint_depths[end] == depth  # NOW checkpointed
-            @test pool.float32._checkpoint_depths[end] <  depth  # Float32 untouched
+            @test pool.float32._checkpoint_depths[end] < depth  # Float32 untouched
 
             rewind!(pool)
             @test pool.float64.n_active == 0

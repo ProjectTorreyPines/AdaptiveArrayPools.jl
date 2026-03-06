@@ -43,7 +43,7 @@ Also updates _current_depth and bitmask state for type touch tracking.
 
 ~77% faster than full checkpoint! when only one type is used.
 """
-@inline function checkpoint!(pool::AdaptiveArrayPool, ::Type{T}) where T
+@inline function checkpoint!(pool::AdaptiveArrayPool, ::Type{T}) where {T}
 
     pool._current_depth += 1
     push!(pool._touched_type_masks, UInt16(0))
@@ -52,7 +52,7 @@ Also updates _current_depth and bitmask state for type touch tracking.
     # (which bypasses _record_type_touch!) is the only acquire path.
     push!(pool._touched_has_others, _fixed_slot_bit(T) == UInt16(0))
     _checkpoint_typed_pool!(get_typed_pool!(pool, T), pool._current_depth)
-    nothing
+    return nothing
 end
 
 """
@@ -77,7 +77,7 @@ compile-time unrolling. Increments _current_depth once for all types.
     # even when _acquire_impl! (bypassing _record_type_touch!) is used.
     has_any_fallback = any(i -> _fixed_slot_bit(types[i].parameters[1]) == UInt16(0), unique_indices)
     checkpoint_exprs = [:(_checkpoint_typed_pool!(get_typed_pool!(pool, types[$i]), pool._current_depth)) for i in unique_indices]
-    quote
+    return quote
         pool._current_depth += 1
         push!(pool._touched_type_masks, UInt16(0))
         push!(pool._touched_has_others, $has_any_fallback)
@@ -96,7 +96,7 @@ end
         push!(tp._checkpoint_n_active, tp.n_active)
         push!(tp._checkpoint_depths, depth)
     end
-    nothing
+    return nothing
 end
 
 """
@@ -128,7 +128,7 @@ Performance: ~2ns vs ~540ns for full `checkpoint!`.
         _checkpoint_typed_pool!(p, depth)
         @inbounds pool._touched_has_others[depth] = true
     end
-    nothing
+    return nothing
 end
 
 # ==============================================================================
@@ -183,7 +183,7 @@ end
 Restore state for a specific type only.
 Also updates _current_depth and bitmask state.
 """
-@inline function rewind!(pool::AdaptiveArrayPool, ::Type{T}) where T
+@inline function rewind!(pool::AdaptiveArrayPool, ::Type{T}) where {T}
 
     # Safety guard: at global scope (depth=1), delegate to reset!
     if pool._current_depth == 1
@@ -194,7 +194,7 @@ Also updates _current_depth and bitmask state.
     pop!(pool._touched_type_masks)
     pop!(pool._touched_has_others)
     pool._current_depth -= 1
-    nothing
+    return nothing
 end
 
 """
@@ -216,7 +216,7 @@ Decrements _current_depth once after all types are rewound.
     end
     rewind_exprs = [:(_rewind_typed_pool!(get_typed_pool!(pool, types[$i]), pool._current_depth)) for i in reverse(unique_indices)]
     reset_exprs = [:(reset!(get_typed_pool!(pool, types[$i]))) for i in unique_indices]
-    quote
+    return quote
         # Safety guard: at global scope (depth=1), delegate to reset!
         if pool._current_depth == 1
             $(reset_exprs...)
@@ -256,7 +256,7 @@ end
         # - If sentinel (_checkpoint_n_active=[0]), restores to n_active=0
         tp.n_active = @inbounds tp._checkpoint_n_active[end]
     end
-    nothing
+    return nothing
 end
 
 """
@@ -272,7 +272,7 @@ Called directly from the macro-generated `finally` clause as a single function c
 """
 @inline function _lazy_rewind!(pool::AdaptiveArrayPool)
 
-    d    = pool._current_depth
+    d = pool._current_depth
     bits = @inbounds(pool._touched_type_masks[d]) & _TYPE_BITS_MASK
     _selective_rewind_fixed_slots!(pool, bits)
     if @inbounds(pool._touched_has_others[d])
@@ -283,7 +283,7 @@ Called directly from the macro-generated `finally` clause as a single function c
     pop!(pool._touched_type_masks)
     pop!(pool._touched_has_others)
     pool._current_depth -= 1
-    nothing
+    return nothing
 end
 
 """
@@ -320,7 +320,7 @@ lazy first-touch checkpoint for each extra type on first acquire, ensuring Case 
         end
         @inbounds pool._touched_has_others[d] = true
     end
-    nothing
+    return nothing
 end
 
 """
@@ -347,7 +347,7 @@ guaranteed by the `_TYPED_LAZY_BIT` mode set in `_typed_lazy_checkpoint!`.
     pop!(pool._touched_type_masks)
     pop!(pool._touched_has_others)
     pool._current_depth -= 1
-    nothing
+    return nothing
 end
 
 """
@@ -365,15 +365,15 @@ checkpoint, `_rewind_typed_pool!` Case B safely restores from the parent checkpo
 @inline function _selective_rewind_fixed_slots!(pool::AdaptiveArrayPool, mask::UInt16)
 
     d = pool._current_depth
-    _has_bit(mask, Float64)    && _rewind_typed_pool!(pool.float64,    d)
-    _has_bit(mask, Float32)    && _rewind_typed_pool!(pool.float32,    d)
-    _has_bit(mask, Int64)      && _rewind_typed_pool!(pool.int64,      d)
-    _has_bit(mask, Int32)      && _rewind_typed_pool!(pool.int32,      d)
+    _has_bit(mask, Float64)    && _rewind_typed_pool!(pool.float64, d)
+    _has_bit(mask, Float32)    && _rewind_typed_pool!(pool.float32, d)
+    _has_bit(mask, Int64)      && _rewind_typed_pool!(pool.int64, d)
+    _has_bit(mask, Int32)      && _rewind_typed_pool!(pool.int32, d)
     _has_bit(mask, ComplexF64) && _rewind_typed_pool!(pool.complexf64, d)
     _has_bit(mask, ComplexF32) && _rewind_typed_pool!(pool.complexf32, d)
-    _has_bit(mask, Bool)       && _rewind_typed_pool!(pool.bool,       d)
-    _has_bit(mask, Bit)        && _rewind_typed_pool!(pool.bits,       d)
-    nothing
+    _has_bit(mask, Bool)       && _rewind_typed_pool!(pool.bool, d)
+    _has_bit(mask, Bit)        && _rewind_typed_pool!(pool.bits, d)
+    return nothing
 end
 
 # ==============================================================================
@@ -548,9 +548,9 @@ to sentinel state while preserving allocated vectors.
 
 See also: [`reset!(::AdaptiveArrayPool)`](@ref), [`rewind!`](@ref)
 """
-@inline function reset!(pool::AdaptiveArrayPool, ::Type{T}) where T
+@inline function reset!(pool::AdaptiveArrayPool, ::Type{T}) where {T}
     reset!(get_typed_pool!(pool, T))
-    pool
+    return pool
 end
 
 """
@@ -563,7 +563,7 @@ See also: [`reset!(::AdaptiveArrayPool)`](@ref), [`rewind!`](@ref)
 """
 @generated function reset!(pool::AdaptiveArrayPool, types::Type...)
     reset_exprs = [:(reset!(get_typed_pool!(pool, types[$i]))) for i in 1:length(types)]
-    quote
+    return quote
         $(reset_exprs...)
         pool
     end

@@ -12,7 +12,7 @@ function write_if_changed(path::String, content::String)
     if isfile(path) && read(path, String) == content
         return  # Content unchanged, skip write
     end
-    write(path, content)
+    return write(path, content)
 end
 
 # ============================================

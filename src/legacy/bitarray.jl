@@ -66,7 +66,7 @@ Uses N-way set-associative cache with up to CACHE_WAYS patterns per slot.
 The returned BitArray is only valid within the `@with_pool` scope.
 Do NOT use after the scope ends (use-after-free risk).
 """
-function get_bitarray!(tp::BitTypedPool, dims::NTuple{N,Int}) where {N}
+function get_bitarray!(tp::BitTypedPool, dims::NTuple{N, Int}) where {N}
     total_len = safe_prod(dims)
     tp.n_active += 1
     idx = tp.n_active
@@ -118,7 +118,7 @@ function get_bitarray!(tp::BitTypedPool, dims::NTuple{N,Int}) where {N}
         @inbounds cached_ptr = tp.nd_ptrs[cache_idx]
 
         # Must check isa FIRST for type stability (avoids boxing in == comparison)
-        if cached_dims isa NTuple{N,Int} && cached_ptr == current_ptr
+        if cached_dims isa NTuple{N, Int} && cached_ptr == current_ptr
             if cached_dims == dims
                 # Exact match - return cached BitArray directly (0 alloc)
                 return @inbounds tp.nd_arrays[cache_idx]::BitArray{N}
@@ -162,11 +162,11 @@ end
     return _unsafe_acquire_impl!(pool, Bit, n)
 end
 
-@inline function _acquire_impl!(pool::AbstractArrayPool, ::Type{Bit}, dims::Vararg{Int,N}) where {N}
+@inline function _acquire_impl!(pool::AbstractArrayPool, ::Type{Bit}, dims::Vararg{Int, N}) where {N}
     return _unsafe_acquire_impl!(pool, Bit, dims...)
 end
 
-@inline function _acquire_impl!(pool::AbstractArrayPool, ::Type{Bit}, dims::NTuple{N,Int}) where {N}
+@inline function _acquire_impl!(pool::AbstractArrayPool, ::Type{Bit}, dims::NTuple{N, Int}) where {N}
     return _unsafe_acquire_impl!(pool, Bit, dims...)
 end
 
@@ -180,12 +180,12 @@ end
     return get_bitarray!(tp, n)
 end
 
-@inline function _unsafe_acquire_impl!(pool::AbstractArrayPool, ::Type{Bit}, dims::Vararg{Int,N}) where {N}
+@inline function _unsafe_acquire_impl!(pool::AbstractArrayPool, ::Type{Bit}, dims::Vararg{Int, N}) where {N}
     tp = get_typed_pool!(pool, Bit)::BitTypedPool
     return get_bitarray!(tp, dims)
 end
 
-@inline function _unsafe_acquire_impl!(pool::AbstractArrayPool, ::Type{Bit}, dims::NTuple{N,Int}) where {N}
+@inline function _unsafe_acquire_impl!(pool::AbstractArrayPool, ::Type{Bit}, dims::NTuple{N, Int}) where {N}
     tp = get_typed_pool!(pool, Bit)::BitTypedPool
     return get_bitarray!(tp, dims)
 end
@@ -196,10 +196,10 @@ end
 
 # --- acquire! for DisabledPool{:cpu} with Bit type (returns BitArray) ---
 @inline acquire!(::DisabledPool{:cpu}, ::Type{Bit}, n::Int) = BitVector(undef, n)
-@inline acquire!(::DisabledPool{:cpu}, ::Type{Bit}, dims::Vararg{Int,N}) where {N} = BitArray{N}(undef, dims)
-@inline acquire!(::DisabledPool{:cpu}, ::Type{Bit}, dims::NTuple{N,Int}) where {N} = BitArray{N}(undef, dims)
+@inline acquire!(::DisabledPool{:cpu}, ::Type{Bit}, dims::Vararg{Int, N}) where {N} = BitArray{N}(undef, dims)
+@inline acquire!(::DisabledPool{:cpu}, ::Type{Bit}, dims::NTuple{N, Int}) where {N} = BitArray{N}(undef, dims)
 
 # --- unsafe_acquire! for DisabledPool{:cpu} with Bit type (returns BitArray) ---
 @inline unsafe_acquire!(::DisabledPool{:cpu}, ::Type{Bit}, n::Int) = BitVector(undef, n)
-@inline unsafe_acquire!(::DisabledPool{:cpu}, ::Type{Bit}, dims::Vararg{Int,N}) where {N} = BitArray{N}(undef, dims)
-@inline unsafe_acquire!(::DisabledPool{:cpu}, ::Type{Bit}, dims::NTuple{N,Int}) where {N} = BitArray{N}(undef, dims)
+@inline unsafe_acquire!(::DisabledPool{:cpu}, ::Type{Bit}, dims::Vararg{Int, N}) where {N} = BitArray{N}(undef, dims)
+@inline unsafe_acquire!(::DisabledPool{:cpu}, ::Type{Bit}, dims::NTuple{N, Int}) where {N} = BitArray{N}(undef, dims)

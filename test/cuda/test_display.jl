@@ -3,7 +3,7 @@
 
 # Helper macro to capture stdout
 macro capture_out(expr)
-    quote
+    return quote
         local old_stdout = stdout
         local rd, wr = redirect_stdout()
         try
@@ -182,10 +182,10 @@ end
         reset!(pool)
 
         # pool_stats should return nothing
-        result = pool_stats(pool; io=devnull)
+        result = pool_stats(pool; io = devnull)
         @test result === nothing
 
-        result = pool_stats(:cuda; io=devnull)
+        result = pool_stats(:cuda; io = devnull)
         @test result === nothing
     end
 

@@ -23,7 +23,7 @@ achieving zero overhead compared to Dict-based registry.
 @inline _get_pool_for_backend(::Val{:cpu}) = get_task_local_pool()
 
 # Fallback with helpful error message (marked @noinline to keep hot path fast)
-@noinline function _get_pool_for_backend(::Val{B}) where B
+@noinline function _get_pool_for_backend(::Val{B}) where {B}
     error("Pool backend :$B is not available. Load the extension first (e.g., `using CUDA` for :cuda).")
 end
 
@@ -106,22 +106,22 @@ end
 ```
 """
 macro with_pool(pool_name, expr)
-    _generate_pool_code(pool_name, expr, true; source=__source__)
+    return _generate_pool_code(pool_name, expr, true; source = __source__)
 end
 
 macro with_pool(expr)
     pool_name = gensym(:pool)
-    _generate_pool_code(pool_name, expr, true; source=__source__)
+    return _generate_pool_code(pool_name, expr, true; source = __source__)
 end
 
 # Backend-specific variants: @with_pool :cuda pool begin ... end
 macro with_pool(backend::QuoteNode, pool_name, expr)
-    _generate_pool_code_with_backend(backend.value, pool_name, expr, true; source=__source__)
+    return _generate_pool_code_with_backend(backend.value, pool_name, expr, true; source = __source__)
 end
 
 macro with_pool(backend::QuoteNode, expr)
     pool_name = gensym(:pool)
-    _generate_pool_code_with_backend(backend.value, pool_name, expr, true; source=__source__)
+    return _generate_pool_code_with_backend(backend.value, pool_name, expr, true; source = __source__)
 end
 
 """
@@ -153,22 +153,22 @@ end
 ```
 """
 macro maybe_with_pool(pool_name, expr)
-    _generate_pool_code(pool_name, expr, false; source=__source__)
+    return _generate_pool_code(pool_name, expr, false; source = __source__)
 end
 
 macro maybe_with_pool(expr)
     pool_name = gensym(:pool)
-    _generate_pool_code(pool_name, expr, false; source=__source__)
+    return _generate_pool_code(pool_name, expr, false; source = __source__)
 end
 
 # Backend-specific variants: @maybe_with_pool :cuda pool begin ... end
 macro maybe_with_pool(backend::QuoteNode, pool_name, expr)
-    _generate_pool_code_with_backend(backend.value, pool_name, expr, false; source=__source__)
+    return _generate_pool_code_with_backend(backend.value, pool_name, expr, false; source = __source__)
 end
 
 macro maybe_with_pool(backend::QuoteNode, expr)
     pool_name = gensym(:pool)
-    _generate_pool_code_with_backend(backend.value, pool_name, expr, false; source=__source__)
+    return _generate_pool_code_with_backend(backend.value, pool_name, expr, false; source = __source__)
 end
 
 # ==============================================================================
@@ -182,7 +182,7 @@ Generate expression for DisabledPool singleton based on backend.
 Used when pooling is disabled to preserve backend context.
 """
 function _disabled_pool_expr(backend::Symbol)
-    if backend == :cpu
+    return if backend == :cpu
         :($DISABLED_CPU)
     else
         :($(DisabledPool{backend}()))
@@ -232,7 +232,7 @@ Ensure body has a LineNumberNode pointing to user source at the top level.
 
 Returns a new Expr to avoid mutating the original AST.
 """
-function _ensure_body_has_toplevel_lnn(body, source::Union{LineNumberNode,Nothing})
+function _ensure_body_has_toplevel_lnn(body, source::Union{LineNumberNode, Nothing})
     source === nothing && return body
     # Don't clobber valid file info with :none from REPL/eval
     source.file === :none && return body
@@ -275,7 +275,7 @@ Scans first few args to handle Expr(:meta, ...) from @inline etc.
 If source.file === :none (REPL/eval), don't clobber valid file LNNs.
 Modifies expr in-place and returns it.
 """
-function _fix_try_body_lnn!(expr, source::Union{LineNumberNode,Nothing})
+function _fix_try_body_lnn!(expr, source::Union{LineNumberNode, Nothing})
     source === nothing && return expr
     # Don't clobber valid file info with :none from REPL/eval
     source.file === :none && return expr
@@ -307,7 +307,7 @@ end
 # Internal: Code Generation
 # ==============================================================================
 
-function _generate_pool_code(pool_name, expr, force_enable; source::Union{LineNumberNode,Nothing}=nothing)
+function _generate_pool_code(pool_name, expr, force_enable; source::Union{LineNumberNode, Nothing} = nothing)
     # Compile-time check: if pooling disabled, use DisabledPool to preserve backend context
     if !USE_POOLING
         disabled_pool = _disabled_pool_expr(:cpu)
@@ -402,7 +402,7 @@ Uses `_get_pool_for_backend(Val{backend}())` for zero-overhead dispatch.
 
 Includes type-specific checkpoint/rewind optimization (same as regular @with_pool).
 """
-function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, force_enable::Bool; source::Union{LineNumberNode,Nothing}=nothing)
+function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, force_enable::Bool; source::Union{LineNumberNode, Nothing} = nothing)
     # Compile-time check: if pooling disabled, use DisabledPool to preserve backend context
     if !USE_POOLING
         disabled_pool = _disabled_pool_expr(backend)
@@ -515,7 +515,7 @@ end
 Generate function code for a specific backend (e.g., :cuda).
 Wraps the function body with pool getter, checkpoint, try-finally, rewind.
 """
-function _generate_function_pool_code_with_backend(backend::Symbol, pool_name, func_def, disable_pooling::Bool; source::Union{LineNumberNode,Nothing}=nothing)
+function _generate_function_pool_code_with_backend(backend::Symbol, pool_name, func_def, disable_pooling::Bool; source::Union{LineNumberNode, Nothing} = nothing)
     def_head = func_def.head
     call_expr = func_def.args[1]
     body = func_def.args[2]
@@ -572,7 +572,7 @@ function _generate_function_pool_code_with_backend(backend::Symbol, pool_name, f
     return Expr(def_head, esc(call_expr), new_body)
 end
 
-function _generate_function_pool_code(pool_name, func_def, force_enable, disable_pooling, backend::Symbol=:cpu; source::Union{LineNumberNode,Nothing}=nothing)
+function _generate_function_pool_code(pool_name, func_def, force_enable, disable_pooling, backend::Symbol = :cpu; source::Union{LineNumberNode, Nothing} = nothing)
     def_head = func_def.head
     call_expr = func_def.args[1]
     body = func_def.args[2]
@@ -670,14 +670,14 @@ These cannot be used for typed checkpoint since they're defined after checkpoint
 
 Detects patterns like: `T = eltype(x)`, `local T = ...`, etc.
 """
-function _extract_local_assignments(expr, locals=Set{Symbol}())
+function _extract_local_assignments(expr, locals = Set{Symbol}())
     if expr isa Expr
         if expr.head == :(=) && length(expr.args) >= 1
             lhs = expr.args[1]
             # Simple assignment: T = ...
             if lhs isa Symbol
                 push!(locals, lhs)
-            # Typed assignment: T::Type = ...
+                # Typed assignment: T::Type = ...
             elseif Meta.isexpr(lhs, :(::)) && length(lhs.args) >= 1 && lhs.args[1] isa Symbol
                 push!(locals, lhs.args[1])
             end
@@ -720,7 +720,7 @@ Handles various forms:
 - `similar!(pool, x)`: generates `eltype(x)` expression
 - `similar!(pool, x, Type, ...)`: extracts Type
 """
-function _extract_acquire_types(expr, target_pool, types=Set{Any}())
+function _extract_acquire_types(expr, target_pool, types = Set{Any}())
     if expr isa Expr
         # Match: function calls with pool argument
         if expr.head == :call && length(expr.args) >= 3
@@ -752,10 +752,10 @@ function _extract_acquire_types(expr, target_pool, types=Set{Any}())
                         # acquire!(pool, x) - similar-style form
                         push!(types, Expr(:call, :eltype, expr.args[3]))
                     end
-                # trues!/falses! (always uses Bit type)
+                    # trues!/falses! (always uses Bit type)
                 elseif fn in (:trues!, :falses!) || fn_name in (:trues!, :falses!)
                     push!(types, :Bit)
-                # zeros!/ones!/unsafe_zeros!/unsafe_ones!
+                    # zeros!/ones!/unsafe_zeros!/unsafe_ones!
                 elseif fn in (:zeros!, :ones!, :unsafe_zeros!, :unsafe_ones!) || fn_name in (:zeros!, :ones!, :unsafe_zeros!, :unsafe_ones!)
                     if nargs >= 3
                         third_arg = expr.args[3]
@@ -768,7 +768,7 @@ function _extract_acquire_types(expr, target_pool, types=Set{Any}())
                             push!(types, Expr(:call, :default_eltype, target_pool))
                         end
                     end
-                # similar!/unsafe_similar!
+                    # similar!/unsafe_similar!
                 elseif fn in (:similar!, :unsafe_similar!) || fn_name in (:similar!, :unsafe_similar!)
                     if nargs == 3
                         # similar!(pool, x) - same type as x
@@ -783,7 +783,7 @@ function _extract_acquire_types(expr, target_pool, types=Set{Any}())
                             push!(types, Expr(:call, :eltype, expr.args[3]))
                         end
                     end
-                # reshape!
+                    # reshape!
                 elseif fn in (:reshape!,) || fn_name in (:reshape!,)
                     # reshape!(pool, A, dims...) — extract eltype(A) from second arg
                     if nargs >= 3
@@ -859,7 +859,7 @@ Filter types for typed checkpoint/rewind generation.
 Type parameters (T, S from `where` clause) resolve to concrete types at runtime.
 Local variables (T = eltype(x)) are defined after checkpoint! and cannot be used.
 """
-function _filter_static_types(types, local_vars=Set{Symbol}())
+function _filter_static_types(types, local_vars = Set{Symbol}())
     static_types = Any[]
     has_dynamic = false
 
@@ -926,7 +926,7 @@ function _generate_typed_checkpoint_call(pool_expr, types)
     else
         escaped_types = [esc(t) for t in types]
         typed_call = :($checkpoint!($pool_expr, $(escaped_types...)))
-        lazy_call  = :($_typed_lazy_checkpoint!($pool_expr, $(escaped_types...)))
+        lazy_call = :($_typed_lazy_checkpoint!($pool_expr, $(escaped_types...)))
         return quote
             if $_can_use_typed_path($pool_expr, $_tracked_mask_for_types($(escaped_types...)))
                 $typed_call
@@ -951,9 +951,13 @@ function _generate_typed_rewind_call(pool_expr, types)
         return :($rewind!($pool_expr))       # fallback for direct external calls (unreachable via macro)
     else
         escaped_types = [esc(t) for t in types]
-        typed_call     = :($rewind!($pool_expr, $(escaped_types...)))
-        selective_call = :($_typed_lazy_rewind!($pool_expr,
-                              $_tracked_mask_for_types($(escaped_types...))))
+        typed_call = :($rewind!($pool_expr, $(escaped_types...)))
+        selective_call = :(
+            $_typed_lazy_rewind!(
+                $pool_expr,
+                $_tracked_mask_for_types($(escaped_types...))
+            )
+        )
         return quote
             if $_can_use_typed_path($pool_expr, $_tracked_mask_for_types($(escaped_types...)))
                 $typed_call

@@ -73,7 +73,7 @@
         println("  Subprocess failed: ", e)
         false
     finally
-        rm(test_file; force=true)
+        rm(test_file; force = true)
     end
 
     @test result == true

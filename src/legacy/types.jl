@@ -70,7 +70,7 @@ end
 
 Abstract base for type-specific memory pools.
 """
-abstract type AbstractTypedPool{T, V<:AbstractVector{T}} end
+abstract type AbstractTypedPool{T, V <: AbstractVector{T}} end
 
 """
     AbstractArrayPool
@@ -324,10 +324,10 @@ const FIXED_SLOT_FIELDS = (:float64, :float32, :int64, :int32, :complexf64, :com
 # Bits 0-7: fixed-slot type touch tracking (one bit per type)
 # Bits 14-15: mode flags set during checkpoint to control lazy behavior
 
-const _LAZY_MODE_BIT   = UInt16(0x8000)  # bit 15: lazy (dynamic-selective) checkpoint mode
-const _TYPED_LAZY_BIT  = UInt16(0x4000)  # bit 14: typed lazy-fallback mode
-const _MODE_BITS_MASK  = UInt16(0xC000)  # bits 14-15: all mode flags
-const _TYPE_BITS_MASK  = UInt16(0x00FF)  # bits 0-7: fixed-slot type bits
+const _LAZY_MODE_BIT = UInt16(0x8000)  # bit 15: lazy (dynamic-selective) checkpoint mode
+const _TYPED_LAZY_BIT = UInt16(0x4000)  # bit 14: typed lazy-fallback mode
+const _MODE_BITS_MASK = UInt16(0xC000)  # bits 14-15: all mode flags
+const _TYPE_BITS_MASK = UInt16(0x00FF)  # bits 0-7: fixed-slot type bits
 
 # ==============================================================================
 # Fixed-Slot Bit Mapping (for type touch tracking)
@@ -335,15 +335,15 @@ const _TYPE_BITS_MASK  = UInt16(0x00FF)  # bits 0-7: fixed-slot type bits
 # Maps each fixed-slot type to a unique bit in a UInt16 bitmask.
 # Bit ordering matches FIXED_SLOT_FIELDS. Non-fixed types return UInt16(0).
 
-@inline _fixed_slot_bit(::Type{Float64})    = UInt16(1) << 0
-@inline _fixed_slot_bit(::Type{Float32})    = UInt16(1) << 1
-@inline _fixed_slot_bit(::Type{Int64})      = UInt16(1) << 2
-@inline _fixed_slot_bit(::Type{Int32})      = UInt16(1) << 3
+@inline _fixed_slot_bit(::Type{Float64}) = UInt16(1) << 0
+@inline _fixed_slot_bit(::Type{Float32}) = UInt16(1) << 1
+@inline _fixed_slot_bit(::Type{Int64}) = UInt16(1) << 2
+@inline _fixed_slot_bit(::Type{Int32}) = UInt16(1) << 3
 @inline _fixed_slot_bit(::Type{ComplexF64}) = UInt16(1) << 4
 @inline _fixed_slot_bit(::Type{ComplexF32}) = UInt16(1) << 5
-@inline _fixed_slot_bit(::Type{Bool})       = UInt16(1) << 6
-@inline _fixed_slot_bit(::Type{Bit})        = UInt16(1) << 7
-@inline _fixed_slot_bit(::Type)             = UInt16(0)  # non-fixed-slot → triggers has_others
+@inline _fixed_slot_bit(::Type{Bool}) = UInt16(1) << 6
+@inline _fixed_slot_bit(::Type{Bit}) = UInt16(1) << 7
+@inline _fixed_slot_bit(::Type) = UInt16(0)  # non-fixed-slot → triggers has_others
 
 # Check whether a type's bit is set in a bitmask (e.g. _touched_type_masks or combined).
 @inline _has_bit(mask::UInt16, ::Type{T}) where {T} = (mask & _fixed_slot_bit(T)) != 0
@@ -379,7 +379,7 @@ mutable struct AdaptiveArrayPool <: AbstractArrayPool
 end
 
 function AdaptiveArrayPool()
-    AdaptiveArrayPool(
+    return AdaptiveArrayPool(
         TypedPool{Float64}(),
         TypedPool{Float32}(),
         TypedPool{Int64}(),
@@ -411,7 +411,7 @@ end
 
 # Slow Path: rare types via IdDict
 @inline function get_typed_pool!(p::AdaptiveArrayPool, ::Type{T}) where {T}
-    get!(p.others, T) do
+    return get!(p.others, T) do
         tp = TypedPool{T}()
         # If inside a checkpoint scope (_current_depth > 1 means inside @with_pool),
         # auto-checkpoint the new pool to prevent issues on rewind
@@ -439,7 +439,7 @@ Apply `f` to each fixed slot TypedPool. Zero allocation via compile-time unrolli
 """
 @generated function foreach_fixed_slot(f::F, pool::AdaptiveArrayPool) where {F}
     exprs = [:(f(getfield(pool, $(QuoteNode(field))))) for field in FIXED_SLOT_FIELDS]
-    quote
+    return quote
         Base.@_inline_meta
         $(exprs...)
         nothing

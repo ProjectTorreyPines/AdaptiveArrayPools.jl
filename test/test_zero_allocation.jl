@@ -11,7 +11,7 @@
 # 3. Verify: loop has 0 bytes allocation after warmup
 
 @testset "Zero-allocation Patterns" begin
-    
+
     # ==============================================================================
     # Pattern 1: acquire! only (SubArray) - N-D matrices
     # ==============================================================================

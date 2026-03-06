@@ -42,7 +42,7 @@
                 v1 = acquire!(p, Float32, 100)
                 v2 = acquire!(p, Float32, 200)
                 v3 = acquire!(p, Float32, 300)
-                v1 .= 1f0; v2 .= 2f0; v3 .= 3f0
+                v1 .= 1.0f0; v2 .= 2.0f0; v3 .= 3.0f0
             end
         end
 
@@ -260,7 +260,7 @@ end
                 v32 = acquire!(p, Float32, 100)
                 v64 = acquire!(p, Float64, 100)
                 vi32 = acquire!(p, Int32, 100)
-                v32 .= 1f0; v64 .= 2.0; vi32 .= 3
+                v32 .= 1.0f0; v64 .= 2.0; vi32 .= 3
             end
         end
 

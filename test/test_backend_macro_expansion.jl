@@ -215,7 +215,7 @@
         end
 
         @testset "Where clause preserved" begin
-            expr = @macroexpand @with_pool :cuda pool function generic_func(x::Vector{T}) where T
+            expr = @macroexpand @with_pool :cuda pool function generic_func(x::Vector{T}) where {T}
                 v = acquire!(pool, T, length(x))
                 return sum(v)
             end
@@ -379,7 +379,7 @@
             expr = @macroexpand @with_pool :cuda pool function complex_func(
                     x::AbstractArray{T},
                     y::AbstractArray{S};
-                    tol::Float64 = 1e-6
+                    tol::Float64 = 1.0e-6
                 ) where {T <: Real, S <: Real}
                 v = acquire!(pool, T, size(x))
                 return sum(v)

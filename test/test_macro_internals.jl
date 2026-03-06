@@ -81,7 +81,7 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
 
             # Assignment in function call (should NOT be captured)
             @testset "function call with kwarg" begin
-                expr = :(foo(x, y=1))
+                expr = :(foo(x, y = 1))
                 locals = _extract_local_assignments(expr)
                 # y=1 inside function call is a kwarg, not an assignment
                 # This depends on Julia parsing - in some cases it might be captured

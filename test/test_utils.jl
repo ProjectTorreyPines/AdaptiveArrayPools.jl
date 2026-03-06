@@ -2,7 +2,7 @@ import AdaptiveArrayPools: _validate_pool_return
 
 # Helper macro to capture stdout (must be defined before use)
 macro capture_out(expr)
-    quote
+    return quote
         local old_stdout = stdout
         local rd, wr = redirect_stdout()
         try
@@ -197,7 +197,7 @@ end
     end
 
     @testset "Base.show for TypedPool & BitTypedPool" begin
-        import AdaptiveArrayPools: TypedPool, BitTypedPool 
+        import AdaptiveArrayPools: TypedPool, BitTypedPool
 
         # Empty TypedPool - compact show
         tp_empty = TypedPool{Float64}()

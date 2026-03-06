@@ -328,7 +328,7 @@
             # 1D with explicit type
             result = @with_pool pool begin
                 v = unsafe_zeros!(pool, Float64, size(x1d))
-                @test v isa Array{Float64,1}
+                @test v isa Array{Float64, 1}
                 @test length(v) == 10
                 @test all(v .== 0.0)
                 sum(v)
@@ -338,7 +338,7 @@
             # 1D without type
             result = @with_pool pool begin
                 v = unsafe_zeros!(pool, size(x1d))
-                @test v isa Array{Float64,1}
+                @test v isa Array{Float64, 1}
                 @test eltype(v) == Float64
                 sum(v)
             end
@@ -347,7 +347,7 @@
             # 2D with explicit type
             result = @with_pool pool begin
                 m = unsafe_zeros!(pool, Float32, size(x2d))
-                @test m isa Array{Float32,2}
+                @test m isa Array{Float32, 2}
                 @test size(m) == (5, 8)
                 sum(m)
             end
@@ -361,7 +361,7 @@
             # 1D with explicit type
             result = @with_pool pool begin
                 v = unsafe_ones!(pool, Float64, size(x1d))
-                @test v isa Array{Float64,1}
+                @test v isa Array{Float64, 1}
                 @test length(v) == 10
                 @test all(v .== 1.0)
                 sum(v)
@@ -371,7 +371,7 @@
             # 1D without type
             result = @with_pool pool begin
                 v = unsafe_ones!(pool, size(x1d))
-                @test v isa Array{Float64,1}
+                @test v isa Array{Float64, 1}
                 @test eltype(v) == Float64
                 sum(v)
             end
@@ -380,7 +380,7 @@
             # 2D with explicit type
             result = @with_pool pool begin
                 m = unsafe_ones!(pool, Float32, size(x2d))
-                @test m isa Array{Float32,2}
+                @test m isa Array{Float32, 2}
                 @test size(m) == (5, 8)
                 sum(m)
             end
@@ -424,7 +424,7 @@
 
         @testset "returns raw array (not view)" begin
             v = unsafe_zeros!(pool, Float64, 10)
-            @test v isa Array{Float64,1}
+            @test v isa Array{Float64, 1}
             @test !(v isa SubArray)
             @test length(v) == 10
             @test all(v .== 0.0)
@@ -432,7 +432,7 @@
 
         @testset "default type (Float64)" begin
             v = unsafe_zeros!(pool, 10)
-            @test v isa Array{Float64,1}
+            @test v isa Array{Float64, 1}
             @test !(v isa SubArray)
             @test eltype(v) == Float64
             @test all(v .== 0.0)
@@ -440,7 +440,7 @@
 
         @testset "multi-dimensional" begin
             m = unsafe_zeros!(pool, Float64, 3, 4)
-            @test m isa Array{Float64,2}
+            @test m isa Array{Float64, 2}
             @test !(m isa SubArray)
             @test size(m) == (3, 4)
             @test all(m .== 0.0)
@@ -469,7 +469,7 @@
 
         @testset "returns raw array (not view)" begin
             v = unsafe_ones!(pool, Float64, 10)
-            @test v isa Array{Float64,1}
+            @test v isa Array{Float64, 1}
             @test !(v isa SubArray)
             @test length(v) == 10
             @test all(v .== 1.0)
@@ -477,7 +477,7 @@
 
         @testset "default type (Float64)" begin
             v = unsafe_ones!(pool, 10)
-            @test v isa Array{Float64,1}
+            @test v isa Array{Float64, 1}
             @test !(v isa SubArray)
             @test eltype(v) == Float64
             @test all(v .== 1.0)
@@ -485,7 +485,7 @@
 
         @testset "multi-dimensional" begin
             m = unsafe_ones!(pool, Float64, 3, 4)
-            @test m isa Array{Float64,2}
+            @test m isa Array{Float64, 2}
             @test !(m isa SubArray)
             @test size(m) == (3, 4)
             @test all(m .== 1.0)
@@ -516,28 +516,28 @@
 
         @testset "returns raw array (not view)" begin
             v = unsafe_similar!(pool, template)
-            @test v isa Array{Float64,2}
+            @test v isa Array{Float64, 2}
             @test !(v isa SubArray)
             @test size(v) == size(template)
         end
 
         @testset "different type" begin
             v = unsafe_similar!(pool, template, Float32)
-            @test v isa Array{Float32,2}
+            @test v isa Array{Float32, 2}
             @test !(v isa SubArray)
             @test size(v) == size(template)
         end
 
         @testset "different size" begin
             v = unsafe_similar!(pool, template, 5, 5)
-            @test v isa Array{Float64,2}
+            @test v isa Array{Float64, 2}
             @test !(v isa SubArray)
             @test size(v) == (5, 5)
         end
 
         @testset "different type and size" begin
             v = unsafe_similar!(pool, template, Int32, 3, 4)
-            @test v isa Array{Int32,2}
+            @test v isa Array{Int32, 2}
             @test !(v isa SubArray)
             @test size(v) == (3, 4)
         end
@@ -556,7 +556,7 @@
         @testset "unsafe_zeros! in macro" begin
             result = @with_pool pool begin
                 v = unsafe_zeros!(pool, Float64, 100)
-                @test v isa Array{Float64,1}
+                @test v isa Array{Float64, 1}
                 @test !(v isa SubArray)
                 v .+= 1.0
                 sum(v)
@@ -567,7 +567,7 @@
         @testset "unsafe_ones! in macro" begin
             result = @with_pool pool begin
                 v = unsafe_ones!(pool, Float64, 50)
-                @test v isa Array{Float64,1}
+                @test v isa Array{Float64, 1}
                 @test !(v isa SubArray)
                 sum(v)
             end
@@ -578,7 +578,7 @@
             template = rand(10)
             result = @with_pool pool begin
                 v = unsafe_similar!(pool, template)
-                @test v isa Array{Float64,1}
+                @test v isa Array{Float64, 1}
                 @test !(v isa SubArray)
                 v .= 2.0
                 sum(v)

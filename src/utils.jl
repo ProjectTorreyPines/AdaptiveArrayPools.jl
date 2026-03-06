@@ -50,7 +50,7 @@ function _validate_pool_return(val, pool::AdaptiveArrayPool)
     end
 
     # 3. Check raw Array (from unsafe_acquire!)
-    if val isa Array
+    return if val isa Array
         _check_pointer_overlap(val, pool)
     end
 end
@@ -61,7 +61,7 @@ function _check_pointer_overlap(arr::Array, pool::AdaptiveArrayPool)
     arr_len = length(arr) * sizeof(eltype(arr))
     arr_end = arr_ptr + arr_len
 
-    check_overlap = function(tp)
+    check_overlap = function (tp)
         for v in tp.vectors
             v_ptr = UInt(pointer(v))
             v_len = length(v) * sizeof(eltype(v))
@@ -70,6 +70,7 @@ function _check_pointer_overlap(arr::Array, pool::AdaptiveArrayPool)
                 error("Safety Violation: The function returned an Array backed by pool memory. This is unsafe as the memory will be reclaimed. Please return a copy (collect) or a scalar.")
             end
         end
+        return
     end
 
     # Check fixed slots
@@ -81,6 +82,7 @@ function _check_pointer_overlap(arr::Array, pool::AdaptiveArrayPool)
     for tp in values(pool.others)
         check_overlap(tp)
     end
+    return
 end
 
 # Check if BitArray chunks overlap with the pool's BitTypedPool storage
@@ -123,14 +125,14 @@ _count_label(::BitTypedPool) = "bits"
 
 Print statistics for a TypedPool or BitTypedPool.
 """
-function pool_stats(tp::AbstractTypedPool; io::IO=stdout, indent::Int=0, name::String="")
+function pool_stats(tp::AbstractTypedPool; io::IO = stdout, indent::Int = 0, name::String = "")
     prefix = " "^indent
     type_name = isempty(name) ? _default_type_name(tp) : name
 
     n_arrays = length(tp.vectors)
     if n_arrays == 0
-        printstyled(io, prefix, type_name, color=:cyan)
-        printstyled(io, " (empty)\n", color=:dark_gray)
+        printstyled(io, prefix, type_name, color = :cyan)
+        printstyled(io, " (empty)\n", color = :dark_gray)
         return
     end
 
@@ -139,19 +141,19 @@ function pool_stats(tp::AbstractTypedPool; io::IO=stdout, indent::Int=0, name::S
     bytes_str = Base.format_bytes(total_bytes)
 
     # Header
-    printstyled(io, prefix, type_name, color=:cyan)
+    printstyled(io, prefix, type_name, color = :cyan)
     println(io)
 
     # Stats
-    printstyled(io, prefix, "  slots: ", color=:dark_gray)
-    printstyled(io, n_arrays, color=:blue)
-    printstyled(io, " (active: ", color=:dark_gray)
-    printstyled(io, tp.n_active, color=:blue)
-    printstyled(io, ")\n", color=:dark_gray)
+    printstyled(io, prefix, "  slots: ", color = :dark_gray)
+    printstyled(io, n_arrays, color = :blue)
+    printstyled(io, " (active: ", color = :dark_gray)
+    printstyled(io, tp.n_active, color = :blue)
+    printstyled(io, ")\n", color = :dark_gray)
 
-    printstyled(io, prefix, "  ", _count_label(tp), ": ", color=:dark_gray)
-    printstyled(io, total_count, color=:blue)
-    printstyled(io, " ($bytes_str)\n", color=:dark_gray)
+    printstyled(io, prefix, "  ", _count_label(tp), ": ", color = :dark_gray)
+    printstyled(io, total_count, color = :blue)
+    printstyled(io, " ($bytes_str)\n", color = :dark_gray)
     return nothing
 end
 
@@ -169,9 +171,9 @@ pool = AdaptiveArrayPool()
 end
 ```
 """
-function pool_stats(pool::AdaptiveArrayPool; io::IO=stdout)
+function pool_stats(pool::AdaptiveArrayPool; io::IO = stdout)
     # Header
-    printstyled(io, "AdaptiveArrayPool", bold=true, color=:white)
+    printstyled(io, "AdaptiveArrayPool", bold = true, color = :white)
     println(io)
 
     has_content = false
@@ -181,18 +183,18 @@ function pool_stats(pool::AdaptiveArrayPool; io::IO=stdout)
         if !isempty(tp.vectors)
             has_content = true
             name = _default_type_name(tp) * " (fixed)"
-            pool_stats(tp; io, indent=2, name)
+            pool_stats(tp; io, indent = 2, name)
         end
     end
 
     # Fallback types
     for (T, tp) in pool.others
         has_content = true
-        pool_stats(tp; io, indent=2, name="$T (fallback)")
+        pool_stats(tp; io, indent = 2, name = "$T (fallback)")
     end
 
     if !has_content
-        printstyled(io, "  (empty)\n", color=:dark_gray)
+        printstyled(io, "  (empty)\n", color = :dark_gray)
     end
     return nothing
 end
@@ -210,7 +212,7 @@ Print statistics for all task-local pools (CPU and CUDA if loaded).
 end
 ```
 """
-function pool_stats(; io::IO=stdout)
+function pool_stats(; io::IO = stdout)
     pool_stats(:cpu; io)
     # Show CUDA pools if extension is loaded and pools exist
     try
@@ -227,8 +229,8 @@ end
 
 Print statistics for the CPU task-local pool only.
 """
-pool_stats(::Val{:cpu}; io::IO=stdout) = pool_stats(get_task_local_pool(); io)
-pool_stats(s::Symbol; io::IO=stdout) = pool_stats(Val(s); io)
+pool_stats(::Val{:cpu}; io::IO = stdout) = pool_stats(get_task_local_pool(); io)
+pool_stats(s::Symbol; io::IO = stdout) = pool_stats(Val(s); io)
 
 """
     pool_stats(:cuda; io::IO=stdout)
@@ -236,7 +238,7 @@ pool_stats(s::Symbol; io::IO=stdout) = pool_stats(Val(s); io)
 Print statistics for CUDA task-local pools.
 Requires CUDA.jl to be loaded.
 """
-function pool_stats(::Val{:cuda}; io::IO=stdout)
+function pool_stats(::Val{:cuda}; io::IO = stdout)
     pools = get_task_local_cuda_pools()  # Throws MethodError if extension not loaded
     for pool in values(pools)
         pool_stats(pool; io)
@@ -256,7 +258,7 @@ _show_type_name(::BitTypedPool) = "BitTypedPool"
 function Base.show(io::IO, tp::AbstractTypedPool)
     name = _show_type_name(tp)
     n_vectors = length(tp.vectors)
-    if n_vectors == 0
+    return if n_vectors == 0
         print(io, "$name(empty)")
     else
         total = sum(length(v) for v in tp.vectors)
@@ -267,7 +269,7 @@ end
 
 # Multi-line show for all AbstractTypedPool
 function Base.show(io::IO, ::MIME"text/plain", tp::AbstractTypedPool)
-    pool_stats(tp; io, name=_show_type_name(tp))
+    return pool_stats(tp; io, name = _show_type_name(tp))
 end
 
 # Compact one-line show for AdaptiveArrayPool
@@ -290,10 +292,10 @@ function Base.show(io::IO, pool::AdaptiveArrayPool)
         total_active[] += tp.n_active
     end
 
-    print(io, "AdaptiveArrayPool(types=$(n_types[]), slots=$(total_vectors[]), active=$(total_active[]))")
+    return print(io, "AdaptiveArrayPool(types=$(n_types[]), slots=$(total_vectors[]), active=$(total_active[]))")
 end
 
 # Multi-line show for AdaptiveArrayPool
 function Base.show(io::IO, ::MIME"text/plain", pool::AdaptiveArrayPool)
-    pool_stats(pool; io)
+    return pool_stats(pool; io)
 end
