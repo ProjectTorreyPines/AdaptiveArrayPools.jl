@@ -783,6 +783,12 @@ function _extract_acquire_types(expr, target_pool, types=Set{Any}())
                             push!(types, Expr(:call, :eltype, expr.args[3]))
                         end
                     end
+                # reshape!
+                elseif fn in (:reshape!,) || fn_name in (:reshape!,)
+                    # reshape!(pool, A, dims...) — extract eltype(A) from second arg
+                    if nargs >= 3
+                        push!(types, Expr(:call, :eltype, expr.args[3]))
+                    end
                 end
             end
         end
@@ -1015,6 +1021,7 @@ const _SIMILAR_IMPL_REF = GlobalRef(@__MODULE__, :_similar_impl!)
 const _UNSAFE_ZEROS_IMPL_REF = GlobalRef(@__MODULE__, :_unsafe_zeros_impl!)
 const _UNSAFE_ONES_IMPL_REF = GlobalRef(@__MODULE__, :_unsafe_ones_impl!)
 const _UNSAFE_SIMILAR_IMPL_REF = GlobalRef(@__MODULE__, :_unsafe_similar_impl!)
+const _RESHAPE_IMPL_REF = GlobalRef(@__MODULE__, :_reshape_impl!)
 
 function _transform_acquire_calls(expr, pool_name)
     if expr isa Expr
@@ -1040,6 +1047,8 @@ function _transform_acquire_calls(expr, pool_name)
                     expr = Expr(:call, _FALSES_IMPL_REF, expr.args[2:end]...)
                 elseif fn == :similar!
                     expr = Expr(:call, _SIMILAR_IMPL_REF, expr.args[2:end]...)
+                elseif fn == :reshape!
+                    expr = Expr(:call, _RESHAPE_IMPL_REF, expr.args[2:end]...)
                 elseif fn == :unsafe_zeros!
                     expr = Expr(:call, _UNSAFE_ZEROS_IMPL_REF, expr.args[2:end]...)
                 elseif fn == :unsafe_ones!
@@ -1063,6 +1072,8 @@ function _transform_acquire_calls(expr, pool_name)
                         expr = Expr(:call, _FALSES_IMPL_REF, expr.args[2:end]...)
                     elseif qn == QuoteNode(:similar!)
                         expr = Expr(:call, _SIMILAR_IMPL_REF, expr.args[2:end]...)
+                    elseif qn == QuoteNode(:reshape!)
+                        expr = Expr(:call, _RESHAPE_IMPL_REF, expr.args[2:end]...)
                     elseif qn == QuoteNode(:unsafe_zeros!)
                         expr = Expr(:call, _UNSAFE_ZEROS_IMPL_REF, expr.args[2:end]...)
                     elseif qn == QuoteNode(:unsafe_ones!)

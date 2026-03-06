@@ -5,7 +5,7 @@ using Printf
 # Public API
 export AdaptiveArrayPool, acquire!, unsafe_acquire!, pool_stats, get_task_local_pool
 export acquire_view!, acquire_array!  # Explicit naming aliases
-export zeros!, ones!, trues!, falses!, similar!, default_eltype  # Convenience functions
+export zeros!, ones!, trues!, falses!, similar!, reshape!, default_eltype  # Convenience functions
 export unsafe_zeros!, unsafe_ones!, unsafe_similar!  # Unsafe convenience functions
 export Bit  # Sentinel type for BitArray (use with acquire!, trues!, falses!)
 export @with_pool, @maybe_with_pool
