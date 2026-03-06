@@ -42,6 +42,23 @@ negligible relative to the 100-200 ns cost of the full allocation path.
 end
 
 # ==============================================================================
+# Helper: Pool Growth Warning (cold path, kept out of hot loops)
+# ==============================================================================
+
+@noinline function _warn_pool_growing(tp::AbstractTypedPool{T}, idx::Int) where {T}
+    total_bytes = sum(length, tp.vectors) * sizeof(T)
+    @warn "$(nameof(typeof(tp))){$T} growing large ($idx arrays, ~$(Base.format_bytes(total_bytes))). Missing rewind!()?"
+    return nothing
+end
+
+@inline function _check_pool_growth(tp::AbstractTypedPool, idx::Int)
+    # Warn at every power of 2 from 512 onward (512, 1024, 2048, …)
+    if idx >= 512 && (idx & (idx - 1)) == 0
+        _warn_pool_growing(tp, idx)
+    end
+end
+
+# ==============================================================================
 # Get 1D View (Internal - Zero-Allocation Cache)
 # ==============================================================================
 
@@ -61,12 +78,7 @@ function get_view!(tp::AbstractTypedPool{T}, n::Int) where {T}
         new_view = view(tp.vectors[idx], 1:n)
         push!(tp.views, new_view)
         push!(tp.view_lengths, n)
-
-        # Warn at powers of 2 (512, 1024, 2048, ...) - possible missing rewind!()
-        if idx >= 512 && (idx & (idx - 1)) == 0
-            total_bytes = sum(length, tp.vectors) * sizeof(T)
-            @warn "$(nameof(typeof(tp))){$T} growing large ($idx arrays, ~$(Base.format_bytes(total_bytes))). Missing rewind!()?"
-        end
+        _check_pool_growth(tp, idx)
 
         return new_view
     end
@@ -88,6 +100,88 @@ function get_view!(tp::AbstractTypedPool{T}, n::Int) where {T}
     @inbounds tp.view_lengths[idx] = n
 
     return new_view
+end
+
+# ==============================================================================
+# Slot Claim (for reshape! — wrapper-only, no backing memory)
+# ==============================================================================
+
+"""
+    _claim_slot!(tp::TypedPool{T}) -> Int
+
+Claim the next slot index by incrementing `n_active`.
+Ensures the slot exists in vectors/views/view_lengths arrays.
+The backing vector at this slot is unused — this is for wrapper-only caching
+(e.g., `reshape!` uses the slot index for `nd_wrapper` storage only).
+"""
+@inline function _claim_slot!(tp::TypedPool{T}) where {T}
+    tp.n_active += 1
+    idx = tp.n_active
+    if idx > length(tp.vectors)
+        push!(tp.vectors, Vector{T}(undef, 0))
+        push!(tp.views, view(tp.vectors[idx], 1:0))
+        push!(tp.view_lengths, 0)
+        _check_pool_growth(tp, idx)
+    end
+    return idx
+end
+
+# ==============================================================================
+# reshape! — Zero-Allocation Reshape (setfield!-based, Julia 1.11+)
+# ==============================================================================
+
+"""
+    _reshape_impl!(pool::AdaptiveArrayPool, A::Array{T,M}, dims::NTuple{N,Int}) -> Array{T,N}
+
+Zero-allocation reshape using `setfield!`-based wrapper reuse (Julia 1.11+).
+
+- **Same dimensionality (M == N)**: `setfield!(A, :size, dims)` — no pool interaction
+- **Different dimensionality (M ≠ N)**: Claims a pool slot via `_claim_slot!`,
+  reuses cached `Array{T,N}` wrapper with `setfield!(:ref, :size)` pointing to `A`'s memory.
+  Automatically reclaimed on `rewind!` via `n_active` restoration.
+"""
+@inline function _reshape_impl!(pool::AdaptiveArrayPool, A::Array{T,M}, dims::NTuple{N,Int}) where {T,M,N}
+    # Reject negative dimensions (match Base.reshape behavior)
+    for d in dims
+        d < 0 && throw(ArgumentError("invalid Array dimensions"))
+    end
+
+    # Validate before claiming slot
+    total_len = safe_prod(dims)
+    length(A) == total_len || throw(DimensionMismatch(
+        "new dimensions $(dims) must be consistent with array length $(length(A))"))
+
+    # 0-D reshape: rare edge case, delegate to Base (nd_wrappers is 1-indexed by N)
+    N == 0 && return reshape(A, dims)
+
+    # Same dimensionality: just update size in-place, no pool interaction
+    if M == N
+        setfield!(A, :size, dims)
+        return A
+    end
+
+    # Different dimensionality: claim slot + reuse cached N-D wrapper
+    tp = get_typed_pool!(pool, T)
+    slot = _claim_slot!(tp)
+
+    # Look up cached wrapper (direct index, no hash)
+    wrappers = N <= length(tp.nd_wrappers) ? (@inbounds tp.nd_wrappers[N]) : nothing
+    if wrappers !== nothing && slot <= length(wrappers)
+        wrapper = @inbounds wrappers[slot]
+        if wrapper !== nothing
+            arr = wrapper::Array{T,N}
+            setfield!(arr, :ref, getfield(A, :ref))
+            setfield!(arr, :size, dims)
+            return arr
+        end
+    end
+
+    # Cache miss (first call per slot+N): create wrapper, cache forever
+    arr = Array{T,N}(undef, ntuple(_ -> 0, Val(N)))
+    setfield!(arr, :ref, getfield(A, :ref))
+    setfield!(arr, :size, dims)
+    _store_nd_wrapper!(tp, N, slot, arr)
+    return arr
 end
 
 # ==============================================================================

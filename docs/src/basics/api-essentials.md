@@ -62,6 +62,26 @@ Match existing array properties:
 end
 ```
 
+### Reshaping with `reshape!`
+
+Reshape an existing array using the pool's wrapper cache. The result shares memory with the original — mutations are visible in both:
+
+```julia
+@with_pool pool function process_grid(data, nx, ny)
+    M = reshape!(pool, data, nx, ny)   # 1D → 2D, shares memory with data
+    col_sums = zeros!(pool, Float64, ny)
+    for j in 1:ny, i in 1:nx
+        col_sums[j] += M[i, j]
+    end
+    return sum(col_sums)
+end
+```
+
+On Julia 1.11+, cross-dimensional reshapes are **zero-allocation** after warmup via `setfield!`-based wrapper reuse. On Julia 1.10, falls back to `Base.reshape`.
+
+!!! warning "DimensionMismatch"
+    `prod(dims)` must equal `length(A)`, otherwise a `DimensionMismatch` is thrown.
+
 ### Custom Initialization with `fill!`
 
 For values other than 0 or 1, use Julia's built-in `fill!`:
@@ -117,6 +137,7 @@ end
 | `zeros!(pool, [T,] dims...)` | View type | 0 bytes | Zero-initialized |
 | `ones!(pool, [T,] dims...)` | View type | 0 bytes | One-initialized |
 | `similar!(pool, A)` | View type | 0 bytes | Match existing array |
+| `reshape!(pool, A, dims...)` | Reshaped array | 0 bytes (1.11+) | Reshape sharing memory |
 | `reset!(pool)` | `nothing` | - | Release all memory |
 | `pooling_enabled(pool)` | `Bool` | - | Check pool status |
 

@@ -62,6 +62,7 @@ Common initialization patterns have shortcuts:
 | `zeros!(pool, 10)` | `acquire!` + `fill!(0)` |
 | `ones!(pool, Float32, 3, 3)` | `acquire!` + `fill!(1)` |
 | `similar!(pool, A)` | `acquire!` matching `eltype(A)`, `size(A)` |
+| `reshape!(pool, A, 3, 4)` | Reshape sharing memory, zero-alloc (1.11+) |
 
 ```julia
 @with_pool pool function example(n)

@@ -310,6 +310,67 @@ end
 end
 
 # ==============================================================================
+# reshape! - Reshape arrays using pool's wrapper cache
+# ==============================================================================
+
+"""
+    reshape!(pool, A, dims...) -> reshaped array
+    reshape!(pool, A, dims::Tuple) -> reshaped array
+
+Reshape array `A` to dimensions `dims` using the pool's wrapper cache.
+
+The returned array shares memory with `A` — mutations are visible in both.
+The pool provides cached wrapper objects to reduce allocation on repeated calls.
+
+On Julia 1.11+:
+- If `ndims(A) == length(dims)` (same dimensionality), `reshape!` mutates `A`
+  in-place by changing its size. This differs from `Base.reshape`, which always
+  returns a new wrapper.
+- For cross-dimensional reshapes (`ndims(A) != length(dims)`), the returned
+  `Array` wrapper is taken from the pool's internal cache and may be reused
+  after `rewind!` or pool scope exit.
+
+As with all pool-backed objects, the reshaped result must not escape the
+surrounding `@with_pool` scope.
+
+On Julia 1.10 and CUDA, falls back to `Base.reshape`.
+
+Throws `DimensionMismatch` if `prod(dims) != length(A)`.
+
+## Example
+```julia
+A = collect(1.0:12.0)
+@with_pool pool begin
+    B = reshape!(pool, A, 3, 4)   # 12-element vector → 3×4 matrix
+    B[1,1] = 999.0                # A[1] is now 999.0
+end
+```
+
+See also: [`acquire!`](@ref), [`similar!`](@ref)
+"""
+@inline function reshape!(pool::AbstractArrayPool, A::AbstractArray{T}, dims::Vararg{Int,N}) where {T,N}
+    _record_type_touch!(pool, T)
+    _reshape_impl!(pool, A, dims)
+end
+
+@inline function reshape!(pool::AbstractArrayPool, A::AbstractArray{T}, dims::NTuple{N,Int}) where {T,N}
+    _record_type_touch!(pool, T)
+    _reshape_impl!(pool, A, dims)
+end
+
+# Internal implementation (fallback: delegates to Base.reshape)
+@inline function _reshape_impl!(::AbstractArrayPool, A::AbstractArray, dims::NTuple{N,Int}) where {N}
+    for d in dims
+        d < 0 && throw(ArgumentError("invalid Array dimensions"))
+    end
+    reshape(A, dims)
+end
+
+# Vararg forwarding (macro transforms reshape!(pool, A, 3, 4) → _reshape_impl!(pool, A, 3, 4))
+@inline _reshape_impl!(pool::AbstractArrayPool, A::AbstractArray, dims::Vararg{Int,N}) where {N} =
+    _reshape_impl!(pool, A, dims)
+
+# ==============================================================================
 # unsafe_zeros! - Acquire zero-initialized raw arrays from pool
 # ==============================================================================
 
@@ -587,6 +648,10 @@ end
 @inline similar!(::DisabledPool{:cpu}, x::AbstractArray, dims::Vararg{Int,N}) where {N} = similar(x, dims...)
 @inline similar!(::DisabledPool{:cpu}, x::AbstractArray, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = similar(x, T, dims...)
 
+# --- reshape! for DisabledPool{:cpu} ---
+@inline reshape!(::DisabledPool{:cpu}, A::AbstractArray, dims::Vararg{Int,N}) where {N} = reshape(A, dims...)
+@inline reshape!(::DisabledPool{:cpu}, A::AbstractArray, dims::NTuple{N,Int}) where {N} = reshape(A, dims)
+
 # --- unsafe_zeros! for DisabledPool{:cpu} ---
 @inline unsafe_zeros!(::DisabledPool{:cpu}, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = zeros(T, dims...)
 @inline unsafe_zeros!(p::DisabledPool{:cpu}, dims::Vararg{Int,N}) where {N} = zeros(default_eltype(p), dims...)
@@ -614,6 +679,7 @@ end
 @inline unsafe_zeros!(p::DisabledPool{B}, args...) where {B} = _throw_backend_not_loaded(B)
 @inline unsafe_ones!(p::DisabledPool{B}, args...) where {B} = _throw_backend_not_loaded(B)
 @inline unsafe_similar!(p::DisabledPool{B}, args...) where {B} = _throw_backend_not_loaded(B)
+@inline reshape!(p::DisabledPool{B}, args...) where {B} = _throw_backend_not_loaded(B)
 
 # ==============================================================================
 # _impl! Delegators for DisabledPool
@@ -649,6 +715,9 @@ end
 @inline _similar_impl!(p::DisabledPool, x::AbstractArray, ::Type{T}) where {T} = similar!(p, x, T)
 @inline _similar_impl!(p::DisabledPool, x::AbstractArray, dims::Vararg{Int,N}) where {N} = similar!(p, x, dims...)
 @inline _similar_impl!(p::DisabledPool, x::AbstractArray, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = similar!(p, x, T, dims...)
+
+# --- _reshape_impl! ---
+@inline _reshape_impl!(p::DisabledPool, A::AbstractArray, dims::NTuple{N,Int}) where {N} = reshape!(p, A, dims)
 
 # --- _unsafe_zeros_impl! ---
 @inline _unsafe_zeros_impl!(p::DisabledPool, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = unsafe_zeros!(p, T, dims...)
