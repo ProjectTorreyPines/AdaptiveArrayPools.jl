@@ -406,8 +406,6 @@ Restores sentinel values for 1-based sentinel pattern.
 """
 function Base.empty!(tp::TypedPool)
     empty!(tp.vectors)
-    empty!(tp.views)
-    empty!(tp.view_lengths)
     empty!(tp.nd_wrappers)
     tp.n_active = 0
     # Restore sentinel values (1-based sentinel pattern)
@@ -489,7 +487,7 @@ This function:
 - Restores all checkpoint stacks to sentinel state
 - Resets `_current_depth` and type touch tracking state
 
-Unlike `empty!`, this **preserves** all allocated vectors, views, and N-D arrays
+Unlike `empty!`, this **preserves** all allocated vectors and N-D wrapper caches
 for reuse, avoiding reallocation costs.
 
 ## Use Case

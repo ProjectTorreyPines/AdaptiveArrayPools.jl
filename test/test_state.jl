@@ -224,8 +224,6 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
 
         # Verify all fixed slots are cleared
         @test isempty(pool.float64.vectors)
-        @test isempty(pool.float64.views)
-        @test isempty(pool.float64.view_lengths)
         @test pool.float64.n_active == 0
         @test length(pool.float64._checkpoint_n_active) == 1  # Only sentinel remains
 
@@ -286,7 +284,7 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
             reset!(pool)
             @test pool.float64.n_active == 0
             @test length(pool.float64.vectors) >= 3    # Vectors preserved
-            @test length(pool.float64.views) >= 1      # 1D cache preserved
+            @test length(pool.float64.vectors) >= 1     # Vectors preserved
             @test _test_nd_cache_preserved(pool.float64)    # N-D cache preserved
         end
 

@@ -154,10 +154,6 @@ Internal structure managing pooled vectors for a specific element type `T`.
 ### Storage
 - `vectors`: Backing `Vector{T}` storage (actual memory allocation)
 
-### 1D Cache (for `acquire!(pool, T, n)`)
-- `views`: Cached `SubArray` views for zero-allocation 1D access
-- `view_lengths`: Cached lengths for fast Int comparison (SoA pattern)
-
 ### N-D Wrapper Cache (Julia 1.11+, setfield!-based reuse)
 - `nd_wrappers`: `Vector{Union{Nothing, Vector{Any}}}` — indexed by N (dimensionality),
   each entry is a per-slot cached `Array{T,N}` wrapper. Uses `setfield!(wrapper, :size, dims)`
@@ -168,17 +164,15 @@ Internal structure managing pooled vectors for a specific element type `T`.
 - `_checkpoint_n_active`: Saved n_active values at each checkpoint (sentinel: `[0]`)
 - `_checkpoint_depths`: Depth of each checkpoint entry (sentinel: `[0]`)
 
-## Note
-`acquire!` for N-D returns `ReshapedArray` (zero creation cost), so no caching needed.
-`unsafe_acquire!` uses `setfield!` wrapper reuse — unlimited dim patterns, 0-alloc after warmup.
+## Design Notes
+- 1D views (`SubArray`) are created fresh on every `acquire!` call — SubArray is stack-allocated
+  via SROA in modern Julia, making caching unnecessary (and slower due to memory indirection).
+- `unsafe_acquire!` uses `setfield!` wrapper reuse — unlimited dim patterns, 0-alloc after warmup.
+- Slot management is unified via `_claim_slot!` — the shared primitive for all acquisition paths.
 """
 mutable struct TypedPool{T} <: AbstractTypedPool{T, Vector{T}}
     # --- Storage ---
     vectors::Vector{Vector{T}}
-
-    # --- 1D Cache (1:1 mapping) ---
-    views::Vector{SubArray{T, 1, Vector{T}, Tuple{UnitRange{Int64}}, true}}
-    view_lengths::Vector{Int}
 
     # --- N-D Wrapper Cache (setfield!-based reuse) ---
     nd_wrappers::Vector{Union{Nothing, Vector{Any}}}  # index=N (dimensionality), value=per-slot Array{T,N}
@@ -192,9 +186,6 @@ end
 TypedPool{T}() where {T} = TypedPool{T}(
     # Storage
     Vector{T}[],
-    # 1D Cache
-    SubArray{T, 1, Vector{T}, Tuple{UnitRange{Int64}}, true}[],
-    Int[],
     # N-D Wrapper Cache
     Union{Nothing, Vector{Any}}[],
     # State Management (1-based sentinel pattern: guaranteed non-empty)

@@ -6,7 +6,7 @@
 @inline allocate_vector(::AbstractTypedPool{T, Vector{T}}, n::Int) where {T} =
     Vector{T}(undef, n)
 
-# Wrap flat view into N-D array (dispatch point for extensions)
+# Wrap flat view into N-D array (extension dispatch point, not used by main CPU path)
 @inline function wrap_array(
         ::AbstractTypedPool{T, Vector{T}},
         flat_view, dims::NTuple{N, Int}
@@ -61,71 +61,62 @@ end
 end
 
 # ==============================================================================
-# Get 1D View (Internal - Zero-Allocation Cache)
+# Slot Claim — Shared Primitive for All Acquisition Paths
 # ==============================================================================
 
 """
-    get_view!(tp::AbstractTypedPool{T}, n::Int)
+    _claim_slot!(tp::TypedPool{T}, n::Int) -> Int
 
-Get a 1D vector view of size `n` from the typed pool.
-Returns cached view on hit (zero allocation), creates new on miss.
+Claim the next slot, ensuring the backing vector exists and has capacity >= `n`.
+Returns the slot index. This is the shared primitive for all acquisition paths
+(`get_view!`, `get_nd_array!`, `get_nd_view!`).
 """
-function get_view!(tp::AbstractTypedPool{T}, n::Int) where {T}
+@inline function _claim_slot!(tp::TypedPool{T}, n::Int) where {T}
     tp.n_active += 1
     idx = tp.n_active
-
-    # 1. Need to expand pool (new slot)
     if idx > length(tp.vectors)
         push!(tp.vectors, allocate_vector(tp, n))
-        new_view = view(tp.vectors[idx], 1:n)
-        push!(tp.views, new_view)
-        push!(tp.view_lengths, n)
         _check_pool_growth(tp, idx)
-
-        return new_view
+    else
+        @inbounds vec = tp.vectors[idx]
+        if length(vec) < n
+            resize!(vec, n)
+        end
     end
-
-    # 2. Cache hit: same size requested -> return cached view (ZERO ALLOC)
-    @inbounds cached_len = tp.view_lengths[idx]
-    if cached_len == n
-        return @inbounds tp.views[idx]
-    end
-
-    # 3. Cache miss: different size -> update cache
-    @inbounds vec = tp.vectors[idx]
-    if length(vec) < n
-        resize!(vec, n)
-    end
-
-    new_view = view(vec, 1:n)
-    @inbounds tp.views[idx] = new_view
-    @inbounds tp.view_lengths[idx] = n
-
-    return new_view
+    return idx
 end
-
-# ==============================================================================
-# Slot Claim (for reshape! — wrapper-only, no backing memory)
-# ==============================================================================
 
 """
     _claim_slot!(tp::TypedPool{T}) -> Int
 
-Claim the next slot index by incrementing `n_active`.
-Ensures the slot exists in vectors/views/view_lengths arrays.
-The backing vector at this slot is unused — this is for wrapper-only caching
-(e.g., `reshape!` uses the slot index for `nd_wrapper` storage only).
+Claim the next slot without provisioning memory (zero-length backing vector).
+Used by `reshape!` which only needs the slot index for `nd_wrapper` caching —
+the wrapper points to a different array's memory via `setfield!(:ref)`.
 """
 @inline function _claim_slot!(tp::TypedPool{T}) where {T}
     tp.n_active += 1
     idx = tp.n_active
     if idx > length(tp.vectors)
         push!(tp.vectors, Vector{T}(undef, 0))
-        push!(tp.views, view(tp.vectors[idx], 1:0))
-        push!(tp.view_lengths, 0)
         _check_pool_growth(tp, idx)
     end
     return idx
+end
+
+# ==============================================================================
+# Get 1D View (Internal — Always Fresh, SubArray is Stack-Allocated via SROA)
+# ==============================================================================
+
+"""
+    get_view!(tp::AbstractTypedPool{T}, n::Int)
+
+Get a 1D `SubArray` view of size `n` from the typed pool.
+Always creates a fresh view — `SubArray` is stack-allocated via SROA in compiled code,
+making caching unnecessary (and slower due to memory indirection overhead).
+"""
+@inline function get_view!(tp::AbstractTypedPool{T}, n::Int) where {T}
+    idx = _claim_slot!(tp, n)
+    return @inbounds view(tp.vectors[idx], 1:n)
 end
 
 # ==============================================================================
@@ -231,18 +222,13 @@ end
 
 Get an N-dimensional `Array` from the pool with `setfield!`-based wrapper reuse.
 
-Uses Julia 1.11+ `setfield!` to mutate cached `Array` wrappers in-place:
-- Same N (dimensionality): `setfield!(arr, :size, dims)` — 0 allocation
-- Backing memory: `setfield!(arr, :ref, ...)` — always updated, 0 allocation in compiled code
-- First call per (slot, N): `unsafe_wrap` once, then cached forever
-
-Unlike the N-way cache (Julia 1.10), this has no eviction limit — unlimited dimension
-patterns per slot are supported with zero allocation after warmup.
+Uses `_claim_slot!` directly for slot management (independent of view path).
+Cache hit: `setfield!(arr, :ref/size)` — 0 allocation.
+Cache miss: creates wrapper via `setfield!` pattern, then cached forever.
 """
 @inline function get_nd_array!(tp::AbstractTypedPool{T, Vector{T}}, dims::NTuple{N, Int}) where {T, N}
     total_len = safe_prod(dims)
-    flat_view = get_view!(tp, total_len) # Increments n_active, ensures backing vec
-    slot = tp.n_active
+    slot = _claim_slot!(tp, total_len)
     @inbounds vec = tp.vectors[slot]
 
     # Look up cached wrapper for this dimensionality (direct index, no hash)
@@ -261,8 +247,10 @@ patterns per slot are supported with zero allocation after warmup.
         end
     end
 
-    # Cache miss: first call for this (slot, N) — unsafe_wrap once
-    arr = wrap_array(tp, flat_view, dims)
+    # Cache miss: first call for this (slot, N) — create via setfield! pattern
+    arr = Array{T, N}(undef, ntuple(_ -> 0, Val(N)))
+    setfield!(arr, :ref, getfield(vec, :ref))
+    setfield!(arr, :size, dims)
     _store_nd_wrapper!(tp, N, slot, arr)
     return arr
 end
@@ -270,12 +258,13 @@ end
 """
     get_nd_view!(tp::AbstractTypedPool{T}, dims::NTuple{N,Int})
 
-Get an N-dimensional view via `reshape` (zero creation cost).
+Get an N-dimensional view via `_claim_slot!` + `reshape` (zero creation cost).
+Independent of array path — uses `_claim_slot!` directly.
 """
 @inline function get_nd_view!(tp::AbstractTypedPool{T}, dims::NTuple{N, Int}) where {T, N}
     total_len = safe_prod(dims)
-    flat_view = get_view!(tp, total_len)  # 1D view (cached, 0 alloc)
-    return reshape(flat_view, dims)        # ReshapedArray (0 creation cost)
+    slot = _claim_slot!(tp, total_len)
+    return @inbounds reshape(view(tp.vectors[slot], 1:total_len), dims)
 end
 
 # ==============================================================================
