@@ -133,8 +133,8 @@ end
 Get an N-dimensional `Array` from the pool with `setfield!`-based wrapper reuse.
 
 Uses Julia 1.11+ `setfield!` to mutate cached `Array` wrappers in-place:
-- Same N (dimensionality): `setfield!(:size, dims)` — 0 allocation
-- Backing memory: `setfield!(:ref, ...)` — always updated, 0 allocation in compiled code
+- Same N (dimensionality): `setfield!(arr, :size, dims)` — 0 allocation
+- Backing memory: `setfield!(arr, :ref, ...)` — always updated, 0 allocation in compiled code
 - First call per (slot, N): `unsafe_wrap` once, then cached forever
 
 Unlike the N-way cache (Julia 1.10), this has no eviction limit — unlimited dimension

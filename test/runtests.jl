@@ -3,6 +3,13 @@ using AdaptiveArrayPools
 using AdaptiveArrayPools: get_typed_pool!
 import AdaptiveArrayPools: checkpoint!, rewind!
 
+# Version-specific helpers (always defined, even for ARGS path)
+@static if VERSION >= v"1.11-"
+    _test_nd_cache_preserved(tp) = !isempty(tp.nd_wrappers)
+else
+    _test_nd_cache_preserved(tp) = length(tp.nd_arrays) >= 1
+end
+
 # Check if specific test files are requested via ARGS
 if !isempty(ARGS)
     for testfile in ARGS
@@ -10,10 +17,8 @@ if !isempty(ARGS)
         include(testfile)
     end
 else
-    # Version-specific helper and test file selection
+    # Version-specific test file selection
     @static if VERSION >= v"1.11-"
-        _test_nd_cache_preserved(tp) = !isempty(tp.nd_wrappers)
-
         include("test_aqua.jl")
         include("test_basic.jl")
         include("test_state.jl")
@@ -35,8 +40,6 @@ else
         include("test_allocation.jl")
         include("test_fallback_reclamation.jl")
     else
-        _test_nd_cache_preserved(tp) = length(tp.nd_arrays) >= 1
-
         include("test_aqua.jl")
         include("test_basic.jl")
         include("test_state.jl")

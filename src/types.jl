@@ -160,8 +160,8 @@ Internal structure managing pooled vectors for a specific element type `T`.
 
 ### N-D Wrapper Cache (Julia 1.11+, setfield!-based reuse)
 - `nd_wrappers`: `Vector{Union{Nothing, Vector{Any}}}` — indexed by N (dimensionality),
-  each entry is a per-slot cached `Array{T,N}` wrapper. Uses `setfield!(:size, dims)`
-  and `setfield!(:ref, ...)` for zero-allocation reuse of unlimited dim patterns.
+  each entry is a per-slot cached `Array{T,N}` wrapper. Uses `setfield!(wrapper, :size, dims)`
+  and `setfield!(wrapper, :ref, parent)` for zero-allocation reuse of unlimited dim patterns.
 
 ### State Management (1-based sentinel pattern)
 - `n_active`: Count of currently active (checked-out) arrays
