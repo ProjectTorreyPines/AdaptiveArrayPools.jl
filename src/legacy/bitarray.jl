@@ -1,13 +1,13 @@
 # ==============================================================================
-# BitArray Acquisition — Julia 1.11+ (setfield!-based Wrapper Reuse)
+# BitArray Acquisition — Legacy (Julia ≤1.10, N-way Set-Associative Cache)
 # ==============================================================================
 #
-# This file contains BitArray-specific pool operations for Julia 1.11+.
-# Uses setfield!-based wrapper reuse for unlimited dim patterns, 0-alloc.
+# This file contains BitArray-specific pool operations for Julia ≤1.10.
+# Uses N-way set-associative cache for N-D BitArray caching.
 #
 # Key components:
 # - Base.zero/one(::Type{Bit}) - Fill value dispatch for Bit sentinel type
-# - get_bitarray! - N-D BitArray with setfield!-based caching
+# - get_bitarray! - N-D BitArray with shared chunks and N-way caching
 # - _acquire_impl! for Bit - Delegates to _unsafe_acquire_impl! for performance
 # - _unsafe_acquire_impl! for Bit - Raw BitArray acquisition with caching
 # - DisabledPool fallbacks for Bit type
@@ -15,8 +15,27 @@
 # Design Decision: Unified BitArray Return Type
 # =============================================
 # Unlike regular types where acquire! returns SubArray and unsafe_acquire!
-# returns Array, for Bit type BOTH return BitArray{N}. This ensures users
-# always get SIMD-optimized performance (~10-100x faster count/sum/bitwise).
+# returns Array, for Bit type BOTH return BitArray{N}. This design choice is
+# intentional for several reasons:
+#
+# 1. **SIMD Performance**: BitArray operations like `count()`, `sum()`, and
+#    bitwise operations are ~(10x ~ 100x) faster than their SubArray equivalents
+#    because they use SIMD-optimized chunked algorithms.
+#
+# 2. **API Simplicity**: Users always get BitArray regardless of which API
+#    they call. No need to remember "use unsafe_acquire! for performance".
+#
+# 3. **N-D Caching**: BitArray{N} can be reused by modifying dims/len fields
+#    when ndims matches, achieving 0 allocation on repeated calls. This is
+#    unique to BitArray - regular Array cannot modify dims in place.
+#
+# 4. **Backwards Compatibility**: Code using trues!/falses! just works with
+#    optimal performance - these convenience functions return BitVector.
+#
+# Implementation:
+# - _acquire_impl!(pool, Bit, ...) delegates to _unsafe_acquire_impl!
+# - get_bitarray! creates BitArray shells sharing pool's chunks
+# - N-way cache stores BitArray{N} entries, reused via dims modification
 # ==============================================================================
 
 # ==============================================================================
@@ -28,7 +47,7 @@
 @inline Base.one(::Type{Bit}) = true
 
 # ==============================================================================
-# BitArray Acquisition (N-D caching with chunks sharing)
+# BitArray Acquisition (N-way set-associative cache, Julia ≤1.10)
 # ==============================================================================
 
 """
@@ -36,7 +55,7 @@
 
 Get a BitArray{N} that shares `chunks` with the pooled BitVector.
 
-Uses `setfield!`-based wrapper reuse — unlimited dim patterns, 0-alloc after warmup.
+Uses N-way set-associative cache with up to CACHE_WAYS patterns per slot.
 
 ## Implementation Notes
 - BitVector (N=1): `size()` uses `len` field, `dims` is ignored
@@ -61,8 +80,19 @@ function get_bitarray!(tp::BitTypedPool, dims::NTuple{N,Int}) where {N}
         ba = BitArray{N}(undef, dims)
         ba.chunks = pool_bv.chunks
 
-        # Cache the wrapper
-        _store_nd_wrapper!(tp, N, idx, ba)
+        # Expand N-way cache (CACHE_WAYS entries per slot)
+        for _ in 1:CACHE_WAYS
+            push!(tp.nd_arrays, nothing)
+            push!(tp.nd_dims, nothing)
+            push!(tp.nd_ptrs, UInt(0))
+        end
+        push!(tp.nd_next_way, 0)
+
+        # Cache in first way
+        base = (idx - 1) * CACHE_WAYS + 1
+        @inbounds tp.nd_arrays[base] = ba
+        @inbounds tp.nd_dims[base] = dims
+        @inbounds tp.nd_ptrs[base] = UInt(pointer(pool_bv.chunks))
 
         # Warn at powers of 2 (possible missing rewind!)
         if idx >= 512 && (idx & (idx - 1)) == 0
@@ -78,25 +108,44 @@ function get_bitarray!(tp::BitTypedPool, dims::NTuple{N,Int}) where {N}
     if length(pool_bv) != total_len
         resize!(pool_bv, total_len)
     end
+    current_ptr = UInt(pointer(pool_bv.chunks))
+    base = (idx - 1) * CACHE_WAYS
 
-    # 3. Check wrapper cache (direct index, no hash)
-    wrappers = N <= length(tp.nd_wrappers) ? (@inbounds tp.nd_wrappers[N]) : nothing
-    if wrappers !== nothing && idx <= length(wrappers)
-        wrapper = @inbounds wrappers[idx]
-        if wrapper !== nothing
-            ba = wrapper::BitArray{N}
-            # Update fields in-place (all 0-alloc via setfield!)
-            setfield!(ba, :len, total_len)
-            setfield!(ba, :dims, dims)
-            setfield!(ba, :chunks, pool_bv.chunks)
-            return ba
+    # 3. Check N-way cache for hit
+    for k in 1:CACHE_WAYS
+        cache_idx = base + k
+        @inbounds cached_dims = tp.nd_dims[cache_idx]
+        @inbounds cached_ptr = tp.nd_ptrs[cache_idx]
+
+        # Must check isa FIRST for type stability (avoids boxing in == comparison)
+        if cached_dims isa NTuple{N,Int} && cached_ptr == current_ptr
+            if cached_dims == dims
+                # Exact match - return cached BitArray directly (0 alloc)
+                return @inbounds tp.nd_arrays[cache_idx]::BitArray{N}
+            else
+                # Same ndims but different dims - reuse by modifying fields (0 alloc!)
+                ba = @inbounds tp.nd_arrays[cache_idx]::BitArray{N}
+                ba.len = total_len
+                ba.dims = dims
+                ba.chunks = pool_bv.chunks
+                # Update cache metadata
+                @inbounds tp.nd_dims[cache_idx] = dims
+                return ba
+            end
         end
     end
 
-    # 4. Cache miss: first call for this (slot, N)
+    # 4. Cache miss - create new BitArray{N}
     ba = BitArray{N}(undef, dims)
     ba.chunks = pool_bv.chunks
-    _store_nd_wrapper!(tp, N, idx, ba)
+
+    # Round-robin replacement
+    @inbounds way_offset = tp.nd_next_way[idx]
+    target_idx = base + way_offset + 1
+    @inbounds tp.nd_arrays[target_idx] = ba
+    @inbounds tp.nd_dims[target_idx] = dims
+    @inbounds tp.nd_ptrs[target_idx] = current_ptr
+    @inbounds tp.nd_next_way[idx] = (way_offset + 1) % CACHE_WAYS
 
     return ba
 end
@@ -107,14 +156,6 @@ end
 # ==============================================================================
 # Acquire Implementation (Bit type → delegates to unsafe_acquire for performance)
 # ==============================================================================
-#
-# Unlike other types where acquire! returns SubArray (view-based) and
-# unsafe_acquire! returns Array (raw), Bit type always returns BitArray{N}.
-# This is because BitArray's SIMD-optimized operations (count, sum, etc.)
-# are ~(10x ~ 100x) faster than SubArray equivalents.
-#
-# The delegation is transparent: users calling acquire!(pool, Bit, dims...) get
-# BitArray{N} without needing to know about unsafe_acquire!.
 
 # Bit type: delegates to _unsafe_acquire_impl! for SIMD performance
 @inline function _acquire_impl!(pool::AbstractArrayPool, ::Type{Bit}, n::Int)

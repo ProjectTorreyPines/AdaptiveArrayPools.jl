@@ -24,11 +24,6 @@ Compute the product of dimensions with overflow checking.
 Throws `OverflowError` if the product exceeds `typemax(Int)`, preventing
 memory corruption from integer overflow in `unsafe_wrap` operations.
 
-## Rationale
-Without overflow checking, large dimensions like `(10^10, 10^10)` would wrap
-around to a small value, causing `unsafe_wrap` to create an array view that
-indexes beyond allocated memory.
-
 ## Performance
 Adds ~0.3-1.2 ns overhead (<1%) compared to unchecked `prod()`, which is
 negligible relative to the 100-200 ns cost of the full allocation path.
@@ -91,80 +86,69 @@ function get_view!(tp::AbstractTypedPool{T}, n::Int) where {T}
 end
 
 # ==============================================================================
-# Get N-D Array (setfield!-based Wrapper Reuse, Julia 1.11+)
+# Get N-D Array (N-way Set-Associative Cache, Julia ≤1.10)
 # ==============================================================================
 #
-# Julia 1.11+ changed Array to mutable struct {ref::MemoryRef{T}, size::NTuple{N,Int}},
-# enabling in-place mutation via setfield!. This eliminates N-way cache eviction limits:
-# unlimited dimension patterns per slot, 0-alloc after warmup for any dims with same N.
+# On Julia ≤1.10, Array is not a mutable struct, so setfield! cannot be used.
+# This provides the N-way cache that stores up to CACHE_WAYS different
+# (dims, pointer) patterns per slot via round-robin replacement.
 
 """
-    _store_nd_wrapper!(tp::AbstractTypedPool, N::Int, slot::Int, wrapper)
+    get_nd_array!(tp::AbstractTypedPool{T}, dims::NTuple{N,Int}) -> Array{T,N}
 
-Store a cached N-D wrapper for the given slot. Creates the per-N Vector if needed.
+Get an N-dimensional `Array` from the pool with N-way caching.
+
+Uses a set-associative cache with `CACHE_WAYS` entries per slot (default: 4).
+Cache hit (exact dims + pointer match) returns the cached Array at zero cost.
+Cache miss creates a new `unsafe_wrap`'d Array (~96 bytes) and stores it via
+round-robin replacement.
 """
-function _store_nd_wrapper!(tp::AbstractTypedPool, N::Int, slot::Int, wrapper)
-    # Grow nd_wrappers vector so index N is valid
-    if N > length(tp.nd_wrappers)
-        old_len = length(tp.nd_wrappers)
-        resize!(tp.nd_wrappers, N)
-        for i in (old_len+1):N
-            @inbounds tp.nd_wrappers[i] = nothing
-        end
-    end
-    wrappers = @inbounds tp.nd_wrappers[N]
-    if wrappers === nothing
-        wrappers = Vector{Any}(nothing, slot)
-        @inbounds tp.nd_wrappers[N] = wrappers
-    elseif slot > length(wrappers)
-        old_len = length(wrappers)
-        resize!(wrappers, slot)
-        for i in (old_len+1):slot
-            @inbounds wrappers[i] = nothing
-        end
-    end
-    @inbounds wrappers[slot] = wrapper
-    nothing
-end
-
-"""
-    get_nd_array!(tp::AbstractTypedPool{T,Vector{T}}, dims::NTuple{N,Int}) -> Array{T,N}
-
-Get an N-dimensional `Array` from the pool with `setfield!`-based wrapper reuse.
-
-Uses Julia 1.11+ `setfield!` to mutate cached `Array` wrappers in-place:
-- Same N (dimensionality): `setfield!(arr, :size, dims)` — 0 allocation
-- Backing memory: `setfield!(arr, :ref, ...)` — always updated, 0 allocation in compiled code
-- First call per (slot, N): `unsafe_wrap` once, then cached forever
-
-Unlike the N-way cache (Julia 1.10), this has no eviction limit — unlimited dimension
-patterns per slot are supported with zero allocation after warmup.
-"""
-@inline function get_nd_array!(tp::AbstractTypedPool{T, Vector{T}}, dims::NTuple{N, Int}) where {T, N}
+@inline function get_nd_array!(tp::AbstractTypedPool{T}, dims::NTuple{N, Int}) where {T, N}
     total_len = safe_prod(dims)
-    flat_view = get_view!(tp, total_len) # Increments n_active, ensures backing vec
+    flat_view = get_view!(tp, total_len) # Increments n_active
     slot = tp.n_active
-    @inbounds vec = tp.vectors[slot]
 
-    # Look up cached wrapper for this dimensionality (direct index, no hash)
-    wrappers = N <= length(tp.nd_wrappers) ? (@inbounds tp.nd_wrappers[N]) : nothing
-    if wrappers !== nothing && slot <= length(wrappers)
-        wrapper = @inbounds wrappers[slot]
-        if wrapper !== nothing
-            arr = wrapper::Array{T, N}
-            # Always update ref: resize! can grow in-place without changing pointer,
-            # but the old MemoryRef still has the old (smaller) Memory length.
-            # setfield!(:ref) is 0-alloc in compiled code (only 32B at REPL top-level).
-            setfield!(arr, :ref, getfield(vec, :ref))
-            # Update dimensions (0-alloc: NTuple stored inline in mutable Array)
-            setfield!(arr, :size, dims)
-            return arr
+    @inbounds vec = tp.vectors[slot]
+    current_ptr = UInt(pointer(vec))
+
+    # Expand cache slots if needed (CACHE_WAYS entries per slot)
+    n_slots_cached = length(tp.nd_next_way)
+    while slot > n_slots_cached
+        for _ in 1:CACHE_WAYS
+            push!(tp.nd_arrays, nothing)
+            push!(tp.nd_dims, nothing)
+            push!(tp.nd_ptrs, UInt(0))
+        end
+        push!(tp.nd_next_way, 0)
+        n_slots_cached += 1
+    end
+
+    base = (slot - 1) * CACHE_WAYS
+
+    # Linear Search across all ways (Cache hit = 0 bytes)
+    for k in 1:CACHE_WAYS
+        cache_idx = base + k
+        @inbounds cached_dims = tp.nd_dims[cache_idx]
+        @inbounds cached_ptr = tp.nd_ptrs[cache_idx]
+
+        if cached_dims isa NTuple{N, Int} && cached_dims == dims && cached_ptr == current_ptr
+            return @inbounds tp.nd_arrays[cache_idx]::Array{T, N}
         end
     end
 
-    # Cache miss: first call for this (slot, N) — unsafe_wrap once
+    # Cache Miss - Round-Robin Replacement
+    @inbounds way_offset = tp.nd_next_way[slot]
+    target_idx = base + way_offset + 1
+
     arr = wrap_array(tp, flat_view, dims)
-    _store_nd_wrapper!(tp, N, slot, arr)
+
+    @inbounds tp.nd_arrays[target_idx] = arr
+    @inbounds tp.nd_dims[target_idx] = dims
+    @inbounds tp.nd_ptrs[target_idx] = current_ptr
+
+    # Update round-robin counter
+    @inbounds tp.nd_next_way[slot] = (way_offset + 1) % CACHE_WAYS
+
     return arr
 end
 
@@ -372,10 +356,6 @@ Returns the backend's native array type:
 - **Bit** (`T === Bit`): `BitVector` / `BitArray{N}` (chunks-sharing; equivalent to `acquire!`)
 - **CUDA**: `CuArray{T,N}` (via unified view cache)
 
-For CPU pools, since `Array` instances are mutable references, cached instances can be
-returned directly without creating new wrapper objects—ideal for type-unspecified paths.
-For CUDA pools, this delegates to the same unified N-way cache as `acquire!`.
-
 ## Safety Warning
 The returned array is only valid within the `@with_pool` scope. Using it after
 the scope ends leads to undefined behavior (use-after-free, data corruption).
@@ -385,18 +365,13 @@ undefined behavior as the memory is owned by the pool.
 
 ## When to Use
 - **Type-unspecified paths**: Struct fields without concrete type parameters
-  (e.g., `_pooled_chain::PooledChain` instead of `_pooled_chain::PooledChain{M}`)
 - FFI calls expecting raw pointers
 - APIs that strictly require native array types
-
-## Allocation Behavior
-- **CPU**: Cache hit 0 bytes, cache miss ~112 bytes (Array header via `unsafe_wrap`)
-- **CUDA**: Cache hit ~0 bytes, cache miss ~80 bytes (CuArray wrapper creation)
 
 ## Example
 ```julia
 @with_pool pool begin
-    A = unsafe_acquire!(pool, Float64, 100, 100)  # Matrix{Float64} (CPU) or CuMatrix{Float64} (CUDA)
+    A = unsafe_acquire!(pool, Float64, 100, 100)  # Matrix{Float64}
     B = unsafe_acquire!(pool, Float64, 100, 100)
     C = similar(A)  # Regular allocation for result
     mul!(C, A, B)   # BLAS uses A, B directly

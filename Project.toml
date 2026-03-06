@@ -1,7 +1,7 @@
 name = "AdaptiveArrayPools"
 uuid = "4f381ef7-9af0-4cbe-99d4-cf36d7b0f233"
-version = "0.2.1"
 authors = ["Min-Gu Yoo <mgyoo86@gmail.com>"]
+version = "0.2.1"
 
 [deps]
 Preferences = "21216c6a-2e73-6563-6e65-726566657250"
@@ -14,7 +14,7 @@ CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
 AdaptiveArrayPoolsCUDAExt = "CUDA"
 
 [compat]
-julia = "1.10"
-Preferences = "1"
 CUDA = "5"
+Preferences = "1"
 Printf = "1"
+julia = "1.10"

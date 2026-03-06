@@ -1,5 +1,12 @@
 # N-D Array Approach Comparison: unsafe_wrap vs ReshapedArray
 
+> **Update (v0.2.2, feat/new_array_nd)**: The N-way set-associative cache described in this
+> document has been **superseded on Julia 1.11+ CPU** by `setfield!`-based wrapper reuse
+> (`nd_wrappers` indexed by dimensionality N). This achieves **0-alloc for unlimited dimension
+> patterns** — no eviction, no `CACHE_WAYS` limit. The N-way cache remains in use for
+> **CUDA** and the **Julia 1.10 legacy** path. The `acquire!` → `ReshapedArray` path is
+> unchanged. See `src/acquire.jl` and `src/types.jl` for the current implementation.
+
 ## Summary
 
 This document analyzes two approaches for returning N-dimensional arrays from AdaptiveArrayPools:

@@ -1,5 +1,5 @@
 # ==============================================================================
-# Constants (Configurable via Preferences)
+# Constants (Configurable via Preferences) — Legacy (Julia ≤1.10)
 # ==============================================================================
 
 using Preferences
@@ -138,7 +138,7 @@ pooling_enabled(::AbstractArrayPool) = true
 pooling_enabled(::DisabledPool) = false
 
 # ==============================================================================
-# Core Data Structures
+# Core Data Structures — Legacy (Julia ≤1.10, N-way set-associative cache)
 # ==============================================================================
 
 # 1-Based Sentinel Pattern: Arrays start with sentinel values to eliminate
@@ -158,19 +158,16 @@ Internal structure managing pooled vectors for a specific element type `T`.
 - `views`: Cached `SubArray` views for zero-allocation 1D access
 - `view_lengths`: Cached lengths for fast Int comparison (SoA pattern)
 
-### N-D Wrapper Cache (Julia 1.11+, setfield!-based reuse)
-- `nd_wrappers`: `Vector{Union{Nothing, Vector{Any}}}` — indexed by N (dimensionality),
-  each entry is a per-slot cached `Array{T,N}` wrapper. Uses `setfield!(wrapper, :size, dims)`
-  and `setfield!(wrapper, :ref, parent)` for zero-allocation reuse of unlimited dim patterns.
+### N-D Array Cache (N-way set-associative, Julia ≤1.10)
+- `nd_arrays`: Cached N-D `Array` objects (length = slots × CACHE_WAYS)
+- `nd_dims`: Cached dimension tuples for cache hit validation
+- `nd_ptrs`: Cached pointer values to detect backing vector resize
+- `nd_next_way`: Round-robin counter per slot (length = slots)
 
 ### State Management (1-based sentinel pattern)
 - `n_active`: Count of currently active (checked-out) arrays
 - `_checkpoint_n_active`: Saved n_active values at each checkpoint (sentinel: `[0]`)
 - `_checkpoint_depths`: Depth of each checkpoint entry (sentinel: `[0]`)
-
-## Note
-`acquire!` for N-D returns `ReshapedArray` (zero creation cost), so no caching needed.
-`unsafe_acquire!` uses `setfield!` wrapper reuse — unlimited dim patterns, 0-alloc after warmup.
 """
 mutable struct TypedPool{T} <: AbstractTypedPool{T, Vector{T}}
     # --- Storage ---
@@ -180,8 +177,11 @@ mutable struct TypedPool{T} <: AbstractTypedPool{T, Vector{T}}
     views::Vector{SubArray{T, 1, Vector{T}, Tuple{UnitRange{Int64}}, true}}
     view_lengths::Vector{Int}
 
-    # --- N-D Wrapper Cache (setfield!-based reuse) ---
-    nd_wrappers::Vector{Union{Nothing, Vector{Any}}}  # index=N (dimensionality), value=per-slot Array{T,N}
+    # --- N-D Array Cache (N-way set associative) ---
+    nd_arrays::Vector{Any}      # length = slots × CACHE_WAYS
+    nd_dims::Vector{Any}        # dimension tuples
+    nd_ptrs::Vector{UInt}       # pointer validation
+    nd_next_way::Vector{Int}    # round-robin counter per slot
 
     # --- State Management (1-based sentinel pattern) ---
     n_active::Int
@@ -195,8 +195,8 @@ TypedPool{T}() where {T} = TypedPool{T}(
     # 1D Cache
     SubArray{T, 1, Vector{T}, Tuple{UnitRange{Int64}}, true}[],
     Int[],
-    # N-D Wrapper Cache
-    Union{Nothing, Vector{Any}}[],
+    # N-D Array Cache
+    Any[], Any[], UInt[], Int[],
     # State Management (1-based sentinel pattern: guaranteed non-empty)
     0,          # n_active
     [0],        # _checkpoint_n_active: sentinel (n_active=0 at depth=0)
@@ -261,7 +261,7 @@ See also: [`trues!`](@ref), [`falses!`](@ref), [`BitTypedPool`](@ref)
 struct Bit end
 
 # ==============================================================================
-# BitTypedPool - Specialized pool for BitVector/BitArray
+# BitTypedPool — Legacy (Julia ≤1.10, N-way set-associative cache)
 # ==============================================================================
 
 """
@@ -269,29 +269,11 @@ struct Bit end
 
 Specialized pool for `BitVector` arrays with memory reuse.
 
-Unlike `TypedPool{Bool}` which stores `Vector{Bool}` (1 byte per element),
-this pool stores `BitVector` (1 bit per element, ~8x memory efficiency).
-
-## Unified API (Always Returns BitVector)
-Unlike other types, both `acquire!` and `unsafe_acquire!` return `BitVector`
-for the `Bit` type. This design ensures users always get SIMD-optimized
-performance without needing to choose between APIs.
-
-- `acquire!(pool, Bit, n)` → `BitVector` (SIMD optimized)
-- `unsafe_acquire!(pool, Bit, n)` → `BitVector` (same behavior)
-- `trues!(pool, n)` → `BitVector` filled with `true`
-- `falses!(pool, n)` → `BitVector` filled with `false`
-
 ## Fields
 - `vectors`: Backing `BitVector` storage
-- `nd_wrappers`: `Vector{Union{Nothing, Vector{Any}}}` — setfield!-based cache (Julia 1.11+)
+- `nd_arrays`, `nd_dims`, `nd_ptrs`, `nd_next_way`: N-way cache (Julia ≤1.10)
 - `n_active`: Count of currently active arrays
 - `_checkpoint_*`: State management stacks (1-based sentinel pattern)
-
-## Performance
-Operations like `count()`, `sum()`, and bitwise operations are ~(10x ~ 100x) faster
-than equivalent operations on `SubArray{Bool}` because `BitVector` uses
-SIMD-optimized algorithms on packed 64-bit chunks.
 
 See also: [`trues!`](@ref), [`falses!`](@ref), [`Bit`](@ref)
 """
@@ -299,8 +281,11 @@ mutable struct BitTypedPool <: AbstractTypedPool{Bool, BitVector}
     # --- Storage ---
     vectors::Vector{BitVector}
 
-    # --- N-D Wrapper Cache (setfield!-based reuse) ---
-    nd_wrappers::Vector{Union{Nothing, Vector{Any}}}  # index=N (dimensionality), value=per-slot BitArray{N}
+    # --- N-D BitArray Cache (N-way set associative) ---
+    nd_arrays::Vector{Any}      # Cached BitArray{N} instances
+    nd_dims::Vector{Any}        # Cached dims (NTuple{N,Int})
+    nd_ptrs::Vector{UInt}       # pointer validation
+    nd_next_way::Vector{Int}    # round-robin counter per slot
 
     # --- State Management (1-based sentinel pattern) ---
     n_active::Int
@@ -311,8 +296,8 @@ end
 BitTypedPool() = BitTypedPool(
     # Storage
     BitVector[],
-    # N-D Wrapper Cache
-    Union{Nothing, Vector{Any}}[],
+    # N-D BitArray Cache
+    Any[], Any[], UInt[], Int[],
     # State Management (1-based sentinel pattern)
     0,          # n_active
     [0],        # _checkpoint_n_active: sentinel
