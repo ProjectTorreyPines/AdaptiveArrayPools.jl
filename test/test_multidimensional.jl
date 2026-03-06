@@ -37,7 +37,7 @@ using AdaptiveArrayPools: checkpoint!, rewind!
 
         # Without pool (fallback)
         mat_alloc = acquire!(DISABLED_CPU, Float64, 10, 10)
-        @test mat_alloc isa Array{Float64,2}
+        @test mat_alloc isa Array{Float64, 2}
         @test size(mat_alloc) == (10, 10)
     end
 

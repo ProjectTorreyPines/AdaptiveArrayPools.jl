@@ -63,14 +63,14 @@ ensuring thread safety without locks.
     # 1. Fast Path: Try to get existing pool
     # get(dict, key, default) is optimized in Julia Base
     pool = get(task_local_storage(), _POOL_KEY, nothing)
-    
+
     if pool === nothing
         # 2. Slow Path: Create and store new pool
         # This branch is rarely taken (only once per Task)
         pool = AdaptiveArrayPool()
         task_local_storage(_POOL_KEY, pool)
     end
-    
+
     return pool::AdaptiveArrayPool
 end
 

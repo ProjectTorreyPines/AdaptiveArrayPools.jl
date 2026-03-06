@@ -390,7 +390,9 @@
             end
 
             # Warmup (compile + cache)
-            for _ in 1:4; _test_reshape_func_alloc(ext); end
+            for _ in 1:4
+                _test_reshape_func_alloc(ext)
+            end
 
             alloc = @allocated _test_reshape_func_alloc(ext)
             println("  @with_pool function (acquire+reshape+zeros!): $alloc bytes")
@@ -415,7 +417,9 @@
 
             function _measure_maybe_reshape(data, enabled)
                 MAYBE_POOLING_ENABLED[] = enabled
-                for _ in 1:4; _test_maybe_reshape_alloc(data); end
+                for _ in 1:4
+                    _test_maybe_reshape_alloc(data)
+                end
                 return @allocated _test_maybe_reshape_alloc(data)
             end
 
@@ -428,7 +432,7 @@
                 _measure_maybe_reshape(ext, false)
 
                 # Measure
-                alloc_pooled   = _measure_maybe_reshape(ext, true)
+                alloc_pooled = _measure_maybe_reshape(ext, true)
                 alloc_unpooled = _measure_maybe_reshape(ext, false)
 
                 println("  @maybe_with_pool pooled:   $alloc_pooled bytes")

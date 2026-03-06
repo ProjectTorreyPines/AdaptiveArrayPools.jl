@@ -3,13 +3,15 @@
 # ==============================================================================
 
 # Allocate a new vector (dispatch point for extensions)
-@inline allocate_vector(::AbstractTypedPool{T,Vector{T}}, n::Int) where {T} =
+@inline allocate_vector(::AbstractTypedPool{T, Vector{T}}, n::Int) where {T} =
     Vector{T}(undef, n)
 
 # Wrap flat view into N-D array (dispatch point for extensions)
-@inline function wrap_array(::AbstractTypedPool{T,Vector{T}},
-                            flat_view, dims::NTuple{N,Int}) where {T,N}
-    unsafe_wrap(Array{T,N}, pointer(flat_view), dims)
+@inline function wrap_array(
+        ::AbstractTypedPool{T, Vector{T}},
+        flat_view, dims::NTuple{N, Int}
+    ) where {T, N}
+    return unsafe_wrap(Array{T, N}, pointer(flat_view), dims)
 end
 
 # ==============================================================================
@@ -185,7 +187,7 @@ For non-fixed-slot types, sets `_touched_has_others` flag.
     else
         @inbounds pool._touched_type_masks[depth] |= b
     end
-    nothing
+    return nothing
 end
 
 # CPU-specific override: adds lazy first-touch checkpoint in lazy mode
@@ -213,7 +215,7 @@ end
         end
         @inbounds pool._touched_type_masks[depth] = current_mask | b
     end
-    nothing
+    return nothing
 end
 
 # ==============================================================================
@@ -238,7 +240,7 @@ end
 end
 
 @inline function _acquire_impl!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
-    _acquire_impl!(pool, T, dims...)
+    return _acquire_impl!(pool, T, dims...)
 end
 
 # Similar-style
@@ -305,19 +307,19 @@ See also: [`unsafe_acquire!`](@ref) for native array access.
 """
 @inline function acquire!(pool::AbstractArrayPool, ::Type{T}, n::Int) where {T}
     _record_type_touch!(pool, T)
-    _acquire_impl!(pool, T, n)
+    return _acquire_impl!(pool, T, n)
 end
 
 # Multi-dimensional support (zero-allocation with N-D cache)
 @inline function acquire!(pool::AbstractArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
     _record_type_touch!(pool, T)
-    _acquire_impl!(pool, T, dims...)
+    return _acquire_impl!(pool, T, dims...)
 end
 
 # Tuple support: allows acquire!(pool, T, size(A)) where size(A) returns NTuple{N,Int}
 @inline function acquire!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
     _record_type_touch!(pool, T)
-    _acquire_impl!(pool, T, dims...)
+    return _acquire_impl!(pool, T, dims...)
 end
 
 # Similar-style convenience methods
@@ -337,7 +339,7 @@ end
 """
 @inline function acquire!(pool::AbstractArrayPool, x::AbstractArray)
     _record_type_touch!(pool, eltype(x))
-    _acquire_impl!(pool, eltype(x), size(x))
+    return _acquire_impl!(pool, eltype(x), size(x))
 end
 
 # ==============================================================================
@@ -383,18 +385,18 @@ See also: [`acquire!`](@ref) for view-based access.
 """
 @inline function unsafe_acquire!(pool::AbstractArrayPool, ::Type{T}, n::Int) where {T}
     _record_type_touch!(pool, T)
-    _unsafe_acquire_impl!(pool, T, n)
+    return _unsafe_acquire_impl!(pool, T, n)
 end
 
 @inline function unsafe_acquire!(pool::AbstractArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
     _record_type_touch!(pool, T)
-    _unsafe_acquire_impl!(pool, T, dims...)
+    return _unsafe_acquire_impl!(pool, T, dims...)
 end
 
 # Tuple support
 @inline function unsafe_acquire!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
     _record_type_touch!(pool, T)
-    _unsafe_acquire_impl!(pool, T, dims)
+    return _unsafe_acquire_impl!(pool, T, dims)
 end
 
 # Similar-style convenience methods
@@ -414,7 +416,7 @@ end
 """
 @inline function unsafe_acquire!(pool::AbstractArrayPool, x::AbstractArray)
     _record_type_touch!(pool, eltype(x))
-    _unsafe_acquire_impl!(pool, eltype(x), size(x))
+    return _unsafe_acquire_impl!(pool, eltype(x), size(x))
 end
 
 # ==============================================================================
@@ -451,14 +453,14 @@ const _acquire_array_impl! = _unsafe_acquire_impl!
 
 # --- acquire! for DisabledPool{:cpu} ---
 @inline acquire!(::DisabledPool{:cpu}, ::Type{T}, n::Int) where {T} = Vector{T}(undef, n)
-@inline acquire!(::DisabledPool{:cpu}, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = Array{T,N}(undef, dims)
-@inline acquire!(::DisabledPool{:cpu}, ::Type{T}, dims::NTuple{N,Int}) where {T,N} = Array{T,N}(undef, dims)
+@inline acquire!(::DisabledPool{:cpu}, ::Type{T}, dims::Vararg{Int, N}) where {T, N} = Array{T, N}(undef, dims)
+@inline acquire!(::DisabledPool{:cpu}, ::Type{T}, dims::NTuple{N, Int}) where {T, N} = Array{T, N}(undef, dims)
 @inline acquire!(::DisabledPool{:cpu}, x::AbstractArray) = similar(x)
 
 # --- unsafe_acquire! for DisabledPool{:cpu} ---
 @inline unsafe_acquire!(::DisabledPool{:cpu}, ::Type{T}, n::Int) where {T} = Vector{T}(undef, n)
-@inline unsafe_acquire!(::DisabledPool{:cpu}, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = Array{T,N}(undef, dims)
-@inline unsafe_acquire!(::DisabledPool{:cpu}, ::Type{T}, dims::NTuple{N,Int}) where {T,N} = Array{T,N}(undef, dims)
+@inline unsafe_acquire!(::DisabledPool{:cpu}, ::Type{T}, dims::Vararg{Int, N}) where {T, N} = Array{T, N}(undef, dims)
+@inline unsafe_acquire!(::DisabledPool{:cpu}, ::Type{T}, dims::NTuple{N, Int}) where {T, N} = Array{T, N}(undef, dims)
 @inline unsafe_acquire!(::DisabledPool{:cpu}, x::AbstractArray) = similar(x)
 
 # --- Generic DisabledPool fallbacks (unknown backend → error) ---
@@ -469,11 +471,11 @@ const _acquire_array_impl! = _unsafe_acquire_impl!
 # Called when: USE_POOLING=true + @maybe_with_pool + MAYBE_POOLING_ENABLED[]=false
 # Explicit overloads for proper inlining (especially important for CUDA backend).
 @inline _acquire_impl!(p::DisabledPool, ::Type{T}, n::Int) where {T} = acquire!(p, T, n)
-@inline _acquire_impl!(p::DisabledPool, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = acquire!(p, T, dims...)
-@inline _acquire_impl!(p::DisabledPool, ::Type{T}, dims::NTuple{N,Int}) where {T,N} = acquire!(p, T, dims)
+@inline _acquire_impl!(p::DisabledPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N} = acquire!(p, T, dims...)
+@inline _acquire_impl!(p::DisabledPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N} = acquire!(p, T, dims)
 @inline _acquire_impl!(p::DisabledPool, x::AbstractArray) = acquire!(p, x)
 
 @inline _unsafe_acquire_impl!(p::DisabledPool, ::Type{T}, n::Int) where {T} = unsafe_acquire!(p, T, n)
-@inline _unsafe_acquire_impl!(p::DisabledPool, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = unsafe_acquire!(p, T, dims...)
-@inline _unsafe_acquire_impl!(p::DisabledPool, ::Type{T}, dims::NTuple{N,Int}) where {T,N} = unsafe_acquire!(p, T, dims)
+@inline _unsafe_acquire_impl!(p::DisabledPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N} = unsafe_acquire!(p, T, dims...)
+@inline _unsafe_acquire_impl!(p::DisabledPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N} = unsafe_acquire!(p, T, dims)
 @inline _unsafe_acquire_impl!(p::DisabledPool, x::AbstractArray) = unsafe_acquire!(p, x)

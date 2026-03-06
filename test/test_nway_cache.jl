@@ -130,8 +130,10 @@ end
         pool = AdaptiveArrayPool()
 
         function test_nd_many_patterns!(p)
-            dims_list = ((2, 50), (5, 20), (10, 10), (20, 5), (50, 2),
-                         (1, 100), (100, 1), (4, 25), (25, 4), (8, 13))
+            dims_list = (
+                (2, 50), (5, 20), (10, 10), (20, 5), (50, 2),
+                (1, 100), (100, 1), (4, 25), (25, 4), (8, 13),
+            )
             for _ in 1:50
                 for dims in dims_list
                     @with_pool p begin

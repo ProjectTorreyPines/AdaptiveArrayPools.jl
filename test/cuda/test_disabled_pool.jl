@@ -24,7 +24,7 @@ using AdaptiveArrayPools: DisabledPool, DISABLED_CPU, pooling_enabled, default_e
         @test all(v1 .== 0.0f0)
 
         v2 = zeros!(DISABLED_CUDA, Float64, 5, 5)
-        @test v2 isa CuArray{Float64,2}
+        @test v2 isa CuArray{Float64, 2}
         @test size(v2) == (5, 5)
         @test all(v2 .== 0.0)
 
@@ -34,16 +34,16 @@ using AdaptiveArrayPools: DisabledPool, DISABLED_CPU, pooling_enabled, default_e
         @test length(v3) == 8
 
         v4 = zeros!(DISABLED_CUDA, 3, 4)
-        @test v4 isa CuArray{Float32,2}
+        @test v4 isa CuArray{Float32, 2}
         @test size(v4) == (3, 4)
 
         # Tuple dims
         v5 = zeros!(DISABLED_CUDA, Float32, (2, 3, 4))
-        @test v5 isa CuArray{Float32,3}
+        @test v5 isa CuArray{Float32, 3}
         @test size(v5) == (2, 3, 4)
 
         v6 = zeros!(DISABLED_CUDA, (5, 6))
-        @test v6 isa CuArray{Float32,2}
+        @test v6 isa CuArray{Float32, 2}
         @test size(v6) == (5, 6)
     end
 
@@ -55,7 +55,7 @@ using AdaptiveArrayPools: DisabledPool, DISABLED_CPU, pooling_enabled, default_e
         @test all(v1 .== 1.0f0)
 
         v2 = ones!(DISABLED_CUDA, Float64, 5, 5)
-        @test v2 isa CuArray{Float64,2}
+        @test v2 isa CuArray{Float64, 2}
         @test size(v2) == (5, 5)
         @test all(v2 .== 1.0)
 
@@ -65,16 +65,16 @@ using AdaptiveArrayPools: DisabledPool, DISABLED_CPU, pooling_enabled, default_e
         @test all(v3 .== 1.0f0)
 
         v4 = ones!(DISABLED_CUDA, 3, 4)
-        @test v4 isa CuArray{Float32,2}
+        @test v4 isa CuArray{Float32, 2}
         @test size(v4) == (3, 4)
 
         # Tuple dims
         v5 = ones!(DISABLED_CUDA, Float32, (2, 3))
-        @test v5 isa CuArray{Float32,2}
+        @test v5 isa CuArray{Float32, 2}
         @test size(v5) == (2, 3)
 
         v6 = ones!(DISABLED_CUDA, (4, 5))
-        @test v6 isa CuArray{Float32,2}
+        @test v6 isa CuArray{Float32, 2}
         @test size(v6) == (4, 5)
     end
 
@@ -90,11 +90,11 @@ using AdaptiveArrayPools: DisabledPool, DISABLED_CPU, pooling_enabled, default_e
         @test length(v2) == 10
 
         v3 = similar!(DISABLED_CUDA, template, 5, 5)
-        @test v3 isa CuArray{Float32,2}
+        @test v3 isa CuArray{Float32, 2}
         @test size(v3) == (5, 5)
 
         v4 = similar!(DISABLED_CUDA, template, Float64, 3, 4)
-        @test v4 isa CuArray{Float64,2}
+        @test v4 isa CuArray{Float64, 2}
         @test size(v4) == (3, 4)
     end
 
@@ -110,11 +110,11 @@ using AdaptiveArrayPools: DisabledPool, DISABLED_CPU, pooling_enabled, default_e
         @test length(v2) == 8
 
         v3 = similar!(DISABLED_CUDA, cpu_template, 4, 4)
-        @test v3 isa CuArray{Float64,2}
+        @test v3 isa CuArray{Float64, 2}
         @test size(v3) == (4, 4)
 
         v4 = similar!(DISABLED_CUDA, cpu_template, Int32, 2, 3)
-        @test v4 isa CuArray{Int32,2}
+        @test v4 isa CuArray{Int32, 2}
         @test size(v4) == (2, 3)
     end
 
@@ -124,7 +124,7 @@ using AdaptiveArrayPools: DisabledPool, DISABLED_CPU, pooling_enabled, default_e
         @test all(v1 .== 0.0f0)
 
         v2 = unsafe_zeros!(DISABLED_CUDA, Float64, 5, 5)
-        @test v2 isa CuArray{Float64,2}
+        @test v2 isa CuArray{Float64, 2}
         @test size(v2) == (5, 5)
 
         # Without type
@@ -133,11 +133,11 @@ using AdaptiveArrayPools: DisabledPool, DISABLED_CPU, pooling_enabled, default_e
 
         # Tuple dims
         v4 = unsafe_zeros!(DISABLED_CUDA, Float32, (3, 4))
-        @test v4 isa CuArray{Float32,2}
+        @test v4 isa CuArray{Float32, 2}
         @test size(v4) == (3, 4)
 
         v5 = unsafe_zeros!(DISABLED_CUDA, (2, 3))
-        @test v5 isa CuArray{Float32,2}
+        @test v5 isa CuArray{Float32, 2}
     end
 
     @testset "unsafe_ones!" begin
@@ -146,7 +146,7 @@ using AdaptiveArrayPools: DisabledPool, DISABLED_CPU, pooling_enabled, default_e
         @test all(v1 .== 1.0f0)
 
         v2 = unsafe_ones!(DISABLED_CUDA, Float64, 5, 5)
-        @test v2 isa CuArray{Float64,2}
+        @test v2 isa CuArray{Float64, 2}
         @test size(v2) == (5, 5)
 
         # Without type
@@ -155,10 +155,10 @@ using AdaptiveArrayPools: DisabledPool, DISABLED_CPU, pooling_enabled, default_e
 
         # Tuple dims
         v4 = unsafe_ones!(DISABLED_CUDA, Float32, (3, 4))
-        @test v4 isa CuArray{Float32,2}
+        @test v4 isa CuArray{Float32, 2}
 
         v5 = unsafe_ones!(DISABLED_CUDA, (2, 3))
-        @test v5 isa CuArray{Float32,2}
+        @test v5 isa CuArray{Float32, 2}
     end
 
     @testset "unsafe_similar! with CuArray input" begin
@@ -171,10 +171,10 @@ using AdaptiveArrayPools: DisabledPool, DISABLED_CPU, pooling_enabled, default_e
         @test v2 isa CuVector{Float64}
 
         v3 = unsafe_similar!(DISABLED_CUDA, template, 5, 5)
-        @test v3 isa CuArray{Float32,2}
+        @test v3 isa CuArray{Float32, 2}
 
         v4 = unsafe_similar!(DISABLED_CUDA, template, Float64, 3, 4)
-        @test v4 isa CuArray{Float64,2}
+        @test v4 isa CuArray{Float64, 2}
     end
 
     @testset "unsafe_similar! with AbstractArray input (CPU->GPU)" begin
@@ -187,10 +187,10 @@ using AdaptiveArrayPools: DisabledPool, DISABLED_CPU, pooling_enabled, default_e
         @test v2 isa CuVector{Float32}
 
         v3 = unsafe_similar!(DISABLED_CUDA, cpu_template, 4, 4)
-        @test v3 isa CuArray{Float64,2}
+        @test v3 isa CuArray{Float64, 2}
 
         v4 = unsafe_similar!(DISABLED_CUDA, cpu_template, Int32, 2, 3)
-        @test v4 isa CuArray{Int32,2}
+        @test v4 isa CuArray{Int32, 2}
     end
 
     @testset "acquire!" begin
@@ -201,12 +201,12 @@ using AdaptiveArrayPools: DisabledPool, DISABLED_CPU, pooling_enabled, default_e
 
         # Type + vararg dims
         v2 = acquire!(DISABLED_CUDA, Float64, 5, 5)
-        @test v2 isa CuArray{Float64,2}
+        @test v2 isa CuArray{Float64, 2}
         @test size(v2) == (5, 5)
 
         # Type + tuple dims
         v3 = acquire!(DISABLED_CUDA, Float32, (3, 4, 5))
-        @test v3 isa CuArray{Float32,3}
+        @test v3 isa CuArray{Float32, 3}
         @test size(v3) == (3, 4, 5)
 
         # CuArray template
@@ -230,12 +230,12 @@ using AdaptiveArrayPools: DisabledPool, DISABLED_CPU, pooling_enabled, default_e
 
         # Type + vararg dims
         v2 = unsafe_acquire!(DISABLED_CUDA, Float64, 5, 5)
-        @test v2 isa CuArray{Float64,2}
+        @test v2 isa CuArray{Float64, 2}
         @test size(v2) == (5, 5)
 
         # Type + tuple dims
         v3 = unsafe_acquire!(DISABLED_CUDA, Float32, (3, 4, 5))
-        @test v3 isa CuArray{Float32,3}
+        @test v3 isa CuArray{Float32, 3}
         @test size(v3) == (3, 4, 5)
 
         # CuArray template

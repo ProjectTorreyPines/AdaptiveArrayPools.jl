@@ -49,7 +49,7 @@ mutable struct CuTypedPool{T} <: AbstractTypedPool{T, CuVector{T}}
 end
 
 function CuTypedPool{T}() where {T}
-    CuTypedPool{T}(
+    return CuTypedPool{T}(
         CuVector{T}[],      # vectors
         Any[],              # views (N-way flat cache)
         Any[],              # view_dims
@@ -121,7 +121,7 @@ end
 
 function CuAdaptiveArrayPool()
     dev = CUDA.device()
-    CuAdaptiveArrayPool(
+    return CuAdaptiveArrayPool(
         CuTypedPool{Float32}(),
         CuTypedPool{Float64}(),
         CuTypedPool{Float16}(),

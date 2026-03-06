@@ -42,52 +42,52 @@ end
 
 See also: [`ones!`](@ref), [`similar!`](@ref), [`acquire!`](@ref)
 """
-@inline function zeros!(pool::AbstractArrayPool, ::Type{T}, dims::Vararg{Int,N}) where {T,N}
+@inline function zeros!(pool::AbstractArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
     _record_type_touch!(pool, T)
-    _zeros_impl!(pool, T, dims...)
+    return _zeros_impl!(pool, T, dims...)
 end
 
-@inline function zeros!(pool::AbstractArrayPool, dims::Vararg{Int,N}) where {N}
+@inline function zeros!(pool::AbstractArrayPool, dims::Vararg{Int, N}) where {N}
     _record_type_touch!(pool, default_eltype(pool))
-    _zeros_impl!(pool, default_eltype(pool), dims...)
+    return _zeros_impl!(pool, default_eltype(pool), dims...)
 end
 
-@inline function zeros!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N,Int}) where {T,N}
+@inline function zeros!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
     _record_type_touch!(pool, T)
-    _zeros_impl!(pool, T, dims...)
+    return _zeros_impl!(pool, T, dims...)
 end
 
-@inline function zeros!(pool::AbstractArrayPool, dims::NTuple{N,Int}) where {N}
+@inline function zeros!(pool::AbstractArrayPool, dims::NTuple{N, Int}) where {N}
     _record_type_touch!(pool, default_eltype(pool))
-    _zeros_impl!(pool, default_eltype(pool), dims...)
+    return _zeros_impl!(pool, default_eltype(pool), dims...)
 end
 
 # Internal implementation (for macro transformation)
-@inline function _zeros_impl!(pool::AbstractArrayPool, ::Type{T}, dims::Vararg{Int,N}) where {T,N}
+@inline function _zeros_impl!(pool::AbstractArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
     arr = _acquire_impl!(pool, T, dims...)
     fill!(arr, zero(T))
-    arr
+    return arr
 end
 
 # Default type overload for macro transformation (uses default_eltype for backend flexibility)
-@inline function _zeros_impl!(pool::AbstractArrayPool, dims::Vararg{Int,N}) where {N}
-    _zeros_impl!(pool, default_eltype(pool), dims...)
+@inline function _zeros_impl!(pool::AbstractArrayPool, dims::Vararg{Int, N}) where {N}
+    return _zeros_impl!(pool, default_eltype(pool), dims...)
 end
 
 # NTuple overloads for macro transformation (handles zeros!(pool, T, size(x)) form)
-@inline function _zeros_impl!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N,Int}) where {T,N}
-    _zeros_impl!(pool, T, dims...)
+@inline function _zeros_impl!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
+    return _zeros_impl!(pool, T, dims...)
 end
 
-@inline function _zeros_impl!(pool::AbstractArrayPool, dims::NTuple{N,Int}) where {N}
-    _zeros_impl!(pool, default_eltype(pool), dims...)
+@inline function _zeros_impl!(pool::AbstractArrayPool, dims::NTuple{N, Int}) where {N}
+    return _zeros_impl!(pool, default_eltype(pool), dims...)
 end
 
 # Bit type specialization: zeros!(pool, Bit, ...) delegates to falses!(pool, ...)
-@inline zeros!(pool::AbstractArrayPool, ::Type{Bit}, dims::Vararg{Int,N}) where {N} = falses!(pool, dims...)
-@inline zeros!(pool::AbstractArrayPool, ::Type{Bit}, dims::NTuple{N,Int}) where {N} = falses!(pool, dims)
-@inline _zeros_impl!(pool::AbstractArrayPool, ::Type{Bit}, dims::Vararg{Int,N}) where {N} = _falses_impl!(pool, dims...)
-@inline _zeros_impl!(pool::AbstractArrayPool, ::Type{Bit}, dims::NTuple{N,Int}) where {N} = _falses_impl!(pool, dims)
+@inline zeros!(pool::AbstractArrayPool, ::Type{Bit}, dims::Vararg{Int, N}) where {N} = falses!(pool, dims...)
+@inline zeros!(pool::AbstractArrayPool, ::Type{Bit}, dims::NTuple{N, Int}) where {N} = falses!(pool, dims)
+@inline _zeros_impl!(pool::AbstractArrayPool, ::Type{Bit}, dims::Vararg{Int, N}) where {N} = _falses_impl!(pool, dims...)
+@inline _zeros_impl!(pool::AbstractArrayPool, ::Type{Bit}, dims::NTuple{N, Int}) where {N} = _falses_impl!(pool, dims)
 
 # ==============================================================================
 # ones! - Acquire one-initialized arrays from pool
@@ -115,52 +115,52 @@ end
 
 See also: [`zeros!`](@ref), [`similar!`](@ref), [`acquire!`](@ref)
 """
-@inline function ones!(pool::AbstractArrayPool, ::Type{T}, dims::Vararg{Int,N}) where {T,N}
+@inline function ones!(pool::AbstractArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
     _record_type_touch!(pool, T)
-    _ones_impl!(pool, T, dims...)
+    return _ones_impl!(pool, T, dims...)
 end
 
-@inline function ones!(pool::AbstractArrayPool, dims::Vararg{Int,N}) where {N}
+@inline function ones!(pool::AbstractArrayPool, dims::Vararg{Int, N}) where {N}
     _record_type_touch!(pool, default_eltype(pool))
-    _ones_impl!(pool, default_eltype(pool), dims...)
+    return _ones_impl!(pool, default_eltype(pool), dims...)
 end
 
-@inline function ones!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N,Int}) where {T,N}
+@inline function ones!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
     _record_type_touch!(pool, T)
-    _ones_impl!(pool, T, dims...)
+    return _ones_impl!(pool, T, dims...)
 end
 
-@inline function ones!(pool::AbstractArrayPool, dims::NTuple{N,Int}) where {N}
+@inline function ones!(pool::AbstractArrayPool, dims::NTuple{N, Int}) where {N}
     _record_type_touch!(pool, default_eltype(pool))
-    _ones_impl!(pool, default_eltype(pool), dims...)
+    return _ones_impl!(pool, default_eltype(pool), dims...)
 end
 
 # Internal implementation (for macro transformation)
-@inline function _ones_impl!(pool::AbstractArrayPool, ::Type{T}, dims::Vararg{Int,N}) where {T,N}
+@inline function _ones_impl!(pool::AbstractArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
     arr = _acquire_impl!(pool, T, dims...)
     fill!(arr, one(T))
-    arr
+    return arr
 end
 
 # Default type overload for macro transformation (uses default_eltype for backend flexibility)
-@inline function _ones_impl!(pool::AbstractArrayPool, dims::Vararg{Int,N}) where {N}
-    _ones_impl!(pool, default_eltype(pool), dims...)
+@inline function _ones_impl!(pool::AbstractArrayPool, dims::Vararg{Int, N}) where {N}
+    return _ones_impl!(pool, default_eltype(pool), dims...)
 end
 
 # NTuple overloads for macro transformation (handles ones!(pool, T, size(x)) form)
-@inline function _ones_impl!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N,Int}) where {T,N}
-    _ones_impl!(pool, T, dims...)
+@inline function _ones_impl!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
+    return _ones_impl!(pool, T, dims...)
 end
 
-@inline function _ones_impl!(pool::AbstractArrayPool, dims::NTuple{N,Int}) where {N}
-    _ones_impl!(pool, default_eltype(pool), dims...)
+@inline function _ones_impl!(pool::AbstractArrayPool, dims::NTuple{N, Int}) where {N}
+    return _ones_impl!(pool, default_eltype(pool), dims...)
 end
 
 # Bit type specialization: ones!(pool, Bit, ...) delegates to trues!(pool, ...)
-@inline ones!(pool::AbstractArrayPool, ::Type{Bit}, dims::Vararg{Int,N}) where {N} = trues!(pool, dims...)
-@inline ones!(pool::AbstractArrayPool, ::Type{Bit}, dims::NTuple{N,Int}) where {N} = trues!(pool, dims)
-@inline _ones_impl!(pool::AbstractArrayPool, ::Type{Bit}, dims::Vararg{Int,N}) where {N} = _trues_impl!(pool, dims...)
-@inline _ones_impl!(pool::AbstractArrayPool, ::Type{Bit}, dims::NTuple{N,Int}) where {N} = _trues_impl!(pool, dims)
+@inline ones!(pool::AbstractArrayPool, ::Type{Bit}, dims::Vararg{Int, N}) where {N} = trues!(pool, dims...)
+@inline ones!(pool::AbstractArrayPool, ::Type{Bit}, dims::NTuple{N, Int}) where {N} = trues!(pool, dims)
+@inline _ones_impl!(pool::AbstractArrayPool, ::Type{Bit}, dims::Vararg{Int, N}) where {N} = _trues_impl!(pool, dims...)
+@inline _ones_impl!(pool::AbstractArrayPool, ::Type{Bit}, dims::NTuple{N, Int}) where {N} = _trues_impl!(pool, dims)
 
 # ==============================================================================
 # trues! - Acquire BitArray filled with true from pool
@@ -185,22 +185,22 @@ end
 
 See also: [`falses!`](@ref), [`ones!`](@ref), [`acquire!`](@ref)
 """
-@inline function trues!(pool::AbstractArrayPool, dims::Vararg{Int,N}) where {N}
+@inline function trues!(pool::AbstractArrayPool, dims::Vararg{Int, N}) where {N}
     _record_type_touch!(pool, Bit)
-    _trues_impl!(pool, dims...)
+    return _trues_impl!(pool, dims...)
 end
-@inline function trues!(pool::AbstractArrayPool, dims::NTuple{N,Int}) where {N}
+@inline function trues!(pool::AbstractArrayPool, dims::NTuple{N, Int}) where {N}
     _record_type_touch!(pool, Bit)
-    _trues_impl!(pool, dims...)
+    return _trues_impl!(pool, dims...)
 end
 
 # Internal implementation (for macro transformation)
-@inline function _trues_impl!(pool::AbstractArrayPool, dims::Vararg{Int,N}) where {N}
+@inline function _trues_impl!(pool::AbstractArrayPool, dims::Vararg{Int, N}) where {N}
     arr = _acquire_impl!(pool, Bit, dims...)
     fill!(arr, true)
-    arr
+    return arr
 end
-@inline _trues_impl!(pool::AbstractArrayPool, dims::NTuple{N,Int}) where {N} = _trues_impl!(pool, dims...)
+@inline _trues_impl!(pool::AbstractArrayPool, dims::NTuple{N, Int}) where {N} = _trues_impl!(pool, dims...)
 
 # ==============================================================================
 # falses! - Acquire BitArray filled with false from pool
@@ -225,22 +225,22 @@ end
 
 See also: [`trues!`](@ref), [`zeros!`](@ref), [`acquire!`](@ref)
 """
-@inline function falses!(pool::AbstractArrayPool, dims::Vararg{Int,N}) where {N}
+@inline function falses!(pool::AbstractArrayPool, dims::Vararg{Int, N}) where {N}
     _record_type_touch!(pool, Bit)
-    _falses_impl!(pool, dims...)
+    return _falses_impl!(pool, dims...)
 end
-@inline function falses!(pool::AbstractArrayPool, dims::NTuple{N,Int}) where {N}
+@inline function falses!(pool::AbstractArrayPool, dims::NTuple{N, Int}) where {N}
     _record_type_touch!(pool, Bit)
-    _falses_impl!(pool, dims...)
+    return _falses_impl!(pool, dims...)
 end
 
 # Internal implementation (for macro transformation)
-@inline function _falses_impl!(pool::AbstractArrayPool, dims::Vararg{Int,N}) where {N}
+@inline function _falses_impl!(pool::AbstractArrayPool, dims::Vararg{Int, N}) where {N}
     arr = _acquire_impl!(pool, Bit, dims...)
     fill!(arr, false)
-    arr
+    return arr
 end
-@inline _falses_impl!(pool::AbstractArrayPool, dims::NTuple{N,Int}) where {N} = _falses_impl!(pool, dims...)
+@inline _falses_impl!(pool::AbstractArrayPool, dims::NTuple{N, Int}) where {N} = _falses_impl!(pool, dims...)
 
 # ==============================================================================
 # similar! - Acquire arrays with same type/size as template
@@ -274,39 +274,39 @@ See also: [`zeros!`](@ref), [`ones!`](@ref), [`acquire!`](@ref)
 """
 @inline function similar!(pool::AbstractArrayPool, x::AbstractArray)
     _record_type_touch!(pool, eltype(x))
-    _similar_impl!(pool, x)
+    return _similar_impl!(pool, x)
 end
 
 @inline function similar!(pool::AbstractArrayPool, x::AbstractArray, ::Type{T}) where {T}
     _record_type_touch!(pool, T)
-    _similar_impl!(pool, x, T)
+    return _similar_impl!(pool, x, T)
 end
 
-@inline function similar!(pool::AbstractArrayPool, x::AbstractArray, dims::Vararg{Int,N}) where {N}
+@inline function similar!(pool::AbstractArrayPool, x::AbstractArray, dims::Vararg{Int, N}) where {N}
     _record_type_touch!(pool, eltype(x))
-    _similar_impl!(pool, x, dims...)
+    return _similar_impl!(pool, x, dims...)
 end
 
-@inline function similar!(pool::AbstractArrayPool, x::AbstractArray, ::Type{T}, dims::Vararg{Int,N}) where {T,N}
+@inline function similar!(pool::AbstractArrayPool, x::AbstractArray, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
     _record_type_touch!(pool, T)
-    _similar_impl!(pool, x, T, dims...)
+    return _similar_impl!(pool, x, T, dims...)
 end
 
 # Internal implementation (for macro transformation)
 @inline function _similar_impl!(pool::AbstractArrayPool, x::AbstractArray)
-    _acquire_impl!(pool, eltype(x), size(x))
+    return _acquire_impl!(pool, eltype(x), size(x))
 end
 
 @inline function _similar_impl!(pool::AbstractArrayPool, x::AbstractArray, ::Type{T}) where {T}
-    _acquire_impl!(pool, T, size(x))
+    return _acquire_impl!(pool, T, size(x))
 end
 
-@inline function _similar_impl!(pool::AbstractArrayPool, x::AbstractArray, dims::Vararg{Int,N}) where {N}
-    _acquire_impl!(pool, eltype(x), dims...)
+@inline function _similar_impl!(pool::AbstractArrayPool, x::AbstractArray, dims::Vararg{Int, N}) where {N}
+    return _acquire_impl!(pool, eltype(x), dims...)
 end
 
-@inline function _similar_impl!(pool::AbstractArrayPool, x::AbstractArray, ::Type{T}, dims::Vararg{Int,N}) where {T,N}
-    _acquire_impl!(pool, T, dims...)
+@inline function _similar_impl!(pool::AbstractArrayPool, x::AbstractArray, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
+    return _acquire_impl!(pool, T, dims...)
 end
 
 # ==============================================================================
@@ -348,26 +348,26 @@ end
 
 See also: [`acquire!`](@ref), [`similar!`](@ref)
 """
-@inline function reshape!(pool::AbstractArrayPool, A::AbstractArray{T}, dims::Vararg{Int,N}) where {T,N}
+@inline function reshape!(pool::AbstractArrayPool, A::AbstractArray{T}, dims::Vararg{Int, N}) where {T, N}
     _record_type_touch!(pool, T)
-    _reshape_impl!(pool, A, dims)
+    return _reshape_impl!(pool, A, dims)
 end
 
-@inline function reshape!(pool::AbstractArrayPool, A::AbstractArray{T}, dims::NTuple{N,Int}) where {T,N}
+@inline function reshape!(pool::AbstractArrayPool, A::AbstractArray{T}, dims::NTuple{N, Int}) where {T, N}
     _record_type_touch!(pool, T)
-    _reshape_impl!(pool, A, dims)
+    return _reshape_impl!(pool, A, dims)
 end
 
 # Internal implementation (fallback: delegates to Base.reshape)
-@inline function _reshape_impl!(::AbstractArrayPool, A::AbstractArray, dims::NTuple{N,Int}) where {N}
+@inline function _reshape_impl!(::AbstractArrayPool, A::AbstractArray, dims::NTuple{N, Int}) where {N}
     for d in dims
         d < 0 && throw(ArgumentError("invalid Array dimensions"))
     end
-    reshape(A, dims)
+    return reshape(A, dims)
 end
 
 # Vararg forwarding (macro transforms reshape!(pool, A, 3, 4) → _reshape_impl!(pool, A, 3, 4))
-@inline _reshape_impl!(pool::AbstractArrayPool, A::AbstractArray, dims::Vararg{Int,N}) where {N} =
+@inline _reshape_impl!(pool::AbstractArrayPool, A::AbstractArray, dims::Vararg{Int, N}) where {N} =
     _reshape_impl!(pool, A, dims)
 
 # ==============================================================================
@@ -396,45 +396,45 @@ end
 
 See also: [`unsafe_ones!`](@ref), [`zeros!`](@ref), [`unsafe_acquire!`](@ref)
 """
-@inline function unsafe_zeros!(pool::AbstractArrayPool, ::Type{T}, dims::Vararg{Int,N}) where {T,N}
+@inline function unsafe_zeros!(pool::AbstractArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
     _record_type_touch!(pool, T)
-    _unsafe_zeros_impl!(pool, T, dims...)
+    return _unsafe_zeros_impl!(pool, T, dims...)
 end
 
-@inline function unsafe_zeros!(pool::AbstractArrayPool, dims::Vararg{Int,N}) where {N}
+@inline function unsafe_zeros!(pool::AbstractArrayPool, dims::Vararg{Int, N}) where {N}
     _record_type_touch!(pool, default_eltype(pool))
-    _unsafe_zeros_impl!(pool, default_eltype(pool), dims...)
+    return _unsafe_zeros_impl!(pool, default_eltype(pool), dims...)
 end
 
-@inline function unsafe_zeros!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N,Int}) where {T,N}
+@inline function unsafe_zeros!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
     _record_type_touch!(pool, T)
-    _unsafe_zeros_impl!(pool, T, dims...)
+    return _unsafe_zeros_impl!(pool, T, dims...)
 end
 
-@inline function unsafe_zeros!(pool::AbstractArrayPool, dims::NTuple{N,Int}) where {N}
+@inline function unsafe_zeros!(pool::AbstractArrayPool, dims::NTuple{N, Int}) where {N}
     _record_type_touch!(pool, default_eltype(pool))
-    _unsafe_zeros_impl!(pool, default_eltype(pool), dims...)
+    return _unsafe_zeros_impl!(pool, default_eltype(pool), dims...)
 end
 
 # Internal implementation (for macro transformation)
-@inline function _unsafe_zeros_impl!(pool::AbstractArrayPool, ::Type{T}, dims::Vararg{Int,N}) where {T,N}
+@inline function _unsafe_zeros_impl!(pool::AbstractArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
     arr = _unsafe_acquire_impl!(pool, T, dims...)
     fill!(arr, zero(T))
-    arr
+    return arr
 end
 
 # Default type overload for macro transformation (uses default_eltype for backend flexibility)
-@inline function _unsafe_zeros_impl!(pool::AbstractArrayPool, dims::Vararg{Int,N}) where {N}
-    _unsafe_zeros_impl!(pool, default_eltype(pool), dims...)
+@inline function _unsafe_zeros_impl!(pool::AbstractArrayPool, dims::Vararg{Int, N}) where {N}
+    return _unsafe_zeros_impl!(pool, default_eltype(pool), dims...)
 end
 
 # NTuple overloads for macro transformation (handles unsafe_zeros!(pool, T, size(x)) form)
-@inline function _unsafe_zeros_impl!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N,Int}) where {T,N}
-    _unsafe_zeros_impl!(pool, T, dims...)
+@inline function _unsafe_zeros_impl!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
+    return _unsafe_zeros_impl!(pool, T, dims...)
 end
 
-@inline function _unsafe_zeros_impl!(pool::AbstractArrayPool, dims::NTuple{N,Int}) where {N}
-    _unsafe_zeros_impl!(pool, default_eltype(pool), dims...)
+@inline function _unsafe_zeros_impl!(pool::AbstractArrayPool, dims::NTuple{N, Int}) where {N}
+    return _unsafe_zeros_impl!(pool, default_eltype(pool), dims...)
 end
 
 # ==============================================================================
@@ -463,45 +463,45 @@ end
 
 See also: [`unsafe_zeros!`](@ref), [`ones!`](@ref), [`unsafe_acquire!`](@ref)
 """
-@inline function unsafe_ones!(pool::AbstractArrayPool, ::Type{T}, dims::Vararg{Int,N}) where {T,N}
+@inline function unsafe_ones!(pool::AbstractArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
     _record_type_touch!(pool, T)
-    _unsafe_ones_impl!(pool, T, dims...)
+    return _unsafe_ones_impl!(pool, T, dims...)
 end
 
-@inline function unsafe_ones!(pool::AbstractArrayPool, dims::Vararg{Int,N}) where {N}
+@inline function unsafe_ones!(pool::AbstractArrayPool, dims::Vararg{Int, N}) where {N}
     _record_type_touch!(pool, default_eltype(pool))
-    _unsafe_ones_impl!(pool, default_eltype(pool), dims...)
+    return _unsafe_ones_impl!(pool, default_eltype(pool), dims...)
 end
 
-@inline function unsafe_ones!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N,Int}) where {T,N}
+@inline function unsafe_ones!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
     _record_type_touch!(pool, T)
-    _unsafe_ones_impl!(pool, T, dims...)
+    return _unsafe_ones_impl!(pool, T, dims...)
 end
 
-@inline function unsafe_ones!(pool::AbstractArrayPool, dims::NTuple{N,Int}) where {N}
+@inline function unsafe_ones!(pool::AbstractArrayPool, dims::NTuple{N, Int}) where {N}
     _record_type_touch!(pool, default_eltype(pool))
-    _unsafe_ones_impl!(pool, default_eltype(pool), dims...)
+    return _unsafe_ones_impl!(pool, default_eltype(pool), dims...)
 end
 
 # Internal implementation (for macro transformation)
-@inline function _unsafe_ones_impl!(pool::AbstractArrayPool, ::Type{T}, dims::Vararg{Int,N}) where {T,N}
+@inline function _unsafe_ones_impl!(pool::AbstractArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
     arr = _unsafe_acquire_impl!(pool, T, dims...)
     fill!(arr, one(T))
-    arr
+    return arr
 end
 
 # Default type overload for macro transformation (uses default_eltype for backend flexibility)
-@inline function _unsafe_ones_impl!(pool::AbstractArrayPool, dims::Vararg{Int,N}) where {N}
-    _unsafe_ones_impl!(pool, default_eltype(pool), dims...)
+@inline function _unsafe_ones_impl!(pool::AbstractArrayPool, dims::Vararg{Int, N}) where {N}
+    return _unsafe_ones_impl!(pool, default_eltype(pool), dims...)
 end
 
 # NTuple overloads for macro transformation (handles unsafe_ones!(pool, T, size(x)) form)
-@inline function _unsafe_ones_impl!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N,Int}) where {T,N}
-    _unsafe_ones_impl!(pool, T, dims...)
+@inline function _unsafe_ones_impl!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
+    return _unsafe_ones_impl!(pool, T, dims...)
 end
 
-@inline function _unsafe_ones_impl!(pool::AbstractArrayPool, dims::NTuple{N,Int}) where {N}
-    _unsafe_ones_impl!(pool, default_eltype(pool), dims...)
+@inline function _unsafe_ones_impl!(pool::AbstractArrayPool, dims::NTuple{N, Int}) where {N}
+    return _unsafe_ones_impl!(pool, default_eltype(pool), dims...)
 end
 
 # ==============================================================================
@@ -535,39 +535,39 @@ See also: [`similar!`](@ref), [`unsafe_acquire!`](@ref)
 """
 @inline function unsafe_similar!(pool::AbstractArrayPool, x::AbstractArray)
     _record_type_touch!(pool, eltype(x))
-    _unsafe_similar_impl!(pool, x)
+    return _unsafe_similar_impl!(pool, x)
 end
 
 @inline function unsafe_similar!(pool::AbstractArrayPool, x::AbstractArray, ::Type{T}) where {T}
     _record_type_touch!(pool, T)
-    _unsafe_similar_impl!(pool, x, T)
+    return _unsafe_similar_impl!(pool, x, T)
 end
 
-@inline function unsafe_similar!(pool::AbstractArrayPool, x::AbstractArray, dims::Vararg{Int,N}) where {N}
+@inline function unsafe_similar!(pool::AbstractArrayPool, x::AbstractArray, dims::Vararg{Int, N}) where {N}
     _record_type_touch!(pool, eltype(x))
-    _unsafe_similar_impl!(pool, x, dims...)
+    return _unsafe_similar_impl!(pool, x, dims...)
 end
 
-@inline function unsafe_similar!(pool::AbstractArrayPool, x::AbstractArray, ::Type{T}, dims::Vararg{Int,N}) where {T,N}
+@inline function unsafe_similar!(pool::AbstractArrayPool, x::AbstractArray, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
     _record_type_touch!(pool, T)
-    _unsafe_similar_impl!(pool, x, T, dims...)
+    return _unsafe_similar_impl!(pool, x, T, dims...)
 end
 
 # Internal implementation (for macro transformation)
 @inline function _unsafe_similar_impl!(pool::AbstractArrayPool, x::AbstractArray)
-    _unsafe_acquire_impl!(pool, eltype(x), size(x))
+    return _unsafe_acquire_impl!(pool, eltype(x), size(x))
 end
 
 @inline function _unsafe_similar_impl!(pool::AbstractArrayPool, x::AbstractArray, ::Type{T}) where {T}
-    _unsafe_acquire_impl!(pool, T, size(x))
+    return _unsafe_acquire_impl!(pool, T, size(x))
 end
 
-@inline function _unsafe_similar_impl!(pool::AbstractArrayPool, x::AbstractArray, dims::Vararg{Int,N}) where {N}
-    _unsafe_acquire_impl!(pool, eltype(x), dims...)
+@inline function _unsafe_similar_impl!(pool::AbstractArrayPool, x::AbstractArray, dims::Vararg{Int, N}) where {N}
+    return _unsafe_acquire_impl!(pool, eltype(x), dims...)
 end
 
-@inline function _unsafe_similar_impl!(pool::AbstractArrayPool, x::AbstractArray, ::Type{T}, dims::Vararg{Int,N}) where {T,N}
-    _unsafe_acquire_impl!(pool, T, dims...)
+@inline function _unsafe_similar_impl!(pool::AbstractArrayPool, x::AbstractArray, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
+    return _unsafe_acquire_impl!(pool, T, dims...)
 end
 
 # ==============================================================================
@@ -593,7 +593,7 @@ end
 
 function Base.showerror(io::IO, e::BackendNotLoadedError)
     print(io, "Backend :$(e.backend) is not available. ")
-    if e.backend == :cuda
+    return if e.backend == :cuda
         print(io, "Make sure CUDA.jl is loaded: `using CUDA`")
     else
         print(io, "Make sure the appropriate backend package is loaded.")
@@ -619,56 +619,56 @@ default_eltype(::DisabledPool{:cpu}) = Float64
 end
 
 # --- zeros! for DisabledPool{:cpu} ---
-@inline zeros!(::DisabledPool{:cpu}, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = zeros(T, dims...)
-@inline zeros!(p::DisabledPool{:cpu}, dims::Vararg{Int,N}) where {N} = zeros(default_eltype(p), dims...)
-@inline zeros!(::DisabledPool{:cpu}, ::Type{T}, dims::NTuple{N,Int}) where {T,N} = zeros(T, dims...)
-@inline zeros!(p::DisabledPool{:cpu}, dims::NTuple{N,Int}) where {N} = zeros(default_eltype(p), dims...)
+@inline zeros!(::DisabledPool{:cpu}, ::Type{T}, dims::Vararg{Int, N}) where {T, N} = zeros(T, dims...)
+@inline zeros!(p::DisabledPool{:cpu}, dims::Vararg{Int, N}) where {N} = zeros(default_eltype(p), dims...)
+@inline zeros!(::DisabledPool{:cpu}, ::Type{T}, dims::NTuple{N, Int}) where {T, N} = zeros(T, dims...)
+@inline zeros!(p::DisabledPool{:cpu}, dims::NTuple{N, Int}) where {N} = zeros(default_eltype(p), dims...)
 
 # --- ones! for DisabledPool{:cpu} ---
-@inline ones!(::DisabledPool{:cpu}, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = ones(T, dims...)
-@inline ones!(p::DisabledPool{:cpu}, dims::Vararg{Int,N}) where {N} = ones(default_eltype(p), dims...)
-@inline ones!(::DisabledPool{:cpu}, ::Type{T}, dims::NTuple{N,Int}) where {T,N} = ones(T, dims...)
-@inline ones!(p::DisabledPool{:cpu}, dims::NTuple{N,Int}) where {N} = ones(default_eltype(p), dims...)
+@inline ones!(::DisabledPool{:cpu}, ::Type{T}, dims::Vararg{Int, N}) where {T, N} = ones(T, dims...)
+@inline ones!(p::DisabledPool{:cpu}, dims::Vararg{Int, N}) where {N} = ones(default_eltype(p), dims...)
+@inline ones!(::DisabledPool{:cpu}, ::Type{T}, dims::NTuple{N, Int}) where {T, N} = ones(T, dims...)
+@inline ones!(p::DisabledPool{:cpu}, dims::NTuple{N, Int}) where {N} = ones(default_eltype(p), dims...)
 
 # --- zeros!/ones! for DisabledPool{:cpu} with Bit type (returns BitArray) ---
-@inline zeros!(::DisabledPool{:cpu}, ::Type{Bit}, dims::Vararg{Int,N}) where {N} = falses(dims...)
-@inline zeros!(::DisabledPool{:cpu}, ::Type{Bit}, dims::NTuple{N,Int}) where {N} = falses(dims...)
-@inline ones!(::DisabledPool{:cpu}, ::Type{Bit}, dims::Vararg{Int,N}) where {N} = trues(dims...)
-@inline ones!(::DisabledPool{:cpu}, ::Type{Bit}, dims::NTuple{N,Int}) where {N} = trues(dims...)
+@inline zeros!(::DisabledPool{:cpu}, ::Type{Bit}, dims::Vararg{Int, N}) where {N} = falses(dims...)
+@inline zeros!(::DisabledPool{:cpu}, ::Type{Bit}, dims::NTuple{N, Int}) where {N} = falses(dims...)
+@inline ones!(::DisabledPool{:cpu}, ::Type{Bit}, dims::Vararg{Int, N}) where {N} = trues(dims...)
+@inline ones!(::DisabledPool{:cpu}, ::Type{Bit}, dims::NTuple{N, Int}) where {N} = trues(dims...)
 
 # --- trues!/falses! for DisabledPool{:cpu} ---
-@inline trues!(::DisabledPool{:cpu}, dims::Vararg{Int,N}) where {N} = trues(dims...)
-@inline trues!(::DisabledPool{:cpu}, dims::NTuple{N,Int}) where {N} = trues(dims...)
-@inline falses!(::DisabledPool{:cpu}, dims::Vararg{Int,N}) where {N} = falses(dims...)
-@inline falses!(::DisabledPool{:cpu}, dims::NTuple{N,Int}) where {N} = falses(dims...)
+@inline trues!(::DisabledPool{:cpu}, dims::Vararg{Int, N}) where {N} = trues(dims...)
+@inline trues!(::DisabledPool{:cpu}, dims::NTuple{N, Int}) where {N} = trues(dims...)
+@inline falses!(::DisabledPool{:cpu}, dims::Vararg{Int, N}) where {N} = falses(dims...)
+@inline falses!(::DisabledPool{:cpu}, dims::NTuple{N, Int}) where {N} = falses(dims...)
 
 # --- similar! for DisabledPool{:cpu} ---
 @inline similar!(::DisabledPool{:cpu}, x::AbstractArray) = similar(x)
 @inline similar!(::DisabledPool{:cpu}, x::AbstractArray, ::Type{T}) where {T} = similar(x, T)
-@inline similar!(::DisabledPool{:cpu}, x::AbstractArray, dims::Vararg{Int,N}) where {N} = similar(x, dims...)
-@inline similar!(::DisabledPool{:cpu}, x::AbstractArray, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = similar(x, T, dims...)
+@inline similar!(::DisabledPool{:cpu}, x::AbstractArray, dims::Vararg{Int, N}) where {N} = similar(x, dims...)
+@inline similar!(::DisabledPool{:cpu}, x::AbstractArray, ::Type{T}, dims::Vararg{Int, N}) where {T, N} = similar(x, T, dims...)
 
 # --- reshape! for DisabledPool{:cpu} ---
-@inline reshape!(::DisabledPool{:cpu}, A::AbstractArray, dims::Vararg{Int,N}) where {N} = reshape(A, dims...)
-@inline reshape!(::DisabledPool{:cpu}, A::AbstractArray, dims::NTuple{N,Int}) where {N} = reshape(A, dims)
+@inline reshape!(::DisabledPool{:cpu}, A::AbstractArray, dims::Vararg{Int, N}) where {N} = reshape(A, dims...)
+@inline reshape!(::DisabledPool{:cpu}, A::AbstractArray, dims::NTuple{N, Int}) where {N} = reshape(A, dims)
 
 # --- unsafe_zeros! for DisabledPool{:cpu} ---
-@inline unsafe_zeros!(::DisabledPool{:cpu}, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = zeros(T, dims...)
-@inline unsafe_zeros!(p::DisabledPool{:cpu}, dims::Vararg{Int,N}) where {N} = zeros(default_eltype(p), dims...)
-@inline unsafe_zeros!(::DisabledPool{:cpu}, ::Type{T}, dims::NTuple{N,Int}) where {T,N} = zeros(T, dims...)
-@inline unsafe_zeros!(p::DisabledPool{:cpu}, dims::NTuple{N,Int}) where {N} = zeros(default_eltype(p), dims...)
+@inline unsafe_zeros!(::DisabledPool{:cpu}, ::Type{T}, dims::Vararg{Int, N}) where {T, N} = zeros(T, dims...)
+@inline unsafe_zeros!(p::DisabledPool{:cpu}, dims::Vararg{Int, N}) where {N} = zeros(default_eltype(p), dims...)
+@inline unsafe_zeros!(::DisabledPool{:cpu}, ::Type{T}, dims::NTuple{N, Int}) where {T, N} = zeros(T, dims...)
+@inline unsafe_zeros!(p::DisabledPool{:cpu}, dims::NTuple{N, Int}) where {N} = zeros(default_eltype(p), dims...)
 
 # --- unsafe_ones! for DisabledPool{:cpu} ---
-@inline unsafe_ones!(::DisabledPool{:cpu}, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = ones(T, dims...)
-@inline unsafe_ones!(p::DisabledPool{:cpu}, dims::Vararg{Int,N}) where {N} = ones(default_eltype(p), dims...)
-@inline unsafe_ones!(::DisabledPool{:cpu}, ::Type{T}, dims::NTuple{N,Int}) where {T,N} = ones(T, dims...)
-@inline unsafe_ones!(p::DisabledPool{:cpu}, dims::NTuple{N,Int}) where {N} = ones(default_eltype(p), dims...)
+@inline unsafe_ones!(::DisabledPool{:cpu}, ::Type{T}, dims::Vararg{Int, N}) where {T, N} = ones(T, dims...)
+@inline unsafe_ones!(p::DisabledPool{:cpu}, dims::Vararg{Int, N}) where {N} = ones(default_eltype(p), dims...)
+@inline unsafe_ones!(::DisabledPool{:cpu}, ::Type{T}, dims::NTuple{N, Int}) where {T, N} = ones(T, dims...)
+@inline unsafe_ones!(p::DisabledPool{:cpu}, dims::NTuple{N, Int}) where {N} = ones(default_eltype(p), dims...)
 
 # --- unsafe_similar! for DisabledPool{:cpu} ---
 @inline unsafe_similar!(::DisabledPool{:cpu}, x::AbstractArray) = similar(x)
 @inline unsafe_similar!(::DisabledPool{:cpu}, x::AbstractArray, ::Type{T}) where {T} = similar(x, T)
-@inline unsafe_similar!(::DisabledPool{:cpu}, x::AbstractArray, dims::Vararg{Int,N}) where {N} = similar(x, dims...)
-@inline unsafe_similar!(::DisabledPool{:cpu}, x::AbstractArray, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = similar(x, T, dims...)
+@inline unsafe_similar!(::DisabledPool{:cpu}, x::AbstractArray, dims::Vararg{Int, N}) where {N} = similar(x, dims...)
+@inline unsafe_similar!(::DisabledPool{:cpu}, x::AbstractArray, ::Type{T}, dims::Vararg{Int, N}) where {T, N} = similar(x, T, dims...)
 
 # --- Generic DisabledPool fallbacks (unknown backend → error) ---
 @inline zeros!(p::DisabledPool{B}, args...) where {B} = _throw_backend_not_loaded(B)
@@ -691,48 +691,48 @@ end
 # Explicit overloads for proper inlining (especially important for CUDA backend).
 
 # --- _zeros_impl! ---
-@inline _zeros_impl!(p::DisabledPool, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = zeros!(p, T, dims...)
-@inline _zeros_impl!(p::DisabledPool, dims::Vararg{Int,N}) where {N} = zeros!(p, dims...)
-@inline _zeros_impl!(p::DisabledPool, ::Type{T}, dims::NTuple{N,Int}) where {T,N} = zeros!(p, T, dims)
-@inline _zeros_impl!(p::DisabledPool, dims::NTuple{N,Int}) where {N} = zeros!(p, dims)
+@inline _zeros_impl!(p::DisabledPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N} = zeros!(p, T, dims...)
+@inline _zeros_impl!(p::DisabledPool, dims::Vararg{Int, N}) where {N} = zeros!(p, dims...)
+@inline _zeros_impl!(p::DisabledPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N} = zeros!(p, T, dims)
+@inline _zeros_impl!(p::DisabledPool, dims::NTuple{N, Int}) where {N} = zeros!(p, dims)
 
 # --- _ones_impl! ---
-@inline _ones_impl!(p::DisabledPool, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = ones!(p, T, dims...)
-@inline _ones_impl!(p::DisabledPool, dims::Vararg{Int,N}) where {N} = ones!(p, dims...)
-@inline _ones_impl!(p::DisabledPool, ::Type{T}, dims::NTuple{N,Int}) where {T,N} = ones!(p, T, dims)
-@inline _ones_impl!(p::DisabledPool, dims::NTuple{N,Int}) where {N} = ones!(p, dims)
+@inline _ones_impl!(p::DisabledPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N} = ones!(p, T, dims...)
+@inline _ones_impl!(p::DisabledPool, dims::Vararg{Int, N}) where {N} = ones!(p, dims...)
+@inline _ones_impl!(p::DisabledPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N} = ones!(p, T, dims)
+@inline _ones_impl!(p::DisabledPool, dims::NTuple{N, Int}) where {N} = ones!(p, dims)
 
 # --- _trues_impl! ---
-@inline _trues_impl!(p::DisabledPool, dims::Vararg{Int,N}) where {N} = trues!(p, dims...)
-@inline _trues_impl!(p::DisabledPool, dims::NTuple{N,Int}) where {N} = trues!(p, dims)
+@inline _trues_impl!(p::DisabledPool, dims::Vararg{Int, N}) where {N} = trues!(p, dims...)
+@inline _trues_impl!(p::DisabledPool, dims::NTuple{N, Int}) where {N} = trues!(p, dims)
 
 # --- _falses_impl! ---
-@inline _falses_impl!(p::DisabledPool, dims::Vararg{Int,N}) where {N} = falses!(p, dims...)
-@inline _falses_impl!(p::DisabledPool, dims::NTuple{N,Int}) where {N} = falses!(p, dims)
+@inline _falses_impl!(p::DisabledPool, dims::Vararg{Int, N}) where {N} = falses!(p, dims...)
+@inline _falses_impl!(p::DisabledPool, dims::NTuple{N, Int}) where {N} = falses!(p, dims)
 
 # --- _similar_impl! ---
 @inline _similar_impl!(p::DisabledPool, x::AbstractArray) = similar!(p, x)
 @inline _similar_impl!(p::DisabledPool, x::AbstractArray, ::Type{T}) where {T} = similar!(p, x, T)
-@inline _similar_impl!(p::DisabledPool, x::AbstractArray, dims::Vararg{Int,N}) where {N} = similar!(p, x, dims...)
-@inline _similar_impl!(p::DisabledPool, x::AbstractArray, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = similar!(p, x, T, dims...)
+@inline _similar_impl!(p::DisabledPool, x::AbstractArray, dims::Vararg{Int, N}) where {N} = similar!(p, x, dims...)
+@inline _similar_impl!(p::DisabledPool, x::AbstractArray, ::Type{T}, dims::Vararg{Int, N}) where {T, N} = similar!(p, x, T, dims...)
 
 # --- _reshape_impl! ---
-@inline _reshape_impl!(p::DisabledPool, A::AbstractArray, dims::NTuple{N,Int}) where {N} = reshape!(p, A, dims)
+@inline _reshape_impl!(p::DisabledPool, A::AbstractArray, dims::NTuple{N, Int}) where {N} = reshape!(p, A, dims)
 
 # --- _unsafe_zeros_impl! ---
-@inline _unsafe_zeros_impl!(p::DisabledPool, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = unsafe_zeros!(p, T, dims...)
-@inline _unsafe_zeros_impl!(p::DisabledPool, dims::Vararg{Int,N}) where {N} = unsafe_zeros!(p, dims...)
-@inline _unsafe_zeros_impl!(p::DisabledPool, ::Type{T}, dims::NTuple{N,Int}) where {T,N} = unsafe_zeros!(p, T, dims)
-@inline _unsafe_zeros_impl!(p::DisabledPool, dims::NTuple{N,Int}) where {N} = unsafe_zeros!(p, dims)
+@inline _unsafe_zeros_impl!(p::DisabledPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N} = unsafe_zeros!(p, T, dims...)
+@inline _unsafe_zeros_impl!(p::DisabledPool, dims::Vararg{Int, N}) where {N} = unsafe_zeros!(p, dims...)
+@inline _unsafe_zeros_impl!(p::DisabledPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N} = unsafe_zeros!(p, T, dims)
+@inline _unsafe_zeros_impl!(p::DisabledPool, dims::NTuple{N, Int}) where {N} = unsafe_zeros!(p, dims)
 
 # --- _unsafe_ones_impl! ---
-@inline _unsafe_ones_impl!(p::DisabledPool, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = unsafe_ones!(p, T, dims...)
-@inline _unsafe_ones_impl!(p::DisabledPool, dims::Vararg{Int,N}) where {N} = unsafe_ones!(p, dims...)
-@inline _unsafe_ones_impl!(p::DisabledPool, ::Type{T}, dims::NTuple{N,Int}) where {T,N} = unsafe_ones!(p, T, dims)
-@inline _unsafe_ones_impl!(p::DisabledPool, dims::NTuple{N,Int}) where {N} = unsafe_ones!(p, dims)
+@inline _unsafe_ones_impl!(p::DisabledPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N} = unsafe_ones!(p, T, dims...)
+@inline _unsafe_ones_impl!(p::DisabledPool, dims::Vararg{Int, N}) where {N} = unsafe_ones!(p, dims...)
+@inline _unsafe_ones_impl!(p::DisabledPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N} = unsafe_ones!(p, T, dims)
+@inline _unsafe_ones_impl!(p::DisabledPool, dims::NTuple{N, Int}) where {N} = unsafe_ones!(p, dims)
 
 # --- _unsafe_similar_impl! ---
 @inline _unsafe_similar_impl!(p::DisabledPool, x::AbstractArray) = unsafe_similar!(p, x)
 @inline _unsafe_similar_impl!(p::DisabledPool, x::AbstractArray, ::Type{T}) where {T} = unsafe_similar!(p, x, T)
-@inline _unsafe_similar_impl!(p::DisabledPool, x::AbstractArray, dims::Vararg{Int,N}) where {N} = unsafe_similar!(p, x, dims...)
-@inline _unsafe_similar_impl!(p::DisabledPool, x::AbstractArray, ::Type{T}, dims::Vararg{Int,N}) where {T,N} = unsafe_similar!(p, x, T, dims...)
+@inline _unsafe_similar_impl!(p::DisabledPool, x::AbstractArray, dims::Vararg{Int, N}) where {N} = unsafe_similar!(p, x, dims...)
+@inline _unsafe_similar_impl!(p::DisabledPool, x::AbstractArray, ::Type{T}, dims::Vararg{Int, N}) where {T, N} = unsafe_similar!(p, x, T, dims...)

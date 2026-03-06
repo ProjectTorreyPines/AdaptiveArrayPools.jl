@@ -49,26 +49,26 @@
 
         # acquire! with vararg dims
         v = acquire!(pool, Float32, 3, 3)
-        @test v isa Array{Float32,2}
+        @test v isa Array{Float32, 2}
 
         # acquire! with tuple dims
         v = acquire!(pool, Float32, (2, 2))
-        @test v isa Array{Float32,2}
+        @test v isa Array{Float32, 2}
 
         # acquire! with similar
         template = rand(Int32, 4, 4)
         v = acquire!(pool, template)
-        @test v isa Array{Int32,2}
+        @test v isa Array{Int32, 2}
 
         # unsafe_acquire! variants
         v = unsafe_acquire!(pool, Float32, 3, 3)
-        @test v isa Array{Float32,2}
+        @test v isa Array{Float32, 2}
 
         v = unsafe_acquire!(pool, Float32, (2, 2))
-        @test v isa Array{Float32,2}
+        @test v isa Array{Float32, 2}
 
         v = unsafe_acquire!(pool, template)
-        @test v isa Array{Int32,2}
+        @test v isa Array{Int32, 2}
     end
 
     @testset "BackendNotLoadedError" begin
@@ -90,14 +90,46 @@
 
         # Test that errors are thrown for unknown backend
         fake_pool = DisabledPool{:fake_backend}()
-        @test try zeros!(fake_pool, 10); false catch e; e isa AdaptiveArrayPools.BackendNotLoadedError end
-        @test try ones!(fake_pool, 10); false catch e; e isa AdaptiveArrayPools.BackendNotLoadedError end
-        @test try similar!(fake_pool, rand(3)); false catch e; e isa AdaptiveArrayPools.BackendNotLoadedError end
-        @test try unsafe_zeros!(fake_pool, 10); false catch e; e isa AdaptiveArrayPools.BackendNotLoadedError end
-        @test try unsafe_ones!(fake_pool, 10); false catch e; e isa AdaptiveArrayPools.BackendNotLoadedError end
-        @test try unsafe_similar!(fake_pool, rand(3)); false catch e; e isa AdaptiveArrayPools.BackendNotLoadedError end
-        @test try acquire!(fake_pool, Float64, 10); false catch e; e isa AdaptiveArrayPools.BackendNotLoadedError end
-        @test try unsafe_acquire!(fake_pool, Float64, 10); false catch e; e isa AdaptiveArrayPools.BackendNotLoadedError end
+        @test try
+            zeros!(fake_pool, 10); false
+        catch e
+            e isa AdaptiveArrayPools.BackendNotLoadedError
+        end
+        @test try
+            ones!(fake_pool, 10); false
+        catch e
+            e isa AdaptiveArrayPools.BackendNotLoadedError
+        end
+        @test try
+            similar!(fake_pool, rand(3)); false
+        catch e
+            e isa AdaptiveArrayPools.BackendNotLoadedError
+        end
+        @test try
+            unsafe_zeros!(fake_pool, 10); false
+        catch e
+            e isa AdaptiveArrayPools.BackendNotLoadedError
+        end
+        @test try
+            unsafe_ones!(fake_pool, 10); false
+        catch e
+            e isa AdaptiveArrayPools.BackendNotLoadedError
+        end
+        @test try
+            unsafe_similar!(fake_pool, rand(3)); false
+        catch e
+            e isa AdaptiveArrayPools.BackendNotLoadedError
+        end
+        @test try
+            acquire!(fake_pool, Float64, 10); false
+        catch e
+            e isa AdaptiveArrayPools.BackendNotLoadedError
+        end
+        @test try
+            unsafe_acquire!(fake_pool, Float64, 10); false
+        catch e
+            e isa AdaptiveArrayPools.BackendNotLoadedError
+        end
     end
 
     @testset "_impl! delegators for DisabledPool" begin
@@ -237,7 +269,12 @@
         @test AdaptiveArrayPools._is_function_def(:(function foo() end)) == true
         @test AdaptiveArrayPools._is_function_def(:(foo(x) = x + 1)) == true
         @test AdaptiveArrayPools._is_function_def(:(x = 1)) == false
-        @test AdaptiveArrayPools._is_function_def(:(begin; end)) == false
+        @test AdaptiveArrayPools._is_function_def(
+            :(
+                begin
+                end
+            )
+        ) == false
 
         # Test _filter_static_types
         types = Set{Any}([Float64, Int64])
@@ -392,7 +429,11 @@
 
     @testset "_generate_function_pool_code" begin
         # Test function code generation with disable_pooling=true
-        func_expr = :(function bar(x) x + 1 end)
+        func_expr = :(
+            function bar(x)
+                x + 1
+            end
+        )
         result = AdaptiveArrayPools._generate_function_pool_code(:pool, func_expr, true, true, :cpu)
         @test result isa Expr
         @test result.head == :function
@@ -410,7 +451,11 @@
 
     @testset "_generate_function_pool_code_with_backend" begin
         # Test function code generation with backend
-        func_expr = :(function compute(x) x + 1 end)
+        func_expr = :(
+            function compute(x)
+                x + 1
+            end
+        )
 
         # With disable_pooling=true
         result1 = AdaptiveArrayPools._generate_function_pool_code_with_backend(:cpu, :pool, func_expr, true)

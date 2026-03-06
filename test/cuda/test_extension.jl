@@ -57,7 +57,7 @@ end
         vec = CUDA.zeros(Float32, 50)
         flat_view = view(vec, 1:50)
         wrapped = AdaptiveArrayPools.wrap_array(tp, flat_view, (10, 5))
-        @test wrapped isa CuArray{Float32,2}
+        @test wrapped isa CuArray{Float32, 2}
         @test size(wrapped) == (10, 5)
     end
 
@@ -121,13 +121,15 @@ end
 
     @testset "get_task_local_cuda_pools before pool creation" begin
         # Test in a fresh task where no pool exists yet
-        result = fetch(Threads.@spawn begin
-            # Call get_task_local_cuda_pools() FIRST (before get_task_local_cuda_pool)
-            pools = get_task_local_cuda_pools()
-            @test pools isa Dict{Int, CuAdaptiveArrayPool}
-            @test isempty(pools)  # No pools created yet
-            true
-        end)
+        result = fetch(
+            Threads.@spawn begin
+                # Call get_task_local_cuda_pools() FIRST (before get_task_local_cuda_pool)
+                pools = get_task_local_cuda_pools()
+                @test pools isa Dict{Int, CuAdaptiveArrayPool}
+                @test isempty(pools)  # No pools created yet
+                true
+            end
+        )
         @test result == true
     end
 
@@ -449,7 +451,7 @@ end
     @testset "unsafe_acquire!" begin
         result = @with_pool :cuda pool begin
             A = unsafe_acquire!(pool, Float32, 100)
-            @test A isa CuArray{Float32,1}
+            @test A isa CuArray{Float32, 1}
             A .= 2.0f0
             sum(A)
         end
@@ -490,12 +492,12 @@ end
         pool = CuAdaptiveArrayPool()
 
         v = unsafe_acquire!(pool, Float32, 100)
-        @test v isa CuArray{Float32,1}
+        @test v isa CuArray{Float32, 1}
 
         A = unsafe_acquire!(pool, Float64, 10, 10)
-        @test A isa CuArray{Float64,2}
+        @test A isa CuArray{Float64, 2}
 
         B = unsafe_acquire!(pool, Int32, (5, 5))
-        @test B isa CuArray{Int32,2}
+        @test B isa CuArray{Int32, 2}
     end
 end

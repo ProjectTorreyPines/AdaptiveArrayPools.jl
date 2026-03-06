@@ -28,8 +28,8 @@
 # ==============================================================================
 
 using AdaptiveArrayPools: get_view!, get_nd_view!, get_nd_array!, allocate_vector, safe_prod,
-                          _record_type_touch!, _fixed_slot_bit, _checkpoint_typed_pool!,
-                          _MODE_BITS_MASK
+    _record_type_touch!, _fixed_slot_bit, _checkpoint_typed_pool!,
+    _MODE_BITS_MASK
 
 """
     get_view!(tp::CuTypedPool{T}, n::Int) -> CuVector{T}
@@ -205,5 +205,5 @@ end
         end
         @inbounds pool._touched_type_masks[depth] = current_mask | b
     end
-    nothing
+    return nothing
 end

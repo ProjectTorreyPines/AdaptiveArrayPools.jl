@@ -10,7 +10,7 @@ using AdaptiveArrayPools: allocate_vector, wrap_array, get_typed_pool!
 # ==============================================================================
 
 @inline AdaptiveArrayPools.allocate_vector(
-    ::AbstractTypedPool{T,CuVector{T}}, n::Int
+    ::AbstractTypedPool{T, CuVector{T}}, n::Int
 ) where {T} = CuVector{T}(undef, n)
 
 # ==============================================================================
@@ -20,8 +20,8 @@ using AdaptiveArrayPools: allocate_vector, wrap_array, get_typed_pool!
 # GPU uses reshape which returns CuArray{T,N} via GPUArrays derive()
 # (NOT ReshapedArray like CPU - this is simpler for GPU kernels)
 @inline AdaptiveArrayPools.wrap_array(
-    ::AbstractTypedPool{T,CuVector{T}}, flat_view, dims::NTuple{N,Int}
-) where {T,N} = reshape(flat_view, dims)
+    ::AbstractTypedPool{T, CuVector{T}}, flat_view, dims::NTuple{N, Int}
+) where {T, N} = reshape(flat_view, dims)
 
 # ==============================================================================
 # get_typed_pool! Dispatches for CuAdaptiveArrayPool
@@ -39,7 +39,7 @@ using AdaptiveArrayPools: allocate_vector, wrap_array, get_typed_pool!
 
 # Slow path: rare types via IdDict (with checkpoint correction!)
 @inline function AdaptiveArrayPools.get_typed_pool!(p::CuAdaptiveArrayPool, ::Type{T}) where {T}
-    get!(p.others, T) do
+    return get!(p.others, T) do
         tp = CuTypedPool{T}()
         # CRITICAL: Match CPU behavior - auto-checkpoint new pool if inside @with_pool scope
         # Without this, rewind! would corrupt state for dynamically-created pools
