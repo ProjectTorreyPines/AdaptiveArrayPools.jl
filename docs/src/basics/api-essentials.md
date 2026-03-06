@@ -137,7 +137,7 @@ end
 | `zeros!(pool, [T,] dims...)` | View type | 0 bytes | Zero-initialized |
 | `ones!(pool, [T,] dims...)` | View type | 0 bytes | One-initialized |
 | `similar!(pool, A)` | View type | 0 bytes | Match existing array |
-| `reshape!(pool, A, dims...)` | `Array{T,N}` | 0 bytes (1.11+) | Reshape sharing memory |
+| `reshape!(pool, A, dims...)` | Reshaped array | 0 bytes (1.11+) | Reshape sharing memory |
 | `reset!(pool)` | `nothing` | - | Release all memory |
 | `pooling_enabled(pool)` | `Bool` | - | Check pool status |
 

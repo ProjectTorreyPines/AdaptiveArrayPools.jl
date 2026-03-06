@@ -322,9 +322,18 @@ Reshape array `A` to dimensions `dims` using the pool's wrapper cache.
 The returned array shares memory with `A` — mutations are visible in both.
 The pool provides cached wrapper objects to reduce allocation on repeated calls.
 
-On Julia 1.11+, cross-dimensional reshapes are zero-allocation after warmup
-(uses `setfield!`-based wrapper reuse). On Julia 1.10 and CUDA, falls back
-to `Base.reshape`.
+On Julia 1.11+:
+- If `ndims(A) == length(dims)` (same dimensionality), `reshape!` mutates `A`
+  in-place by changing its size. This differs from `Base.reshape`, which always
+  returns a new wrapper.
+- For cross-dimensional reshapes (`ndims(A) != length(dims)`), the returned
+  `Array` wrapper is taken from the pool's internal cache and may be reused
+  after `rewind!` or pool scope exit.
+
+As with all pool-backed objects, the reshaped result must not escape the
+surrounding `@with_pool` scope.
+
+On Julia 1.10 and CUDA, falls back to `Base.reshape`.
 
 Throws `DimensionMismatch` if `prod(dims) != length(A)`.
 
@@ -350,8 +359,12 @@ end
 end
 
 # Internal implementation (fallback: delegates to Base.reshape)
-@inline _reshape_impl!(::AbstractArrayPool, A::AbstractArray, dims::NTuple{N,Int}) where {N} =
+@inline function _reshape_impl!(::AbstractArrayPool, A::AbstractArray, dims::NTuple{N,Int}) where {N}
+    for d in dims
+        d < 0 && throw(ArgumentError("invalid Array dimensions"))
+    end
     reshape(A, dims)
+end
 
 # Vararg forwarding (macro transforms reshape!(pool, A, 3, 4) → _reshape_impl!(pool, A, 3, 4))
 @inline _reshape_impl!(pool::AbstractArrayPool, A::AbstractArray, dims::Vararg{Int,N}) where {N} =

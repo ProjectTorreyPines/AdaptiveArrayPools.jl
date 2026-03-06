@@ -42,6 +42,23 @@ negligible relative to the 100-200 ns cost of the full allocation path.
 end
 
 # ==============================================================================
+# Helper: Pool Growth Warning (cold path, kept out of hot loops)
+# ==============================================================================
+
+@noinline function _warn_pool_growing(tp::AbstractTypedPool{T}, idx::Int) where {T}
+    total_bytes = sum(length, tp.vectors) * sizeof(T)
+    @warn "$(nameof(typeof(tp))){$T} growing large ($idx arrays, ~$(Base.format_bytes(total_bytes))). Missing rewind!()?"
+    return nothing
+end
+
+@inline function _check_pool_growth(tp::AbstractTypedPool, idx::Int)
+    # Warn at every power of 2 from 512 onward (512, 1024, 2048, …)
+    if idx >= 512 && (idx & (idx - 1)) == 0
+        _warn_pool_growing(tp, idx)
+    end
+end
+
+# ==============================================================================
 # Get 1D View (Internal - Zero-Allocation Cache)
 # ==============================================================================
 
@@ -61,12 +78,7 @@ function get_view!(tp::AbstractTypedPool{T}, n::Int) where {T}
         new_view = view(tp.vectors[idx], 1:n)
         push!(tp.views, new_view)
         push!(tp.view_lengths, n)
-
-        # Warn at powers of 2 (512, 1024, 2048, ...) - possible missing rewind!()
-        if idx >= 512 && (idx & (idx - 1)) == 0
-            total_bytes = sum(length, tp.vectors) * sizeof(T)
-            @warn "$(nameof(typeof(tp))){$T} growing large ($idx arrays, ~$(Base.format_bytes(total_bytes))). Missing rewind!()?"
-        end
+        _check_pool_growth(tp, idx)
 
         return new_view
     end
@@ -109,6 +121,7 @@ The backing vector at this slot is unused — this is for wrapper-only caching
         push!(tp.vectors, Vector{T}(undef, 0))
         push!(tp.views, view(tp.vectors[idx], 1:0))
         push!(tp.view_lengths, 0)
+        _check_pool_growth(tp, idx)
     end
     return idx
 end
@@ -164,7 +177,7 @@ Zero-allocation reshape using `setfield!`-based wrapper reuse (Julia 1.11+).
     end
 
     # Cache miss (first call per slot+N): create wrapper, cache forever
-    arr = Array{T,N}(undef, ntuple(_ -> 1, Val(N)))
+    arr = Array{T,N}(undef, ntuple(_ -> 0, Val(N)))
     setfield!(arr, :ref, getfield(A, :ref))
     setfield!(arr, :size, dims)
     _store_nd_wrapper!(tp, N, slot, arr)
