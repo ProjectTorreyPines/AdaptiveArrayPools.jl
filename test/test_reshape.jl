@@ -90,6 +90,32 @@
     end
 
     # ==========================================================================
+    # Negative dimensions (must throw ArgumentError like Base.reshape)
+    # ==========================================================================
+
+    @testset "Negative dimensions" begin
+        pool = AdaptiveArrayPool()
+        A = [1.0]
+        @test_throws ArgumentError reshape!(pool, A, -1, -1)
+        @test_throws ArgumentError reshape!(pool, A, (-1,))
+        @test_throws ArgumentError reshape!(pool, collect(1.0:4.0), -2, -2)
+    end
+
+    # ==========================================================================
+    # Zero-dimensional reshape (N == 0)
+    # ==========================================================================
+
+    @testset "Zero-dimensional reshape" begin
+        pool = AdaptiveArrayPool()
+        A = [42.0]
+        checkpoint!(pool)
+        B = reshape!(pool, A, ())
+        @test ndims(B) == 0
+        @test B[] == 42.0
+        rewind!(pool)
+    end
+
+    # ==========================================================================
     # Tuple and vararg syntax
     # ==========================================================================
 

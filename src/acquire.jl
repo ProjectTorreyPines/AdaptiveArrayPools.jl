@@ -128,10 +128,18 @@ Zero-allocation reshape using `setfield!`-based wrapper reuse (Julia 1.11+).
   Automatically reclaimed on `rewind!` via `n_active` restoration.
 """
 @inline function _reshape_impl!(pool::AdaptiveArrayPool, A::Array{T,M}, dims::NTuple{N,Int}) where {T,M,N}
+    # Reject negative dimensions (match Base.reshape behavior)
+    for d in dims
+        d < 0 && throw(ArgumentError("invalid Array dimensions"))
+    end
+
     # Validate before claiming slot
     total_len = safe_prod(dims)
     length(A) == total_len || throw(DimensionMismatch(
         "new dimensions $(dims) must be consistent with array length $(length(A))"))
+
+    # 0-D reshape: rare edge case, delegate to Base (nd_wrappers is 1-indexed by N)
+    N == 0 && return reshape(A, dims)
 
     # Same dimensionality: just update size in-place, no pool interaction
     if M == N
