@@ -35,6 +35,7 @@ Default element type is `Float64` (CPU) or `Float32` (CUDA).
 | `trues!(pool, dims...)` | Bit-packed `BitVector` / `BitArray{N}` filled with `true`. |
 | `falses!(pool, dims...)` | Bit-packed `BitVector` / `BitArray{N}` filled with `false`. |
 | `similar!(pool, A)` | View matching `eltype(A)` and `size(A)`. |
+| `reshape!(pool, A, dims...)` | Reshape `A` to `dims`, sharing memory. Zero-alloc on Julia 1.11+. |
 
 ### Types
 

@@ -337,6 +337,11 @@
         @test sz3d == (2, 3, 4)
         @test v111 == 1.0
         @test v234 == 24.0
+
+        # External data integrity: src must be unchanged after call
+        @test src == collect(1.0:24.0)
+        @test src isa Vector{Float64}
+        @test size(src) == (24,)
     end
 
     # ==========================================================================
