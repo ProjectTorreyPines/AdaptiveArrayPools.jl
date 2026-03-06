@@ -1,9 +1,10 @@
 # AdaptiveArrayPools.jl CUDA Extension Design
 
-> **Status**: Draft v0.6 (Post-Review Revision)
-> **Version**: 0.6
-> **Date**: 2024-12-14
-> **Authors**: Design discussion with AI assistance
+> **Update (v0.2.2, feat/new_array_nd)**: The CPU path now uses `setfield!`-based wrapper
+> reuse (Julia 1.11+) instead of the N-way cache for `unsafe_acquire!`. The **CUDA extension
+> still uses the N-way set-associative cache** described in this document, since `CuArray`
+> does not support `setfield!`-based field mutation. `CACHE_WAYS` and `set_cache_ways!` are
+> now only relevant for the CUDA backend (and Julia 1.10 legacy CPU path).
 
 ## 1. Executive Summary
 

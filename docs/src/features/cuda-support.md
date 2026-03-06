@@ -47,12 +47,17 @@ The CUDA backend uses the same API as CPU, with `:cuda` backend specifier:
 
 **GPU Memory**: Always 0 bytes allocation after warmup. The underlying `CuVector` is resized as needed and reused.
 
-**CPU Memory**:
-- Cache hit (≤4 dimension patterns per slot): 0 bytes
-- Cache miss (>4 patterns): ~100 bytes for wrapper metadata
+**CPU-side Wrapper Memory** (for `unsafe_acquire!` N-D on CUDA):
+- The CUDA backend uses an N-way set-associative cache for `CuArray` wrapper reuse
+- Cache hit (≤`CACHE_WAYS` dimension patterns per slot): 0 bytes
+- Cache miss (>`CACHE_WAYS` patterns): ~100 bytes for wrapper metadata
+- See [Configuration](configuration.md) for `CACHE_WAYS` tuning
+
+!!! note "CPU vs CUDA caching"
+    On CPU (Julia 1.11+), `unsafe_acquire!` uses `setfield!`-based wrapper reuse with **zero allocation for any number of dimension patterns**. The CUDA backend does not yet support this optimization and still uses the N-way cache.
 
 ```julia
-# Example: 4 patterns fit in 4-way cache → zero CPU allocation
+# Example: 4 patterns fit in default 4-way cache → zero CPU-side allocation
 dims_list = ((10, 10), (5, 20), (20, 5), (4, 25))
 for dims in dims_list
     @with_pool :cuda p begin

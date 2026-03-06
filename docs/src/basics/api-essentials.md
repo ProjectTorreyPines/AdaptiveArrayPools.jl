@@ -21,7 +21,7 @@ end
 
 ### `unsafe_acquire!(pool, T, dims...)`
 
-Returns a native `Array` type. **Zero-allocation on cache hit**—only allocates a small header (~80-144 bytes) on cache miss. Use when you specifically need `Array{T,N}`:
+Returns a native `Array` type. On **Julia 1.11+**, always **zero-allocation** via `setfield!`-based wrapper reuse (unlimited dimension patterns). On Julia 1.10 and CUDA, zero-allocation on cache hit with a small header (~80-144 bytes) on cache miss. Use when you specifically need `Array{T,N}`:
 
 ```julia
 @with_pool pool begin
@@ -36,7 +36,7 @@ end
 ```
 
 !!! tip "Cache behavior"
-    Same dimension pattern → **0 bytes**. Different pattern → 80-144 bytes header only (data memory always reused). See [N-Way Cache](../architecture/type-dispatch.md#n-way-set-associative-cache) for details.
+    On Julia 1.11+: **always 0 bytes** regardless of dimension pattern (setfield!-based reuse). On Julia 1.10 / CUDA: same dimension pattern → 0 bytes, different pattern → 80-144 bytes header only (data always reused). See [N-D Wrapper Caching](../architecture/type-dispatch.md#n-d-wrapper-caching-for-unsafe_acquire) for details.
 
 !!! note "`Bit` behavior"
     For `T === Bit`, `unsafe_acquire!` is equivalent to `acquire!` and returns native `BitVector`/`BitArray{N}`.
@@ -113,7 +113,7 @@ end
 | Function | Returns | Allocation | Use Case |
 |----------|---------|------------|----------|
 | `acquire!(pool, T, dims...)` | View type | 0 bytes | Default choice |
-| `unsafe_acquire!(pool, T, dims...)` | `Array{T,N}` | 0 (hit) / 80-144 (miss) | FFI, type constraints |
+| `unsafe_acquire!(pool, T, dims...)` | `Array{T,N}` | 0 bytes (1.11+) / 0-144 (1.10/CUDA) | FFI, type constraints |
 | `zeros!(pool, [T,] dims...)` | View type | 0 bytes | Zero-initialized |
 | `ones!(pool, [T,] dims...)` | View type | 0 bytes | One-initialized |
 | `similar!(pool, A)` | View type | 0 bytes | Match existing array |

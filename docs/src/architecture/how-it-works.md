@@ -82,57 +82,66 @@ end
 
 When you call `acquire!(pool, Float64, n)`, the compiler inlines directly to `pool.float64` — no dictionary lookup, no type instability.
 
-## N-Way Set Associative Cache
+## N-D Wrapper Reuse (CPU)
 
-For `unsafe_acquire!` (which returns native `Array` types), we use an N-way cache to reduce header allocation:
+For `unsafe_acquire!` (which returns native `Array` types), the caching strategy depends on the Julia version:
+
+### Julia 1.11+: `setfield!`-based Wrapper Reuse (Zero-Allocation)
+
+Julia 1.11 changed `Array` from an opaque C struct to a mutable Julia struct with `ref::MemoryRef{T}` and `size::NTuple{N,Int}` fields. This enables in-place mutation of cached `Array` wrappers via `setfield!`:
 
 ```
-                    CACHE_WAYS = 4 (default)
-                    ┌────┬────┬────┬────┐
-Slot 0 (Float64):   │way0│way1│way2│way3│  ← round-robin eviction
-                    └────┴────┴────┴────┘
-                    ┌────┬────┬────┬────┐
-Slot 1 (Float32):   │way0│way1│way2│way3│
-                    └────┴────┴────┴────┘
-                    ...
+nd_wrappers[N][slot] → cached Array{T,N}
+    │
+    ├─ setfield!(:ref, new_memory_ref)   ← update backing memory (0-alloc)
+    └─ setfield!(:size, new_dims)        ← update dimensions (0-alloc)
 ```
 
-### Cache Lookup Pseudocode
+**Result**: Unlimited dimension patterns per slot with **zero allocation** after warmup. No eviction, no round-robin, no `CACHE_WAYS` limit.
 
 ```julia
+# Pseudocode for Julia 1.11+ path
 function unsafe_acquire!(pool, T, dims...)
     typed_pool = get_typed_pool!(pool, T)
-    slot = n_active + 1
-    base = (slot - 1) * CACHE_WAYS
+    flat_view = get_view!(typed_pool, prod(dims))
+    slot = typed_pool.n_active
 
-    # Search all ways for matching dimensions
-    for k in 1:CACHE_WAYS
-        idx = base + k
-        if dims == typed_pool.nd_dims[idx]
-            # Cache hit! Check if underlying vector was resized
-            if pointer matches
-                return typed_pool.nd_arrays[idx]
-            end
-        end
+    # Direct index lookup by dimensionality N (~1ns)
+    wrapper = typed_pool.nd_wrappers[N][slot]
+    if wrapper !== nothing
+        setfield!(wrapper, :ref, getfield(vec, :ref))  # 0-alloc
+        setfield!(wrapper, :size, dims)                 # 0-alloc
+        return wrapper
     end
 
-    # Cache miss: create new Array header, store in next way (round-robin)
-    way = typed_pool.nd_next_way[slot]
-    typed_pool.nd_next_way[slot] = (way + 1) % CACHE_WAYS
-    # ... create and cache Array ...
+    # First call for this (slot, N): unsafe_wrap once, cached forever
+    arr = wrap_array(typed_pool, flat_view, dims)
+    store_wrapper!(typed_pool, N, slot, arr)
+    return arr
 end
 ```
 
-**Key insight**: Even on cache miss, only the `Array` header (~80-144 bytes) is allocated. The actual data memory is always reused from the pool.
+### Julia 1.10 (Legacy): N-Way Set Associative Cache
+
+On Julia 1.10, `Array` fields cannot be mutated, so the legacy path uses a 4-way set-associative cache with round-robin eviction:
+
+- Cache hit (≤`CACHE_WAYS` dimension patterns per slot): **0 bytes**
+- Cache miss (>`CACHE_WAYS` patterns): **~80-144 bytes** per `unsafe_wrap` call
+
+See [Configuration](../features/configuration.md) for `CACHE_WAYS` tuning (Julia 1.10 / CUDA only).
+
+### CUDA: N-Way Cache
+
+The CUDA backend still uses the N-way set-associative cache (same as Julia 1.10 legacy), since `CuArray` does not support `setfield!`-based mutation.
 
 ## View vs Array Return Types
 
 Type stability is critical for performance. AdaptiveArrayPools provides two APIs:
 
-| API | 1D Return | N-D Return | Allocation |
-|-----|-----------|------------|------------|
-| `acquire!` | `SubArray{T,1}` | `ReshapedArray{T,N}` | Always 0 bytes |
-| `unsafe_acquire!` | `Vector{T}` | `Array{T,N}` | 0 bytes (hit) / ~100 bytes (miss) |
+| API | 1D Return | N-D Return | Allocation (Julia 1.11+) | Allocation (Julia 1.10 / CUDA) |
+|-----|-----------|------------|--------------------------|-------------------------------|
+| `acquire!` | `SubArray{T,1}` | `ReshapedArray{T,N}` | Always 0 bytes | Always 0 bytes |
+| `unsafe_acquire!` | `Vector{T}` | `Array{T,N}` | 0 bytes (setfield! reuse) | 0 bytes (hit) / ~100 bytes (miss) |
 
 !!! note "`Bit` type behavior"
     For `T === Bit`, both `acquire!` and `unsafe_acquire!` return native `BitVector` / `BitArray{N}` (not views). Cache hit achieves 0 bytes allocation.

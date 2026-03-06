@@ -1,5 +1,13 @@
 # Hybrid API Design: acquire! vs unsafe_acquire!
 
+> **Update (v0.2.2, feat/new_array_nd)**: The `unsafe_acquire!` path no longer uses
+> `unsafe_wrap` + N-way cache on Julia 1.11+ CPU. Instead, it uses `setfield!`-based
+> wrapper reuse — **0-alloc for any number of dimension patterns** (no eviction limit).
+> The N-way cache (`CACHE_WAYS`) is now only used by the **CUDA** backend and the
+> **Julia 1.10 legacy** fallback. The `acquire!` → `ReshapedArray` path is unchanged.
+> `TypedPool` fields changed: `nd_arrays`/`nd_dims`/`nd_ptrs`/`nd_next_way` →
+> `nd_wrappers::Vector{Union{Nothing, Vector{Any}}}`.
+
 ## Executive Summary
 
 Redesigning `AdaptiveArrayPools.jl`'s N-D array acquisition API with a **Two Tools Strategy**:

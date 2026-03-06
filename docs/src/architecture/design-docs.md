@@ -10,7 +10,7 @@ For in-depth analysis of design decisions, implementation tradeoffs, and archite
 ## Caching & Performance
 
 - **[nd_array_approach_comparison.md](https://github.com/ProjectTorreyPines/AdaptiveArrayPools.jl/blob/master/docs/design/nd_array_approach_comparison.md)**
-  N-way cache design, boxing analysis, and ReshapedArray benchmarks
+  N-way cache design (now legacy — replaced by `setfield!` reuse on Julia 1.11+ CPU), boxing analysis, and ReshapedArray benchmarks
 
 - **[fixed_slots_codegen_design.md](https://github.com/ProjectTorreyPines/AdaptiveArrayPools.jl/blob/master/docs/design/fixed_slots_codegen_design.md)**
   Zero-allocation iteration via `@generated` functions and fixed-slot type dispatch
@@ -32,7 +32,7 @@ For in-depth analysis of design decisions, implementation tradeoffs, and archite
 | Document | Focus Area | Key Insights |
 |----------|------------|--------------|
 | hybrid_api_design | API strategy | View types for zero-alloc, Array for FFI |
-| nd_array_approach_comparison | Caching | N-way associative cache reduces header allocation |
+| nd_array_approach_comparison | Caching | N-way cache (legacy); setfield! reuse on Julia 1.11+ CPU |
 | fixed_slots_codegen_design | Codegen | @generated functions enable type-stable iteration |
 | untracked_acquire_design | Macro safety | Sentinel pattern ensures correct cleanup |
 | cuda_extension_design | GPU support | Seamless CPU/CUDA API parity |

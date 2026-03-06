@@ -79,16 +79,14 @@ Operations like `count()`, `sum()`, and bitwise broadcasting are **10x~100x fast
 
 ### N-D Caching & Zero Allocation
 
-The pool uses an N-way associative cache to efficiently reuse `BitArray{N}` instances:
+The pool reuses `BitArray{N}` wrapper instances via `setfield!`-based in-place mutation (Julia 1.11+) or N-way cache (Julia 1.10 / CUDA):
 
-| Scenario | Allocation |
-|----------|------------|
-| First call with new dims | ~944 bytes (new `BitArray{N}` created) |
-| Subsequent call with same dims | **0 bytes** (cached instance reused) |
-| Same ndims, different dims | **0 bytes** (dims/len fields modified in-place) |
-| Different ndims | ~944 bytes (new `BitArray{N}` created and cached) |
+| Scenario | Julia 1.11+ | Julia 1.10 / CUDA |
+|----------|-------------|-------------------|
+| First call with new (slot, N) | ~944 bytes (new `BitArray{N}`) | ~944 bytes |
+| Subsequent call, any dims | **0 bytes** (setfield! reuse) | **0 bytes** (same ndims) / ~944 bytes (different ndims) |
 
-Unlike regular `Array` where dimensions are immutable, `BitArray` allows in-place modification of its `dims` and `len` fields. The pool exploits this to achieve **zero allocation** on repeated calls with matching dimensionality.
+On Julia 1.11+, `BitArray` fields (`len`, `dims`, `chunks`) are mutated in-place via `setfield!`, achieving **zero allocation** on all repeated calls regardless of dimension pattern.
 
 ```julia
 @with_pool pool begin
@@ -98,12 +96,12 @@ Unlike regular `Array` where dimensions are immutable, `BitArray` allows in-plac
     # Rewind to reuse the same slot
     rewind!(pool)
 
-    # Same dims: 0 allocation (exact cache hit)
+    # Same dims: 0 allocation (cached wrapper reused)
     m2 = acquire!(pool, Bit, 100, 100)
 
     rewind!(pool)
 
-    # Different dims but same ndims: 0 allocation (dims modified in-place)
+    # Different dims but same ndims: 0 allocation (fields updated in-place)
     m3 = acquire!(pool, Bit, 50, 200)
 end
 ```
