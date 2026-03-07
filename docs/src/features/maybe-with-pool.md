@@ -1,6 +1,6 @@
 # `@maybe_with_pool`
 
-Runtime-toggleable pooling. Users can enable/disable via `MAYBE_POOLING_ENABLED[]`.
+Runtime-toggleable pooling. Users can enable/disable via `MAYBE_POOLING[]`.
 
 ## Usage
 
@@ -12,8 +12,8 @@ Runtime-toggleable pooling. Users can enable/disable via `MAYBE_POOLING_ENABLED[
 end
 
 # Toggle at runtime
-MAYBE_POOLING_ENABLED[] = false  # Normal allocation
-MAYBE_POOLING_ENABLED[] = true   # Uses pool
+MAYBE_POOLING[] = false  # Normal allocation
+MAYBE_POOLING[] = true   # Uses pool
 ```
 
 ## When to Use
@@ -24,7 +24,7 @@ MAYBE_POOLING_ENABLED[] = true   # Uses pool
 
 ## How It Works
 
-When `MAYBE_POOLING_ENABLED[] == false`:
+When `MAYBE_POOLING[] == false`:
 - `pool` becomes `DisabledPool{backend}()` (e.g., `DisabledPool{:cpu}()` or `DisabledPool{:cuda}()`)
 - All pool functions (`acquire!`, `zeros!`, etc.) fall back to standard allocation
 - Backend context is preserved: `:cuda` → `CuArray`, `:cpu` → `Array`

@@ -7,7 +7,7 @@
 | Macro | Description |
 |-------|-------------|
 | `@with_pool name expr` | **Recommended.** Injects a global, task-local pool named `name`. Automatically checkpoints and rewinds. |
-| `@maybe_with_pool name expr` | Same as `@with_pool`, but can be toggled on/off at runtime via `MAYBE_POOLING_ENABLED[]`. |
+| `@maybe_with_pool name expr` | Same as `@with_pool`, but can be toggled on/off at runtime via `MAYBE_POOLING[]`. |
 
 ### Functions
 
@@ -49,8 +49,8 @@ Default element type is `Float64` (CPU) or `Float32` (CUDA).
 
 | Symbol | Description |
 |--------|-------------|
-| `USE_POOLING` | Compile-time constant to disable all pooling. |
-| `MAYBE_POOLING_ENABLED` | Runtime `Ref{Bool}` for `@maybe_with_pool`. |
+| `STATIC_POOLING` | Compile-time constant to disable all pooling. (alias: `USE_POOLING`) |
+| `MAYBE_POOLING` | Runtime `Ref{Bool}` for `@maybe_with_pool`. (alias: `MAYBE_POOLING_ENABLED`) |
 | `POOL_DEBUG` | Runtime `Ref{Bool}` to enable safety validation. |
 | `set_cache_ways!(n)` | Set N-way cache size (Julia 1.10 / CUDA only; no effect on Julia 1.11+ CPU). |
 

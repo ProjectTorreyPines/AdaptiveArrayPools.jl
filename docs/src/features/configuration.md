@@ -8,7 +8,7 @@ use_pooling = false  # ⭐ Primary: Disable pooling entirely
 cache_ways = 8       # Advanced: N-way cache size (default: 4)
 ```
 
-## Compile-time: USE_POOLING (⭐ Primary)
+## Compile-time: STATIC_POOLING (⭐ Primary)
 
 **The most important configuration.** Completely disable pooling to make `acquire!` behave like standard allocation.
 
@@ -26,7 +26,7 @@ Preferences.set_preferences!(AdaptiveArrayPools, "use_pooling" => false)
 # Restart Julia for changes to take effect
 ```
 
-When `USE_POOLING = false`:
+When `STATIC_POOLING = false`:
 - `pool` becomes `DisabledPool{backend}()` instead of an active pool
 - All pool functions fall back to standard allocation
 - Backend context is preserved: `:cuda` still returns `CuArray`
@@ -50,13 +50,13 @@ Use `pooling_enabled(pool)` to check if pooling is active.
 
 All pooling code is **completely eliminated at compile time** (zero overhead).
 
-## Runtime: MAYBE_POOLING_ENABLED
+## Runtime: MAYBE_POOLING
 
 Only affects `@maybe_with_pool`. Toggle without restart.
 
 ```julia
-MAYBE_POOLING_ENABLED[] = false  # Disable
-MAYBE_POOLING_ENABLED[] = true   # Enable (default)
+MAYBE_POOLING[] = false  # Disable
+MAYBE_POOLING[] = true   # Enable (default)
 ```
 
 ## Runtime: POOL_DEBUG
@@ -100,5 +100,5 @@ set_cache_ways!(8)
 |---------|-------|----------|----------|---------|
 | `use_pooling` | Compile-time | Yes | ⭐ Primary | All macros, `acquire!` behavior |
 | `cache_ways` | Compile-time | Yes | Advanced | `unsafe_acquire!` N-D caching (Julia 1.10 / CUDA only) |
-| `MAYBE_POOLING_ENABLED` | Runtime | No | Optional | `@maybe_with_pool` only |
+| `MAYBE_POOLING` | Runtime | No | Optional | `@maybe_with_pool` only |
 | `POOL_DEBUG` | Runtime | No | Debug | Safety validation |
