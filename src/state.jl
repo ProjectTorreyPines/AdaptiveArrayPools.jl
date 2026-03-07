@@ -381,24 +381,6 @@ end
 # ==============================================================================
 
 """
-    empty!(tp::BitTypedPool)
-
-Clear all internal storage for BitTypedPool, releasing all memory.
-Restores sentinel values for 1-based sentinel pattern.
-"""
-function Base.empty!(tp::BitTypedPool)
-    empty!(tp.vectors)
-    empty!(tp.arr_wrappers)
-    tp.n_active = 0
-    # Restore sentinel values (1-based sentinel pattern)
-    empty!(tp._checkpoint_n_active)
-    push!(tp._checkpoint_n_active, 0)   # Sentinel: n_active=0 at depth=0
-    empty!(tp._checkpoint_depths)
-    push!(tp._checkpoint_depths, 0)     # Sentinel: depth=0 = no checkpoint
-    return tp
-end
-
-"""
     empty!(tp::TypedPool)
 
 Clear all internal storage for TypedPool, releasing all memory.

@@ -85,25 +85,6 @@ function _check_pointer_overlap(arr::Array, pool::AdaptiveArrayPool)
     return
 end
 
-# Check if BitArray chunks overlap with the pool's BitTypedPool storage
-function _check_bitchunks_overlap(arr::BitArray, pool::AdaptiveArrayPool)
-    arr_chunks = arr.chunks
-    arr_ptr = UInt(pointer(arr_chunks))
-    arr_len = length(arr_chunks) * sizeof(UInt64)
-    arr_end = arr_ptr + arr_len
-
-    for v in pool.bits.vectors
-        v_chunks = v.chunks
-        v_ptr = UInt(pointer(v_chunks))
-        v_len = length(v_chunks) * sizeof(UInt64)
-        v_end = v_ptr + v_len
-        if !(arr_end <= v_ptr || v_end <= arr_ptr)
-            error("Safety Violation: The function returned a BitArray backed by pool memory. This is unsafe as the memory will be reclaimed. Please return a copy (copy) or a scalar.")
-        end
-    end
-    return nothing
-end
-
 _validate_pool_return(val, ::DisabledPool) = nothing
 
 # ==============================================================================
@@ -112,13 +93,10 @@ _validate_pool_return(val, ::DisabledPool) = nothing
 
 # --- Helper functions for pool_stats (type-specific behavior) ---
 _default_type_name(::TypedPool{T}) where {T} = string(T)
-_default_type_name(::BitTypedPool) = "Bit"
 
 _vector_bytes(v::Vector) = Base.summarysize(v)
-_vector_bytes(v::BitVector) = sizeof(v.chunks)
 
 _count_label(::TypedPool) = "elements"
-_count_label(::BitTypedPool) = "bits"
 
 """
     pool_stats(tp::AbstractTypedPool; io::IO=stdout, indent::Int=0, name::String="")
@@ -252,7 +230,6 @@ end
 
 # --- Helper for Base.show (full type name for display) ---
 _show_type_name(::TypedPool{T}) where {T} = "TypedPool{$T}"
-_show_type_name(::BitTypedPool) = "BitTypedPool"
 
 # Compact one-line show for all AbstractTypedPool
 function Base.show(io::IO, tp::AbstractTypedPool)
