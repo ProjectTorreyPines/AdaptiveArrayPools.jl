@@ -29,9 +29,10 @@
     end
 
     @testset "CACHE_WAYS configuration" begin
-        # Verify CACHE_WAYS is accessible
-        @test AdaptiveArrayPools.CACHE_WAYS isa Int
-        @test 1 <= AdaptiveArrayPools.CACHE_WAYS <= 16
+        # CACHE_WAYS is defined in CUDA extension (CPU ≥1.11 no longer uses view caching)
+        CUDAExt = Base.get_extension(AdaptiveArrayPools, :AdaptiveArrayPoolsCUDAExt)
+        @test CUDAExt.CACHE_WAYS isa Int
+        @test 1 <= CUDAExt.CACHE_WAYS <= 16
     end
 
 end
