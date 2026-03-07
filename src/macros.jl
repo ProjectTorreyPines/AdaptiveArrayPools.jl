@@ -407,7 +407,7 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, forc
     if !USE_POOLING
         disabled_pool = _disabled_pool_expr(backend)
         if Meta.isexpr(expr, [:function, :(=)]) && _is_function_def(expr)
-            return _generate_function_pool_code_with_backend(backend, pool_name, expr, true; source)
+            return _generate_function_pool_code_with_backend(backend, pool_name, expr, force_enable, true; source)
         else
             return quote
                 local $(esc(pool_name)) = $disabled_pool
@@ -421,7 +421,7 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, forc
         disabled_pool = _disabled_pool_expr(backend)
         # Check if function definition
         if Meta.isexpr(expr, [:function, :(=)]) && _is_function_def(expr)
-            return _generate_function_pool_code_with_backend(backend, pool_name, expr, false; source)
+            return _generate_function_pool_code_with_backend(backend, pool_name, expr, false, false; source)
         end
 
         # Block logic with runtime check
@@ -464,7 +464,7 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, forc
 
     # Check if function definition
     if Meta.isexpr(expr, [:function, :(=)]) && _is_function_def(expr)
-        return _generate_function_pool_code_with_backend(backend, pool_name, expr, false; source)
+        return _generate_function_pool_code_with_backend(backend, pool_name, expr, true, false; source)
     end
 
     # Block logic: Extract types from acquire! calls for optimized checkpoint/rewind
@@ -510,12 +510,16 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, forc
 end
 
 """
-    _generate_function_pool_code_with_backend(backend, pool_name, func_def, disable_pooling)
+    _generate_function_pool_code_with_backend(backend, pool_name, func_def, force_enable, disable_pooling)
 
 Generate function code for a specific backend (e.g., :cuda).
 Wraps the function body with pool getter, checkpoint, try-finally, rewind.
+
+When `disable_pooling=true` (USE_POOLING=false), generates DisabledPool binding.
+When `force_enable=true` (@with_pool), always uses the real pool.
+When `force_enable=false` (@maybe_with_pool), generates MAYBE_POOLING_ENABLED[] runtime check.
 """
-function _generate_function_pool_code_with_backend(backend::Symbol, pool_name, func_def, disable_pooling::Bool; source::Union{LineNumberNode, Nothing} = nothing)
+function _generate_function_pool_code_with_backend(backend::Symbol, pool_name, func_def, force_enable::Bool, disable_pooling::Bool; source::Union{LineNumberNode, Nothing} = nothing)
     def_head = func_def.head
     call_expr = func_def.args[1]
     body = func_def.args[2]
@@ -546,23 +550,37 @@ function _generate_function_pool_code_with_backend(backend::Symbol, pool_name, f
 
     if use_typed
         checkpoint_call = _generate_typed_checkpoint_call(esc(pool_name), static_types)
-    else
-        checkpoint_call = _generate_lazy_checkpoint_call(esc(pool_name))
-    end
-
-    if use_typed
         rewind_call = _generate_typed_rewind_call(esc(pool_name), static_types)
     else
+        checkpoint_call = _generate_lazy_checkpoint_call(esc(pool_name))
         rewind_call = _generate_lazy_rewind_call(esc(pool_name))
     end
 
-    new_body = quote
-        local $(esc(pool_name)) = $pool_getter
-        $checkpoint_call
-        try
-            $(esc(transformed_body))
-        finally
-            $rewind_call
+    if force_enable
+        new_body = quote
+            local $(esc(pool_name)) = $pool_getter
+            $checkpoint_call
+            try
+                $(esc(transformed_body))
+            finally
+                $rewind_call
+            end
+        end
+    else
+        disabled_pool = _disabled_pool_expr(backend)
+        new_body = quote
+            if $MAYBE_POOLING_ENABLED[]
+                local $(esc(pool_name)) = $pool_getter
+                $checkpoint_call
+                try
+                    $(esc(transformed_body))
+                finally
+                    $rewind_call
+                end
+            else
+                local $(esc(pool_name)) = $disabled_pool
+                $(esc(body))
+            end
         end
     end
 

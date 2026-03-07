@@ -213,6 +213,38 @@
     end
 
     # ==================================================================
+    # 8b. Function definition + sub-function passing
+    # ==================================================================
+    @testset "@with_pool function + sub-function passing" begin
+        function _disabled_helper_typed(pool::AbstractArrayPool, n)
+            return zeros!(pool, Float64, n)
+        end
+
+        @with_pool pool function _test_func_with_helper(n)
+            v = _disabled_helper_typed(pool, n)
+            @test v isa Vector{Float64}
+            @test all(v .== 0.0)
+            return sum(v .+ 1.0)
+        end
+
+        @test _test_func_with_helper(5) == 5.0
+    end
+
+    # ==================================================================
+    # 8c. @maybe_with_pool function definition
+    # ==================================================================
+    @testset "@maybe_with_pool function definition" begin
+        @maybe_with_pool pool function _test_maybe_func(x)
+            @test pool isa DisabledPool{:cpu}
+            v = acquire!(pool, Float64, length(x))
+            v .= x .* 3
+            return sum(v)
+        end
+
+        @test _test_maybe_func([1.0, 2.0]) == 9.0
+    end
+
+    # ==================================================================
     # 9. Multi-dimensional arrays
     # ==================================================================
     @testset "Multi-dimensional" begin

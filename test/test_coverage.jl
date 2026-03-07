@@ -296,19 +296,24 @@
             end
         )
 
-        # With disable_pooling=true
-        result1 = AdaptiveArrayPools._generate_function_pool_code_with_backend(:cpu, :pool, func_expr, true)
+        # With disable_pooling=true (force_enable irrelevant)
+        result1 = AdaptiveArrayPools._generate_function_pool_code_with_backend(:cpu, :pool, func_expr, true, true)
         @test result1 isa Expr
         @test result1.head == :function
 
-        # With disable_pooling=false (generates full checkpoint/rewind)
-        result2 = AdaptiveArrayPools._generate_function_pool_code_with_backend(:cuda, :pool, func_expr, false)
+        # With force_enable=true, disable_pooling=false (always pool)
+        result2 = AdaptiveArrayPools._generate_function_pool_code_with_backend(:cuda, :pool, func_expr, true, false)
         @test result2 isa Expr
         @test result2.head == :function
 
+        # With force_enable=false, disable_pooling=false (runtime toggle)
+        result2b = AdaptiveArrayPools._generate_function_pool_code_with_backend(:cuda, :pool, func_expr, false, false)
+        @test result2b isa Expr
+        @test result2b.head == :function
+
         # Test with short form function
         short_func = :(fast(x) = x * 2)
-        result3 = AdaptiveArrayPools._generate_function_pool_code_with_backend(:cpu, :pool, short_func, true)
+        result3 = AdaptiveArrayPools._generate_function_pool_code_with_backend(:cpu, :pool, short_func, true, true)
         @test result3 isa Expr
         @test result3.head == :(=)
     end

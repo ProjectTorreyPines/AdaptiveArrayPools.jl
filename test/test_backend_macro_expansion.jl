@@ -440,4 +440,59 @@
         end
     end
 
+    # ==========================================================================
+    # @maybe_with_pool :backend — runtime toggle support
+    # ==========================================================================
+
+    @testset "@maybe_with_pool :backend expansion" begin
+        # MAYBE_POOLING_ENABLED is a Ref{Bool}, so @macroexpand renders it as
+        # "(Base.RefValue{Bool}(true))[]" — match on "RefValue{Bool}" instead.
+        refvalue_pattern = "RefValue{Bool}"
+
+        @testset "Block form has runtime toggle check" begin
+            expr = @macroexpand @maybe_with_pool :cuda pool begin
+                v = acquire!(pool, Float64, 10)
+                sum(v)
+            end
+
+            expr_str = string(expr)
+            @test occursin(refvalue_pattern, expr_str)
+            @test occursin("_get_pool_for_backend", expr_str)
+            @test occursin("Val{:cuda}", expr_str)
+            @test occursin("DisabledPool", expr_str)
+        end
+
+        @testset "Function form has runtime toggle check" begin
+            expr = @macroexpand @maybe_with_pool :cuda pool function maybe_backend_func(n)
+                v = acquire!(pool, Float64, n)
+                return sum(v)
+            end
+
+            @test expr.head == :function
+            body_str = string(expr.args[2])
+            @test occursin(refvalue_pattern, body_str)
+            @test occursin("_get_pool_for_backend", body_str)
+            @test occursin("Val{:cuda}", body_str)
+        end
+
+        @testset "Short-form function has runtime toggle check" begin
+            expr = @macroexpand @maybe_with_pool :cuda pool maybe_short(n) = acquire!(pool, Float64, n)
+
+            expr_str = string(expr)
+            @test occursin(refvalue_pattern, expr_str)
+            @test occursin("Val{:cuda}", expr_str)
+        end
+
+        @testset "vs @with_pool :backend — no runtime toggle" begin
+            expr = @macroexpand @with_pool :cuda pool function with_backend_func(n)
+                v = acquire!(pool, Float64, n)
+                return sum(v)
+            end
+
+            body_str = string(expr.args[2])
+            @test !occursin(refvalue_pattern, body_str)
+            @test occursin("_get_pool_for_backend", body_str)
+        end
+    end
+
 end # Backend Macro Expansion
