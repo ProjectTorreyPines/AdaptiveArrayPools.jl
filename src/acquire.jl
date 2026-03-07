@@ -100,8 +100,8 @@ end
 # ==============================================================================
 
 """
-    get_view!(tp::AbstractTypedPool{T}, n::Int) -> SubArray{T,1}
-    get_view!(tp::AbstractTypedPool{T}, dims::NTuple{N,Int}) -> ReshapedArray{T,N}
+    get_view!(tp::TypedPool{T}, n::Int) -> SubArray{T,1}
+    get_view!(tp::TypedPool{T}, dims::NTuple{N,Int}) -> ReshapedArray{T,N}
 
 Get a pooled view from the typed pool.
 - **1D**: Returns a fresh `SubArray` (stack-allocated via SROA in compiled code).
@@ -109,13 +109,17 @@ Get a pooled view from the typed pool.
 
 Always creates fresh views — caching is unnecessary since both `SubArray` and
 `ReshapedArray` are small structs that SROA can stack-allocate.
+
+Dispatches on `TypedPool{T}` (not `AbstractTypedPool`) because `_claim_slot!`
+is only defined for `TypedPool{T}`. Other subtypes override `get_view!` directly
+(e.g., `CuTypedPool`) or use a separate path (e.g., `BitTypedPool` → `get_bitarray!`).
 """
-@inline function get_view!(tp::AbstractTypedPool{T}, n::Int) where {T}
+@inline function get_view!(tp::TypedPool{T}, n::Int) where {T}
     idx = _claim_slot!(tp, n)
     return @inbounds view(tp.vectors[idx], 1:n)
 end
 
-@inline function get_view!(tp::AbstractTypedPool{T}, dims::NTuple{N, Int}) where {T, N}
+@inline function get_view!(tp::TypedPool{T}, dims::NTuple{N, Int}) where {T, N}
     total_len = safe_prod(dims)
     slot = _claim_slot!(tp, total_len)
     return @inbounds reshape(view(tp.vectors[slot], 1:total_len), dims)
