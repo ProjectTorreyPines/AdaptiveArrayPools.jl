@@ -106,7 +106,7 @@ end
 
 See also: [`pooling_enabled`](@ref), [`DISABLED_CPU`](@ref)
 """
-struct DisabledPool{Backend} end
+struct DisabledPool{Backend} <: AbstractArrayPool end
 
 """
     DISABLED_CPU
