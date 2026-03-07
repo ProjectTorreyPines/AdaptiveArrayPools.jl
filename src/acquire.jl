@@ -6,14 +6,6 @@
 @inline allocate_vector(::AbstractTypedPool{T, Vector{T}}, n::Int) where {T} =
     Vector{T}(undef, n)
 
-# Wrap flat view into N-D array (extension dispatch point, not used by main CPU path)
-@inline function wrap_array(
-        ::AbstractTypedPool{T, Vector{T}},
-        flat_view, dims::NTuple{N, Int}
-    ) where {T, N}
-    return unsafe_wrap(Array{T, N}, pointer(flat_view), dims)
-end
-
 # ==============================================================================
 # Helper: Overflow-Safe Product
 # ==============================================================================
