@@ -193,6 +193,55 @@ using AdaptiveArrayPools: DisabledPool, DISABLED_CPU, pooling_enabled, default_e
         @test v4 isa CuArray{Int32, 2}
     end
 
+    @testset "reshape!" begin
+        a = acquire!(DISABLED_CUDA, Float32, 12)
+        r1 = reshape!(DISABLED_CUDA, a, 3, 4)
+        @test r1 isa CuArray{Float32, 2}
+        @test size(r1) == (3, 4)
+
+        r2 = reshape!(DISABLED_CUDA, a, (4, 3))
+        @test r2 isa CuArray{Float32, 2}
+        @test size(r2) == (4, 3)
+    end
+
+    @testset "Sub-function passing" begin
+        # Untyped parameter
+        function _cuda_helper(pool, n)
+            return zeros!(pool, Float32, n)
+        end
+
+        # Typed as AbstractArrayPool
+        function _cuda_helper_typed(pool::AbstractArrayPool, n)
+            return acquire!(pool, Float32, n)
+        end
+
+        # Nested chain
+        function _cuda_outer(pool, n)
+            return _cuda_inner(pool, n)
+        end
+        function _cuda_inner(pool, n)
+            return ones!(pool, Float32, n)
+        end
+
+        v1 = _cuda_helper(DISABLED_CUDA, 5)
+        @test v1 isa CuVector{Float32}
+        @test all(v1 .== 0.0f0)
+
+        v2 = _cuda_helper_typed(DISABLED_CUDA, 5)
+        @test v2 isa CuVector{Float32}
+
+        v3 = _cuda_outer(DISABLED_CUDA, 3)
+        @test v3 isa CuVector{Float32}
+        @test all(v3 .== 1.0f0)
+    end
+
+    @testset "State management no-ops" begin
+        @test checkpoint!(DISABLED_CUDA) === nothing
+        @test rewind!(DISABLED_CUDA) === nothing
+        @test reset!(DISABLED_CUDA) === nothing
+        @test empty!(DISABLED_CUDA) === nothing
+    end
+
     @testset "acquire!" begin
         # Type + single dim
         v1 = acquire!(DISABLED_CUDA, Float32, 10)

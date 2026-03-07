@@ -82,6 +82,10 @@ AdaptiveArrayPools.default_eltype(::DisabledPool{:cuda}) = Float32
 @inline AdaptiveArrayPools.unsafe_similar!(::DisabledPool{:cuda}, x::AbstractArray, dims::Vararg{Int, N}) where {N} = CuArray{eltype(x)}(undef, dims)
 @inline AdaptiveArrayPools.unsafe_similar!(::DisabledPool{:cuda}, x::AbstractArray, ::Type{T}, dims::Vararg{Int, N}) where {T, N} = CuArray{T}(undef, dims)
 
+# --- reshape! for DisabledPool{:cuda} ---
+@inline AdaptiveArrayPools.reshape!(::DisabledPool{:cuda}, A::AbstractArray, dims::Vararg{Int, N}) where {N} = reshape(A, dims...)
+@inline AdaptiveArrayPools.reshape!(::DisabledPool{:cuda}, A::AbstractArray, dims::NTuple{N, Int}) where {N} = reshape(A, dims)
+
 # --- acquire! for DisabledPool{:cuda} ---
 @inline AdaptiveArrayPools.acquire!(::DisabledPool{:cuda}, ::Type{T}, n::Int) where {T} = CuVector{T}(undef, n)
 @inline AdaptiveArrayPools.acquire!(::DisabledPool{:cuda}, ::Type{T}, dims::Vararg{Int, N}) where {T, N} = CuArray{T, N}(undef, dims)
