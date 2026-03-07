@@ -343,11 +343,7 @@
         @test_throws MethodError pool_stats(:cuda)
     end
 
-    @testset "set_cache_ways! validation" begin
-        # Test invalid range
-        @test_throws ArgumentError AdaptiveArrayPools.set_cache_ways!(0)
-        @test_throws ArgumentError AdaptiveArrayPools.set_cache_ways!(17)
-    end
+    # set_cache_ways! tests are in test/legacy/test_nway_cache.jl (legacy only)
 
     @testset "_transform_acquire_calls with qualified names" begin
         # Test qualified name transformation (AdaptiveArrayPools.function!)

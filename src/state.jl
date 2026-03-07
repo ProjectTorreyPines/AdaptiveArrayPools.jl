@@ -381,24 +381,6 @@ end
 # ==============================================================================
 
 """
-    empty!(tp::BitTypedPool)
-
-Clear all internal storage for BitTypedPool, releasing all memory.
-Restores sentinel values for 1-based sentinel pattern.
-"""
-function Base.empty!(tp::BitTypedPool)
-    empty!(tp.vectors)
-    empty!(tp.nd_wrappers)
-    tp.n_active = 0
-    # Restore sentinel values (1-based sentinel pattern)
-    empty!(tp._checkpoint_n_active)
-    push!(tp._checkpoint_n_active, 0)   # Sentinel: n_active=0 at depth=0
-    empty!(tp._checkpoint_depths)
-    push!(tp._checkpoint_depths, 0)     # Sentinel: depth=0 = no checkpoint
-    return tp
-end
-
-"""
     empty!(tp::TypedPool)
 
 Clear all internal storage for TypedPool, releasing all memory.
@@ -406,9 +388,7 @@ Restores sentinel values for 1-based sentinel pattern.
 """
 function Base.empty!(tp::TypedPool)
     empty!(tp.vectors)
-    empty!(tp.views)
-    empty!(tp.view_lengths)
-    empty!(tp.nd_wrappers)
+    empty!(tp.arr_wrappers)
     tp.n_active = 0
     # Restore sentinel values (1-based sentinel pattern)
     empty!(tp._checkpoint_n_active)
@@ -489,7 +469,7 @@ This function:
 - Restores all checkpoint stacks to sentinel state
 - Resets `_current_depth` and type touch tracking state
 
-Unlike `empty!`, this **preserves** all allocated vectors, views, and N-D arrays
+Unlike `empty!`, this **preserves** all allocated vectors and N-D wrapper caches
 for reuse, avoiding reallocation costs.
 
 ## Use Case

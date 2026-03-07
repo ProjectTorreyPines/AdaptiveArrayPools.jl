@@ -53,6 +53,44 @@
         @test length(v2) == 5
     end
 
+    @testset "Slot reuse with resize via _claim_slot!" begin
+        pool = AdaptiveArrayPool()
+
+        # Acquire slot with small size, write sentinel data to slot 2
+        checkpoint!(pool)
+        v1 = acquire!(pool, Float64, 10)
+        v1 .= 1.0
+        v2 = acquire!(pool, Float64, 20)
+        v2 .= 2.0
+        @test pool.float64.n_active == 2
+        @test length(pool.float64.vectors[1]) >= 10
+        rewind!(pool)
+
+        # Re-acquire slot 1 with LARGER size — triggers resize in _claim_slot!
+        checkpoint!(pool)
+        v1_big = acquire!(pool, Float64, 200)
+        @test length(v1_big) == 200
+        @test length(pool.float64.vectors[1]) >= 200  # backing vec grew
+
+        # Slot 2 reused at original size — should not be affected by slot 1 resize
+        v2_reuse = acquire!(pool, Float64, 15)
+        v2_reuse .= 3.0
+        @test length(v2_reuse) == 15
+        @test length(pool.float64.vectors[2]) >= 15  # unchanged or grown, not corrupted
+
+        # Verify independence: writing to v1_big doesn't corrupt v2_reuse
+        v1_big .= 99.0
+        @test all(v2_reuse .== 3.0)
+        rewind!(pool)
+
+        # Re-acquire slot 1 with SMALLER size — no resize needed, backing vec stays large
+        checkpoint!(pool)
+        v1_small = acquire!(pool, Float64, 5)
+        @test length(v1_small) == 5
+        @test length(pool.float64.vectors[1]) >= 200  # capacity preserved from earlier grow
+        rewind!(pool)
+    end
+
     @testset "Fixed slot types" begin
         pool = AdaptiveArrayPool()
 

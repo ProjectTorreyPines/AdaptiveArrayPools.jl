@@ -52,15 +52,6 @@ end
         @test length(vec) == 100
     end
 
-    @testset "wrap_array" begin
-        tp = CuTypedPool{Float32}()
-        vec = CUDA.zeros(Float32, 50)
-        flat_view = view(vec, 1:50)
-        wrapped = AdaptiveArrayPools.wrap_array(tp, flat_view, (10, 5))
-        @test wrapped isa CuArray{Float32, 2}
-        @test size(wrapped) == (10, 5)
-    end
-
     @testset "get_typed_pool! fixed slots" begin
         pool = CuAdaptiveArrayPool()
         test_types = [Float32, Float64, Float16, Int32, Int64, ComplexF32, ComplexF64, Bool]

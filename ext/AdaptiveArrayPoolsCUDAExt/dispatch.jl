@@ -3,7 +3,7 @@
 # ==============================================================================
 # Key dispatch points for GPU-specific allocation and type routing.
 
-using AdaptiveArrayPools: allocate_vector, wrap_array, get_typed_pool!
+using AdaptiveArrayPools: allocate_vector, get_typed_pool!
 
 # ==============================================================================
 # Allocation Dispatch (single GPU-specific method needed!)
@@ -12,16 +12,6 @@ using AdaptiveArrayPools: allocate_vector, wrap_array, get_typed_pool!
 @inline AdaptiveArrayPools.allocate_vector(
     ::AbstractTypedPool{T, CuVector{T}}, n::Int
 ) where {T} = CuVector{T}(undef, n)
-
-# ==============================================================================
-# Array Wrapping Dispatch
-# ==============================================================================
-
-# GPU uses reshape which returns CuArray{T,N} via GPUArrays derive()
-# (NOT ReshapedArray like CPU - this is simpler for GPU kernels)
-@inline AdaptiveArrayPools.wrap_array(
-    ::AbstractTypedPool{T, CuVector{T}}, flat_view, dims::NTuple{N, Int}
-) where {T, N} = reshape(flat_view, dims)
 
 # ==============================================================================
 # get_typed_pool! Dispatches for CuAdaptiveArrayPool

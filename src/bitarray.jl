@@ -11,6 +11,9 @@
 # - _acquire_impl! for Bit - Delegates to _unsafe_acquire_impl! for performance
 # - _unsafe_acquire_impl! for Bit - Raw BitArray acquisition with caching
 # - DisabledPool fallbacks for Bit type
+# - empty!(::BitTypedPool) - State management (clearing pool storage)
+# - _check_bitchunks_overlap - Safety validation for POOL_DEBUG mode
+# - Display helpers: _default_type_name, _vector_bytes, _count_label, _show_type_name
 #
 # Design Decision: Unified BitArray Return Type
 # =============================================
@@ -62,7 +65,7 @@ function get_bitarray!(tp::BitTypedPool, dims::NTuple{N, Int}) where {N}
         ba.chunks = pool_bv.chunks
 
         # Cache the wrapper
-        _store_nd_wrapper!(tp, N, idx, ba)
+        _store_arr_wrapper!(tp, N, idx, ba)
 
         # Warn at powers of 2 (possible missing rewind!)
         if idx >= 512 && (idx & (idx - 1)) == 0
@@ -80,7 +83,7 @@ function get_bitarray!(tp::BitTypedPool, dims::NTuple{N, Int}) where {N}
     end
 
     # 3. Check wrapper cache (direct index, no hash)
-    wrappers = N <= length(tp.nd_wrappers) ? (@inbounds tp.nd_wrappers[N]) : nothing
+    wrappers = N <= length(tp.arr_wrappers) ? (@inbounds tp.arr_wrappers[N]) : nothing
     if wrappers !== nothing && idx <= length(wrappers)
         wrapper = @inbounds wrappers[idx]
         if wrapper !== nothing
@@ -96,7 +99,7 @@ function get_bitarray!(tp::BitTypedPool, dims::NTuple{N, Int}) where {N}
     # 4. Cache miss: first call for this (slot, N)
     ba = BitArray{N}(undef, dims)
     ba.chunks = pool_bv.chunks
-    _store_nd_wrapper!(tp, N, idx, ba)
+    _store_arr_wrapper!(tp, N, idx, ba)
 
     return ba
 end
@@ -162,3 +165,57 @@ end
 @inline unsafe_acquire!(::DisabledPool{:cpu}, ::Type{Bit}, n::Int) = BitVector(undef, n)
 @inline unsafe_acquire!(::DisabledPool{:cpu}, ::Type{Bit}, dims::Vararg{Int, N}) where {N} = BitArray{N}(undef, dims)
 @inline unsafe_acquire!(::DisabledPool{:cpu}, ::Type{Bit}, dims::NTuple{N, Int}) where {N} = BitArray{N}(undef, dims)
+
+# ==============================================================================
+# State Management — empty!
+# ==============================================================================
+
+"""
+    empty!(tp::BitTypedPool)
+
+Clear all internal storage for BitTypedPool, releasing all memory.
+Restores sentinel values for 1-based sentinel pattern.
+"""
+function Base.empty!(tp::BitTypedPool)
+    empty!(tp.vectors)
+    empty!(tp.arr_wrappers)
+    tp.n_active = 0
+    # Restore sentinel values (1-based sentinel pattern)
+    empty!(tp._checkpoint_n_active)
+    push!(tp._checkpoint_n_active, 0)   # Sentinel: n_active=0 at depth=0
+    empty!(tp._checkpoint_depths)
+    push!(tp._checkpoint_depths, 0)     # Sentinel: depth=0 = no checkpoint
+    return tp
+end
+
+# ==============================================================================
+# Safety Validation (POOL_DEBUG mode)
+# ==============================================================================
+
+# Check if BitArray chunks overlap with the pool's BitTypedPool storage
+function _check_bitchunks_overlap(arr::BitArray, pool::AdaptiveArrayPool)
+    arr_chunks = arr.chunks
+    arr_ptr = UInt(pointer(arr_chunks))
+    arr_len = length(arr_chunks) * sizeof(UInt64)
+    arr_end = arr_ptr + arr_len
+
+    for v in pool.bits.vectors
+        v_chunks = v.chunks
+        v_ptr = UInt(pointer(v_chunks))
+        v_len = length(v_chunks) * sizeof(UInt64)
+        v_end = v_ptr + v_len
+        if !(arr_end <= v_ptr || v_end <= arr_ptr)
+            error("Safety Violation: The function returned a BitArray backed by pool memory. This is unsafe as the memory will be reclaimed. Please return a copy (copy) or a scalar.")
+        end
+    end
+    return nothing
+end
+
+# ==============================================================================
+# Display Helpers (pool_stats / Base.show)
+# ==============================================================================
+
+_default_type_name(::BitTypedPool) = "Bit"
+_vector_bytes(v::BitVector) = sizeof(v.chunks)
+_count_label(::BitTypedPool) = "bits"
+_show_type_name(::BitTypedPool) = "BitTypedPool"

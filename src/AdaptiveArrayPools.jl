@@ -11,7 +11,6 @@ export Bit  # Sentinel type for BitArray (use with acquire!, trues!, falses!)
 export @with_pool, @maybe_with_pool
 export USE_POOLING, MAYBE_POOLING_ENABLED, POOL_DEBUG
 export checkpoint!, rewind!, reset!
-export CACHE_WAYS, set_cache_ways!  # N-way cache configuration
 export get_task_local_cuda_pool, get_task_local_cuda_pools  # CUDA (stubs, overridden by extension)
 
 # Extension API (for GPU backends)
@@ -30,6 +29,7 @@ export DisabledPool, DISABLED_CPU, pooling_enabled  # Disabled pool support
     include("task_local_pool.jl")
     include("macros.jl")
 else
+    export CACHE_WAYS, set_cache_ways!  # N-way cache configuration (legacy only)
     include("legacy/types.jl")
     include("utils.jl")
     include("legacy/acquire.jl")

@@ -27,7 +27,7 @@
 #   - Could track recent N sizes to make smarter decisions (avoid shrink if sizes fluctuate)
 # ==============================================================================
 
-using AdaptiveArrayPools: get_view!, get_nd_view!, get_nd_array!, allocate_vector, safe_prod,
+using AdaptiveArrayPools: get_view!, get_array!, allocate_vector, safe_prod,
     _record_type_touch!, _fixed_slot_bit, _checkpoint_typed_pool!,
     _MODE_BITS_MASK
 
@@ -138,30 +138,16 @@ See module header for "lazy shrink" optimization notes.
 end
 
 # ==============================================================================
-# CUDA-Specific get_nd_view! - Delegates to unified get_view!
+# CUDA-Specific get_array! - Delegates to unified get_view!
 # ==============================================================================
 
 """
-    get_nd_view!(tp::CuTypedPool{T}, dims::NTuple{N,Int}) -> CuArray{T,N}
-
-Delegates to `get_view!(tp, dims)` for unified caching.
-This override exists for API compatibility with the base package.
-"""
-@inline function AdaptiveArrayPools.get_nd_view!(tp::CuTypedPool{T}, dims::NTuple{N, Int}) where {T, N}
-    return get_view!(tp, dims)
-end
-
-# ==============================================================================
-# CUDA-Specific get_nd_array! - Delegates to unified get_view!
-# ==============================================================================
-
-"""
-    get_nd_array!(tp::CuTypedPool{T}, dims::NTuple{N,Int}) -> CuArray{T,N}
+    get_array!(tp::CuTypedPool{T}, dims::NTuple{N,Int}) -> CuArray{T,N}
 
 Delegates to `get_view!(tp, dims)` for unified caching.
 Used by `unsafe_acquire!` - same zero-allocation behavior as `acquire!`.
 """
-@inline function AdaptiveArrayPools.get_nd_array!(tp::CuTypedPool{T}, dims::NTuple{N, Int}) where {T, N}
+@inline function AdaptiveArrayPools.get_array!(tp::CuTypedPool{T}, dims::NTuple{N, Int}) where {T, N}
     return get_view!(tp, dims)
 end
 
