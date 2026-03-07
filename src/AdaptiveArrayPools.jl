@@ -9,7 +9,8 @@ export zeros!, ones!, trues!, falses!, similar!, reshape!, default_eltype  # Con
 export unsafe_zeros!, unsafe_ones!, unsafe_similar!  # Unsafe convenience functions
 export Bit  # Sentinel type for BitArray (use with acquire!, trues!, falses!)
 export @with_pool, @maybe_with_pool
-export USE_POOLING, MAYBE_POOLING_ENABLED, POOL_DEBUG
+export STATIC_POOLING, MAYBE_POOLING, POOL_DEBUG
+export USE_POOLING, MAYBE_POOLING_ENABLED  # Deprecated aliases (backward compat)
 export checkpoint!, rewind!, reset!
 export get_task_local_cuda_pool, get_task_local_cuda_pools  # CUDA (stubs, overridden by extension)
 

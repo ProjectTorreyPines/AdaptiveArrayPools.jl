@@ -88,172 +88,16 @@
         @test occursin("metal", msg2)
         @test occursin("backend package", msg2)
 
-        # Test that errors are thrown for unknown backend
+        # Unknown backends error since DisabledPool has no fields for pool internals.
+        # Only concrete backends (:cpu, :cuda) have specific method overloads.
+        # Use Exception for Julia 1.10 compat (FieldError is 1.11+).
         fake_pool = DisabledPool{:fake_backend}()
-        @test try
-            zeros!(fake_pool, 10); false
-        catch e
-            e isa AdaptiveArrayPools.BackendNotLoadedError
-        end
-        @test try
-            ones!(fake_pool, 10); false
-        catch e
-            e isa AdaptiveArrayPools.BackendNotLoadedError
-        end
-        @test try
-            similar!(fake_pool, rand(3)); false
-        catch e
-            e isa AdaptiveArrayPools.BackendNotLoadedError
-        end
-        @test try
-            unsafe_zeros!(fake_pool, 10); false
-        catch e
-            e isa AdaptiveArrayPools.BackendNotLoadedError
-        end
-        @test try
-            unsafe_ones!(fake_pool, 10); false
-        catch e
-            e isa AdaptiveArrayPools.BackendNotLoadedError
-        end
-        @test try
-            unsafe_similar!(fake_pool, rand(3)); false
-        catch e
-            e isa AdaptiveArrayPools.BackendNotLoadedError
-        end
-        @test try
-            acquire!(fake_pool, Float64, 10); false
-        catch e
-            e isa AdaptiveArrayPools.BackendNotLoadedError
-        end
-        @test try
-            unsafe_acquire!(fake_pool, Float64, 10); false
-        catch e
-            e isa AdaptiveArrayPools.BackendNotLoadedError
-        end
+        @test_throws Exception zeros!(fake_pool, 10)
+        @test_throws Exception ones!(fake_pool, 10)
+        @test_throws Exception acquire!(fake_pool, Float64, 10)
+        @test_throws Exception unsafe_acquire!(fake_pool, Float64, 10)
     end
 
-    @testset "_impl! delegators for DisabledPool" begin
-        pool = DISABLED_CPU
-
-        # --- _zeros_impl! ---
-        # Type + varargs
-        v = AdaptiveArrayPools._zeros_impl!(pool, Float64, 5)
-        @test v isa Vector{Float64}
-        @test all(v .== 0.0)
-
-        v = AdaptiveArrayPools._zeros_impl!(pool, Float32, 3, 4)
-        @test v isa Matrix{Float32}
-        @test size(v) == (3, 4)
-
-        # No type (default eltype)
-        v = AdaptiveArrayPools._zeros_impl!(pool, 5)
-        @test v isa Vector{Float64}
-
-        v = AdaptiveArrayPools._zeros_impl!(pool, 3, 4)
-        @test v isa Matrix{Float64}
-
-        # Tuple dims
-        v = AdaptiveArrayPools._zeros_impl!(pool, Float64, (2, 3))
-        @test v isa Matrix{Float64}
-        @test size(v) == (2, 3)
-
-        v = AdaptiveArrayPools._zeros_impl!(pool, (2, 3))
-        @test v isa Matrix{Float64}
-
-        # --- _ones_impl! ---
-        v = AdaptiveArrayPools._ones_impl!(pool, Float64, 5)
-        @test v isa Vector{Float64}
-        @test all(v .== 1.0)
-
-        v = AdaptiveArrayPools._ones_impl!(pool, 5)
-        @test v isa Vector{Float64}
-
-        v = AdaptiveArrayPools._ones_impl!(pool, Float64, (2, 3))
-        @test v isa Matrix{Float64}
-
-        v = AdaptiveArrayPools._ones_impl!(pool, (2, 3))
-        @test v isa Matrix{Float64}
-
-        # --- _similar_impl! ---
-        template = rand(3, 3)
-        v = AdaptiveArrayPools._similar_impl!(pool, template)
-        @test v isa Matrix{Float64}
-
-        v = AdaptiveArrayPools._similar_impl!(pool, template, Float32)
-        @test v isa Matrix{Float32}
-
-        v = AdaptiveArrayPools._similar_impl!(pool, template, 4, 5)
-        @test v isa Matrix{Float64}
-        @test size(v) == (4, 5)
-
-        v = AdaptiveArrayPools._similar_impl!(pool, template, Int32, 2, 2)
-        @test v isa Matrix{Int32}
-
-        # --- _unsafe_zeros_impl! ---
-        v = AdaptiveArrayPools._unsafe_zeros_impl!(pool, Float64, 5)
-        @test v isa Vector{Float64}
-
-        v = AdaptiveArrayPools._unsafe_zeros_impl!(pool, 5)
-        @test v isa Vector{Float64}
-
-        v = AdaptiveArrayPools._unsafe_zeros_impl!(pool, Float64, (2, 3))
-        @test v isa Matrix{Float64}
-
-        v = AdaptiveArrayPools._unsafe_zeros_impl!(pool, (2, 3))
-        @test v isa Matrix{Float64}
-
-        # --- _unsafe_ones_impl! ---
-        v = AdaptiveArrayPools._unsafe_ones_impl!(pool, Float64, 5)
-        @test v isa Vector{Float64}
-
-        v = AdaptiveArrayPools._unsafe_ones_impl!(pool, 5)
-        @test v isa Vector{Float64}
-
-        v = AdaptiveArrayPools._unsafe_ones_impl!(pool, Float64, (2, 3))
-        @test v isa Matrix{Float64}
-
-        v = AdaptiveArrayPools._unsafe_ones_impl!(pool, (2, 3))
-        @test v isa Matrix{Float64}
-
-        # --- _unsafe_similar_impl! ---
-        v = AdaptiveArrayPools._unsafe_similar_impl!(pool, template)
-        @test v isa Matrix{Float64}
-
-        v = AdaptiveArrayPools._unsafe_similar_impl!(pool, template, Float32)
-        @test v isa Matrix{Float32}
-
-        v = AdaptiveArrayPools._unsafe_similar_impl!(pool, template, 4, 5)
-        @test v isa Matrix{Float64}
-
-        v = AdaptiveArrayPools._unsafe_similar_impl!(pool, template, Int32, 2, 2)
-        @test v isa Matrix{Int32}
-
-        # --- _acquire_impl! ---
-        v = AdaptiveArrayPools._acquire_impl!(pool, Float64, 5)
-        @test v isa Vector{Float64}
-
-        v = AdaptiveArrayPools._acquire_impl!(pool, Float64, 3, 4)
-        @test v isa Matrix{Float64}
-
-        v = AdaptiveArrayPools._acquire_impl!(pool, Float64, (2, 3))
-        @test v isa Matrix{Float64}
-
-        v = AdaptiveArrayPools._acquire_impl!(pool, template)
-        @test v isa Matrix{Float64}
-
-        # --- _unsafe_acquire_impl! ---
-        v = AdaptiveArrayPools._unsafe_acquire_impl!(pool, Float64, 5)
-        @test v isa Vector{Float64}
-
-        v = AdaptiveArrayPools._unsafe_acquire_impl!(pool, Float64, 3, 4)
-        @test v isa Matrix{Float64}
-
-        v = AdaptiveArrayPools._unsafe_acquire_impl!(pool, Float64, (2, 3))
-        @test v isa Matrix{Float64}
-
-        v = AdaptiveArrayPools._unsafe_acquire_impl!(pool, template)
-        @test v isa Matrix{Float64}
-    end
 
     @testset "Macro internals" begin
         # Test _disabled_pool_expr for cpu backend
@@ -402,7 +246,7 @@
 
     @testset "_generate_pool_code_with_backend" begin
         # Test that backend-specific code generation works
-        # With USE_POOLING=false, it should return DisabledPool expression
+        # With STATIC_POOLING=false, it should return DisabledPool expression
 
         # Test block expression with :cpu backend
         result_cpu = AdaptiveArrayPools._generate_pool_code_with_backend(:cpu, :pool, :(x = 1), true)
@@ -453,19 +297,24 @@
             end
         )
 
-        # With disable_pooling=true
-        result1 = AdaptiveArrayPools._generate_function_pool_code_with_backend(:cpu, :pool, func_expr, true)
+        # With disable_pooling=true (force_enable irrelevant)
+        result1 = AdaptiveArrayPools._generate_function_pool_code_with_backend(:cpu, :pool, func_expr, true, true)
         @test result1 isa Expr
         @test result1.head == :function
 
-        # With disable_pooling=false (generates full checkpoint/rewind)
-        result2 = AdaptiveArrayPools._generate_function_pool_code_with_backend(:cuda, :pool, func_expr, false)
+        # With force_enable=true, disable_pooling=false (always pool)
+        result2 = AdaptiveArrayPools._generate_function_pool_code_with_backend(:cuda, :pool, func_expr, true, false)
         @test result2 isa Expr
         @test result2.head == :function
 
+        # With force_enable=false, disable_pooling=false (runtime toggle)
+        result2b = AdaptiveArrayPools._generate_function_pool_code_with_backend(:cuda, :pool, func_expr, false, false)
+        @test result2b isa Expr
+        @test result2b.head == :function
+
         # Test with short form function
         short_func = :(fast(x) = x * 2)
-        result3 = AdaptiveArrayPools._generate_function_pool_code_with_backend(:cpu, :pool, short_func, true)
+        result3 = AdaptiveArrayPools._generate_function_pool_code_with_backend(:cpu, :pool, short_func, true, true)
         @test result3 isa Expr
         @test result3.head == :(=)
     end

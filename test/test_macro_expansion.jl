@@ -31,7 +31,7 @@
             @test occursin("finally", expr_str)
         end
 
-        # Test @maybe_with_pool expansion (has MAYBE_POOLING_ENABLED branch)
+        # Test @maybe_with_pool expansion (has MAYBE_POOLING branch)
         @testset "@maybe_with_pool expansion" begin
             expr = @macroexpand @maybe_with_pool pool begin
                 v = acquire!(pool, Float64, 10)
@@ -40,7 +40,7 @@
 
             expr_str = string(expr)
 
-            # Should contain conditional check (MAYBE_POOLING_ENABLED is inlined as RefValue)
+            # Should contain conditional check (MAYBE_POOLING is inlined as RefValue)
             @test occursin("RefValue", expr_str) || occursin("if", expr_str)
 
             # Should have both branches (pool getter and DisabledPool fallback)

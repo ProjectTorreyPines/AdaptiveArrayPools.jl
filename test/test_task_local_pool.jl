@@ -32,8 +32,8 @@
 
     @testset "@maybe_with_pool with pooling enabled" begin
         # Ensure pooling is enabled
-        old_state = MAYBE_POOLING_ENABLED[]
-        MAYBE_POOLING_ENABLED[] = true
+        old_state = MAYBE_POOLING[]
+        MAYBE_POOLING[] = true
 
         function maybe_test_enabled(n, pool)
             v = acquire!(pool, Float64, n)
@@ -52,12 +52,12 @@
         end
         @test result_type == true
 
-        MAYBE_POOLING_ENABLED[] = old_state
+        MAYBE_POOLING[] = old_state
     end
 
     @testset "@maybe_with_pool with pooling disabled" begin
-        old_state = MAYBE_POOLING_ENABLED[]
-        MAYBE_POOLING_ENABLED[] = false
+        old_state = MAYBE_POOLING[]
+        MAYBE_POOLING[] = false
 
         function maybe_test_disabled(n, pool)
             v = acquire!(pool, Float64, n)
@@ -76,14 +76,14 @@
         end
         @test result_type == true
 
-        MAYBE_POOLING_ENABLED[] = old_state
+        MAYBE_POOLING[] = old_state
     end
 
     @testset "@maybe_with_pool block mode" begin
-        old_state = MAYBE_POOLING_ENABLED[]
+        old_state = MAYBE_POOLING[]
 
         # Enabled
-        MAYBE_POOLING_ENABLED[] = true
+        MAYBE_POOLING[] = true
         result1 = @maybe_with_pool pool begin
             v = acquire!(pool, Float64, 5)
             v .= 4.0
@@ -92,7 +92,7 @@
         @test result1 == 20.0
 
         # Disabled
-        MAYBE_POOLING_ENABLED[] = false
+        MAYBE_POOLING[] = false
         result2 = @maybe_with_pool pool begin
             v = acquire!(pool, Float64, 5)
             v .= 4.0
@@ -100,7 +100,7 @@
         end
         @test result2 == 20.0
 
-        MAYBE_POOLING_ENABLED[] = old_state
+        MAYBE_POOLING[] = old_state
     end
 
     # Function barrier for accurate allocation measurement
@@ -138,7 +138,7 @@
     # Test runtime toggle within a single function
     function test_runtime_toggle()
         # With pooling enabled
-        MAYBE_POOLING_ENABLED[] = true
+        MAYBE_POOLING[] = true
         alloc_with = @allocated begin
             r = @maybe_with_pool pool begin
                 v = acquire!(pool, Float64, 100)
@@ -149,7 +149,7 @@
         end
 
         # With pooling disabled (toggle in same function!)
-        MAYBE_POOLING_ENABLED[] = false
+        MAYBE_POOLING[] = false
         alloc_without = @allocated begin
             r = @maybe_with_pool pool begin
                 v = acquire!(pool, Float64, 100)
@@ -163,8 +163,8 @@
     end
 
     @testset "@maybe_with_pool zero-allocation" begin
-        old_state = MAYBE_POOLING_ENABLED[]
-        MAYBE_POOLING_ENABLED[] = true
+        old_state = MAYBE_POOLING[]
+        MAYBE_POOLING[] = true
 
         # Warm-up (compile)
         test_zero_alloc_maybe_with_pool()
@@ -183,14 +183,14 @@
         @test a3 == 0
         @test a4 == 0
 
-        MAYBE_POOLING_ENABLED[] = old_state
+        MAYBE_POOLING[] = old_state
     end
 
     @testset "@maybe_with_pool pooling vs no-pooling" begin
-        old_state = MAYBE_POOLING_ENABLED[]
+        old_state = MAYBE_POOLING[]
 
         # Warm-up (compile the function, warm up pool)
-        MAYBE_POOLING_ENABLED[] = true
+        MAYBE_POOLING[] = true
         test_runtime_toggle()
         test_runtime_toggle()
 
@@ -205,7 +205,7 @@
         # With pooling: 0 bytes (after warm-up)
         @test alloc_with < alloc_without
 
-        MAYBE_POOLING_ENABLED[] = old_state
+        MAYBE_POOLING[] = old_state
     end
 
     @testset "Pool growth warning at 512 arrays" begin

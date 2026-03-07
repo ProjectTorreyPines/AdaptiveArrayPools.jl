@@ -24,7 +24,7 @@ abstract type AbstractArrayPool end
     DisabledPool{Backend}
 
 Sentinel type for disabled pooling that preserves backend context.
-When `USE_POOLING=false` (compile-time) or `MAYBE_POOLING_ENABLED[]=false` (runtime),
+When `STATIC_POOLING=false` (compile-time) or `MAYBE_POOLING[]=false` (runtime),
 macros return `DisabledPool{backend}()` instead of `nothing`.
 
 Backend symbols:
@@ -35,7 +35,7 @@ This enables `@with_pool :cuda` to return correct array types even when pooling 
 
 ## Example
 ```julia
-# When USE_POOLING=false:
+# When STATIC_POOLING=false:
 @with_pool :cuda pool begin
     v = zeros!(pool, 10)  # Returns CuArray{Float32}, not Array{Float64}!
 end
@@ -43,13 +43,13 @@ end
 
 See also: [`pooling_enabled`](@ref), [`DISABLED_CPU`](@ref)
 """
-struct DisabledPool{Backend} end
+struct DisabledPool{Backend} <: AbstractArrayPool end
 
 """
     DISABLED_CPU
 
 Singleton instance for disabled CPU pooling.
-Used by macros when `USE_POOLING=false` without backend specification.
+Used by macros when `STATIC_POOLING=false` without backend specification.
 """
 const DISABLED_CPU = DisabledPool{:cpu}()
 
