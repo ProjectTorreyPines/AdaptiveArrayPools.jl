@@ -155,7 +155,7 @@ Internal structure managing pooled vectors for a specific element type `T`.
 - `vectors`: Backing `Vector{T}` storage (actual memory allocation)
 
 ### N-D Wrapper Cache (Julia 1.11+, setfield!-based reuse)
-- `nd_wrappers`: `Vector{Union{Nothing, Vector{Any}}}` — indexed by N (dimensionality),
+- `arr_wrappers`: `Vector{Union{Nothing, Vector{Any}}}` — indexed by N (dimensionality),
   each entry is a per-slot cached `Array{T,N}` wrapper. Uses `setfield!(wrapper, :size, dims)`
   and `setfield!(wrapper, :ref, parent)` for zero-allocation reuse of unlimited dim patterns.
 
@@ -175,7 +175,7 @@ mutable struct TypedPool{T} <: AbstractTypedPool{T, Vector{T}}
     vectors::Vector{Vector{T}}
 
     # --- N-D Wrapper Cache (setfield!-based reuse) ---
-    nd_wrappers::Vector{Union{Nothing, Vector{Any}}}  # index=N (dimensionality), value=per-slot Array{T,N}
+    arr_wrappers::Vector{Union{Nothing, Vector{Any}}}  # index=N (dimensionality), value=per-slot Array{T,N}
 
     # --- State Management (1-based sentinel pattern) ---
     n_active::Int
@@ -275,7 +275,7 @@ performance without needing to choose between APIs.
 
 ## Fields
 - `vectors`: Backing `BitVector` storage
-- `nd_wrappers`: `Vector{Union{Nothing, Vector{Any}}}` — setfield!-based cache (Julia 1.11+)
+- `arr_wrappers`: `Vector{Union{Nothing, Vector{Any}}}` — setfield!-based cache (Julia 1.11+)
 - `n_active`: Count of currently active arrays
 - `_checkpoint_*`: State management stacks (1-based sentinel pattern)
 
@@ -291,7 +291,7 @@ mutable struct BitTypedPool <: AbstractTypedPool{Bool, BitVector}
     vectors::Vector{BitVector}
 
     # --- N-D Wrapper Cache (setfield!-based reuse) ---
-    nd_wrappers::Vector{Union{Nothing, Vector{Any}}}  # index=N (dimensionality), value=per-slot BitArray{N}
+    arr_wrappers::Vector{Union{Nothing, Vector{Any}}}  # index=N (dimensionality), value=per-slot BitArray{N}
 
     # --- State Management (1-based sentinel pattern) ---
     n_active::Int

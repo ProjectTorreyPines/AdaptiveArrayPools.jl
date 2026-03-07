@@ -219,28 +219,28 @@ end
 # ==============================================================================
 # Vector-Based N-D Wrapper Cache Tests (Julia 1.11+)
 # ==============================================================================
-# These tests verify the Dict→Vector migration for nd_wrappers.
+# These tests verify the Dict→Vector migration for arr_wrappers.
 
-@testset "Vector-based nd_wrappers cache" begin
+@testset "Vector-based arr_wrappers cache" begin
     using AdaptiveArrayPools: checkpoint!, rewind!
 
-    @testset "nd_wrappers grows correctly for multiple dimensionalities" begin
+    @testset "arr_wrappers grows correctly for multiple dimensionalities" begin
         pool = AdaptiveArrayPool()
         checkpoint!(pool)
 
         # N=1: 1D unsafe_acquire
         v1 = unsafe_acquire!(pool, Float64, 10)
-        @test length(pool.float64.nd_wrappers) >= 1
+        @test length(pool.float64.arr_wrappers) >= 1
 
-        # N=2: 2D unsafe_acquire — nd_wrappers should grow to index 2
+        # N=2: 2D unsafe_acquire — arr_wrappers should grow to index 2
         m1 = unsafe_acquire!(pool, Float64, 3, 4)
-        @test length(pool.float64.nd_wrappers) >= 2
-        @test pool.float64.nd_wrappers[2] !== nothing  # has a Vector{Any} for N=2
+        @test length(pool.float64.arr_wrappers) >= 2
+        @test pool.float64.arr_wrappers[2] !== nothing  # has a Vector{Any} for N=2
 
-        # N=3: 3D unsafe_acquire — nd_wrappers should grow to index 3
+        # N=3: 3D unsafe_acquire — arr_wrappers should grow to index 3
         t1 = unsafe_acquire!(pool, Float64, 2, 3, 4)
-        @test length(pool.float64.nd_wrappers) >= 3
-        @test pool.float64.nd_wrappers[3] !== nothing  # has a Vector{Any} for N=3
+        @test length(pool.float64.arr_wrappers) >= 3
+        @test pool.float64.arr_wrappers[3] !== nothing  # has a Vector{Any} for N=3
 
         rewind!(pool)
     end
@@ -283,37 +283,37 @@ end
         @test size(t) == (2, 3, 4)
 
         # Both N=2 and N=3 entries exist
-        @test pool.float64.nd_wrappers[2] !== nothing
-        @test pool.float64.nd_wrappers[3] !== nothing
+        @test pool.float64.arr_wrappers[2] !== nothing
+        @test pool.float64.arr_wrappers[3] !== nothing
         rewind!(pool)
     end
 
-    @testset "nd_wrappers with nothing gaps for skipped N" begin
+    @testset "arr_wrappers with nothing gaps for skipped N" begin
         pool = AdaptiveArrayPool()
         checkpoint!(pool)
 
         # Jump directly to N=3 without using N=2
         t = unsafe_acquire!(pool, Float64, 2, 3, 4)
-        @test length(pool.float64.nd_wrappers) >= 3
+        @test length(pool.float64.arr_wrappers) >= 3
 
         # N=2 entry should be nothing (never used for N=2)
-        @test pool.float64.nd_wrappers[2] === nothing
+        @test pool.float64.arr_wrappers[2] === nothing
 
         rewind!(pool)
     end
 
-    @testset "BitTypedPool nd_wrappers cache" begin
+    @testset "BitTypedPool arr_wrappers cache" begin
         pool = AdaptiveArrayPool()
         checkpoint!(pool)
 
         # 1D BitArray
         bv = acquire!(pool, Bit, 100)
-        @test length(pool.bits.nd_wrappers) >= 1
+        @test length(pool.bits.arr_wrappers) >= 1
 
         # 2D BitArray
         ba = acquire!(pool, Bit, 10, 10)
-        @test length(pool.bits.nd_wrappers) >= 2
-        @test pool.bits.nd_wrappers[2] !== nothing
+        @test length(pool.bits.arr_wrappers) >= 2
+        @test pool.bits.arr_wrappers[2] !== nothing
 
         rewind!(pool)
 
@@ -325,29 +325,29 @@ end
         rewind!(pool)
     end
 
-    @testset "empty! clears nd_wrappers" begin
+    @testset "empty! clears arr_wrappers" begin
         pool = AdaptiveArrayPool()
         checkpoint!(pool)
         unsafe_acquire!(pool, Float64, 3, 4)
         rewind!(pool)
 
-        @test !isempty(pool.float64.nd_wrappers)
+        @test !isempty(pool.float64.arr_wrappers)
         empty!(pool)
-        @test isempty(pool.float64.nd_wrappers)
+        @test isempty(pool.float64.arr_wrappers)
     end
 
-    @testset "multiple element types have independent nd_wrappers" begin
+    @testset "multiple element types have independent arr_wrappers" begin
         pool = AdaptiveArrayPool()
         checkpoint!(pool)
 
         mf = unsafe_acquire!(pool, Float64, 3, 4)
         mi = unsafe_acquire!(pool, Int64, 5, 6)
 
-        @test pool.float64.nd_wrappers[2] !== nothing
-        @test pool.int64.nd_wrappers[2] !== nothing
+        @test pool.float64.arr_wrappers[2] !== nothing
+        @test pool.int64.arr_wrappers[2] !== nothing
 
         # They must be separate Vector{Any} instances
-        @test pool.float64.nd_wrappers[2] !== pool.int64.nd_wrappers[2]
+        @test pool.float64.arr_wrappers[2] !== pool.int64.arr_wrappers[2]
 
         rewind!(pool)
     end

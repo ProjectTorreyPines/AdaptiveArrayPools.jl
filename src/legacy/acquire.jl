@@ -96,7 +96,7 @@ end
 # (dims, pointer) patterns per slot via round-robin replacement.
 
 """
-    get_nd_array!(tp::AbstractTypedPool{T}, dims::NTuple{N,Int}) -> Array{T,N}
+    get_array!(tp::AbstractTypedPool{T}, dims::NTuple{N,Int}) -> Array{T,N}
 
 Get an N-dimensional `Array` from the pool with N-way caching.
 
@@ -105,7 +105,7 @@ Cache hit (exact dims + pointer match) returns the cached Array at zero cost.
 Cache miss creates a new `unsafe_wrap`'d Array (~96 bytes) and stores it via
 round-robin replacement.
 """
-@inline function get_nd_array!(tp::AbstractTypedPool{T}, dims::NTuple{N, Int}) where {T, N}
+@inline function get_array!(tp::AbstractTypedPool{T}, dims::NTuple{N, Int}) where {T, N}
     total_len = safe_prod(dims)
     flat_view = get_view!(tp, total_len) # Increments n_active
     slot = tp.n_active
@@ -253,17 +253,17 @@ Internal implementation of unsafe_acquire!. Called directly by macro-transformed
 """
 @inline function _unsafe_acquire_impl!(pool::AbstractArrayPool, ::Type{T}, n::Int) where {T}
     tp = get_typed_pool!(pool, T)
-    return get_nd_array!(tp, (n,))
+    return get_array!(tp, (n,))
 end
 
 @inline function _unsafe_acquire_impl!(pool::AbstractArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
     tp = get_typed_pool!(pool, T)
-    return get_nd_array!(tp, dims)
+    return get_array!(tp, dims)
 end
 
 @inline function _unsafe_acquire_impl!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
     tp = get_typed_pool!(pool, T)
-    return get_nd_array!(tp, dims)
+    return get_array!(tp, dims)
 end
 
 # Similar-style

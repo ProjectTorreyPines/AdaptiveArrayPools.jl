@@ -62,7 +62,7 @@ function get_bitarray!(tp::BitTypedPool, dims::NTuple{N, Int}) where {N}
         ba.chunks = pool_bv.chunks
 
         # Cache the wrapper
-        _store_nd_wrapper!(tp, N, idx, ba)
+        _store_arr_wrapper!(tp, N, idx, ba)
 
         # Warn at powers of 2 (possible missing rewind!)
         if idx >= 512 && (idx & (idx - 1)) == 0
@@ -80,7 +80,7 @@ function get_bitarray!(tp::BitTypedPool, dims::NTuple{N, Int}) where {N}
     end
 
     # 3. Check wrapper cache (direct index, no hash)
-    wrappers = N <= length(tp.nd_wrappers) ? (@inbounds tp.nd_wrappers[N]) : nothing
+    wrappers = N <= length(tp.arr_wrappers) ? (@inbounds tp.arr_wrappers[N]) : nothing
     if wrappers !== nothing && idx <= length(wrappers)
         wrapper = @inbounds wrappers[idx]
         if wrapper !== nothing
@@ -96,7 +96,7 @@ function get_bitarray!(tp::BitTypedPool, dims::NTuple{N, Int}) where {N}
     # 4. Cache miss: first call for this (slot, N)
     ba = BitArray{N}(undef, dims)
     ba.chunks = pool_bv.chunks
-    _store_nd_wrapper!(tp, N, idx, ba)
+    _store_arr_wrapper!(tp, N, idx, ba)
 
     return ba
 end

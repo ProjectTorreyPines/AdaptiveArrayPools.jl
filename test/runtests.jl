@@ -5,7 +5,7 @@ import AdaptiveArrayPools: checkpoint!, rewind!
 
 # Version-specific helpers (always defined, even for ARGS path)
 @static if VERSION >= v"1.11-"
-    _test_nd_cache_preserved(tp) = !isempty(tp.nd_wrappers)
+    _test_nd_cache_preserved(tp) = !isempty(tp.arr_wrappers)
 else
     _test_nd_cache_preserved(tp) = length(tp.nd_arrays) >= 1
 end
