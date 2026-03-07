@@ -462,4 +462,3 @@ const _acquire_array_impl! = _unsafe_acquire_impl!
 @inline unsafe_acquire!(::DisabledPool{:cpu}, ::Type{T}, dims::Vararg{Int, N}) where {T, N} = Array{T, N}(undef, dims)
 @inline unsafe_acquire!(::DisabledPool{:cpu}, ::Type{T}, dims::NTuple{N, Int}) where {T, N} = Array{T, N}(undef, dims)
 @inline unsafe_acquire!(::DisabledPool{:cpu}, x::AbstractArray) = similar(x)
-

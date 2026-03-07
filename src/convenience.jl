@@ -669,4 +669,3 @@ end
 @inline unsafe_similar!(::DisabledPool{:cpu}, x::AbstractArray, ::Type{T}) where {T} = similar(x, T)
 @inline unsafe_similar!(::DisabledPool{:cpu}, x::AbstractArray, dims::Vararg{Int, N}) where {N} = similar(x, dims...)
 @inline unsafe_similar!(::DisabledPool{:cpu}, x::AbstractArray, ::Type{T}, dims::Vararg{Int, N}) where {T, N} = similar(x, T, dims...)
-
