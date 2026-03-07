@@ -28,6 +28,7 @@ export DisabledPool, DISABLED_CPU, pooling_enabled  # Disabled pool support
     include("convenience.jl")
     include("state.jl")
     include("task_local_pool.jl")
+    include("debug.jl")
     include("macros.jl")
 else
     export CACHE_WAYS, set_cache_ways!  # N-way cache configuration (legacy only)
@@ -38,6 +39,7 @@ else
     include("convenience.jl")
     include("legacy/state.jl")
     include("task_local_pool.jl")
+    include("debug.jl")
     include("macros.jl")
 end
 
