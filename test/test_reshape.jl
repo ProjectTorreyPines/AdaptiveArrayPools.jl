@@ -416,7 +416,7 @@
             end
 
             function _measure_maybe_reshape(data, enabled)
-                MAYBE_POOLING_ENABLED[] = enabled
+                MAYBE_POOLING[] = enabled
                 for _ in 1:4
                     _test_maybe_reshape_alloc(data)
                 end
@@ -425,7 +425,7 @@
 
             expected = sum(1.0:12.0) * 3.0
 
-            old_state = MAYBE_POOLING_ENABLED[]
+            old_state = MAYBE_POOLING[]
             try
                 # Compile both paths
                 _measure_maybe_reshape(ext, true)
@@ -444,12 +444,12 @@
                 @test alloc_unpooled > 0
 
                 # Both paths produce correct results
-                MAYBE_POOLING_ENABLED[] = true
+                MAYBE_POOLING[] = true
                 @test _test_maybe_reshape_alloc(ext) ≈ expected
-                MAYBE_POOLING_ENABLED[] = false
+                MAYBE_POOLING[] = false
                 @test _test_maybe_reshape_alloc(ext) ≈ expected
             finally
-                MAYBE_POOLING_ENABLED[] = old_state
+                MAYBE_POOLING[] = old_state
             end
         end
     end

@@ -245,7 +245,7 @@
 
     @testset "_generate_pool_code_with_backend" begin
         # Test that backend-specific code generation works
-        # With USE_POOLING=false, it should return DisabledPool expression
+        # With STATIC_POOLING=false, it should return DisabledPool expression
 
         # Test block expression with :cpu backend
         result_cpu = AdaptiveArrayPools._generate_pool_code_with_backend(:cpu, :pool, :(x = 1), true)

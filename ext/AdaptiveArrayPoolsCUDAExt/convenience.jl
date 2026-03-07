@@ -25,7 +25,7 @@ using AdaptiveArrayPools: DisabledPool
     DISABLED_CUDA
 
 Singleton instance for disabled CUDA pooling.
-Used by macros when `USE_POOLING=false` with `:cuda` backend.
+Used by macros when `STATIC_POOLING=false` with `:cuda` backend.
 """
 const DISABLED_CUDA = DisabledPool{:cuda}()
 

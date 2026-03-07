@@ -115,7 +115,7 @@ import AdaptiveArrayPools: checkpoint!, rewind!
     end
 
     @testset "@maybe_with_pool enabled" begin
-        MAYBE_POOLING_ENABLED[] = true
+        MAYBE_POOLING[] = true
 
         result = @maybe_with_pool pool begin
             v = acquire!(pool, Float64, 10)
@@ -127,7 +127,7 @@ import AdaptiveArrayPools: checkpoint!, rewind!
     end
 
     @testset "@maybe_with_pool disabled" begin
-        MAYBE_POOLING_ENABLED[] = false
+        MAYBE_POOLING[] = false
 
         result = @maybe_with_pool pool begin
             @test pool isa DisabledPool{:cpu}
@@ -140,11 +140,11 @@ import AdaptiveArrayPools: checkpoint!, rewind!
         @test result == 40.0
 
         # Reset
-        MAYBE_POOLING_ENABLED[] = true
+        MAYBE_POOLING[] = true
     end
 
     @testset "@maybe_with_pool 1-arg (no pool name)" begin
-        MAYBE_POOLING_ENABLED[] = true
+        MAYBE_POOLING[] = true
 
         result = @maybe_with_pool begin
             pool = get_task_local_pool()
@@ -154,7 +154,7 @@ import AdaptiveArrayPools: checkpoint!, rewind!
         end
         @test result == 5.0
 
-        MAYBE_POOLING_ENABLED[] = false
+        MAYBE_POOLING[] = false
         result2 = @maybe_with_pool begin
             # Pool is nothing, so we allocate normally
             v = Vector{Float64}(undef, 5)
@@ -164,7 +164,7 @@ import AdaptiveArrayPools: checkpoint!, rewind!
         @test result2 == 10.0
 
         # Reset
-        MAYBE_POOLING_ENABLED[] = true
+        MAYBE_POOLING[] = true
     end
 
     @testset "@with_pool function definition" begin
@@ -227,7 +227,7 @@ import AdaptiveArrayPools: checkpoint!, rewind!
     end
 
     @testset "@maybe_with_pool short-form function definitions" begin
-        MAYBE_POOLING_ENABLED[] = true
+        MAYBE_POOLING[] = true
 
         # Simple short-form with @maybe_with_pool
         @maybe_with_pool p1 maybe_short_form(n) = begin
@@ -240,7 +240,7 @@ import AdaptiveArrayPools: checkpoint!, rewind!
         @test get_task_local_pool().float64.n_active == 0
 
         # Test with pooling disabled
-        MAYBE_POOLING_ENABLED[] = false
+        MAYBE_POOLING[] = false
 
         @maybe_with_pool p2 maybe_short_disabled(n) = begin
             @test p2 isa DisabledPool{:cpu}
@@ -253,7 +253,7 @@ import AdaptiveArrayPools: checkpoint!, rewind!
         @test maybe_short_disabled(5) == 5.0
 
         # Reset
-        MAYBE_POOLING_ENABLED[] = true
+        MAYBE_POOLING[] = true
     end
 
 end # Macro System

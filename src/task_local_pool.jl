@@ -4,16 +4,30 @@
 
 using Preferences: @load_preference
 
+# ==============================================================================
+# Pooling Control: 2-Tier Toggle System
+#
+#   Tier 1: STATIC_POOLING  (compile-time const, master switch)
+#           - Set via LocalPreferences.toml ["use_pooling"]
+#           - When false: ALL macros produce DisabledPool (zero overhead)
+#
+#   Tier 2: MAYBE_POOLING   (runtime Ref{Bool}, @maybe_with_pool only)
+#           - Toggle at runtime without restart
+#           - @with_pool ignores this (always pools when Tier 1 is on)
+#
+#   Hierarchy: STATIC_POOLING=false gates everything.
+#              MAYBE_POOLING only matters when STATIC_POOLING=true.
+# ==============================================================================
+
 """
-    USE_POOLING::Bool
+    STATIC_POOLING::Bool
 
 Compile-time constant (master switch) to completely disable pooling.
 When `false`, all macros (`@with_pool`, `@maybe_with_pool`)
-generate code that uses `nothing` as the pool, causing `acquire!` to fall back
-to normal allocation.
+generate code that uses `DisabledPool`, causing `acquire!` to fall back
+to normal allocation with zero overhead.
 
-This enables zero-overhead when pooling is disabled, as the compiler can
-eliminate all pool-related code paths.
+This is the **Tier 1** control: when disabled, `MAYBE_POOLING` has no effect.
 
 ## Configuration via Preferences.jl
 
@@ -31,23 +45,32 @@ Preferences.set_preferences!(AdaptiveArrayPools, "use_pooling" => false)
 
 Default: `true`
 """
-const USE_POOLING = @load_preference("use_pooling", true)::Bool
+const STATIC_POOLING = @load_preference("use_pooling", true)::Bool
 
 """
-    MAYBE_POOLING_ENABLED
+    MAYBE_POOLING::Ref{Bool}
 
-Runtime flag for `@maybe_with_pool` macro only.
-When `false`, `@maybe_with_pool` will use `nothing` as the pool,
+Runtime toggle for `@maybe_with_pool` macro only (**Tier 2** control).
+When `false`, `@maybe_with_pool` will use `DisabledPool`,
 causing `acquire!` to allocate normally.
 
 Note: This only affects `@maybe_with_pool`.
 `@with_pool` ignores this flag (always uses pooling).
 
-For complete removal of pooling overhead at compile time, use `USE_POOLING` instead.
+For complete removal of pooling overhead at compile time, use `STATIC_POOLING` instead.
 
 Default: `true`
+
+```julia
+MAYBE_POOLING[] = false   # disable @maybe_with_pool at runtime
+MAYBE_POOLING[] = true    # re-enable
+```
 """
-const MAYBE_POOLING_ENABLED = Ref(true)
+const MAYBE_POOLING = Ref(true)
+
+# Deprecated aliases (backward compat) — same objects, just old names
+const USE_POOLING = STATIC_POOLING
+const MAYBE_POOLING_ENABLED = MAYBE_POOLING
 
 const _POOL_KEY = :ADAPTIVE_ARRAY_POOL
 

@@ -128,7 +128,7 @@ end
     @maybe_with_pool pool_name expr
     @maybe_with_pool expr
 
-Conditionally enables pooling based on `MAYBE_POOLING_ENABLED[]`.
+Conditionally enables pooling based on `MAYBE_POOLING[]`.
 If disabled, `pool_name` becomes `nothing`, and `acquire!` falls back to standard allocation.
 
 Useful for libraries that want to let users control pooling behavior at runtime.
@@ -146,7 +146,7 @@ end
 
 ## Block Usage
 ```julia
-MAYBE_POOLING_ENABLED[] = false
+MAYBE_POOLING[] = false
 @maybe_with_pool pool begin
     v = acquire!(pool, Float64, 100)  # Falls back to Vector{Float64}(undef, 100)
 end
@@ -309,7 +309,7 @@ end
 
 function _generate_pool_code(pool_name, expr, force_enable; source::Union{LineNumberNode, Nothing} = nothing)
     # Compile-time check: if pooling disabled, use DisabledPool to preserve backend context
-    if !USE_POOLING
+    if !STATIC_POOLING
         disabled_pool = _disabled_pool_expr(:cpu)
         if Meta.isexpr(expr, [:function, :(=)]) && _is_function_def(expr)
             # Function definition: inject local pool = DisabledPool at start of body
@@ -370,7 +370,7 @@ function _generate_pool_code(pool_name, expr, force_enable; source::Union{LineNu
     else
         # Split branches completely to avoid Union boxing
         return quote
-            if $MAYBE_POOLING_ENABLED[]
+            if $MAYBE_POOLING[]
                 local $(esc(pool_name)) = get_task_local_pool()
                 $checkpoint_call
                 try
@@ -404,7 +404,7 @@ Includes type-specific checkpoint/rewind optimization (same as regular @with_poo
 """
 function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, force_enable::Bool; source::Union{LineNumberNode, Nothing} = nothing)
     # Compile-time check: if pooling disabled, use DisabledPool to preserve backend context
-    if !USE_POOLING
+    if !STATIC_POOLING
         disabled_pool = _disabled_pool_expr(backend)
         if Meta.isexpr(expr, [:function, :(=)]) && _is_function_def(expr)
             return _generate_function_pool_code_with_backend(backend, pool_name, expr, force_enable, true; source)
@@ -443,7 +443,7 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, forc
         end
 
         return quote
-            if $MAYBE_POOLING_ENABLED[]
+            if $MAYBE_POOLING[]
                 local $(esc(pool_name)) = $pool_getter
                 $checkpoint_call
                 try
@@ -515,9 +515,9 @@ end
 Generate function code for a specific backend (e.g., :cuda).
 Wraps the function body with pool getter, checkpoint, try-finally, rewind.
 
-When `disable_pooling=true` (USE_POOLING=false), generates DisabledPool binding.
+When `disable_pooling=true` (STATIC_POOLING=false), generates DisabledPool binding.
 When `force_enable=true` (@with_pool), always uses the real pool.
-When `force_enable=false` (@maybe_with_pool), generates MAYBE_POOLING_ENABLED[] runtime check.
+When `force_enable=false` (@maybe_with_pool), generates MAYBE_POOLING[] runtime check.
 """
 function _generate_function_pool_code_with_backend(backend::Symbol, pool_name, func_def, force_enable::Bool, disable_pooling::Bool; source::Union{LineNumberNode, Nothing} = nothing)
     def_head = func_def.head
@@ -569,7 +569,7 @@ function _generate_function_pool_code_with_backend(backend::Symbol, pool_name, f
     else
         disabled_pool = _disabled_pool_expr(backend)
         new_body = quote
-            if $MAYBE_POOLING_ENABLED[]
+            if $MAYBE_POOLING[]
                 local $(esc(pool_name)) = $pool_getter
                 $checkpoint_call
                 try
@@ -641,7 +641,7 @@ function _generate_function_pool_code(pool_name, func_def, force_enable, disable
     else
         disabled_pool = _disabled_pool_expr(backend)
         new_body = quote
-            if $MAYBE_POOLING_ENABLED[]
+            if $MAYBE_POOLING[]
                 local $(esc(pool_name)) = get_task_local_pool()
                 $checkpoint_call
                 try

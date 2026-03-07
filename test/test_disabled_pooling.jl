@@ -1,19 +1,19 @@
 # ==============================================================================
-# Test USE_POOLING=false branch (requires separate process)
+# Test STATIC_POOLING=false branch (requires separate process)
 # ==============================================================================
 #
-# USE_POOLING is a compile-time const loaded via Preferences.jl.
+# STATIC_POOLING is a compile-time const loaded via Preferences.jl.
 # To test the disabled branch, we must run in a separate Julia process
 # with the preference set before loading the package.
 
-@testset "USE_POOLING=false (separate process)" begin
+@testset "STATIC_POOLING=false (separate process)" begin
     # Create test script that will run in separate process
     test_code = """
     # Set preference BEFORE loading package
     using Preferences
     set_preferences!("AdaptiveArrayPools", "use_pooling" => false; force=true)
 
-    # Now load the package - it will see USE_POOLING=false
+    # Now load the package - it will see STATIC_POOLING=false
     using AdaptiveArrayPools
     using Test
 
@@ -21,7 +21,7 @@
     # 1. Type hierarchy and basics
     # ==================================================================
     @testset "Type hierarchy" begin
-        @test USE_POOLING == false
+        @test STATIC_POOLING == false
         @test DisabledPool{:cpu} <: AbstractArrayPool
         @test DISABLED_CPU isa AbstractArrayPool
         @test !pooling_enabled(DISABLED_CPU)
@@ -269,7 +269,7 @@
     # Restore preference for other tests
     set_preferences!("AdaptiveArrayPools", "use_pooling" => true; force=true)
 
-    println("All USE_POOLING=false tests passed!")
+    println("All STATIC_POOLING=false tests passed!")
     """
 
     # Write test script to temp file

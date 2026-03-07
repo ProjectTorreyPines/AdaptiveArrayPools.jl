@@ -445,7 +445,7 @@
     # ==========================================================================
 
     @testset "@maybe_with_pool :backend expansion" begin
-        # MAYBE_POOLING_ENABLED is a Ref{Bool}, so @macroexpand renders it as
+        # MAYBE_POOLING is a Ref{Bool}, so @macroexpand renders it as
         # "(Base.RefValue{Bool}(true))[]" — match on "RefValue{Bool}" instead.
         refvalue_pattern = "RefValue{Bool}"
 

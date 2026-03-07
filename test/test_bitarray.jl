@@ -403,7 +403,7 @@
         @test result1 == 100
 
         # With pooling disabled
-        AdaptiveArrayPools.MAYBE_POOLING_ENABLED[] = false
+        AdaptiveArrayPools.MAYBE_POOLING[] = false
         try
             result2 = @maybe_with_pool pool begin
                 bv = acquire!(pool, Bit, 100)
@@ -437,7 +437,7 @@
             end
             @test result4 == (40, 0)
         finally
-            AdaptiveArrayPools.MAYBE_POOLING_ENABLED[] = true
+            AdaptiveArrayPools.MAYBE_POOLING[] = true
         end
     end
 
