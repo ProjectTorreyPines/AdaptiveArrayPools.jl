@@ -14,6 +14,7 @@ const POOL_DEBUG = Ref(false)
 
 function _validate_pool_return(val, pool::AdaptiveArrayPool)
     # 0. Check BitArray / BitVector (bit-packed storage)
+    #    Note: _check_bitchunks_overlap is defined in bitarray.jl (included after utils.jl)
     if val isa BitArray
         _check_bitchunks_overlap(val, pool)
         return

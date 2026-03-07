@@ -22,31 +22,8 @@ using AdaptiveArrayPools
         end
     end
 
-    @testset "CACHE_WAYS configuration" begin
-        # Verify CACHE_WAYS is exported and accessible
-        @test CACHE_WAYS isa Int
-        @test 1 <= CACHE_WAYS <= 16  # Valid range
-
-        # Verify set_cache_ways! is exported
-        @test isdefined(AdaptiveArrayPools, :set_cache_ways!)
-    end
-
-    @testset "set_cache_ways! validation" begin
-        # Valid values should return the input value
-        @test set_cache_ways!(1) == 1
-        @test set_cache_ways!(4) == 4
-        @test set_cache_ways!(8) == 8
-        @test set_cache_ways!(16) == 16
-
-        # Invalid values should throw ArgumentError
-        @test_throws ArgumentError set_cache_ways!(0)
-        @test_throws ArgumentError set_cache_ways!(-1)
-        @test_throws ArgumentError set_cache_ways!(17)
-        @test_throws ArgumentError set_cache_ways!(100)
-
-        # Reset to default after tests
-        set_cache_ways!(4)
-    end
+    # CACHE_WAYS and set_cache_ways! are legacy-only (Julia ≤1.10)
+    # See test/legacy/test_nway_cache.jl for those tests.
 
 end
 
