@@ -245,6 +245,55 @@
     end
 
     # ==================================================================
+    # 8d. Backend-specific block mode
+    # ==================================================================
+    @testset "@with_pool :cpu block mode" begin
+        result = @with_pool :cpu pool begin
+            @test pool isa DisabledPool{:cpu}
+            v = acquire!(pool, Float64, 6)
+            @test v isa Vector{Float64}
+            v .= 3.0
+            sum(v)
+        end
+        @test result == 18.0
+    end
+
+    @testset "@maybe_with_pool :cpu block mode" begin
+        result = @maybe_with_pool :cpu pool begin
+            @test pool isa DisabledPool{:cpu}
+            v = zeros!(pool, Float64, 4)
+            @test v isa Vector{Float64}
+            sum(v .+ 1.0)
+        end
+        @test result == 4.0
+    end
+
+    # ==================================================================
+    # 8e. Backend-specific function definition mode
+    # ==================================================================
+    @testset "@with_pool :cpu function definition" begin
+        @with_pool :cpu pool function _test_backend_func(x)
+            @test pool isa DisabledPool{:cpu}
+            v = acquire!(pool, Float64, length(x))
+            v .= x .* 2
+            return sum(v)
+        end
+
+        @test _test_backend_func([1.0, 2.0, 3.0]) == 12.0
+    end
+
+    @testset "@maybe_with_pool :cpu function definition" begin
+        @maybe_with_pool :cpu pool function _test_maybe_backend_func(x)
+            @test pool isa DisabledPool{:cpu}
+            v = acquire!(pool, Float64, length(x))
+            v .= x .* 4
+            return sum(v)
+        end
+
+        @test _test_maybe_backend_func([1.0, 2.0]) == 12.0
+    end
+
+    # ==================================================================
     # 9. Multi-dimensional arrays
     # ==================================================================
     @testset "Multi-dimensional" begin
