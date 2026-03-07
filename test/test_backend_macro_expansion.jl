@@ -483,14 +483,16 @@
             @test occursin("Val{:cuda}", expr_str)
         end
 
-        @testset "vs @with_pool :backend — no runtime toggle" begin
+        @testset "vs @with_pool :backend — no MAYBE_POOLING toggle" begin
             expr = @macroexpand @with_pool :cuda pool function with_backend_func(n)
                 v = acquire!(pool, Float64, n)
                 return sum(v)
             end
 
             body_str = string(expr.args[2])
-            @test !occursin(refvalue_pattern, body_str)
+            # @with_pool has POOL_DEBUG check but NOT MAYBE_POOLING runtime toggle
+            @test occursin("_validate_pool_return", body_str)  # POOL_DEBUG present
+            @test !occursin("DisabledPool", body_str)          # No MAYBE_POOLING branch
             @test occursin("_get_pool_for_backend", body_str)
         end
     end

@@ -562,7 +562,13 @@ function _generate_function_pool_code_with_backend(backend::Symbol, pool_name, f
             local $(esc(pool_name)) = $pool_getter
             $checkpoint_call
             try
-                $(esc(transformed_body))
+                local _result = begin
+                    $(esc(transformed_body))
+                end
+                if $POOL_DEBUG[]
+                    $_validate_pool_return(_result, $(esc(pool_name)))
+                end
+                _result
             finally
                 $rewind_call
             end
@@ -574,7 +580,13 @@ function _generate_function_pool_code_with_backend(backend::Symbol, pool_name, f
                 local $(esc(pool_name)) = $pool_getter
                 $checkpoint_call
                 try
-                    $(esc(transformed_body))
+                    local _result = begin
+                        $(esc(transformed_body))
+                    end
+                    if $POOL_DEBUG[]
+                        $_validate_pool_return(_result, $(esc(pool_name)))
+                    end
+                    _result
                 finally
                     $rewind_call
                 end
@@ -634,7 +646,13 @@ function _generate_function_pool_code(pool_name, func_def, force_enable, disable
             local $(esc(pool_name)) = get_task_local_pool()
             $checkpoint_call
             try
-                $(esc(transformed_body))
+                local _result = begin
+                    $(esc(transformed_body))
+                end
+                if $POOL_DEBUG[]
+                    $_validate_pool_return(_result, $(esc(pool_name)))
+                end
+                _result
             finally
                 $rewind_call
             end
@@ -646,7 +664,13 @@ function _generate_function_pool_code(pool_name, func_def, force_enable, disable
                 local $(esc(pool_name)) = get_task_local_pool()
                 $checkpoint_call
                 try
-                    $(esc(transformed_body))
+                    local _result = begin
+                        $(esc(transformed_body))
+                    end
+                    if $POOL_DEBUG[]
+                        $_validate_pool_return(_result, $(esc(pool_name)))
+                    end
+                    _result
                 finally
                     $rewind_call
                 end
