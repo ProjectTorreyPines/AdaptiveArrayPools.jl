@@ -129,7 +129,8 @@ end
     @maybe_with_pool expr
 
 Conditionally enables pooling based on `MAYBE_POOLING[]`.
-If disabled, `pool_name` becomes `nothing`, and `acquire!` falls back to standard allocation.
+If disabled, `pool_name` is bound to a `DisabledPool` sentinel (e.g. `DISABLED_CPU` on CPU),
+and `acquire!` falls back to standard allocation.
 
 Useful for libraries that want to let users control pooling behavior at runtime.
 

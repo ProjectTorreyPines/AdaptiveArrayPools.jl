@@ -282,21 +282,22 @@
     # Run in separate process
     cmd = `$(Base.julia_cmd()) --project=$project_path $test_file`
 
+    out = IOBuffer()
+    err = IOBuffer()
     result = try
-        output = read(cmd, String)
+        run(pipeline(cmd; stdout = out, stderr = err))
         println("  Output from subprocess:")
-        for line in split(output, '\n')
+        for line in split(String(take!(out)), '\n')
             println("    ", line)
         end
         true
     catch e
         println("  Subprocess failed: ", e)
-        if e isa ProcessFailedException
-            # Show stderr for debugging
-            try
-                err_output = read(pipeline(cmd; stderr = stderr), String)
-                println("  stderr: ", err_output)
-            catch
+        err_str = String(take!(err))
+        if !isempty(err_str)
+            println("  stderr:")
+            for line in split(err_str, '\n')
+                println("    ", line)
             end
         end
         false

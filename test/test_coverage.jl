@@ -88,13 +88,14 @@
         @test occursin("metal", msg2)
         @test occursin("backend package", msg2)
 
-        # Unknown backends error naturally (FieldError) since DisabledPool has no fields.
+        # Unknown backends error since DisabledPool has no fields for pool internals.
         # Only concrete backends (:cpu, :cuda) have specific method overloads.
+        # Use Exception for Julia 1.10 compat (FieldError is 1.11+).
         fake_pool = DisabledPool{:fake_backend}()
-        @test_throws FieldError zeros!(fake_pool, 10)
-        @test_throws FieldError ones!(fake_pool, 10)
-        @test_throws FieldError acquire!(fake_pool, Float64, 10)
-        @test_throws FieldError unsafe_acquire!(fake_pool, Float64, 10)
+        @test_throws Exception zeros!(fake_pool, 10)
+        @test_throws Exception ones!(fake_pool, 10)
+        @test_throws Exception acquire!(fake_pool, Float64, 10)
+        @test_throws Exception unsafe_acquire!(fake_pool, Float64, 10)
     end
 
 

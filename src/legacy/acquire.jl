@@ -448,8 +448,11 @@ const _acquire_view_impl! = _acquire_impl!
 const _acquire_array_impl! = _unsafe_acquire_impl!
 
 # ==============================================================================
-# DisabledPool Acquire Fallbacks (pooling disabled with backend context)
+# DisabledPool Fallbacks (pooling disabled with backend context)
 # ==============================================================================
+
+# DisabledPool has no internal state to track, so type touch is a no-op.
+@inline _record_type_touch!(::DisabledPool, ::Type) = nothing
 
 # --- acquire! for DisabledPool{:cpu} ---
 @inline acquire!(::DisabledPool{:cpu}, ::Type{T}, n::Int) where {T} = Vector{T}(undef, n)
