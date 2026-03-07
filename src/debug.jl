@@ -5,8 +5,12 @@
 """
     POOL_DEBUG
 
-When `true`, `@with_pool` macros validate that returned values don't
-reference pool memory (which would be unsafe).
+Legacy flag for escape detection. Superseded by [`POOL_SAFETY`](@ref).
+
+Setting `POOL_DEBUG[] = true` enables escape detection at `@with_pool` scope exit
+(equivalent to `POOL_SAFETY[] >= 2` behavior). Both flags are checked independently.
+
+For new code, prefer `POOL_SAFETY[] = 2`.
 
 Default: `false`
 """

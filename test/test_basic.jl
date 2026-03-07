@@ -81,7 +81,10 @@
         # Verify independence: writing to v1_big doesn't corrupt v2_reuse
         v1_big .= 99.0
         @test all(v2_reuse .== 3.0)
+        old_safety = POOL_SAFETY[]
+        POOL_SAFETY[] = 0  # disable invalidation so backing vector length is preserved
         rewind!(pool)
+        POOL_SAFETY[] = old_safety
 
         # Re-acquire slot 1 with SMALLER size — no resize needed, backing vec stays large
         checkpoint!(pool)

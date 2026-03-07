@@ -292,6 +292,35 @@ const _TYPE_BITS_MASK = UInt16(0x00FF)  # bits 0-7: fixed-slot type bits
 @inline _has_bit(mask::UInt16, ::Type{T}) where {T} = (mask & _fixed_slot_bit(T)) != 0
 
 # ==============================================================================
+# Safety Configuration (2-Tier Toggle)
+# ==============================================================================
+#
+#   Tier 1: STATIC_POOL_CHECKS (compile-time const)
+#           Set via LocalPreferences.toml: pool_checks = true/false
+#           When false: all safety code elided at compile time (zero overhead)
+#
+#   Tier 2: POOL_SAFETY (runtime Ref{Int}, levels 0/1/2)
+#           0 = off, 1 = guard (resize+setfield invalidation), 2 = full
+#           Default: 1 (guard mode — safe by default)
+
+using Preferences: @load_preference
+
+const STATIC_POOL_CHECKS = @load_preference("pool_checks", true)::Bool
+
+"""
+    POOL_SAFETY
+
+Runtime safety level for pool operations. Only effective when `STATIC_POOL_CHECKS` is `true`.
+
+- `0`: Off — no safety checks (Ref read only, ~1ns)
+- `1`: Guard — structural invalidation on rewind (resize + setfield!, ~1ns/slot)
+- `2`: Full — guard + escape detection on scope exit (future: + poisoning)
+
+Default: `1` (guard mode)
+"""
+const POOL_SAFETY = Ref(1)
+
+# ==============================================================================
 # AdaptiveArrayPool
 # ==============================================================================
 
