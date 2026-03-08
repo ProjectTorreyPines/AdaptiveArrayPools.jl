@@ -12,10 +12,11 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap
         # Default is false
         POOL_DEBUG[] = false
 
-        # When debug is off, no validation happens even if SubArray is returned
+        # When debug is off, no validation happens even if SubArray escapes
+        # (identity() bypasses compile-time escape detection)
         result = @with_pool pool begin
             v = acquire!(pool, Float64, 10)
-            v  # Returning SubArray - would be unsafe in real code
+            identity(v)  # Bypass compile-time; runtime LV<2 won't catch
         end
         @test result isa SubArray  # No error when debug is off
 
@@ -27,9 +28,10 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap
         POOL_DEBUG[] = true
 
         # Should throw error when returning SubArray with debug on
+        # (identity() bypasses compile-time; runtime _validate_pool_return catches it)
         @test_throws ErrorException @with_pool pool begin
             v = acquire!(pool, Float64, 10)
-            v  # Unsafe: returning pool-backed SubArray
+            identity(v)  # Bypass compile-time; caught by runtime LV2
         end
 
         # Safe returns should work fine
@@ -204,13 +206,13 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap
         # N-D ReshapedArray should throw error when returned
         @test_throws ErrorException @with_pool pool begin
             mat = acquire!(pool, Float64, 10, 10)
-            mat  # Unsafe: returning pool-backed N-D ReshapedArray
+            identity(mat)  # Bypass compile-time; caught by runtime LV2
         end
 
         # Raw Array from unsafe_acquire! should throw error when returned
         @test_throws ErrorException @with_pool pool begin
             mat = unsafe_acquire!(pool, Float64, 10, 10)
-            mat  # Unsafe: returning raw Array backed by pool
+            identity(mat)  # Bypass compile-time; caught by runtime LV2
         end
 
         # Safe returns should work fine
@@ -326,13 +328,13 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap
         # BitVector from pool should throw error when returned with debug on
         @test_throws ErrorException @with_pool pool begin
             bv = acquire!(pool, Bit, 100)
-            bv  # Unsafe: returning pool-backed BitVector
+            identity(bv)  # Bypass compile-time; caught by runtime LV2
         end
 
         # BitMatrix from pool should throw error when returned
         @test_throws ErrorException @with_pool pool begin
             ba = acquire!(pool, Bit, 10, 10)
-            ba  # Unsafe: returning pool-backed BitMatrix
+            identity(ba)  # Bypass compile-time; caught by runtime LV2
         end
 
         # Safe returns should work fine
@@ -362,11 +364,11 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap
         old_debug = POOL_DEBUG[]
         POOL_DEBUG[] = true
 
-        # Unsafe: function implicitly returns pool-backed SubArray
+        # Unsafe: function returns pool-backed SubArray (via identity to bypass compile-time)
         @with_pool pool function _test_debug_func_unsafe(n)
             v = acquire!(pool, Float64, n)
             v .= 1.0
-            v  # Implicit return of pool-backed SubArray
+            identity(v)  # Bypass compile-time; caught by runtime LV2
         end
         @test_throws ErrorException _test_debug_func_unsafe(10)
 
@@ -390,7 +392,7 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap
         @with_pool pool function _test_debug_func_nd(m, n)
             mat = acquire!(pool, Float64, m, n)
             mat .= 1.0
-            mat
+            identity(mat)  # Bypass compile-time; caught by runtime LV2
         end
         @test_throws ErrorException _test_debug_func_nd(3, 4)
 
@@ -398,7 +400,7 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap
         @with_pool pool function _test_debug_func_bit(n)
             bv = acquire!(pool, Bit, n)
             bv .= true
-            bv
+            identity(bv)  # Bypass compile-time; caught by runtime LV2
         end
         @test_throws ErrorException _test_debug_func_bit(100)
 
@@ -415,7 +417,7 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap
         @maybe_with_pool pool function _test_maybe_debug_unsafe(n)
             v = acquire!(pool, Float64, n)
             v .= 1.0
-            v
+            identity(v)  # Bypass compile-time; caught by runtime LV2
         end
         @test_throws ErrorException _test_maybe_debug_unsafe(10)
 
@@ -431,7 +433,7 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap
         MAYBE_POOLING[] = false
         @maybe_with_pool pool function _test_maybe_debug_disabled(n)
             v = zeros!(pool, n)
-            v
+            identity(v)  # Bypass compile-time; disabled pool returns fresh arrays
         end
         result = _test_maybe_debug_disabled(5)
         @test result == zeros(5)
@@ -448,7 +450,7 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap
         @with_pool :cpu pool function _test_backend_debug_unsafe(n)
             v = acquire!(pool, Float64, n)
             v .= 1.0
-            v
+            identity(v)  # Bypass compile-time; caught by runtime LV2
         end
         @test_throws ErrorException _test_backend_debug_unsafe(10)
 

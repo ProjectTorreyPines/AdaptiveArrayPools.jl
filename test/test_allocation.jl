@@ -15,6 +15,7 @@
     ff2 = zeros!(pool, Bit, 100)
 
     C = similar!(pool, tt1)
+    nothing  # avoid compile-time escape error (C is pool-backed)
 end
 
 

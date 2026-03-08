@@ -328,6 +328,9 @@ function _generate_pool_code(pool_name, expr, force_enable; source::Union{LineNu
         return _generate_function_pool_code(pool_name, expr, force_enable, false; source)
     end
 
+    # Compile-time escape detection (zero runtime cost)
+    _check_compile_time_escape(expr, pool_name, source)
+
     # Block logic
     # Extract types from acquire! calls for optimized checkpoint/rewind
     # Only extract types for calls to the target pool (pool_name)
@@ -425,6 +428,9 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, forc
             return _generate_function_pool_code_with_backend(backend, pool_name, expr, false, false; source)
         end
 
+        # Compile-time escape detection (zero runtime cost)
+        _check_compile_time_escape(expr, pool_name, source)
+
         # Block logic with runtime check
         all_types = _extract_acquire_types(expr, pool_name)
         local_vars = _extract_local_assignments(expr)
@@ -467,6 +473,9 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, forc
     if Meta.isexpr(expr, [:function, :(=)]) && _is_function_def(expr)
         return _generate_function_pool_code_with_backend(backend, pool_name, expr, true, false; source)
     end
+
+    # Compile-time escape detection (zero runtime cost)
+    _check_compile_time_escape(expr, pool_name, source)
 
     # Block logic: Extract types from acquire! calls for optimized checkpoint/rewind
     all_types = _extract_acquire_types(expr, pool_name)
@@ -535,6 +544,9 @@ function _generate_function_pool_code_with_backend(backend::Symbol, pool_name, f
         new_body = _ensure_body_has_toplevel_lnn(new_body, source)
         return Expr(def_head, esc(call_expr), new_body)
     end
+
+    # Compile-time escape detection (zero runtime cost)
+    _check_compile_time_escape(body, pool_name, source)
 
     # Analyze body for types
     all_types = _extract_acquire_types(body, pool_name)
@@ -618,6 +630,9 @@ function _generate_function_pool_code(pool_name, func_def, force_enable, disable
         new_body = _ensure_body_has_toplevel_lnn(new_body, source)
         return Expr(def_head, esc(call_expr), new_body)
     end
+
+    # Compile-time escape detection (zero runtime cost)
+    _check_compile_time_escape(body, pool_name, source)
 
     # Analyze body for types
     all_types = _extract_acquire_types(body, pool_name)
@@ -1138,4 +1153,248 @@ function _transform_acquire_calls(expr, pool_name)
         return Expr(expr.head, new_args...)
     end
     return expr
+end
+
+# ==============================================================================
+# Internal: Compile-Time Escape Detection
+# ==============================================================================
+#
+# Detects common pool escape patterns at macro expansion time (zero runtime cost).
+# - Error: bare acquired variable as last expression (100% escape)
+# - Warning: acquired variable inside tuple/array literal (likely escape)
+#
+# This catches the most common beginner mistake — returning a pool-backed array
+# from @with_pool — before the code even runs.
+
+"""
+    _ALL_ACQUIRE_NAMES
+
+Set of all function names that return pool-backed arrays.
+Used by `_extract_acquired_vars` to identify assignments like `v = acquire!(pool, ...)`.
+"""
+const _ALL_ACQUIRE_NAMES = Set{Symbol}([
+    :acquire!, :unsafe_acquire!, :acquire_view!, :acquire_array!,
+    :zeros!, :ones!, :similar!, :reshape!,
+    :unsafe_zeros!, :unsafe_ones!, :unsafe_similar!,
+    :trues!, :falses!,
+])
+
+"""
+    _is_acquire_call(expr, target_pool) -> Bool
+
+Check if an expression is a call to any pool acquire/convenience function
+targeting `target_pool`.
+"""
+function _is_acquire_call(expr, target_pool)
+    if !(expr isa Expr && expr.head == :call && length(expr.args) >= 2)
+        return false
+    end
+    fn = expr.args[1]
+    pool_arg = expr.args[2]
+    pool_arg == target_pool || return false
+
+    # Direct name
+    if fn isa Symbol
+        return fn in _ALL_ACQUIRE_NAMES
+    end
+    # Qualified name: Module.acquire!
+    if fn isa Expr && fn.head == :. && length(fn.args) >= 2
+        qn = fn.args[end]
+        if qn isa QuoteNode && qn.value isa Symbol
+            return qn.value in _ALL_ACQUIRE_NAMES
+        end
+    end
+    return false
+end
+
+"""
+    _extract_acquired_vars(expr, target_pool) -> Set{Symbol}
+
+Walk AST to find variable names assigned from acquire/convenience calls.
+Returns the set of symbols that hold pool-backed arrays.
+
+Only top-level assignments in a block are tracked (not inside branches).
+"""
+function _extract_acquired_vars(expr, target_pool, vars = Set{Symbol}())
+    if expr isa Expr
+        if expr.head == :block
+            # Walk top-level statements only (for flat reassignment tracking)
+            for arg in expr.args
+                _extract_acquired_vars(arg, target_pool, vars)
+            end
+        elseif expr.head == :(=) && length(expr.args) >= 2
+            lhs = expr.args[1]
+            rhs = expr.args[2]
+            if lhs isa Symbol && _is_acquire_call(rhs, target_pool)
+                push!(vars, lhs)
+            end
+            # Recurse into RHS (for nested blocks with acquire calls)
+            _extract_acquired_vars(rhs, target_pool, vars)
+        else
+            for arg in expr.args
+                _extract_acquired_vars(arg, target_pool, vars)
+            end
+        end
+    end
+    return vars
+end
+
+"""
+    _get_last_expression(expr) -> Any
+
+Return the last non-LineNumberNode expression from a block.
+For non-block expressions, returns the expression itself.
+"""
+function _get_last_expression(expr)
+    if expr isa Expr && expr.head == :block
+        for i in length(expr.args):-1:1
+            arg = expr.args[i]
+            arg isa LineNumberNode && continue
+            return _get_last_expression(arg)
+        end
+        return nothing
+    end
+    return expr
+end
+
+"""
+    _remove_flat_reassigned!(expr, acquired, target_pool)
+
+Walk top-level statements in order and remove variables from `acquired`
+if they are reassigned to a non-acquire call. Only handles flat (non-branching)
+reassignment — conditional reassignment is conservatively kept.
+"""
+function _remove_flat_reassigned!(expr, acquired, target_pool)
+    if !(expr isa Expr && expr.head == :block)
+        return
+    end
+    for arg in expr.args
+        arg isa LineNumberNode && continue
+        if arg isa Expr && arg.head == :(=) && length(arg.args) >= 2
+            lhs = arg.args[1]
+            rhs = arg.args[2]
+            if lhs isa Symbol && lhs in acquired && !_is_acquire_call(rhs, target_pool)
+                delete!(acquired, lhs)
+            end
+        end
+    end
+end
+
+"""
+    _find_direct_exposure(expr, acquired) -> Set{Symbol}
+
+Check if the expression directly exposes any acquired variable.
+Only catches high-confidence patterns:
+- Bare Symbol: `v`
+- Explicit return: `return v`
+- Tuple/array literal containing a var: `(v, w)`, `[v, w]`
+- NamedTuple-style kw: `(a=v,)`
+
+Does NOT recurse into function calls (can't know what `f(v)` returns).
+"""
+function _find_direct_exposure(expr, acquired)
+    found = Set{Symbol}()
+    if expr isa Symbol
+        # Bare variable: v
+        if expr in acquired
+            push!(found, expr)
+        end
+    elseif expr isa Expr
+        if expr.head == :return
+            # return v, return (v, w), etc.
+            for arg in expr.args
+                union!(found, _find_direct_exposure(arg, acquired))
+            end
+        elseif expr.head in (:tuple, :vect)
+            # (v, w) or [v, w]
+            for arg in expr.args
+                if arg isa Symbol && arg in acquired
+                    push!(found, arg)
+                elseif Meta.isexpr(arg, :(=)) && length(arg.args) >= 2
+                    # NamedTuple: (a=v,)
+                    val = arg.args[2]
+                    if val isa Symbol && val in acquired
+                        push!(found, val)
+                    end
+                end
+            end
+        elseif expr.head == :parameters
+            # (a=v,) style named tuple parameters
+            for arg in expr.args
+                if Meta.isexpr(arg, :kw) && length(arg.args) >= 2
+                    val = arg.args[2]
+                    if val isa Symbol && val in acquired
+                        push!(found, val)
+                    end
+                end
+            end
+        end
+    end
+    return found
+end
+
+"""
+    _is_definite_escape(last_expr, var::Symbol) → Bool
+
+Return `true` if `var` is *certainly* escaping — bare symbol return (`v`) or
+explicit `return v`.  Container patterns (tuples, arrays) are only *possible*
+escapes and return `false`.
+"""
+function _is_definite_escape(last_expr, var::Symbol)
+    # Bare symbol as last expression: `v`
+    last_expr isa Symbol && last_expr == var && return true
+    # Explicit `return v`
+    if Meta.isexpr(last_expr, :return) && length(last_expr.args) == 1
+        last_expr.args[1] isa Symbol && last_expr.args[1] == var && return true
+    end
+    return false
+end
+
+"""
+    _check_compile_time_escape(expr, pool_name, source)
+
+Compile-time (macro expansion time) escape detection.
+
+Checks if the block/function body's return expression directly contains
+a pool-backed variable. This catches the most common beginner mistake
+at zero runtime cost.
+
+- **Error**: bare variable or `return var` (100% certain escape)
+- **Warning**: variable inside tuple/array literal (very likely escape)
+
+Skipped when `STATIC_POOLING = false` (pooling disabled, acquire returns normal arrays).
+"""
+function _check_compile_time_escape(expr, pool_name, source::Union{LineNumberNode, Nothing})
+    # Extract variables assigned from acquire calls
+    acquired = _extract_acquired_vars(expr, pool_name)
+    isempty(acquired) && return
+
+    # Remove vars that were unconditionally reassigned to non-acquire values
+    _remove_flat_reassigned!(expr, acquired, pool_name)
+    isempty(acquired) && return
+
+    # Check the last expression (= implicit return value)
+    last_expr = _get_last_expression(expr)
+    last_expr === nothing && return
+
+    escaped = _find_direct_exposure(last_expr, acquired)
+    isempty(escaped) && return
+
+    # Definite escapes (bare symbol, return var) → compile-time error
+    # Possible escapes (container with acquired var) → compile-time warning
+    for var in escaped
+        loc = source !== nothing ? " at $(source.file):$(source.line)" : ""
+        is_definite = _is_definite_escape(last_expr, var)
+        msg = string(
+            is_definite ? "Pool escape" : "Possible pool escape",
+            loc, ": `", var, "` is pool-backed memory that will be ",
+            "invalidated after @with_pool scope exit. ",
+            "Use `collect(", var, ")` to return an independent copy, or return a scalar value."
+        )
+        if is_definite
+            error(msg)
+        else
+            @warn msg
+        end
+    end
 end
