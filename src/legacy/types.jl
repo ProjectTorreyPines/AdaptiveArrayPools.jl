@@ -62,6 +62,27 @@ function set_cache_ways!(n::Int)
 end
 
 # ==============================================================================
+# Safety Configuration (2-Tier Toggle)
+# ==============================================================================
+#   Tier 1: STATIC_POOL_CHECKS (compile-time const)
+#   Tier 2: POOL_SAFETY_LV (runtime Ref{Int}, levels 0/1/2)
+
+const STATIC_POOL_CHECKS = @load_preference("pool_checks", true)::Bool
+
+"""
+    POOL_SAFETY_LV
+
+Runtime safety level for pool operations. Only effective when `STATIC_POOL_CHECKS` is `true`.
+
+- `0`: Off — no safety checks (Ref read only, ~1ns)
+- `1`: Guard — structural invalidation on rewind (resize + setfield!, ~1ns/slot)
+- `2`: Full — guard + escape detection on scope exit (future: + poisoning)
+
+Default: `1` (guard mode)
+"""
+const POOL_SAFETY_LV = Ref(1)
+
+# ==============================================================================
 # Abstract Type Hierarchy (for extensibility)
 # ==============================================================================
 

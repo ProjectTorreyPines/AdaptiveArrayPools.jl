@@ -52,42 +52,45 @@ import AdaptiveArrayPools: _invalidate_released_slots!
     end
 
     # ==============================================================================
-    # Level 1: unsafe_acquire! Array wrapper invalidation
+    # Level 1: unsafe_acquire! Array wrapper invalidation (Julia 1.11+ only)
+    # On Julia 1.10, Array is a C struct — setfield!(:size) is not available.
     # ==============================================================================
 
-    @testset "unsafe_acquire! Array wrapper invalidated on rewind" begin
-        old_safety = POOL_SAFETY_LV[]
-        POOL_SAFETY_LV[] = 1
+    @static if VERSION >= v"1.11-"
+        @testset "unsafe_acquire! Array wrapper invalidated on rewind" begin
+            old_safety = POOL_SAFETY_LV[]
+            POOL_SAFETY_LV[] = 1
 
-        pool = AdaptiveArrayPool()
-        checkpoint!(pool)
-        arr = unsafe_acquire!(pool, Float64, 10)
-        arr .= 99.0
-        @test size(arr) == (10,)
-        rewind!(pool)
+            pool = AdaptiveArrayPool()
+            checkpoint!(pool)
+            arr = unsafe_acquire!(pool, Float64, 10)
+            arr .= 99.0
+            @test size(arr) == (10,)
+            rewind!(pool)
 
-        # Wrapper size set to (0,) via setfield!
-        @test size(arr) == (0,)
-        @test_throws BoundsError arr[1]
+            # Wrapper size set to (0,) via setfield!
+            @test size(arr) == (0,)
+            @test_throws BoundsError arr[1]
 
-        POOL_SAFETY_LV[] = old_safety
-    end
+            POOL_SAFETY_LV[] = old_safety
+        end
 
-    @testset "unsafe_acquire! N-D Array wrapper invalidated on rewind" begin
-        old_safety = POOL_SAFETY_LV[]
-        POOL_SAFETY_LV[] = 1
+        @testset "unsafe_acquire! N-D Array wrapper invalidated on rewind" begin
+            old_safety = POOL_SAFETY_LV[]
+            POOL_SAFETY_LV[] = 1
 
-        pool = AdaptiveArrayPool()
-        checkpoint!(pool)
-        mat = unsafe_acquire!(pool, Float64, 4, 3)
-        mat .= 1.0
-        @test size(mat) == (4, 3)
-        rewind!(pool)
+            pool = AdaptiveArrayPool()
+            checkpoint!(pool)
+            mat = unsafe_acquire!(pool, Float64, 4, 3)
+            mat .= 1.0
+            @test size(mat) == (4, 3)
+            rewind!(pool)
 
-        @test size(mat) == (0, 0)
-        @test_throws BoundsError mat[1, 1]
+            @test size(mat) == (0, 0)
+            @test_throws BoundsError mat[1, 1]
 
-        POOL_SAFETY_LV[] = old_safety
+            POOL_SAFETY_LV[] = old_safety
+        end
     end
 
     # ==============================================================================
@@ -184,28 +187,30 @@ import AdaptiveArrayPools: _invalidate_released_slots!
         POOL_SAFETY_LV[] = old_safety
     end
 
-    @testset "Re-acquire unsafe_acquire! after invalidation" begin
-        old_safety = POOL_SAFETY_LV[]
-        POOL_SAFETY_LV[] = 1
+    @static if VERSION >= v"1.11-"
+        @testset "Re-acquire unsafe_acquire! after invalidation" begin
+            old_safety = POOL_SAFETY_LV[]
+            POOL_SAFETY_LV[] = 1
 
-        pool = AdaptiveArrayPool()
+            pool = AdaptiveArrayPool()
 
-        # First cycle
-        checkpoint!(pool)
-        arr = unsafe_acquire!(pool, Float64, 20)
-        arr .= 3.0
-        rewind!(pool)
-        @test size(arr) == (0,)
+            # First cycle
+            checkpoint!(pool)
+            arr = unsafe_acquire!(pool, Float64, 20)
+            arr .= 3.0
+            rewind!(pool)
+            @test size(arr) == (0,)
 
-        # Second cycle: wrapper reused, size restored
-        checkpoint!(pool)
-        arr2 = unsafe_acquire!(pool, Float64, 15)
-        @test size(arr2) == (15,)
-        arr2 .= 4.0
-        @test arr2[1] == 4.0
-        rewind!(pool)
+            # Second cycle: wrapper reused, size restored
+            checkpoint!(pool)
+            arr2 = unsafe_acquire!(pool, Float64, 15)
+            @test size(arr2) == (15,)
+            arr2 .= 4.0
+            @test arr2[1] == 4.0
+            rewind!(pool)
 
-        POOL_SAFETY_LV[] = old_safety
+            POOL_SAFETY_LV[] = old_safety
+        end
     end
 
     # ==============================================================================
