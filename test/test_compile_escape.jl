@@ -1,6 +1,7 @@
 import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
     _find_direct_exposure, _remove_flat_reassigned!, _check_compile_time_escape,
-    _collect_all_return_values, _collect_explicit_returns!, _collect_implicit_return_values!
+    _collect_all_return_values, _collect_explicit_returns!, _collect_implicit_return_values!,
+    _get_last_expression_with_line, _render_return_expr
 
 @testset "Compile-Time Escape Detection" begin
 
@@ -448,13 +449,14 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
     # _collect_all_return_values: explicit returns + implicit if/else branches
     # ==============================================================================
 
-    @testset "_collect_all_return_values" begin
+    @testset "_collect_all_return_values (expr, line) pairs" begin
         # Simple block: implicit return only
         vals = _collect_all_return_values(quote
             x = 1
             x
         end)
-        @test any(v -> v isa Symbol && v == :x, vals)
+        exprs = first.(vals)
+        @test any(e -> e isa Symbol && e == :x, exprs)
 
         # Explicit return inside if branch
         vals = _collect_all_return_values(quote
@@ -464,9 +466,9 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
             end
             sum(v)
         end)
-        # Should find both the explicit `return v` and the implicit `sum(v)`
-        @test any(v -> v isa Expr && v.head == :return, vals)
-        @test any(v -> v isa Expr && v.head == :call, vals)
+        exprs = first.(vals)
+        @test any(e -> e isa Expr && e.head == :return, exprs)
+        @test any(e -> e isa Expr && e.head == :call, exprs)
 
         # Both branches have explicit return
         vals = _collect_all_return_values(quote
@@ -476,7 +478,7 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
                 return (v = v, data = z)
             end
         end)
-        returns = filter(v -> v isa Expr && v.head == :return, vals)
+        returns = filter(((e, _),) -> e isa Expr && e.head == :return, vals)
         @test length(returns) >= 2
 
         # Implicit return from if/else branches (no explicit return keyword)
@@ -487,8 +489,9 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
                 sum(v)
             end
         end)
-        @test any(v -> v isa Symbol && v == :v, vals)
-        @test any(v -> v isa Expr && v.head == :call, vals)
+        exprs = first.(vals)
+        @test any(e -> e isa Symbol && e == :v, exprs)
+        @test any(e -> e isa Expr && e.head == :call, exprs)
 
         # elseif branches
         vals = _collect_all_return_values(quote
@@ -500,8 +503,9 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
                 sum(v)
             end
         end)
-        @test any(v -> v isa Symbol && v == :v, vals)
-        @test any(v -> v isa Symbol && v == :w, vals)
+        exprs = first.(vals)
+        @test any(e -> e isa Symbol && e == :v, exprs)
+        @test any(e -> e isa Symbol && e == :w, exprs)
 
         # Nested if inside branch
         vals = _collect_all_return_values(quote
@@ -515,8 +519,9 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
                 sum(v)
             end
         end)
-        @test any(v -> v isa Symbol && v == :v, vals)
-        @test any(v -> v isa Symbol && v == :w, vals)
+        exprs = first.(vals)
+        @test any(e -> e isa Symbol && e == :v, exprs)
+        @test any(e -> e isa Symbol && e == :w, exprs)
 
         # Skips nested function definitions
         vals = _collect_all_return_values(quote
@@ -525,14 +530,26 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
             end
             sum(v)
         end)
-        returns = filter(v -> v isa Expr && v.head == :return, vals)
+        returns = filter(((e, _),) -> e isa Expr && e.head == :return, vals)
         @test isempty(returns)
 
         # Ternary operator (same AST as if/else)
         vals = _collect_all_return_values(quote
             cond ? v : sum(v)
         end)
-        @test any(v -> v isa Symbol && v == :v, vals)
+        exprs = first.(vals)
+        @test any(e -> e isa Symbol && e == :v, exprs)
+
+        # Line numbers are tracked
+        vals = _collect_all_return_values(quote
+            if cond
+                return v  # this will have a line number
+            end
+            sum(v)
+        end)
+        explicit_returns = filter(((e, _),) -> e isa Expr && e.head == :return, vals)
+        @test !isempty(explicit_returns)
+        @test last(explicit_returns[1]) !== nothing  # line is captured
     end
 
     # ==============================================================================
@@ -1263,7 +1280,7 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
     # Error/warning messages: verify variable names and suggestions
     # ==============================================================================
 
-    @testset "PoolEscapeError carries variable names and formatted message" begin
+    @testset "PoolEscapeError carries variable names, points, and formatted message" begin
         # Single variable: bare return
         err = try @macroexpand(@with_pool pool begin
             v = acquire!(pool, Float64, 10)
@@ -1271,9 +1288,12 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
         end) catch e; e end
         @test err isa PoolEscapeError
         @test err.vars == [:v]
+        @test !isempty(err.points)
+        @test :v in err.points[1].vars
         msg = sprint(showerror, err)
         @test occursin("collect(v)", msg)
         @test occursin("identity()", msg)
+        @test occursin("Escaping return", msg)
 
         # Different variable name
         err = try @macroexpand(@with_pool pool begin
@@ -1315,6 +1335,55 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
 
         # Source location captured
         @test err.file !== nothing
+
+        # Branch escapes: points track per-return-point info
+        err = try @macroexpand(@with_pool pool function branch_msg(n)
+            v = acquire!(pool, Float64, n)
+            if n > 0
+                return sum(v)
+            else
+                return v
+            end
+        end) catch e; e end
+        @test err isa PoolEscapeError
+        @test err.vars == [:v]
+        @test length(err.points) == 1  # only the unsafe return
+        @test :v in err.points[1].vars
+        @test err.points[1].line !== nothing
+
+        # Multiple escape points across branches
+        err = try @macroexpand(@with_pool pool function multi_pt(n)
+            v = acquire!(pool, Float64, n)
+            w = acquire!(pool, Float64, n)
+            if n > 0
+                return v
+            else
+                return w
+            end
+        end) catch e; e end
+        @test err isa PoolEscapeError
+        @test err.vars == [:v, :w]
+        @test length(err.points) == 2
+        msg = sprint(showerror, err)
+        @test occursin("[1]", msg)
+        @test occursin("[2]", msg)
+
+        # Rendered expression shows highlighted vars
+        err = try @macroexpand(@with_pool pool begin
+            v = acquire!(pool, Float64, 10)
+            z = similar!(pool, v)
+            if rand() > 0.5
+                return (v = 0.5, data = 1.0)
+            else
+                return (v = v, data = z)
+            end
+        end) catch e; e end
+        @test err isa PoolEscapeError
+        @test err.vars == [:v, :z]
+        msg = sprint(showerror, err)
+        # The rendered return expression appears in the message
+        @test occursin("return", msg)
+        @test occursin("data", msg)
     end
 
 end # Compile-Time Escape Detection

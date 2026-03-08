@@ -6,6 +6,13 @@
 # PoolEscapeError — Compile-time escape detection error
 # ==============================================================================
 
+"""Per-return-point escape detail: which expression, at which line, leaks which vars."""
+struct EscapePoint
+    expr::Any
+    line::Union{Int, Nothing}
+    vars::Vector{Symbol}
+end
+
 """
     PoolEscapeError <: Exception
 
@@ -18,6 +25,46 @@ struct PoolEscapeError <: Exception
     vars::Vector{Symbol}
     file::Union{String, Nothing}
     line::Union{Int, Nothing}
+    points::Vector{EscapePoint}
+end
+
+"""Render an expression with escaped variable names highlighted in red.
+Handles return, tuple, NamedTuple, array literal; falls back to print for others."""
+function _render_return_expr(io::IO, expr, escaped::Set{Symbol})
+    if expr isa Symbol
+        if expr in escaped
+            printstyled(io, string(expr); color=:red, bold=true)
+        else
+            print(io, expr)
+        end
+    elseif expr isa Expr
+        if expr.head == :return && !isempty(expr.args)
+            printstyled(io, "return "; color=:light_black)
+            _render_return_expr(io, expr.args[1], escaped)
+        elseif expr.head == :tuple
+            print(io, "(")
+            for (i, arg) in enumerate(expr.args)
+                i > 1 && print(io, ", ")
+                _render_return_expr(io, arg, escaped)
+            end
+            print(io, ")")
+        elseif expr.head == :(=) && length(expr.args) >= 2
+            # NamedTuple key = value — only highlight value
+            print(io, expr.args[1], " = ")
+            _render_return_expr(io, expr.args[2], escaped)
+        elseif expr.head == :vect
+            print(io, "[")
+            for (i, arg) in enumerate(expr.args)
+                i > 1 && print(io, ", ")
+                _render_return_expr(io, arg, escaped)
+            end
+            print(io, "]")
+        else
+            print(io, expr)
+        end
+    else
+        print(io, expr)
+    end
 end
 
 function Base.showerror(io::IO, e::PoolEscapeError)
@@ -38,14 +85,29 @@ function Base.showerror(io::IO, e::PoolEscapeError)
         printstyled(io, "  ← temporary array, must not escape @with_pool scope\n"; color=:light_black)
     end
 
+    # Show escaping return points with highlighted expressions
+    if !isempty(e.points)
+        println(io)
+        label = length(e.points) == 1 ? "  Escaping return:" : "  Escaping returns:"
+        printstyled(io, label, "\n"; bold=true)
+        escaped_set = Set{Symbol}(e.vars)
+        for (idx, pt) in enumerate(e.points)
+            printstyled(io, "    [", idx, "] "; color=:light_black)
+            if pt.line !== nothing
+                printstyled(io, "line ", pt.line, ": "; color=:light_black)
+            end
+            _render_return_expr(io, pt.expr, escaped_set)
+            println(io)
+        end
+    end
+
     # Suggestion 1: trace the definition
     println(io)
-    vars_str = join([string(v) for v in e.vars], ", ")
-    printstyled(io, "  Fix: "; bold=true)
-    println(io, "Trace where ", vars_str, " are assigned.")
     collects_str = join(["collect($v)" for v in e.vars], ", ")
-    println(io, "       If from acquire!() / zeros!() / similar!(), use ", collects_str)
-    println(io, "       to return owned copies.")
+    printstyled(io, "  Fix: "; bold=true)
+    print(io, "Use ")
+    printstyled(io, collects_str; bold=true)
+    println(io, " to return owned copies.")
 
     # Suggestion 2: false positive escape hatch
     println(io)
@@ -1318,55 +1380,86 @@ function _get_last_expression(expr)
 end
 
 """
-    _collect_all_return_values(expr) -> Vector
+    _collect_all_return_values(expr) -> Vector{Tuple{Any, Union{Int,Nothing}}}
 
-Collect all expressions that could be returned from a block/function body:
+Collect all (expression, line) pairs that could be returned from a block/function body:
 - Explicit `return expr` statements anywhere in the body (recursive, skips nested functions)
 - Implicit returns: the last expression, recursing into if/else/elseif branches
 """
 function _collect_all_return_values(expr)
-    values = Any[]
-    _collect_explicit_returns!(values, expr)
-    last = _get_last_expression(expr)
-    if last !== nothing
-        _collect_implicit_return_values!(values, last)
+    values = Tuple{Any, Union{Int,Nothing}}[]
+    _collect_explicit_returns!(values, expr, nothing)
+    last_expr, last_line = _get_last_expression_with_line(expr)
+    if last_expr !== nothing
+        _collect_implicit_return_values!(values, last_expr, last_line)
     end
     return values
 end
 
-"""Walk AST to find all explicit `return expr` statements.
-Skips nested function definitions (their returns belong to a different scope)."""
-function _collect_explicit_returns!(values, expr)
+"""Walk AST to find all explicit `return expr` statements with line numbers.
+Tracks LineNumberNodes through blocks. Skips nested function definitions."""
+function _collect_explicit_returns!(values, expr, current_line::Union{Int,Nothing})
     expr isa Expr || return
-    # Nested functions have their own scope — don't recurse
     expr.head in (:function, :(->)) && return
     if expr.head == :return
-        push!(values, expr)
+        push!(values, (expr, current_line))
         return
     end
-    for arg in expr.args
-        _collect_explicit_returns!(values, arg)
+    if expr.head == :block
+        line = current_line
+        for arg in expr.args
+            if arg isa LineNumberNode
+                line = arg.line
+            else
+                _collect_explicit_returns!(values, arg, line)
+            end
+        end
+    else
+        for arg in expr.args
+            _collect_explicit_returns!(values, arg, current_line)
+        end
     end
 end
 
+"""Return the last non-LineNumberNode expression from a block, together with its line.
+Recurses into nested blocks."""
+function _get_last_expression_with_line(expr, default_line::Union{Int,Nothing}=nothing)
+    if !(expr isa Expr && expr.head == :block)
+        return (expr, default_line)
+    end
+    for i in length(expr.args):-1:1
+        arg = expr.args[i]
+        arg isa LineNumberNode && continue
+        # Find the LineNumberNode preceding this expression
+        line = default_line
+        for j in (i - 1):-1:1
+            if expr.args[j] isa LineNumberNode
+                line = expr.args[j].line
+                break
+            end
+        end
+        return _get_last_expression_with_line(arg, line)
+    end
+    return (nothing, default_line)
+end
+
 """Expand implicit return values by recursing into if/elseif/else branches.
-Non-branch expressions are collected as-is."""
-function _collect_implicit_return_values!(values, expr)
+Non-branch expressions are collected as (expr, line) pairs."""
+function _collect_implicit_return_values!(values, expr, current_line::Union{Int,Nothing})
     if expr isa Expr && expr.head in (:if, :elseif)
-        # args[1] = condition, args[2] = then-branch, args[3] = else/elseif (optional)
         for i in 2:length(expr.args)
             branch = expr.args[i]
             if branch isa Expr && branch.head in (:if, :elseif)
-                _collect_implicit_return_values!(values, branch)
+                _collect_implicit_return_values!(values, branch, current_line)
             else
-                last = _get_last_expression(branch)
-                if last !== nothing
-                    _collect_implicit_return_values!(values, last)
+                last_expr, last_line = _get_last_expression_with_line(branch, current_line)
+                if last_expr !== nothing
+                    _collect_implicit_return_values!(values, last_expr, last_line)
                 end
             end
         end
     else
-        push!(values, expr)
+        push!(values, (expr, current_line))
     end
 end
 
@@ -1493,14 +1586,25 @@ function _check_compile_time_escape(expr, pool_name, source::Union{LineNumberNod
     isempty(return_values) && return
 
     # Check each return point for direct exposure of acquired vars
-    escaped = Set{Symbol}()
-    for ret_expr in return_values
-        union!(escaped, _find_direct_exposure(ret_expr, acquired))
+    all_escaped = Set{Symbol}()
+    points = EscapePoint[]
+    seen_lines = Set{Int}()
+    for (ret_expr, ret_line) in return_values
+        # Deduplicate: explicit + implicit scanners can find the same return
+        if ret_line !== nothing && ret_line in seen_lines
+            continue
+        end
+        point_escaped = _find_direct_exposure(ret_expr, acquired)
+        if !isempty(point_escaped)
+            push!(points, EscapePoint(ret_expr, ret_line, sort!(collect(point_escaped))))
+            union!(all_escaped, point_escaped)
+            ret_line !== nothing && push!(seen_lines, ret_line)
+        end
     end
-    isempty(escaped) && return
+    isempty(all_escaped) && return
 
-    sorted = sort!(collect(escaped))
+    sorted = sort!(collect(all_escaped))
     file = source !== nothing ? string(source.file) : nothing
     line = source !== nothing ? source.line : nothing
-    throw(PoolEscapeError(sorted, file, line))
+    throw(PoolEscapeError(sorted, file, line, points))
 end
