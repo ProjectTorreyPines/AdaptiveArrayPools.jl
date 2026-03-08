@@ -1,6 +1,6 @@
 import AdaptiveArrayPools: _invalidate_released_slots!
 
-@testset "POOL_SAFETY Guard-Level Invalidation" begin
+@testset "POOL_SAFETY_LV Guard-Level Invalidation" begin
 
     # ==============================================================================
     # Default values
@@ -8,7 +8,7 @@ import AdaptiveArrayPools: _invalidate_released_slots!
 
     @testset "Default configuration" begin
         @test STATIC_POOL_CHECKS == true
-        @test POOL_SAFETY[] == 1
+        @test POOL_SAFETY_LV[] == 1
     end
 
     # ==============================================================================
@@ -16,8 +16,8 @@ import AdaptiveArrayPools: _invalidate_released_slots!
     # ==============================================================================
 
     @testset "acquire! SubArray invalidated on rewind" begin
-        old_safety = POOL_SAFETY[]
-        POOL_SAFETY[] = 1
+        old_safety = POOL_SAFETY_LV[]
+        POOL_SAFETY_LV[] = 1
 
         pool = AdaptiveArrayPool()
         checkpoint!(pool)
@@ -31,12 +31,12 @@ import AdaptiveArrayPools: _invalidate_released_slots!
         # Accessing stale SubArray should throw BoundsError
         @test_throws BoundsError v[1]
 
-        POOL_SAFETY[] = old_safety
+        POOL_SAFETY_LV[] = old_safety
     end
 
     @testset "acquire! N-D ReshapedArray invalidated on rewind" begin
-        old_safety = POOL_SAFETY[]
-        POOL_SAFETY[] = 1
+        old_safety = POOL_SAFETY_LV[]
+        POOL_SAFETY_LV[] = 1
 
         pool = AdaptiveArrayPool()
         checkpoint!(pool)
@@ -48,7 +48,7 @@ import AdaptiveArrayPools: _invalidate_released_slots!
         @test length(parent(parent(mat))) == 0
         @test_throws BoundsError mat[1, 1]
 
-        POOL_SAFETY[] = old_safety
+        POOL_SAFETY_LV[] = old_safety
     end
 
     # ==============================================================================
@@ -56,8 +56,8 @@ import AdaptiveArrayPools: _invalidate_released_slots!
     # ==============================================================================
 
     @testset "unsafe_acquire! Array wrapper invalidated on rewind" begin
-        old_safety = POOL_SAFETY[]
-        POOL_SAFETY[] = 1
+        old_safety = POOL_SAFETY_LV[]
+        POOL_SAFETY_LV[] = 1
 
         pool = AdaptiveArrayPool()
         checkpoint!(pool)
@@ -70,12 +70,12 @@ import AdaptiveArrayPools: _invalidate_released_slots!
         @test size(arr) == (0,)
         @test_throws BoundsError arr[1]
 
-        POOL_SAFETY[] = old_safety
+        POOL_SAFETY_LV[] = old_safety
     end
 
     @testset "unsafe_acquire! N-D Array wrapper invalidated on rewind" begin
-        old_safety = POOL_SAFETY[]
-        POOL_SAFETY[] = 1
+        old_safety = POOL_SAFETY_LV[]
+        POOL_SAFETY_LV[] = 1
 
         pool = AdaptiveArrayPool()
         checkpoint!(pool)
@@ -87,7 +87,7 @@ import AdaptiveArrayPools: _invalidate_released_slots!
         @test size(mat) == (0, 0)
         @test_throws BoundsError mat[1, 1]
 
-        POOL_SAFETY[] = old_safety
+        POOL_SAFETY_LV[] = old_safety
     end
 
     # ==============================================================================
@@ -95,8 +95,8 @@ import AdaptiveArrayPools: _invalidate_released_slots!
     # ==============================================================================
 
     @testset "acquire! BitVector invalidated on rewind" begin
-        old_safety = POOL_SAFETY[]
-        POOL_SAFETY[] = 1
+        old_safety = POOL_SAFETY_LV[]
+        POOL_SAFETY_LV[] = 1
 
         pool = AdaptiveArrayPool()
         checkpoint!(pool)
@@ -109,12 +109,12 @@ import AdaptiveArrayPools: _invalidate_released_slots!
         # Accessing stale BitVector - len was set to 0 via setfield!
         @test length(bv) == 0
 
-        POOL_SAFETY[] = old_safety
+        POOL_SAFETY_LV[] = old_safety
     end
 
     @testset "acquire! BitMatrix invalidated on rewind" begin
-        old_safety = POOL_SAFETY[]
-        POOL_SAFETY[] = 1
+        old_safety = POOL_SAFETY_LV[]
+        POOL_SAFETY_LV[] = 1
 
         pool = AdaptiveArrayPool()
         checkpoint!(pool)
@@ -127,16 +127,16 @@ import AdaptiveArrayPools: _invalidate_released_slots!
         @test size(ba) == (0, 0)
         @test length(ba) == 0
 
-        POOL_SAFETY[] = old_safety
+        POOL_SAFETY_LV[] = old_safety
     end
 
     # ==============================================================================
     # Level 0: No invalidation
     # ==============================================================================
 
-    @testset "POOL_SAFETY=0 bypasses invalidation" begin
-        old_safety = POOL_SAFETY[]
-        POOL_SAFETY[] = 0
+    @testset "POOL_SAFETY_LV=0 bypasses invalidation" begin
+        old_safety = POOL_SAFETY_LV[]
+        POOL_SAFETY_LV[] = 0
 
         pool = AdaptiveArrayPool()
         checkpoint!(pool)
@@ -149,7 +149,7 @@ import AdaptiveArrayPools: _invalidate_released_slots!
         # Stale access works (this is the unsafe behavior we're protecting against)
         @test v[1] == 7.0
 
-        POOL_SAFETY[] = old_safety
+        POOL_SAFETY_LV[] = old_safety
     end
 
     # ==============================================================================
@@ -157,8 +157,8 @@ import AdaptiveArrayPools: _invalidate_released_slots!
     # ==============================================================================
 
     @testset "Re-acquire after invalidation restores vectors" begin
-        old_safety = POOL_SAFETY[]
-        POOL_SAFETY[] = 1
+        old_safety = POOL_SAFETY_LV[]
+        POOL_SAFETY_LV[] = 1
 
         pool = AdaptiveArrayPool()
 
@@ -181,12 +181,12 @@ import AdaptiveArrayPools: _invalidate_released_slots!
         @test parent(v2) === pool.float64.vectors[1]
         rewind!(pool)
 
-        POOL_SAFETY[] = old_safety
+        POOL_SAFETY_LV[] = old_safety
     end
 
     @testset "Re-acquire unsafe_acquire! after invalidation" begin
-        old_safety = POOL_SAFETY[]
-        POOL_SAFETY[] = 1
+        old_safety = POOL_SAFETY_LV[]
+        POOL_SAFETY_LV[] = 1
 
         pool = AdaptiveArrayPool()
 
@@ -205,7 +205,7 @@ import AdaptiveArrayPools: _invalidate_released_slots!
         @test arr2[1] == 4.0
         rewind!(pool)
 
-        POOL_SAFETY[] = old_safety
+        POOL_SAFETY_LV[] = old_safety
     end
 
     # ==============================================================================
@@ -213,8 +213,8 @@ import AdaptiveArrayPools: _invalidate_released_slots!
     # ==============================================================================
 
     @testset "Nested checkpoint/rewind: inner invalidated, outer valid" begin
-        old_safety = POOL_SAFETY[]
-        POOL_SAFETY[] = 1
+        old_safety = POOL_SAFETY_LV[]
+        POOL_SAFETY_LV[] = 1
 
         pool = AdaptiveArrayPool()
         checkpoint!(pool)
@@ -239,7 +239,7 @@ import AdaptiveArrayPools: _invalidate_released_slots!
         # Now outer is also invalidated
         @test length(parent(v_outer)) == 0
 
-        POOL_SAFETY[] = old_safety
+        POOL_SAFETY_LV[] = old_safety
     end
 
     # ==============================================================================
@@ -247,8 +247,8 @@ import AdaptiveArrayPools: _invalidate_released_slots!
     # ==============================================================================
 
     @testset "reset! invalidates all active slots" begin
-        old_safety = POOL_SAFETY[]
-        POOL_SAFETY[] = 1
+        old_safety = POOL_SAFETY_LV[]
+        POOL_SAFETY_LV[] = 1
 
         pool = AdaptiveArrayPool()
         checkpoint!(pool)
@@ -263,7 +263,7 @@ import AdaptiveArrayPools: _invalidate_released_slots!
         @test length(pool.float64.vectors[1]) == 0
         @test length(pool.float64.vectors[2]) == 0
 
-        POOL_SAFETY[] = old_safety
+        POOL_SAFETY_LV[] = old_safety
     end
 
     # ==============================================================================
@@ -271,8 +271,8 @@ import AdaptiveArrayPools: _invalidate_released_slots!
     # ==============================================================================
 
     @testset "Fallback type invalidation" begin
-        old_safety = POOL_SAFETY[]
-        POOL_SAFETY[] = 1
+        old_safety = POOL_SAFETY_LV[]
+        POOL_SAFETY_LV[] = 1
 
         pool = AdaptiveArrayPool()
         checkpoint!(pool)
@@ -286,28 +286,28 @@ import AdaptiveArrayPools: _invalidate_released_slots!
         @test length(tp.vectors[1]) == 0
         @test length(parent(v)) == 0
 
-        POOL_SAFETY[] = old_safety
+        POOL_SAFETY_LV[] = old_safety
     end
 
     # ==============================================================================
     # POOL_DEBUG backward compatibility
     # ==============================================================================
 
-    @testset "POOL_DEBUG backward compat with POOL_SAFETY" begin
+    @testset "POOL_DEBUG backward compat with POOL_SAFETY_LV" begin
         old_debug = POOL_DEBUG[]
-        old_safety = POOL_SAFETY[]
+        old_safety = POOL_SAFETY_LV[]
 
-        # POOL_DEBUG=true still triggers escape detection (regardless of POOL_SAFETY)
+        # POOL_DEBUG=true still triggers escape detection (regardless of POOL_SAFETY_LV)
         POOL_DEBUG[] = true
-        POOL_SAFETY[] = 0
+        POOL_SAFETY_LV[] = 0
         @test_throws ErrorException @with_pool pool begin
             v = acquire!(pool, Float64, 10)
             v  # Unsafe return
         end
 
-        # POOL_SAFETY=2 also triggers escape detection (without POOL_DEBUG)
+        # POOL_SAFETY_LV=2 also triggers escape detection (without POOL_DEBUG)
         POOL_DEBUG[] = false
-        POOL_SAFETY[] = 2
+        POOL_SAFETY_LV[] = 2
         @test_throws ErrorException @with_pool pool begin
             v = acquire!(pool, Float64, 10)
             v  # Unsafe return
@@ -315,7 +315,7 @@ import AdaptiveArrayPools: _invalidate_released_slots!
 
         # Neither flag -> no escape detection
         POOL_DEBUG[] = false
-        POOL_SAFETY[] = 1
+        POOL_SAFETY_LV[] = 1
         result = @with_pool pool begin
             v = acquire!(pool, Float64, 10)
             v  # Would be caught at level 2, but not at level 1
@@ -323,7 +323,7 @@ import AdaptiveArrayPools: _invalidate_released_slots!
         @test result isa SubArray
 
         POOL_DEBUG[] = old_debug
-        POOL_SAFETY[] = old_safety
+        POOL_SAFETY_LV[] = old_safety
     end
 
     # ==============================================================================
@@ -331,8 +331,8 @@ import AdaptiveArrayPools: _invalidate_released_slots!
     # ==============================================================================
 
     @testset "Multiple types invalidated together" begin
-        old_safety = POOL_SAFETY[]
-        POOL_SAFETY[] = 1
+        old_safety = POOL_SAFETY_LV[]
+        POOL_SAFETY_LV[] = 1
 
         pool = AdaptiveArrayPool()
         checkpoint!(pool)
@@ -348,7 +348,7 @@ import AdaptiveArrayPools: _invalidate_released_slots!
         @test length(parent(vi)) == 0
         @test length(vb) == 0
 
-        POOL_SAFETY[] = old_safety
+        POOL_SAFETY_LV[] = old_safety
     end
 
     # ==============================================================================
@@ -356,8 +356,8 @@ import AdaptiveArrayPools: _invalidate_released_slots!
     # ==============================================================================
 
     @testset "@with_pool invalidates on scope exit" begin
-        old_safety = POOL_SAFETY[]
-        POOL_SAFETY[] = 1
+        old_safety = POOL_SAFETY_LV[]
+        POOL_SAFETY_LV[] = 1
 
         pool_ref = Ref{AdaptiveArrayPool}()
         stale_ref = Ref{Any}()
@@ -376,7 +376,7 @@ import AdaptiveArrayPools: _invalidate_released_slots!
         @test length(parent(v)) == 0
         @test_throws BoundsError v[1]
 
-        POOL_SAFETY[] = old_safety
+        POOL_SAFETY_LV[] = old_safety
     end
 
-end # POOL_SAFETY Guard-Level Invalidation
+end # POOL_SAFETY_LV Guard-Level Invalidation

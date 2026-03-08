@@ -299,7 +299,7 @@ const _TYPE_BITS_MASK = UInt16(0x00FF)  # bits 0-7: fixed-slot type bits
 #           Set via LocalPreferences.toml: pool_checks = true/false
 #           When false: all safety code elided at compile time (zero overhead)
 #
-#   Tier 2: POOL_SAFETY (runtime Ref{Int}, levels 0/1/2)
+#   Tier 2: POOL_SAFETY_LV (runtime Ref{Int}, levels 0/1/2)
 #           0 = off, 1 = guard (resize+setfield invalidation), 2 = full
 #           Default: 1 (guard mode — safe by default)
 
@@ -308,7 +308,7 @@ using Preferences: @load_preference
 const STATIC_POOL_CHECKS = @load_preference("pool_checks", true)::Bool
 
 """
-    POOL_SAFETY
+    POOL_SAFETY_LV
 
 Runtime safety level for pool operations. Only effective when `STATIC_POOL_CHECKS` is `true`.
 
@@ -318,7 +318,7 @@ Runtime safety level for pool operations. Only effective when `STATIC_POOL_CHECK
 
 Default: `1` (guard mode)
 """
-const POOL_SAFETY = Ref(1)
+const POOL_SAFETY_LV = Ref(1)
 
 # ==============================================================================
 # AdaptiveArrayPool

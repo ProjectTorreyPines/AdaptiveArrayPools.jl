@@ -39,15 +39,15 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
             acquire!(pool, Float64, 7)
         end
         # Disable safety invalidation to check capacity preservation
-        old_safety = POOL_SAFETY[]
-        POOL_SAFETY[] = 0
+        old_safety = POOL_SAFETY_LV[]
+        POOL_SAFETY_LV[] = 0
         rewind!(pool)
 
         # After warm-up, vectors should be properly sized
         @test length(pool.float64.vectors[1]) >= 101
         @test length(pool.float64.vectors[2]) >= 30
         @test length(pool.float64.vectors[3]) >= 7
-        POOL_SAFETY[] = old_safety
+        POOL_SAFETY_LV[] = old_safety
     end
 
     @testset "checkpoint and rewind API" begin
@@ -135,10 +135,10 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
         v3 = acquire!(pool, Float64, 200)
         @test length(v3) == 200
         @test length(parent(v3)) >= 200  # Backing vector was resized
-        old_safety = POOL_SAFETY[]
-        POOL_SAFETY[] = 0  # disable invalidation so backing vector length is preserved
+        old_safety = POOL_SAFETY_LV[]
+        POOL_SAFETY_LV[] = 0  # disable invalidation so backing vector length is preserved
         rewind!(pool)
-        POOL_SAFETY[] = old_safety
+        POOL_SAFETY_LV[] = old_safety
 
         # Smaller size - cache miss, but no resize needed
         checkpoint!(pool)

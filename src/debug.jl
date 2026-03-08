@@ -5,12 +5,12 @@
 """
     POOL_DEBUG
 
-Legacy flag for escape detection. Superseded by [`POOL_SAFETY`](@ref).
+Legacy flag for escape detection. Superseded by [`POOL_SAFETY_LV`](@ref).
 
 Setting `POOL_DEBUG[] = true` enables escape detection at `@with_pool` scope exit
-(equivalent to `POOL_SAFETY[] >= 2` behavior). Both flags are checked independently.
+(equivalent to `POOL_SAFETY_LV[] >= 2` behavior). Both flags are checked independently.
 
-For new code, prefer `POOL_SAFETY[] = 2`.
+For new code, prefer `POOL_SAFETY_LV[] = 2`.
 
 Default: `false`
 """

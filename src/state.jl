@@ -231,7 +231,7 @@ Decrements _current_depth once after all types are rewound.
 end
 
 # ==============================================================================
-# Safety: Structural Invalidation on Rewind (POOL_SAFETY >= 1)
+# Safety: Structural Invalidation on Rewind (POOL_SAFETY_LV >= 1)
 # ==============================================================================
 #
 # When released, backing vectors are resize!'d to 0 and cached Array/BitArray
@@ -323,7 +323,7 @@ end
 
     # 3. Safety: invalidate released slots (Level 1+)
     @static if STATIC_POOL_CHECKS
-        if POOL_SAFETY[] >= 1 && _old_n_active > tp.n_active
+        if POOL_SAFETY_LV[] >= 1 && _old_n_active > tp.n_active
             _invalidate_released_slots!(tp, _old_n_active)
         end
     end
@@ -532,7 +532,7 @@ function reset!(tp::AbstractTypedPool)
     empty!(tp._checkpoint_depths)
     push!(tp._checkpoint_depths, 0)     # Sentinel: depth=0 = no checkpoint
     @static if STATIC_POOL_CHECKS
-        if POOL_SAFETY[] >= 1 && _old_n_active > 0
+        if POOL_SAFETY_LV[] >= 1 && _old_n_active > 0
             _invalidate_released_slots!(tp, _old_n_active)
         end
     end

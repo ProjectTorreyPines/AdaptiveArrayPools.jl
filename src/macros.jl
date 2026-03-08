@@ -360,7 +360,7 @@ function _generate_pool_code(pool_name, expr, force_enable; source::Union{LineNu
             $checkpoint_call
             try
                 local _result = $(esc(transformed_expr))
-                if ($POOL_SAFETY[] >= 2 || $POOL_DEBUG[])
+                if ($POOL_SAFETY_LV[] >= 2 || $POOL_DEBUG[])
                     $_validate_pool_return(_result, $(esc(pool_name)))
                 end
                 _result
@@ -376,7 +376,7 @@ function _generate_pool_code(pool_name, expr, force_enable; source::Union{LineNu
                 $checkpoint_call
                 try
                     local _result = $(esc(transformed_expr))
-                    if ($POOL_SAFETY[] >= 2 || $POOL_DEBUG[])
+                    if ($POOL_SAFETY_LV[] >= 2 || $POOL_DEBUG[])
                         $_validate_pool_return(_result, $(esc(pool_name)))
                     end
                     _result
@@ -449,7 +449,7 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, forc
                 $checkpoint_call
                 try
                     local _result = $(esc(transformed_expr))
-                    if ($POOL_SAFETY[] >= 2 || $POOL_DEBUG[])
+                    if ($POOL_SAFETY_LV[] >= 2 || $POOL_DEBUG[])
                         $_validate_pool_return(_result, $(esc(pool_name)))
                     end
                     _result
@@ -500,7 +500,7 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, forc
         $checkpoint_call
         try
             local _result = $(esc(transformed_expr))
-            if ($POOL_SAFETY[] >= 2 || $POOL_DEBUG[])
+            if ($POOL_SAFETY_LV[] >= 2 || $POOL_DEBUG[])
                 $_validate_pool_return(_result, $(esc(pool_name)))
             end
             _result
@@ -565,7 +565,7 @@ function _generate_function_pool_code_with_backend(backend::Symbol, pool_name, f
                 local _result = begin
                     $(esc(transformed_body))
                 end
-                if ($POOL_SAFETY[] >= 2 || $POOL_DEBUG[])
+                if ($POOL_SAFETY_LV[] >= 2 || $POOL_DEBUG[])
                     $_validate_pool_return(_result, $(esc(pool_name)))
                 end
                 _result
@@ -583,7 +583,7 @@ function _generate_function_pool_code_with_backend(backend::Symbol, pool_name, f
                     local _result = begin
                         $(esc(transformed_body))
                     end
-                    if ($POOL_SAFETY[] >= 2 || $POOL_DEBUG[])
+                    if ($POOL_SAFETY_LV[] >= 2 || $POOL_DEBUG[])
                         $_validate_pool_return(_result, $(esc(pool_name)))
                     end
                     _result
@@ -649,7 +649,7 @@ function _generate_function_pool_code(pool_name, func_def, force_enable, disable
                 local _result = begin
                     $(esc(transformed_body))
                 end
-                if ($POOL_SAFETY[] >= 2 || $POOL_DEBUG[])
+                if ($POOL_SAFETY_LV[] >= 2 || $POOL_DEBUG[])
                     $_validate_pool_return(_result, $(esc(pool_name)))
                 end
                 _result
@@ -667,7 +667,7 @@ function _generate_function_pool_code(pool_name, func_def, force_enable, disable
                     local _result = begin
                         $(esc(transformed_body))
                     end
-                    if ($POOL_SAFETY[] >= 2 || $POOL_DEBUG[])
+                    if ($POOL_SAFETY_LV[] >= 2 || $POOL_DEBUG[])
                         $_validate_pool_return(_result, $(esc(pool_name)))
                     end
                     _result
