@@ -91,3 +91,36 @@ function _check_pointer_overlap(arr::Array, pool::AdaptiveArrayPool)
 end
 
 _validate_pool_return(val, ::DisabledPool) = nothing
+
+# ==============================================================================
+# Poisoning: Fill released vectors with sentinel values (POOL_SAFETY_LV >= 2)
+# ==============================================================================
+#
+# Poisons backing vectors with detectable values (NaN, typemax) before
+# structural invalidation. This ensures stale references read obviously wrong
+# data instead of silently valid old values — especially useful for
+# unsafe_acquire! Array wrappers on Julia 1.10 where setfield!(:size) is
+# unavailable and structural invalidation can't catch stale access.
+
+_poison_value(::Type{T}) where {T <: AbstractFloat} = T(NaN)
+_poison_value(::Type{T}) where {T <: Integer} = typemax(T)
+_poison_value(::Type{Complex{T}}) where {T} = Complex{T}(_poison_value(T), _poison_value(T))
+_poison_value(::Type{T}) where {T} = zero(T)  # generic fallback
+
+_poison_fill!(v::Vector{T}) where {T} = fill!(v, _poison_value(T))
+_poison_fill!(v::BitVector) = fill!(v, true)
+
+"""
+    _poison_released_vectors!(tp::AbstractTypedPool, old_n_active)
+
+Fill released backing vectors (indices `n_active+1:old_n_active`) with sentinel
+values. Called from `_invalidate_released_slots!` when `POOL_SAFETY_LV[] >= 2`,
+before `resize!` zeroes the lengths.
+"""
+@noinline function _poison_released_vectors!(tp::AbstractTypedPool, old_n_active::Int)
+    new_n = tp.n_active
+    for i in (new_n + 1):old_n_active
+        _poison_fill!(@inbounds tp.vectors[i])
+    end
+    return nothing
+end

@@ -384,4 +384,85 @@ import AdaptiveArrayPools: _invalidate_released_slots!
         POOL_SAFETY_LV[] = old_safety
     end
 
+    # ==============================================================================
+    # Level 2: Poisoning (NaN/sentinel fill before structural invalidation)
+    # ==============================================================================
+
+    @testset "Level 2: Float64 poisoned with NaN on rewind" begin
+        old_safety = POOL_SAFETY_LV[]
+        POOL_SAFETY_LV[] = 2
+
+        pool = AdaptiveArrayPool()
+        checkpoint!(pool)
+        v = acquire!(pool, Float64, 10)
+        v .= 42.0
+        rewind!(pool)
+
+        # Re-acquire: backing vector was poisoned with NaN before resize!(v,0).
+        # resize! round-trip (0→10) preserves capacity, NaN data survives.
+        checkpoint!(pool)
+        v2 = acquire!(pool, Float64, 10)
+        @test all(isnan, v2)
+        rewind!(pool)
+
+        POOL_SAFETY_LV[] = old_safety
+    end
+
+    @testset "Level 2: Int64 poisoned with typemax on rewind" begin
+        old_safety = POOL_SAFETY_LV[]
+        POOL_SAFETY_LV[] = 2
+
+        pool = AdaptiveArrayPool()
+        checkpoint!(pool)
+        v = acquire!(pool, Int64, 10)
+        v .= 42
+        rewind!(pool)
+
+        checkpoint!(pool)
+        v2 = acquire!(pool, Int64, 10)
+        @test all(==(typemax(Int64)), v2)
+        rewind!(pool)
+
+        POOL_SAFETY_LV[] = old_safety
+    end
+
+    @testset "Level 2: ComplexF64 poisoned with NaN+NaN*im on rewind" begin
+        old_safety = POOL_SAFETY_LV[]
+        POOL_SAFETY_LV[] = 2
+
+        pool = AdaptiveArrayPool()
+        checkpoint!(pool)
+        v = acquire!(pool, ComplexF64, 8)
+        v .= 1.0 + 2.0im
+        rewind!(pool)
+
+        checkpoint!(pool)
+        v2 = acquire!(pool, ComplexF64, 8)
+        @test all(z -> isnan(real(z)) && isnan(imag(z)), v2)
+        rewind!(pool)
+
+        POOL_SAFETY_LV[] = old_safety
+    end
+
+    @testset "Level 1 does NOT poison" begin
+        old_safety = POOL_SAFETY_LV[]
+        POOL_SAFETY_LV[] = 1
+
+        pool = AdaptiveArrayPool()
+        checkpoint!(pool)
+        v = acquire!(pool, Float64, 10)
+        v .= 42.0
+        rewind!(pool)
+
+        # At level 1, only resize (no poison). Re-acquire restores length,
+        # data is whatever was in memory — should still be 42.0 (not NaN).
+        checkpoint!(pool)
+        v2 = acquire!(pool, Float64, 10)
+        @test !any(isnan, v2)
+        @test v2[1] == 42.0
+        rewind!(pool)
+
+        POOL_SAFETY_LV[] = old_safety
+    end
+
 end # POOL_SAFETY_LV Guard-Level Invalidation
