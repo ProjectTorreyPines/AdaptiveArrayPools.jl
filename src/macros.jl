@@ -104,16 +104,19 @@ function Base.showerror(io::IO, e::PoolEscapeError)
     # Suggestion 1: trace the definition
     println(io)
     collects_str = join(["collect($v)" for v in e.vars], ", ")
-    printstyled(io, "  Fix: "; bold=true)
-    print(io, "Use ")
-    printstyled(io, collects_str; bold=true)
-    println(io, " to return owned copies.")
+    printstyled(io, "  Fix:\n"; bold=true)
+    printstyled(io, "    Use "; color=:light_black)
+    printstyled(io, collects_str; bold=true, color=:light_black)
+    printstyled(io, " to return owned copies.\n"; color=:light_black)
 
     # Suggestion 2: false positive escape hatch
     println(io)
     printstyled(io, "  False positive?\n"; bold=true)
     printstyled(io, "    Wrap with identity() to suppress this check.\n"; color=:light_black)
 end
+
+# Suppress stacktrace — LoadError delegates to this via showerror(io, ex.error, bt)
+Base.showerror(io::IO, e::PoolEscapeError, ::Any; backtrace=true) = showerror(io, e)
 
 # ==============================================================================
 # Backend Dispatch (for extensibility)
