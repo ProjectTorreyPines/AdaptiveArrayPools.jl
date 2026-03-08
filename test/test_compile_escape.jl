@@ -1,6 +1,5 @@
 import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
-    _find_direct_exposure, _remove_flat_reassigned!, _check_compile_time_escape,
-    _is_definite_escape
+    _find_direct_exposure, _remove_flat_reassigned!, _check_compile_time_escape
 
 @testset "Compile-Time Escape Detection" begin
 
@@ -65,6 +64,41 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
         @test :v in vars
         @test :x in vars
         @test !(:w in vars)
+
+        # Destructuring with tuple RHS: only acquire elements tracked
+        vars = _extract_acquired_vars(
+            :((v, w) = (acquire!(pool, Float64, 10), safe_func())),
+            :pool
+        )
+        @test :v in vars
+        @test !(:w in vars)
+
+        # Destructuring: both acquire calls tracked
+        vars = _extract_acquired_vars(
+            :((v, w) = (acquire!(pool, Float64, 10), zeros!(pool, 5))),
+            :pool
+        )
+        @test :v in vars
+        @test :w in vars
+
+        # Destructuring with function call RHS: can't determine → nothing tracked
+        vars = _extract_acquired_vars(
+            :((v, w) = foo()),
+            :pool
+        )
+        @test isempty(vars)
+
+        # Destructuring: mixed with regular assignment
+        vars = _extract_acquired_vars(
+            quote
+                (a, b) = (acquire!(pool, Float64, 10), safe())
+                c = zeros!(pool, 5)
+            end,
+            :pool
+        )
+        @test :a in vars
+        @test !(:b in vars)
+        @test :c in vars
     end
 
     # ==============================================================================
@@ -207,6 +241,52 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
         acquired = Set{Symbol}([:v])
         _remove_flat_reassigned!(:(v = zeros(10)), acquired, :pool)
         @test :v in acquired  # only processes :block heads
+
+        # Destructuring with function call RHS: v removed (reassigned to unknown)
+        acquired = Set{Symbol}([:v])
+        _remove_flat_reassigned!(
+            quote
+                v = acquire!(pool, Float64, 10)
+                (result, v) = process(v)
+            end,
+            acquired, :pool
+        )
+        @test isempty(acquired)
+
+        # Destructuring with tuple RHS: element-wise check
+        acquired = Set{Symbol}([:v, :w])
+        _remove_flat_reassigned!(
+            quote
+                v = acquire!(pool, Float64, 10)
+                w = acquire!(pool, Float64, 5)
+                (v, w) = (safe_func(), acquire!(pool, Float64, 3))
+            end,
+            acquired, :pool
+        )
+        @test !(:v in acquired)  # reassigned to safe_func() → removed
+        @test :w in acquired     # reassigned to acquire!() → stays
+
+        # Comma destructuring (same AST as tuple): v removed
+        acquired = Set{Symbol}([:v])
+        _remove_flat_reassigned!(
+            quote
+                v = acquire!(pool, Float64, 10)
+                a, v = foo()
+            end,
+            acquired, :pool
+        )
+        @test isempty(acquired)
+
+        # Destructuring doesn't affect vars not in acquired
+        acquired = Set{Symbol}([:v])
+        _remove_flat_reassigned!(
+            quote
+                v = acquire!(pool, Float64, 10)
+                (x, y) = foo()
+            end,
+            acquired, :pool
+        )
+        @test :v in acquired  # v not in destructuring → untouched
     end
 
     # ==============================================================================
@@ -225,8 +305,8 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
             :pool, src
         )
 
-        # Tuple containing acquired var → warning "Possible pool escape"
-        @test_warn "Possible pool escape" _check_compile_time_escape(
+        # Tuple containing acquired var → error
+        @test_throws "Pool escape" _check_compile_time_escape(
             quote
                 v = acquire!(pool, Float64, 10)
                 w = acquire!(pool, Float64, 5)
@@ -353,37 +433,14 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
             :pool, src
         )
 
-        # `return (v, w)` is a possible escape (warning, not error)
-        @test_warn "Possible pool escape" _check_compile_time_escape(
+        # `return (v, w)` is an escape (error)
+        @test_throws "Pool escape" _check_compile_time_escape(
             quote
                 v = acquire!(pool, Float64, 10)
                 return (v, sum(v))
             end,
             :pool, src
         )
-    end
-
-    # ==============================================================================
-    # _is_definite_escape: bare symbol or return-of-symbol
-    # ==============================================================================
-
-    @testset "_is_definite_escape" begin
-        # Bare symbol → definite
-        @test _is_definite_escape(:v, :v)
-        @test !_is_definite_escape(:w, :v)
-
-        # return v → definite
-        @test _is_definite_escape(Expr(:return, :v), :v)
-        @test !_is_definite_escape(Expr(:return, :w), :v)
-
-        # return (v, w) → NOT definite (container)
-        @test !_is_definite_escape(Expr(:return, Expr(:tuple, :v, :w)), :v)
-
-        # Tuple → NOT definite
-        @test !_is_definite_escape(Expr(:tuple, :v, :w), :v)
-
-        # Literal → NOT definite
-        @test !_is_definite_escape(42, :v)
     end
 
     # ==============================================================================
@@ -579,6 +636,38 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
                 x^2
             end
         end
+
+        # Safe: destructuring reassigns v to a non-pool value
+        @test_nowarn @macroexpand @with_pool pool begin
+            v = acquire!(pool, Float64, 10)
+            v .= 1.0
+            (result, v) = process(v)
+            v
+        end
+
+        # Safe: comma destructuring reassigns v
+        @test_nowarn @macroexpand @with_pool pool begin
+            v = acquire!(pool, Float64, 10)
+            idx, v = findmax(some_array)
+            v
+        end
+
+        # Safe: destructuring with tuple RHS — v gets safe value, w stays tracked
+        # but only v is returned
+        @test_nowarn @macroexpand @with_pool pool begin
+            v = acquire!(pool, Float64, 10)
+            w = acquire!(pool, Float64, 5)
+            (v, w) = (collect(v), acquire!(pool, Float64, 3))
+            sum(w) + sum(v)
+        end
+
+        # Safe: swap pattern — v gets non-pool value after swap
+        @test_nowarn @macroexpand @with_pool pool begin
+            v = acquire!(pool, Float64, 10)
+            x = zeros(10)
+            v, x = x, v
+            v
+        end
     end
 
     @testset "Block form: additional escape scenarios" begin
@@ -600,20 +689,20 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
             return v
         end
 
-        # Tuple with acquired var — possible escape (warning)
-        @test_warn "Possible pool escape" @macroexpand @with_pool pool begin
+        # Tuple with acquired var → escape
+        @test_throws "Pool escape" @macroexpand @with_pool pool begin
             v = acquire!(pool, Float64, 10)
             (v, 42)
         end
 
-        # Array literal — possible escape (warning)
-        @test_warn "Possible pool escape" @macroexpand @with_pool pool begin
+        # Array literal → escape
+        @test_throws "Pool escape" @macroexpand @with_pool pool begin
             v = acquire!(pool, Float64, 10)
             [v, nothing]
         end
 
-        # return (v, scalar) — possible escape (warning)
-        @test_warn "Possible pool escape" @macroexpand @with_pool pool begin
+        # return (v, scalar) → escape
+        @test_throws "Pool escape" @macroexpand @with_pool pool begin
             v = acquire!(pool, Float64, 10)
             return (v, sum(v))
         end
@@ -626,15 +715,29 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
         end
 
         # NamedTuple with acquired var as VALUE → escape
-        @test_warn "Possible pool escape" @macroexpand @with_pool pool begin
+        @test_throws "Pool escape" @macroexpand @with_pool pool begin
             v = acquire!(pool, Float64, 10)
             (result = v, n = 42)
         end
 
         # NamedTuple shorthand (v = v) → value IS acquired → escape
-        @test_warn "Possible pool escape" @macroexpand @with_pool pool begin
+        # (key name coincidentally matches, but VALUE is the acquired var)
+        @test_throws "Pool escape" @macroexpand @with_pool pool begin
             v = acquire!(pool, Float64, 10)
             (v = v,)
+        end
+
+        # Destructuring with acquire RHS: v still tracked → escape
+        @test_throws "Pool escape" @macroexpand @with_pool pool begin
+            (v, w) = (acquire!(pool, Float64, 10), safe())
+            v
+        end
+
+        # Destructuring doesn't protect if RHS element IS acquire
+        @test_throws "Pool escape" @macroexpand @with_pool pool begin
+            v = acquire!(pool, Float64, 10)
+            (v, w) = (zeros!(pool, 5), safe())
+            v
         end
     end
 
@@ -662,14 +765,14 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
             bv
         end
 
-        # Possible — tuple return
-        @test_warn "Possible pool escape" @macroexpand @with_pool pool function fn_warn1(n)
+        # Tuple return → escape
+        @test_throws "Pool escape" @macroexpand @with_pool pool function fn_warn1(n)
             v = acquire!(pool, Float64, n)
             (v, sum(v))
         end
 
-        # Possible — return tuple
-        @test_warn "Possible pool escape" @macroexpand @with_pool pool function fn_warn2(n)
+        # return tuple → escape
+        @test_throws "Pool escape" @macroexpand @with_pool pool function fn_warn2(n)
             v = acquire!(pool, Float64, n)
             return (v, n)
         end
@@ -749,6 +852,13 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
             v .= 1.0
             copy(v)
         end
+
+        # Safe: destructuring reassigns v in function form
+        @test_nowarn @macroexpand @with_pool pool function fn_safe_destruct(n)
+            v = acquire!(pool, Float64, n)
+            (result, v) = process(v)
+            v
+        end
     end
 
     # ==============================================================================
@@ -762,8 +872,8 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
             v
         end
 
-        # Possible escape → warning
-        @test_warn "Possible pool escape" @macroexpand @maybe_with_pool pool begin
+        # Container escape → error
+        @test_throws "Pool escape" @macroexpand @maybe_with_pool pool begin
             v = acquire!(pool, Float64, 10)
             (v, sum(v))
         end
@@ -904,34 +1014,22 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
         end
     end
 
-    @testset "Warning messages identify escaping variables in containers" begin
-        # Warning identifies specific variable in tuple (only w escapes, not sum(v))
-        @test_warn r"`w`" @macroexpand @with_pool pool begin
+    @testset "Error messages identify escaping variables in containers" begin
+        # Error identifies specific variable in tuple (only w escapes, not sum(v))
+        @test_throws r"`w`" @macroexpand @with_pool pool begin
             v = acquire!(pool, Float64, 10)
             w = acquire!(pool, Float64, 5)
             (sum(v), w)
         end
 
-        # Multiple variables: both v and w warned about
-        @test_warn r"`v`" @macroexpand @with_pool pool begin
-            v = acquire!(pool, Float64, 10)
-            w = acquire!(pool, Float64, 5)
-            (v, w)
-        end
-        @test_warn r"`w`" @macroexpand @with_pool pool begin
-            v = acquire!(pool, Float64, 10)
-            w = acquire!(pool, Float64, 5)
-            (v, w)
-        end
-
-        # Array literal: warning identifies variable
-        @test_warn r"`v`" @macroexpand @with_pool pool begin
+        # Array literal: error identifies variable
+        @test_throws r"`v`" @macroexpand @with_pool pool begin
             v = acquire!(pool, Float64, 10)
             [v]
         end
 
-        # return tuple in function: warning includes variable name
-        @test_warn r"`v`" @macroexpand @with_pool pool function msg_fn_warn(n)
+        # return tuple in function: error includes variable name
+        @test_throws r"`v`" @macroexpand @with_pool pool function msg_fn_warn(n)
             v = acquire!(pool, Float64, n)
             return (v, n)
         end

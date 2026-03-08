@@ -1214,6 +1214,8 @@ Walk AST to find variable names assigned from acquire/convenience calls.
 Returns the set of symbols that hold pool-backed arrays.
 
 Only top-level assignments in a block are tracked (not inside branches).
+Handles both simple assignment (`v = acquire!(...)`) and tuple destructuring
+(`(v, w) = (acquire!(...), expr)`).
 """
 function _extract_acquired_vars(expr, target_pool, vars = Set{Symbol}())
     if expr isa Expr
@@ -1227,6 +1229,13 @@ function _extract_acquired_vars(expr, target_pool, vars = Set{Symbol}())
             rhs = expr.args[2]
             if lhs isa Symbol && _is_acquire_call(rhs, target_pool)
                 push!(vars, lhs)
+            elseif Meta.isexpr(lhs, :tuple) && Meta.isexpr(rhs, :tuple)
+                # Destructuring with tuple literal RHS: (v, w) = (acquire!(...), expr)
+                for (l, r) in zip(lhs.args, rhs.args)
+                    if l isa Symbol && _is_acquire_call(r, target_pool)
+                        push!(vars, l)
+                    end
+                end
             end
             # Recurse into RHS (for nested blocks with acquire calls)
             _extract_acquired_vars(rhs, target_pool, vars)
@@ -1261,8 +1270,9 @@ end
     _remove_flat_reassigned!(expr, acquired, target_pool)
 
 Walk top-level statements in order and remove variables from `acquired`
-if they are reassigned to a non-acquire call. Only handles flat (non-branching)
-reassignment — conditional reassignment is conservatively kept.
+if they are reassigned to a non-acquire call. Handles both simple assignment
+(`v = expr`) and tuple destructuring (`(a, v) = expr`).
+Only handles flat (non-branching) reassignment — conditional is conservatively kept.
 """
 function _remove_flat_reassigned!(expr, acquired, target_pool)
     if !(expr isa Expr && expr.head == :block)
@@ -1275,6 +1285,24 @@ function _remove_flat_reassigned!(expr, acquired, target_pool)
             rhs = arg.args[2]
             if lhs isa Symbol && lhs in acquired && !_is_acquire_call(rhs, target_pool)
                 delete!(acquired, lhs)
+            elseif Meta.isexpr(lhs, :tuple)
+                # Destructuring: (a, v, b) = expr
+                if Meta.isexpr(rhs, :tuple) && length(rhs.args) == length(lhs.args)
+                    # RHS is tuple literal — check each element pair
+                    for (l, r) in zip(lhs.args, rhs.args)
+                        if l isa Symbol && l in acquired && !_is_acquire_call(r, target_pool)
+                            delete!(acquired, l)
+                        end
+                    end
+                else
+                    # RHS is function call or opaque expression —
+                    # acquired var is now reassigned to unknown value, remove it
+                    for l in lhs.args
+                        if l isa Symbol && l in acquired
+                            delete!(acquired, l)
+                        end
+                    end
+                end
             end
         end
     end
@@ -1334,23 +1362,6 @@ function _find_direct_exposure(expr, acquired)
 end
 
 """
-    _is_definite_escape(last_expr, var::Symbol) → Bool
-
-Return `true` if `var` is *certainly* escaping — bare symbol return (`v`) or
-explicit `return v`.  Container patterns (tuples, arrays) are only *possible*
-escapes and return `false`.
-"""
-function _is_definite_escape(last_expr, var::Symbol)
-    # Bare symbol as last expression: `v`
-    last_expr isa Symbol && last_expr == var && return true
-    # Explicit `return v`
-    if Meta.isexpr(last_expr, :return) && length(last_expr.args) == 1
-        last_expr.args[1] isa Symbol && last_expr.args[1] == var && return true
-    end
-    return false
-end
-
-"""
     _check_compile_time_escape(expr, pool_name, source)
 
 Compile-time (macro expansion time) escape detection.
@@ -1359,8 +1370,8 @@ Checks if the block/function body's return expression directly contains
 a pool-backed variable. This catches the most common beginner mistake
 at zero runtime cost.
 
-- **Error**: bare variable or `return var` (100% certain escape)
-- **Warning**: variable inside tuple/array literal (very likely escape)
+All detected escapes are errors — bare symbol (`v`), `return v`, and
+container patterns (`(v, w)`, `[v]`, `(key=v,)`).
 
 Skipped when `STATIC_POOLING = false` (pooling disabled, acquire returns normal arrays).
 """
@@ -1380,21 +1391,14 @@ function _check_compile_time_escape(expr, pool_name, source::Union{LineNumberNod
     escaped = _find_direct_exposure(last_expr, acquired)
     isempty(escaped) && return
 
-    # Definite escapes (bare symbol, return var) → compile-time error
-    # Possible escapes (container with acquired var) → compile-time warning
-    for var in escaped
-        loc = source !== nothing ? " at $(source.file):$(source.line)" : ""
-        is_definite = _is_definite_escape(last_expr, var)
-        msg = string(
-            is_definite ? "Pool escape" : "Possible pool escape",
-            loc, ": `", var, "` is pool-backed memory that will be ",
-            "invalidated after @with_pool scope exit. ",
-            "Use `collect(", var, ")` to return an independent copy, or return a scalar value."
-        )
-        if is_definite
-            error(msg)
-        else
-            @warn msg
-        end
-    end
+    loc = source !== nothing ? " at $(source.file):$(source.line)" : ""
+    sorted = sort!(collect(escaped))
+    vars_str = join(["`$v`" for v in sorted], ", ")
+    collects_str = join(["collect($v)" for v in sorted], ", ")
+    copy_word = length(sorted) == 1 ? "an independent copy" : "independent copies"
+    error(string(
+        "Pool escape", loc, ": ", vars_str, " — pool-backed memory that will be ",
+        "invalidated after @with_pool scope exit. ",
+        "Use ", collects_str, " to return ", copy_word, ", or return a scalar value."
+    ))
 end
