@@ -297,7 +297,7 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
         src = LineNumberNode(1, :test)
 
         # Bare variable return → error "Pool escape"
-        @test_throws "Pool escape" _check_compile_time_escape(
+        @test_throws PoolEscapeError _check_compile_time_escape(
             quote
                 v = acquire!(pool, Float64, 10)
                 v
@@ -306,7 +306,7 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
         )
 
         # Tuple containing acquired var → error
-        @test_throws "Pool escape" _check_compile_time_escape(
+        @test_throws PoolEscapeError _check_compile_time_escape(
             quote
                 v = acquire!(pool, Float64, 10)
                 w = acquire!(pool, Float64, 5)
@@ -364,7 +364,7 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
         )
 
         # zeros!/ones!/similar! also detected
-        @test_throws "Pool escape" _check_compile_time_escape(
+        @test_throws PoolEscapeError _check_compile_time_escape(
             quote
                 v = zeros!(pool, 10)
                 v
@@ -372,7 +372,7 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
             :pool, src
         )
 
-        @test_throws "Pool escape" _check_compile_time_escape(
+        @test_throws PoolEscapeError _check_compile_time_escape(
             quote
                 v = ones!(pool, Float32, 10)
                 v
@@ -380,7 +380,7 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
             :pool, src
         )
 
-        @test_throws "Pool escape" _check_compile_time_escape(
+        @test_throws PoolEscapeError _check_compile_time_escape(
             quote
                 v = similar!(pool, some_array)
                 v
@@ -389,7 +389,7 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
         )
 
         # unsafe_acquire! also detected
-        @test_throws "Pool escape" _check_compile_time_escape(
+        @test_throws PoolEscapeError _check_compile_time_escape(
             quote
                 v = unsafe_acquire!(pool, Float64, 10)
                 v
@@ -398,7 +398,7 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
         )
 
         # trues!/falses! also detected
-        @test_throws "Pool escape" _check_compile_time_escape(
+        @test_throws PoolEscapeError _check_compile_time_escape(
             quote
                 bv = trues!(pool, 100)
                 bv
@@ -416,7 +416,7 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
         )
 
         # source=nothing also works
-        @test_throws "Pool escape" _check_compile_time_escape(
+        @test_throws PoolEscapeError _check_compile_time_escape(
             quote
                 v = acquire!(pool, Float64, 10)
                 v
@@ -425,7 +425,7 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
         )
 
         # `return v` is also a definite escape (error)
-        @test_throws "Pool escape" _check_compile_time_escape(
+        @test_throws PoolEscapeError _check_compile_time_escape(
             quote
                 v = acquire!(pool, Float64, 10)
                 return v
@@ -434,7 +434,7 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
         )
 
         # `return (v, w)` is an escape (error)
-        @test_throws "Pool escape" _check_compile_time_escape(
+        @test_throws PoolEscapeError _check_compile_time_escape(
             quote
                 v = acquire!(pool, Float64, 10)
                 return (v, sum(v))
@@ -449,7 +449,7 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
 
     @testset "Compile-time error through macro pipeline" begin
         # Bare variable: macro expansion itself throws
-        @test_throws "Pool escape" @macroexpand @with_pool pool begin
+        @test_throws PoolEscapeError @macroexpand @with_pool pool begin
             v = acquire!(pool, Float64, 10)
             v
         end
@@ -462,7 +462,7 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
         @test expanded isa Expr
 
         # Function form: bare return also caught
-        @test_throws "Pool escape" @macroexpand @with_pool pool function test_fn(n)
+        @test_throws PoolEscapeError @macroexpand @with_pool pool function test_fn(n)
             v = acquire!(pool, Float64, n)
             v
         end
@@ -672,69 +672,69 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
 
     @testset "Block form: additional escape scenarios" begin
         # zeros! — definite escape
-        @test_throws "Pool escape" @macroexpand @with_pool pool begin
+        @test_throws PoolEscapeError @macroexpand @with_pool pool begin
             v = zeros!(pool, 10)
             v
         end
 
         # trues! — definite escape
-        @test_throws "Pool escape" @macroexpand @with_pool pool begin
+        @test_throws PoolEscapeError @macroexpand @with_pool pool begin
             bv = trues!(pool, 100)
             bv
         end
 
         # Explicit return — definite escape
-        @test_throws "Pool escape" @macroexpand @with_pool pool begin
+        @test_throws PoolEscapeError @macroexpand @with_pool pool begin
             v = acquire!(pool, Float64, 10)
             return v
         end
 
         # Tuple with acquired var → escape
-        @test_throws "Pool escape" @macroexpand @with_pool pool begin
+        @test_throws PoolEscapeError @macroexpand @with_pool pool begin
             v = acquire!(pool, Float64, 10)
             (v, 42)
         end
 
         # Array literal → escape
-        @test_throws "Pool escape" @macroexpand @with_pool pool begin
+        @test_throws PoolEscapeError @macroexpand @with_pool pool begin
             v = acquire!(pool, Float64, 10)
             [v, nothing]
         end
 
         # return (v, scalar) → escape
-        @test_throws "Pool escape" @macroexpand @with_pool pool begin
+        @test_throws PoolEscapeError @macroexpand @with_pool pool begin
             v = acquire!(pool, Float64, 10)
             return (v, sum(v))
         end
 
         # Re-acquire reassignment: v still tracked after v = zeros!(pool, ...)
-        @test_throws "Pool escape" @macroexpand @with_pool pool begin
+        @test_throws PoolEscapeError @macroexpand @with_pool pool begin
             v = acquire!(pool, Float64, 10)
             v = zeros!(pool, 20)
             v
         end
 
         # NamedTuple with acquired var as VALUE → escape
-        @test_throws "Pool escape" @macroexpand @with_pool pool begin
+        @test_throws PoolEscapeError @macroexpand @with_pool pool begin
             v = acquire!(pool, Float64, 10)
             (result = v, n = 42)
         end
 
         # NamedTuple shorthand (v = v) → value IS acquired → escape
         # (key name coincidentally matches, but VALUE is the acquired var)
-        @test_throws "Pool escape" @macroexpand @with_pool pool begin
+        @test_throws PoolEscapeError @macroexpand @with_pool pool begin
             v = acquire!(pool, Float64, 10)
             (v = v,)
         end
 
         # Destructuring with acquire RHS: v still tracked → escape
-        @test_throws "Pool escape" @macroexpand @with_pool pool begin
+        @test_throws PoolEscapeError @macroexpand @with_pool pool begin
             (v, w) = (acquire!(pool, Float64, 10), safe())
             v
         end
 
         # Destructuring doesn't protect if RHS element IS acquire
-        @test_throws "Pool escape" @macroexpand @with_pool pool begin
+        @test_throws PoolEscapeError @macroexpand @with_pool pool begin
             v = acquire!(pool, Float64, 10)
             (v, w) = (zeros!(pool, 5), safe())
             v
@@ -747,32 +747,32 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
 
     @testset "Function form: escape detection" begin
         # Definite — bare variable return
-        @test_throws "Pool escape" @macroexpand @with_pool pool function fn_esc1(n)
+        @test_throws PoolEscapeError @macroexpand @with_pool pool function fn_esc1(n)
             v = acquire!(pool, Float64, n)
             v
         end
 
         # Definite — explicit return
-        @test_throws "Pool escape" @macroexpand @with_pool pool function fn_esc2(n)
+        @test_throws PoolEscapeError @macroexpand @with_pool pool function fn_esc2(n)
             v = zeros!(pool, n)
             v .= 1.0
             return v
         end
 
         # Definite — trues!
-        @test_throws "Pool escape" @macroexpand @with_pool pool function fn_esc3(n)
+        @test_throws PoolEscapeError @macroexpand @with_pool pool function fn_esc3(n)
             bv = trues!(pool, n)
             bv
         end
 
         # Tuple return → escape
-        @test_throws "Pool escape" @macroexpand @with_pool pool function fn_warn1(n)
+        @test_throws PoolEscapeError @macroexpand @with_pool pool function fn_warn1(n)
             v = acquire!(pool, Float64, n)
             (v, sum(v))
         end
 
         # return tuple → escape
-        @test_throws "Pool escape" @macroexpand @with_pool pool function fn_warn2(n)
+        @test_throws PoolEscapeError @macroexpand @with_pool pool function fn_warn2(n)
             v = acquire!(pool, Float64, n)
             return (v, n)
         end
@@ -867,13 +867,13 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
 
     @testset "@maybe_with_pool block form" begin
         # Definite escape → error
-        @test_throws "Pool escape" @macroexpand @maybe_with_pool pool begin
+        @test_throws PoolEscapeError @macroexpand @maybe_with_pool pool begin
             v = acquire!(pool, Float64, 10)
             v
         end
 
         # Container escape → error
-        @test_throws "Pool escape" @macroexpand @maybe_with_pool pool begin
+        @test_throws PoolEscapeError @macroexpand @maybe_with_pool pool begin
             v = acquire!(pool, Float64, 10)
             (v, sum(v))
         end
@@ -887,7 +887,7 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
 
     @testset "@maybe_with_pool function form" begin
         # Definite escape → error
-        @test_throws "Pool escape" @macroexpand @maybe_with_pool pool function mwp_esc(n)
+        @test_throws PoolEscapeError @macroexpand @maybe_with_pool pool function mwp_esc(n)
             v = acquire!(pool, Float64, n)
             v
         end
@@ -904,7 +904,7 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
     # ==============================================================================
 
     @testset "@with_pool :cpu block form" begin
-        @test_throws "Pool escape" @macroexpand @with_pool :cpu pool begin
+        @test_throws PoolEscapeError @macroexpand @with_pool :cpu pool begin
             v = acquire!(pool, Float64, 10)
             v
         end
@@ -916,7 +916,7 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
     end
 
     @testset "@with_pool :cpu function form" begin
-        @test_throws "Pool escape" @macroexpand @with_pool :cpu pool function cpu_esc(n)
+        @test_throws PoolEscapeError @macroexpand @with_pool :cpu pool function cpu_esc(n)
             v = acquire!(pool, Float64, n)
             v
         end
@@ -929,7 +929,7 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
 
     @testset "@maybe_with_pool :cpu forms" begin
         # Block — error
-        @test_throws "Pool escape" @macroexpand @maybe_with_pool :cpu pool begin
+        @test_throws PoolEscapeError @macroexpand @maybe_with_pool :cpu pool begin
             v = acquire!(pool, Float64, 10)
             v
         end
@@ -941,7 +941,7 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
         end
 
         # Function — error
-        @test_throws "Pool escape" @macroexpand @maybe_with_pool :cpu pool function mcpu_esc(n)
+        @test_throws PoolEscapeError @macroexpand @maybe_with_pool :cpu pool function mcpu_esc(n)
             v = acquire!(pool, Float64, n)
             v
         end
@@ -973,7 +973,7 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
         end
 
         # Outer scope escape → error from outer macro check
-        @test_throws "Pool escape" @macroexpand @with_pool pool begin
+        @test_throws PoolEscapeError @macroexpand @with_pool pool begin
             v = acquire!(pool, Float64, 10)
             @with_pool pool begin
                 w = acquire!(pool, Float64, 5)
@@ -988,51 +988,58 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
     # Error/warning messages: verify variable names and suggestions
     # ==============================================================================
 
-    @testset "Error messages identify escaping variables" begin
-        # Error includes specific variable name
-        @test_throws r"`v`" @macroexpand @with_pool pool begin
+    @testset "PoolEscapeError carries variable names and formatted message" begin
+        # Single variable: bare return
+        err = try @macroexpand(@with_pool pool begin
             v = acquire!(pool, Float64, 10)
             v
-        end
+        end) catch e; e end
+        @test err isa PoolEscapeError
+        @test err.vars == [:v]
+        msg = sprint(showerror, err)
+        @test occursin("collect(v)", msg)
+        @test occursin("identity()", msg)
 
-        # Error includes collect() suggestion
-        @test_throws r"collect" @macroexpand @with_pool pool begin
-            v = acquire!(pool, Float64, 10)
-            v
-        end
-
-        # Different variable name in error
-        @test_throws r"`data`" @macroexpand @with_pool pool begin
+        # Different variable name
+        err = try @macroexpand(@with_pool pool begin
             data = zeros!(pool, 10)
             data
-        end
+        end) catch e; e end
+        @test err isa PoolEscapeError
+        @test err.vars == [:data]
 
-        # Function form: error includes variable name
-        @test_throws r"`result`" @macroexpand @with_pool pool function msg_fn(n)
+        # Function form
+        err = try @macroexpand(@with_pool pool function msg_fn(n)
             result = acquire!(pool, Float64, n)
             result
-        end
-    end
+        end) catch e; e end
+        @test err isa PoolEscapeError
+        @test err.vars == [:result]
 
-    @testset "Error messages identify escaping variables in containers" begin
-        # Error identifies specific variable in tuple (only w escapes, not sum(v))
-        @test_throws r"`w`" @macroexpand @with_pool pool begin
+        # Container: only w escapes, not sum(v)
+        err = try @macroexpand(@with_pool pool begin
             v = acquire!(pool, Float64, 10)
             w = acquire!(pool, Float64, 5)
             (sum(v), w)
-        end
+        end) catch e; e end
+        @test err isa PoolEscapeError
+        @test err.vars == [:w]
+        @test :v ∉ err.vars
 
-        # Array literal: error identifies variable
-        @test_throws r"`v`" @macroexpand @with_pool pool begin
+        # Multi-variable: both appear, sorted
+        err = try @macroexpand(@with_pool pool begin
             v = acquire!(pool, Float64, 10)
-            [v]
-        end
+            w = acquire!(pool, Float64, 5)
+            (v, w)
+        end) catch e; e end
+        @test err isa PoolEscapeError
+        @test err.vars == [:v, :w]
+        msg = sprint(showerror, err)
+        @test occursin("collect(v)", msg)
+        @test occursin("collect(w)", msg)
 
-        # return tuple in function: error includes variable name
-        @test_throws r"`v`" @macroexpand @with_pool pool function msg_fn_warn(n)
-            v = acquire!(pool, Float64, n)
-            return (v, n)
-        end
+        # Source location captured
+        @test err.file !== nothing
     end
 
 end # Compile-Time Escape Detection

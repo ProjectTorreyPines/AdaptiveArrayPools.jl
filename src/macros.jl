@@ -3,6 +3,57 @@
 # ==============================================================================
 
 # ==============================================================================
+# PoolEscapeError — Compile-time escape detection error
+# ==============================================================================
+
+"""
+    PoolEscapeError <: Exception
+
+Thrown at macro expansion time when pool-backed variables are detected in
+return position of `@with_pool` / `@maybe_with_pool` blocks.
+
+This is a compile-time check with zero runtime cost.
+"""
+struct PoolEscapeError <: Exception
+    vars::Vector{Symbol}
+    file::Union{String, Nothing}
+    line::Union{Int, Nothing}
+end
+
+function Base.showerror(io::IO, e::PoolEscapeError)
+    # Header
+    printstyled(io, "PoolEscapeError"; bold=true)
+    printstyled(io, " (compile-time)"; color=:light_black)
+    if e.file !== nothing
+        printstyled(io, " at "; color=:light_black)
+        printstyled(io, string(e.file, ":", e.line); color=:light_black)
+    end
+    println(io)
+
+    # Escaped variables — one per line
+    println(io)
+    for v in e.vars
+        printstyled(io, "    "; color=:normal)
+        printstyled(io, string(v); color=:red, bold=true)
+        printstyled(io, "  ← temporary array, must not escape @with_pool scope\n"; color=:light_black)
+    end
+
+    # Suggestion 1: trace the definition
+    println(io)
+    vars_str = join([string(v) for v in e.vars], ", ")
+    printstyled(io, "  Fix: "; bold=true)
+    println(io, "Trace where ", vars_str, " are assigned.")
+    collects_str = join(["collect($v)" for v in e.vars], ", ")
+    println(io, "       If from acquire!() / zeros!() / similar!(), use ", collects_str)
+    println(io, "       to return owned copies.")
+
+    # Suggestion 2: false positive escape hatch
+    println(io)
+    printstyled(io, "  False positive?\n"; bold=true)
+    printstyled(io, "    Wrap with identity() to suppress this check.\n"; color=:light_black)
+end
+
+# ==============================================================================
 # Backend Dispatch (for extensibility)
 # ==============================================================================
 
@@ -1391,14 +1442,8 @@ function _check_compile_time_escape(expr, pool_name, source::Union{LineNumberNod
     escaped = _find_direct_exposure(last_expr, acquired)
     isempty(escaped) && return
 
-    loc = source !== nothing ? " at $(source.file):$(source.line)" : ""
     sorted = sort!(collect(escaped))
-    vars_str = join(["`$v`" for v in sorted], ", ")
-    collects_str = join(["collect($v)" for v in sorted], ", ")
-    copy_word = length(sorted) == 1 ? "an independent copy" : "independent copies"
-    error(string(
-        "Pool escape", loc, ": ", vars_str, " — pool-backed memory that will be ",
-        "invalidated after @with_pool scope exit. ",
-        "Use ", collects_str, " to return ", copy_word, ", or return a scalar value."
-    ))
+    file = source !== nothing ? string(source.file) : nothing
+    line = source !== nothing ? source.line : nothing
+    throw(PoolEscapeError(sorted, file, line))
 end
