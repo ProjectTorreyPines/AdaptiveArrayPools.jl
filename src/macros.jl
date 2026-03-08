@@ -1318,6 +1318,59 @@ function _get_last_expression(expr)
 end
 
 """
+    _collect_all_return_values(expr) -> Vector
+
+Collect all expressions that could be returned from a block/function body:
+- Explicit `return expr` statements anywhere in the body (recursive, skips nested functions)
+- Implicit returns: the last expression, recursing into if/else/elseif branches
+"""
+function _collect_all_return_values(expr)
+    values = Any[]
+    _collect_explicit_returns!(values, expr)
+    last = _get_last_expression(expr)
+    if last !== nothing
+        _collect_implicit_return_values!(values, last)
+    end
+    return values
+end
+
+"""Walk AST to find all explicit `return expr` statements.
+Skips nested function definitions (their returns belong to a different scope)."""
+function _collect_explicit_returns!(values, expr)
+    expr isa Expr || return
+    # Nested functions have their own scope — don't recurse
+    expr.head in (:function, :(->)) && return
+    if expr.head == :return
+        push!(values, expr)
+        return
+    end
+    for arg in expr.args
+        _collect_explicit_returns!(values, arg)
+    end
+end
+
+"""Expand implicit return values by recursing into if/elseif/else branches.
+Non-branch expressions are collected as-is."""
+function _collect_implicit_return_values!(values, expr)
+    if expr isa Expr && expr.head in (:if, :elseif)
+        # args[1] = condition, args[2] = then-branch, args[3] = else/elseif (optional)
+        for i in 2:length(expr.args)
+            branch = expr.args[i]
+            if branch isa Expr && branch.head in (:if, :elseif)
+                _collect_implicit_return_values!(values, branch)
+            else
+                last = _get_last_expression(branch)
+                if last !== nothing
+                    _collect_implicit_return_values!(values, last)
+                end
+            end
+        end
+    else
+        push!(values, expr)
+    end
+end
+
+"""
     _remove_flat_reassigned!(expr, acquired, target_pool)
 
 Walk top-level statements in order and remove variables from `acquired`
@@ -1435,11 +1488,15 @@ function _check_compile_time_escape(expr, pool_name, source::Union{LineNumberNod
     _remove_flat_reassigned!(expr, acquired, pool_name)
     isempty(acquired) && return
 
-    # Check the last expression (= implicit return value)
-    last_expr = _get_last_expression(expr)
-    last_expr === nothing && return
+    # Collect ALL return points: explicit returns + implicit (last expr / if-else branches)
+    return_values = _collect_all_return_values(expr)
+    isempty(return_values) && return
 
-    escaped = _find_direct_exposure(last_expr, acquired)
+    # Check each return point for direct exposure of acquired vars
+    escaped = Set{Symbol}()
+    for ret_expr in return_values
+        union!(escaped, _find_direct_exposure(ret_expr, acquired))
+    end
     isempty(escaped) && return
 
     sorted = sort!(collect(escaped))

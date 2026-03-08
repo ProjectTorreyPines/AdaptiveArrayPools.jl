@@ -1,5 +1,6 @@
 import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
-    _find_direct_exposure, _remove_flat_reassigned!, _check_compile_time_escape
+    _find_direct_exposure, _remove_flat_reassigned!, _check_compile_time_escape,
+    _collect_all_return_values, _collect_explicit_returns!, _collect_implicit_return_values!
 
 @testset "Compile-Time Escape Detection" begin
 
@@ -441,6 +442,280 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
             end,
             :pool, src
         )
+    end
+
+    # ==============================================================================
+    # _collect_all_return_values: explicit returns + implicit if/else branches
+    # ==============================================================================
+
+    @testset "_collect_all_return_values" begin
+        # Simple block: implicit return only
+        vals = _collect_all_return_values(quote
+            x = 1
+            x
+        end)
+        @test any(v -> v isa Symbol && v == :x, vals)
+
+        # Explicit return inside if branch
+        vals = _collect_all_return_values(quote
+            v = acquire!(pool, Float64, 10)
+            if cond
+                return v
+            end
+            sum(v)
+        end)
+        # Should find both the explicit `return v` and the implicit `sum(v)`
+        @test any(v -> v isa Expr && v.head == :return, vals)
+        @test any(v -> v isa Expr && v.head == :call, vals)
+
+        # Both branches have explicit return
+        vals = _collect_all_return_values(quote
+            if a > 0.5
+                return (v = 0.5, data = a)
+            else
+                return (v = v, data = z)
+            end
+        end)
+        returns = filter(v -> v isa Expr && v.head == :return, vals)
+        @test length(returns) >= 2
+
+        # Implicit return from if/else branches (no explicit return keyword)
+        vals = _collect_all_return_values(quote
+            if cond
+                v
+            else
+                sum(v)
+            end
+        end)
+        @test any(v -> v isa Symbol && v == :v, vals)
+        @test any(v -> v isa Expr && v.head == :call, vals)
+
+        # elseif branches
+        vals = _collect_all_return_values(quote
+            if cond1
+                v
+            elseif cond2
+                w
+            else
+                sum(v)
+            end
+        end)
+        @test any(v -> v isa Symbol && v == :v, vals)
+        @test any(v -> v isa Symbol && v == :w, vals)
+
+        # Nested if inside branch
+        vals = _collect_all_return_values(quote
+            if outer
+                if inner
+                    v
+                else
+                    w
+                end
+            else
+                sum(v)
+            end
+        end)
+        @test any(v -> v isa Symbol && v == :v, vals)
+        @test any(v -> v isa Symbol && v == :w, vals)
+
+        # Skips nested function definitions
+        vals = _collect_all_return_values(quote
+            f = function()
+                return v  # belongs to inner function, not our scope
+            end
+            sum(v)
+        end)
+        returns = filter(v -> v isa Expr && v.head == :return, vals)
+        @test isempty(returns)
+
+        # Ternary operator (same AST as if/else)
+        vals = _collect_all_return_values(quote
+            cond ? v : sum(v)
+        end)
+        @test any(v -> v isa Symbol && v == :v, vals)
+    end
+
+    # ==============================================================================
+    # _check_compile_time_escape: branch return detection
+    # ==============================================================================
+
+    @testset "Escape detection through branches" begin
+        src = LineNumberNode(1, :test)
+
+        # Explicit return inside if branch — caught
+        @test_throws PoolEscapeError _check_compile_time_escape(
+            quote
+                v = acquire!(pool, Float64, 10)
+                if cond
+                    return v
+                end
+                sum(v)
+            end,
+            :pool, src
+        )
+
+        # Both branches return, one unsafe — caught
+        @test_throws PoolEscapeError _check_compile_time_escape(
+            quote
+                v = acquire!(pool, Float64, 10)
+                if a > 0.5
+                    return sum(v)
+                else
+                    return v
+                end
+            end,
+            :pool, src
+        )
+
+        # NamedTuple in branch — caught
+        @test_throws PoolEscapeError _check_compile_time_escape(
+            quote
+                v = acquire!(pool, Float64, 10)
+                z = similar!(pool, v)
+                if a > 0.5
+                    return (v = 0.5, data = a)
+                else
+                    return (v = v, data = z)
+                end
+            end,
+            :pool, src
+        )
+
+        # Both branches safe — no error
+        @test_nowarn _check_compile_time_escape(
+            quote
+                v = acquire!(pool, Float64, 10)
+                if cond
+                    return sum(v)
+                else
+                    return length(v)
+                end
+            end,
+            :pool, src
+        )
+
+        # Implicit return from if/else branches — caught
+        @test_throws PoolEscapeError _check_compile_time_escape(
+            quote
+                v = acquire!(pool, Float64, 10)
+                if cond
+                    sum(v)
+                else
+                    v
+                end
+            end,
+            :pool, src
+        )
+
+        # elseif branch — caught
+        @test_throws PoolEscapeError _check_compile_time_escape(
+            quote
+                v = acquire!(pool, Float64, 10)
+                if cond1
+                    sum(v)
+                elseif cond2
+                    v
+                else
+                    length(v)
+                end
+            end,
+            :pool, src
+        )
+
+        # Ternary with escape — caught
+        @test_throws PoolEscapeError _check_compile_time_escape(
+            quote
+                v = acquire!(pool, Float64, 10)
+                cond ? v : sum(v)
+            end,
+            :pool, src
+        )
+
+        # Early return in loop — caught
+        @test_throws PoolEscapeError _check_compile_time_escape(
+            quote
+                v = acquire!(pool, Float64, 10)
+                for i in 1:10
+                    if cond
+                        return v
+                    end
+                end
+                sum(v)
+            end,
+            :pool, src
+        )
+
+        # Multi-variable across branches: reports all
+        err = try _check_compile_time_escape(
+            quote
+                v = acquire!(pool, Float64, 10)
+                w = acquire!(pool, Float64, 5)
+                if cond
+                    return v
+                else
+                    return w
+                end
+            end,
+            :pool, src
+        ) catch e; e end
+        @test err isa PoolEscapeError
+        @test :v in err.vars
+        @test :w in err.vars
+    end
+
+    # ==============================================================================
+    # Integration: compile-time error via @macroexpand (branch scenarios)
+    # ==============================================================================
+
+    @testset "Branch escape detection through macro pipeline" begin
+        # if/else with explicit return in one branch — caught
+        @test_throws PoolEscapeError @macroexpand @with_pool pool begin
+            v = acquire!(pool, Float64, 10)
+            if rand() > 0.5
+                return sum(v)
+            else
+                return v
+            end
+        end
+
+        # Function form with branch returns — caught
+        @test_throws PoolEscapeError @macroexpand @with_pool pool function branch_fn(n)
+            v = acquire!(pool, Float64, n)
+            z = similar!(pool, v)
+            if n > 0
+                return (v = 0.5, data = 1.0)
+            else
+                return (v = v, data = z)
+            end
+        end
+
+        # Ternary — caught
+        @test_throws PoolEscapeError @macroexpand @with_pool pool begin
+            v = acquire!(pool, Float64, 10)
+            rand() > 0.5 ? sum(v) : v
+        end
+
+        # All branches safe — no error
+        expanded = @macroexpand @with_pool pool begin
+            v = acquire!(pool, Float64, 10)
+            if rand() > 0.5
+                return sum(v)
+            else
+                return length(v)
+            end
+        end
+        @test expanded isa Expr
+
+        # Function form, all branches safe
+        expanded = @macroexpand @with_pool pool function safe_branch(n)
+            v = acquire!(pool, Float64, n)
+            if n > 0
+                sum(v)
+            else
+                0.0
+            end
+        end
+        @test expanded isa Expr
     end
 
     # ==============================================================================
