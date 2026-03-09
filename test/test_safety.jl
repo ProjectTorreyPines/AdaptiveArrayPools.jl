@@ -1,5 +1,8 @@
 import AdaptiveArrayPools: _invalidate_released_slots!, PoolRuntimeEscapeError
 
+# Opaque identity — defeats compile-time escape analysis without @skip_check_vars
+_test_leak(x) = x
+
 @testset "POOL_SAFETY_LV Guard-Level Invalidation" begin
 
     # ==============================================================================
@@ -307,8 +310,7 @@ import AdaptiveArrayPools: _invalidate_released_slots!, PoolRuntimeEscapeError
         POOL_SAFETY_LV[] = 0
         @test_throws PoolRuntimeEscapeError @with_pool pool begin
             v = acquire!(pool, Float64, 10)
-            @skip_check_vars v
-            identity(v)  # compile-time suppressed; caught by runtime LV2
+            _test_leak(v)  # bypasses compile-time check; caught by runtime LV2
         end
 
         # POOL_SAFETY_LV=2 also triggers escape detection (without POOL_DEBUG)
@@ -316,8 +318,7 @@ import AdaptiveArrayPools: _invalidate_released_slots!, PoolRuntimeEscapeError
         POOL_SAFETY_LV[] = 2
         @test_throws PoolRuntimeEscapeError @with_pool pool begin
             v = acquire!(pool, Float64, 10)
-            @skip_check_vars v
-            identity(v)  # compile-time suppressed; caught by runtime LV2
+            _test_leak(v)  # bypasses compile-time check; caught by runtime LV2
         end
 
         # Neither flag -> no escape detection
@@ -325,8 +326,7 @@ import AdaptiveArrayPools: _invalidate_released_slots!, PoolRuntimeEscapeError
         POOL_SAFETY_LV[] = 1
         result = @with_pool pool begin
             v = acquire!(pool, Float64, 10)
-            @skip_check_vars v
-            identity(v)  # compile-time suppressed; runtime LV<2 won't catch
+            _test_leak(v)  # bypasses compile-time check; runtime LV<2 won't catch
         end
         @test result isa SubArray
 

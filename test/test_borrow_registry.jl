@@ -1,6 +1,8 @@
 import AdaptiveArrayPools: _validate_pool_return, _lookup_borrow_callsite,
     PoolRuntimeEscapeError, Bit
 
+_test_leak(x) = x
+
 @testset "Borrow Registry (POOL_SAFETY_LV=3)" begin
 
     # ==============================================================================
@@ -14,8 +16,7 @@ import AdaptiveArrayPools: _validate_pool_return, _lookup_borrow_callsite,
         err = try
             @with_pool pool begin
                 v = acquire!(pool, Float64, 10)
-                @skip_check_vars v
-                identity(v)
+                _test_leak(v)
             end
             nothing
         catch e
@@ -36,8 +37,7 @@ import AdaptiveArrayPools: _validate_pool_return, _lookup_borrow_callsite,
         err = try
             @with_pool pool begin
                 v = unsafe_acquire!(pool, Float64, 10)
-                @skip_check_vars v
-                identity(v)
+                _test_leak(v)
             end
             nothing
         catch e
@@ -110,8 +110,7 @@ import AdaptiveArrayPools: _validate_pool_return, _lookup_borrow_callsite,
         err = try
             @with_pool pool begin
                 v = zeros!(pool, Float64, 10)
-                @skip_check_vars v
-                identity(v)
+                _test_leak(v)
             end
             nothing
         catch e
@@ -132,8 +131,7 @@ import AdaptiveArrayPools: _validate_pool_return, _lookup_borrow_callsite,
         err = try
             @with_pool pool begin
                 v = zeros!(pool, Float64, 10)
-                @skip_check_vars v
-                identity(v)
+                _test_leak(v)
             end
             nothing
         catch e
@@ -182,8 +180,7 @@ import AdaptiveArrayPools: _validate_pool_return, _lookup_borrow_callsite,
         err = try
             @with_pool pool begin
                 v = acquire!(pool, Bit, 100)
-                @skip_check_vars v
-                identity(v)
+                _test_leak(v)
             end
             nothing
         catch e
@@ -350,8 +347,7 @@ import AdaptiveArrayPools: _validate_pool_return, _lookup_borrow_callsite,
         # Function with explicit return of pool-backed array should throw
         @with_pool pool function _test_return_escape()
             v = acquire!(pool, Float64, 10)
-            @skip_check_vars v
-            return identity(v)
+            return _test_leak(v)
         end
 
         @test_throws PoolRuntimeEscapeError _test_return_escape()
@@ -394,8 +390,7 @@ import AdaptiveArrayPools: _validate_pool_return, _lookup_borrow_callsite,
 
         @with_pool pool function _test_return_callsite()
             v = acquire!(pool, Float64, 10)
-            @skip_check_vars v
-            return identity(v)
+            return _test_leak(v)
         end
 
         err = try
@@ -419,8 +414,7 @@ import AdaptiveArrayPools: _validate_pool_return, _lookup_borrow_callsite,
         function _test_block_return_escape()
             @with_pool pool begin
                 v = acquire!(pool, Float64, 10)
-                @skip_check_vars v
-                return identity(v)
+                return _test_leak(v)
             end
         end
 

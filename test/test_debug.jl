@@ -1,4 +1,5 @@
 import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap, _eltype_may_contain_arrays, PoolRuntimeEscapeError
+_test_leak(x) = x  # opaque to compile-time escape checker (only identity() is transparent)
 
 @testset "POOL_DEBUG and Safety Validation" begin
 
@@ -15,8 +16,7 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap, _elt
         # When debug is off, no validation happens even if SubArray escapes
         result = @with_pool pool begin
             v = acquire!(pool, Float64, 10)
-            @skip_check_vars v
-            identity(v)  # compile-time suppressed; runtime LV<2 won't catch
+            _test_leak(v)  # opaque to compile-time checker; runtime LV<2 won't catch
         end
         @test result isa SubArray  # No error when debug is off
 
@@ -30,8 +30,7 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap, _elt
         # Should throw error when returning SubArray with debug on
         @test_throws PoolRuntimeEscapeError @with_pool pool begin
             v = acquire!(pool, Float64, 10)
-            @skip_check_vars v
-            identity(v)  # compile-time suppressed; caught by runtime LV2
+            _test_leak(v)  # opaque to compile-time checker; caught by runtime LV2
         end
 
         # Safe returns should work fine
@@ -206,15 +205,13 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap, _elt
         # N-D ReshapedArray should throw error when returned
         @test_throws PoolRuntimeEscapeError @with_pool pool begin
             mat = acquire!(pool, Float64, 10, 10)
-            @skip_check_vars mat
-            identity(mat)  # compile-time suppressed; caught by runtime LV2
+            _test_leak(mat)  # opaque to compile-time checker; caught by runtime LV2
         end
 
         # Raw Array from unsafe_acquire! should throw error when returned
         @test_throws PoolRuntimeEscapeError @with_pool pool begin
             mat = unsafe_acquire!(pool, Float64, 10, 10)
-            @skip_check_vars mat
-            identity(mat)  # compile-time suppressed; caught by runtime LV2
+            _test_leak(mat)  # opaque to compile-time checker; caught by runtime LV2
         end
 
         # Safe returns should work fine
@@ -330,15 +327,13 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap, _elt
         # BitVector from pool should throw error when returned with debug on
         @test_throws PoolRuntimeEscapeError @with_pool pool begin
             bv = acquire!(pool, Bit, 100)
-            @skip_check_vars bv
-            identity(bv)  # compile-time suppressed; caught by runtime LV2
+            _test_leak(bv)  # opaque to compile-time checker; caught by runtime LV2
         end
 
         # BitMatrix from pool should throw error when returned
         @test_throws PoolRuntimeEscapeError @with_pool pool begin
             ba = acquire!(pool, Bit, 10, 10)
-            @skip_check_vars ba
-            identity(ba)  # compile-time suppressed; caught by runtime LV2
+            _test_leak(ba)  # opaque to compile-time checker; caught by runtime LV2
         end
 
         # Safe returns should work fine
@@ -577,15 +572,13 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap, _elt
         # Tuple containing pool array — caught at runtime
         @test_throws PoolRuntimeEscapeError @with_pool pool begin
             v = acquire!(pool, Float64, 10)
-            @skip_check_vars v
-            identity((sum(v), v))  # compile-time suppressed; runtime LV2 catches v inside tuple
+            _test_leak((sum(v), v))  # opaque to compile-time checker; runtime LV2 catches v inside tuple
         end
 
         # NamedTuple containing pool array — caught at runtime
         @test_throws PoolRuntimeEscapeError @with_pool pool begin
             v = acquire!(pool, Float64, 10)
-            @skip_check_vars v
-            identity((data=v, n=10))  # compile-time suppressed; runtime LV2 catches v inside NamedTuple
+            _test_leak((data=v, n=10))  # opaque to compile-time checker; runtime LV2 catches v inside NamedTuple
         end
 
         # Safe containers pass
@@ -600,33 +593,30 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap, _elt
     end
 
     # ==============================================================================
-    # @skip_check_vars — compile-time suppression does NOT suppress runtime LV2
+    # Runtime LV2 escape detection through opaque function calls
     # ==============================================================================
 
-    @testset "@skip_check_vars suppresses compile-time but runtime LV2 still catches" begin
+    @testset "Runtime LV2 catches escapes through opaque function calls" begin
         old_safety = POOL_SAFETY_LV[]
         POOL_SAFETY_LV[] = 2
 
-        # @skip_check_vars prevents compile-time PoolEscapeError,
+        # Opaque function call bypasses compile-time PoolEscapeError,
         # but runtime _validate_pool_return at LV2 still catches the escape.
         @test_throws PoolRuntimeEscapeError @with_pool pool begin
             v = acquire!(pool, Float64, 10)
-            @skip_check_vars v
-            identity(v)  # compile-time suppressed; runtime LV2 catches
+            _test_leak(v)  # opaque to compile-time checker; runtime LV2 catches
         end
 
-        # Multiple vars: suppress some, escape detection still works for suppressed ones at runtime
+        # Multiple vars: opaque call still caught at runtime
         @test_throws PoolRuntimeEscapeError @with_pool pool begin
             v = acquire!(pool, Float64, 10)
             w = acquire!(pool, Float64, 5)
-            @skip_check_vars v w
-            identity(v)
+            _test_leak(v)
         end
 
-        # Safe return still works with @skip_check_vars
+        # Safe return works fine
         result = @with_pool pool begin
             v = acquire!(pool, Float64, 10)
-            @skip_check_vars v
             v .= 1.0
             sum(v)  # scalar — safe
         end
@@ -635,16 +625,15 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap, _elt
         POOL_SAFETY_LV[] = old_safety
     end
 
-    @testset "@skip_check_vars with LV1 (no runtime escape check)" begin
+    @testset "LV1 does not perform runtime escape check" begin
         old_safety = POOL_SAFETY_LV[]
         POOL_SAFETY_LV[] = 1
 
-        # At LV1, @skip_check_vars suppresses compile-time and runtime doesn't check escapes
+        # At LV1, opaque call bypasses compile-time and runtime doesn't check escapes
         # (only structural invalidation), so the SubArray escapes silently.
         result = @with_pool pool begin
             v = acquire!(pool, Float64, 10)
-            @skip_check_vars v
-            identity(v)
+            _test_leak(v)
         end
         @test result isa SubArray  # Escapes — no runtime check at LV1
 
@@ -663,8 +652,7 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap, _elt
         @with_pool pool function _test_debug_func_unsafe(n)
             v = acquire!(pool, Float64, n)
             v .= 1.0
-            @skip_check_vars v
-            identity(v)  # compile-time suppressed; caught by runtime LV2
+            _test_leak(v)  # opaque to compile-time checker; caught by runtime LV2
         end
         @test_throws PoolRuntimeEscapeError _test_debug_func_unsafe(10)
 
@@ -688,8 +676,7 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap, _elt
         @with_pool pool function _test_debug_func_nd(m, n)
             mat = acquire!(pool, Float64, m, n)
             mat .= 1.0
-            @skip_check_vars mat
-            identity(mat)  # compile-time suppressed; caught by runtime LV2
+            _test_leak(mat)  # opaque to compile-time checker; caught by runtime LV2
         end
         @test_throws PoolRuntimeEscapeError _test_debug_func_nd(3, 4)
 
@@ -697,8 +684,7 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap, _elt
         @with_pool pool function _test_debug_func_bit(n)
             bv = acquire!(pool, Bit, n)
             bv .= true
-            @skip_check_vars bv
-            identity(bv)  # compile-time suppressed; caught by runtime LV2
+            _test_leak(bv)  # opaque to compile-time checker; caught by runtime LV2
         end
         @test_throws PoolRuntimeEscapeError _test_debug_func_bit(100)
 
@@ -715,8 +701,7 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap, _elt
         @maybe_with_pool pool function _test_maybe_debug_unsafe(n)
             v = acquire!(pool, Float64, n)
             v .= 1.0
-            @skip_check_vars v
-            identity(v)  # compile-time suppressed; caught by runtime LV2
+            _test_leak(v)  # opaque to compile-time checker; caught by runtime LV2
         end
         @test_throws PoolRuntimeEscapeError _test_maybe_debug_unsafe(10)
 
@@ -732,8 +717,7 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap, _elt
         MAYBE_POOLING[] = false
         @maybe_with_pool pool function _test_maybe_debug_disabled(n)
             v = zeros!(pool, n)
-            @skip_check_vars v
-            identity(v)  # compile-time suppressed; disabled pool returns fresh arrays
+            _test_leak(v)  # opaque to compile-time checker; disabled pool returns fresh arrays
         end
         result = _test_maybe_debug_disabled(5)
         @test result == zeros(5)
@@ -750,8 +734,7 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap, _elt
         @with_pool :cpu pool function _test_backend_debug_unsafe(n)
             v = acquire!(pool, Float64, n)
             v .= 1.0
-            @skip_check_vars v
-            identity(v)  # compile-time suppressed; caught by runtime LV2
+            _test_leak(v)  # opaque to compile-time checker; caught by runtime LV2
         end
         @test_throws PoolRuntimeEscapeError _test_backend_debug_unsafe(10)
 
