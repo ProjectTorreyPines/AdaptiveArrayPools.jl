@@ -211,6 +211,8 @@ function _check_bitchunks_overlap(arr::BitArray, pool::AdaptiveArrayPool, origin
     arr_len = length(arr_chunks) * sizeof(UInt64)
     arr_end = arr_ptr + arr_len
 
+    return_site = let rs = pool._pending_return_site; isempty(rs) ? nothing : rs end
+
     for v in pool.bits.vectors
         v_chunks = v.chunks
         v_ptr = UInt(pointer(v_chunks))
@@ -218,7 +220,7 @@ function _check_bitchunks_overlap(arr::BitArray, pool::AdaptiveArrayPool, origin
         v_end = v_ptr + v_len
         if !(arr_end <= v_ptr || v_end <= arr_ptr)
             callsite = _lookup_borrow_callsite(pool, v)
-            _throw_pool_escape_error(original_val, Bit, callsite)
+            _throw_pool_escape_error(original_val, Bit, callsite, return_site)
         end
     end
     return nothing

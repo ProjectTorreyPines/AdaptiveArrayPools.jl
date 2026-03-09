@@ -481,7 +481,7 @@ function _generate_pool_code(pool_name, expr, force_enable; source::Union{LineNu
 
     # Inject borrow callsite recording (LV≥3 at runtime; gated by STATIC_POOL_CHECKS at compile time)
     if STATIC_POOL_CHECKS
-        transformed_expr = _inject_pending_callsite(transformed_expr, pool_name)
+        transformed_expr = _inject_pending_callsite(transformed_expr, pool_name, expr)
         transformed_expr = _transform_return_stmts(transformed_expr, pool_name)
     end
 
@@ -580,7 +580,7 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, forc
         # For dynamic path: keep acquire! untransformed so _record_type_touch! is called
         transformed_expr = use_typed ? _transform_acquire_calls(expr, pool_name) : expr
         if STATIC_POOL_CHECKS
-            transformed_expr = _inject_pending_callsite(transformed_expr, pool_name)
+            transformed_expr = _inject_pending_callsite(transformed_expr, pool_name, expr)
             transformed_expr = _transform_return_stmts(transformed_expr, pool_name)
         end
         pool_getter = :($_get_pool_for_backend($(Val{backend}())))
@@ -633,7 +633,7 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, forc
     # For dynamic path: keep acquire! untransformed so _record_type_touch! is called
     transformed_expr = use_typed ? _transform_acquire_calls(expr, pool_name) : expr
     if STATIC_POOL_CHECKS
-        transformed_expr = _inject_pending_callsite(transformed_expr, pool_name)
+        transformed_expr = _inject_pending_callsite(transformed_expr, pool_name, expr)
         transformed_expr = _transform_return_stmts(transformed_expr, pool_name)
     end
 
@@ -706,7 +706,7 @@ function _generate_function_pool_code_with_backend(backend::Symbol, pool_name, f
     # For dynamic path: keep acquire! untransformed so _record_type_touch! is called
     transformed_body = use_typed ? _transform_acquire_calls(body, pool_name) : body
     if STATIC_POOL_CHECKS
-        transformed_body = _inject_pending_callsite(transformed_body, pool_name)
+        transformed_body = _inject_pending_callsite(transformed_body, pool_name, body)
         transformed_body = _transform_return_stmts(transformed_body, pool_name)
     end
 
@@ -796,7 +796,7 @@ function _generate_function_pool_code(pool_name, func_def, force_enable, disable
     # For dynamic path: keep acquire! untransformed so _record_type_touch! is called
     transformed_body = use_typed ? _transform_acquire_calls(body, pool_name) : body
     if STATIC_POOL_CHECKS
-        transformed_body = _inject_pending_callsite(transformed_body, pool_name)
+        transformed_body = _inject_pending_callsite(transformed_body, pool_name, body)
         transformed_body = _transform_return_stmts(transformed_body, pool_name)
     end
 
@@ -1357,28 +1357,57 @@ function _contains_acquire_call(expr, pool_name)
 end
 
 """
-    _inject_pending_callsite(expr, pool_name) -> Expr
+    _find_acquire_call_expr(expr, pool_name) -> Union{Expr, Nothing}
+
+Find the first acquire call expression in `expr` targeting `pool_name`.
+Returns the original call Expr (e.g., `:(zeros!(pool, Float64, 10))`) or `nothing`.
+Used to capture the user's source expression for debug display.
+"""
+function _find_acquire_call_expr(expr, pool_name)
+    expr isa Expr || return nothing
+    if _is_acquire_call(expr, pool_name)
+        return expr
+    end
+    for arg in expr.args
+        result = _find_acquire_call_expr(arg, pool_name)
+        result !== nothing && return result
+    end
+    return nothing
+end
+
+"""
+    _inject_pending_callsite(expr, pool_name, original_expr=expr) -> Expr
 
 Walk block-level statements, track `LineNumberNode`s, and insert
-`POOL_SAFETY_LV[] >= 3 && (pool._pending_callsite = "file:line")`
+`POOL_SAFETY_LV[] >= 3 && (pool._pending_callsite = "file:line\\nexpr")`
 before each statement containing a pool acquire call.
+
+When `original_expr` differs from `expr` (i.e., after `_transform_acquire_calls`),
+the original untransformed AST is used to extract the user's source expression
+(e.g., `zeros!(pool, Float64, 10)` instead of `_zeros_impl!(pool, Float64, 10)`).
 
 Only processes `:block` expressions. Non-block expressions are recursed
 into to find nested blocks.
 """
-function _inject_pending_callsite(expr, pool_name)
+function _inject_pending_callsite(expr, pool_name, original_expr=expr)
     expr isa Expr || return expr
     if expr.head == :block
         new_args = Any[]
         current_lnn = nothing
-        for arg in expr.args
+        orig_args = (original_expr isa Expr && original_expr.head == :block) ? original_expr.args : nothing
+        for (i, arg) in enumerate(expr.args)
             if arg isa LineNumberNode
                 current_lnn = arg
                 push!(new_args, arg)
             else
-                processed = _inject_pending_callsite(arg, pool_name)
+                orig_arg = (orig_args !== nothing && i <= length(orig_args)) ? orig_args[i] : arg
+                processed = _inject_pending_callsite(arg, pool_name, orig_arg)
                 if current_lnn !== nothing && _contains_acquire_call(processed, pool_name)
-                    callsite_str = "$(current_lnn.file):$(current_lnn.line)"
+                    # Use the full original statement for debug display
+                    expr_text = string(orig_arg)
+                    callsite_str = isempty(expr_text) ?
+                        "$(current_lnn.file):$(current_lnn.line)" :
+                        "$(current_lnn.file):$(current_lnn.line)\n$(expr_text)"
                     inject = Expr(:&&,
                         Expr(:call, :>=, Expr(:ref, _POOL_SAFETY_LV_REF), 3),
                         Expr(:(=),
@@ -1391,7 +1420,12 @@ function _inject_pending_callsite(expr, pool_name)
         end
         return Expr(:block, new_args...)
     else
-        new_args = Any[_inject_pending_callsite(arg, pool_name) for arg in expr.args]
+        orig_expr_args = (original_expr isa Expr) ? original_expr.args : nothing
+        new_args = Any[]
+        for (i, arg) in enumerate(expr.args)
+            orig_arg = (orig_expr_args !== nothing && i <= length(orig_expr_args)) ? orig_expr_args[i] : arg
+            push!(new_args, _inject_pending_callsite(arg, pool_name, orig_arg))
+        end
         return Expr(expr.head, new_args...)
     end
 end
@@ -1420,7 +1454,7 @@ Generates: `local _ret = value; if (LV≥2 || DEBUG) validate(_ret, pool); end; 
 Does NOT recurse into nested `:function` or `:->` expressions (inner functions
 have their own `return` semantics).
 """
-function _transform_return_stmts(expr, pool_name)
+function _transform_return_stmts(expr, pool_name, current_lnn=nothing)
     expr isa Expr || return expr
 
     # Don't recurse into nested function definitions (return belongs to inner function)
@@ -1435,19 +1469,56 @@ function _transform_return_stmts(expr, pool_name)
             return expr
         end
         # Recurse into the value expression first (may contain nested returns in ternary etc.)
-        value_expr = _transform_return_stmts(value_expr, pool_name)
+        value_expr = _transform_return_stmts(value_expr, pool_name, current_lnn)
         retvar = gensym(:_pool_ret)
+
+        # Build return-site string for LV ≥ 3 display (e.g. "file:line\nreturn v")
+        return_site_str = if current_lnn !== nothing
+            "$(current_lnn.file):$(current_lnn.line)\n$(string(expr))"
+        else
+            ""
+        end
+
+        # Conditionally set _pending_return_site before validation
+        validate_expr = if !isempty(return_site_str)
+            Expr(:block,
+                Expr(:&&,
+                    Expr(:call, :>=, Expr(:ref, _POOL_SAFETY_LV_REF), 3),
+                    Expr(:(=),
+                        Expr(:., pool_name, QuoteNode(:_pending_return_site)),
+                        return_site_str)),
+                Expr(:call, _VALIDATE_POOL_RETURN_REF, retvar, pool_name))
+        else
+            Expr(:call, _VALIDATE_POOL_RETURN_REF, retvar, pool_name)
+        end
+
         return Expr(:block,
             Expr(:local, Expr(:(=), retvar, value_expr)),
             Expr(:if,
                 Expr(:||,
                     Expr(:call, :>=, Expr(:ref, _POOL_SAFETY_LV_REF), 2),
                     Expr(:ref, _POOL_DEBUG_REF)),
-                Expr(:call, _VALIDATE_POOL_RETURN_REF, retvar, pool_name)),
+                validate_expr),
             Expr(:return, retvar))
     end
 
-    new_args = Any[_transform_return_stmts(arg, pool_name) for arg in expr.args]
+    # For blocks, track LineNumberNodes
+    if expr.head == :block
+        new_args = Any[]
+        lnn = current_lnn
+        for arg in expr.args
+            if arg isa LineNumberNode
+                lnn = arg
+                push!(new_args, arg)
+            else
+                push!(new_args, _transform_return_stmts(arg, pool_name, lnn))
+            end
+        end
+        return Expr(:block, new_args...)
+    end
+
+    # Other expressions: recurse with current_lnn
+    new_args = Any[_transform_return_stmts(arg, pool_name, current_lnn) for arg in expr.args]
     return Expr(expr.head, new_args...)
 end
 

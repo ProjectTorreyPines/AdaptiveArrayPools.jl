@@ -125,6 +125,30 @@ import AdaptiveArrayPools: _validate_pool_return, _lookup_borrow_callsite,
         POOL_SAFETY_LV[] = old_lv
     end
 
+    @testset "Macro path: callsite includes expression text" begin
+        old_lv = POOL_SAFETY_LV[]
+        POOL_SAFETY_LV[] = 3
+
+        err = try
+            @with_pool pool begin
+                v = zeros!(pool, Float64, 10)
+                @skip_check_vars v
+                identity(v)
+            end
+            nothing
+        catch e
+            e
+        end
+
+        @test err isa PoolRuntimeEscapeError
+        @test err.callsite !== nothing
+        # Callsite should contain expression text after \n
+        @test contains(err.callsite, "\n")
+        @test contains(err.callsite, "zeros!(pool, Float64, 10)")
+
+        POOL_SAFETY_LV[] = old_lv
+    end
+
     @testset "Direct zeros! shows generic callsite label" begin
         old_lv = POOL_SAFETY_LV[]
         POOL_SAFETY_LV[] = 3
@@ -235,7 +259,7 @@ import AdaptiveArrayPools: _validate_pool_return, _lookup_borrow_callsite,
     # ==============================================================================
 
     @testset "showerror: 'acquired at' shown when callsite present (LV≥3)" begin
-        err = PoolRuntimeEscapeError("SubArray{Float64, 1}", "Float64", "test.jl:42")
+        err = PoolRuntimeEscapeError("SubArray{Float64, 1}", "Float64", "test.jl:42", nothing)
         io = IOBuffer()
         showerror(io, err)
         msg = String(take!(io))
@@ -246,8 +270,34 @@ import AdaptiveArrayPools: _validate_pool_return, _lookup_borrow_callsite,
         @test !contains(msg, "Tip:")
     end
 
+    @testset "showerror: expression text shown when present in callsite" begin
+        err = PoolRuntimeEscapeError("SubArray{Float64, 1}", "Float64",
+            "test.jl:42\nzeros!(pool, Float64, 10)", nothing)
+        io = IOBuffer()
+        showerror(io, err)
+        msg = String(take!(io))
+
+        @test contains(msg, "acquired at")
+        @test contains(msg, "test.jl:42")
+        @test contains(msg, "zeros!(pool, Float64, 10)")
+    end
+
+    @testset "showerror: short path used for absolute paths" begin
+        err = PoolRuntimeEscapeError("SubArray{Float64, 1}", "Float64",
+            "$(homedir())/.julia/dev/Foo/src/bar.jl:99\nacquire!(pool, Float64, 5)", nothing)
+        io = IOBuffer()
+        showerror(io, err)
+        msg = String(take!(io))
+
+        @test contains(msg, "acquired at")
+        # Should NOT contain the full absolute homedir path
+        @test !contains(msg, homedir())
+        @test contains(msg, "bar.jl:99")
+        @test contains(msg, "acquire!(pool, Float64, 5)")
+    end
+
     @testset "showerror: 'Tip: set LV=3' shown when no callsite (LV=2)" begin
-        err = PoolRuntimeEscapeError("SubArray{Float64, 1}", "Float64", nothing)
+        err = PoolRuntimeEscapeError("SubArray{Float64, 1}", "Float64", nothing, nothing)
         io = IOBuffer()
         showerror(io, err)
         msg = String(take!(io))

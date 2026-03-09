@@ -83,6 +83,8 @@ function _check_pointer_overlap(arr::Array, pool::AdaptiveArrayPool, original_va
     arr_len = length(arr) * sizeof(eltype(arr))
     arr_end = arr_ptr + arr_len
 
+    return_site = let rs = pool._pending_return_site; isempty(rs) ? nothing : rs end
+
     check_overlap = function (tp)
         for v in tp.vectors
             v isa Array || continue  # Skip BitVector (no pointer(); checked via _check_bitchunks_overlap)
@@ -91,7 +93,7 @@ function _check_pointer_overlap(arr::Array, pool::AdaptiveArrayPool, original_va
             v_end = v_ptr + v_len
             if !(arr_end <= v_ptr || v_end <= arr_ptr)
                 callsite = _lookup_borrow_callsite(pool, v)
-                _throw_pool_escape_error(original_val, eltype(v), callsite)
+                _throw_pool_escape_error(original_val, eltype(v), callsite, return_site)
             end
         end
         return
@@ -120,7 +122,8 @@ This is the runtime counterpart of [`PoolEscapeError`](@ref) (compile-time).
 struct PoolRuntimeEscapeError <: Exception
     val_summary::String
     pool_eltype::String
-    callsite::Union{Nothing, String}   # acquire location (LV ≥ 3)
+    callsite::Union{Nothing, String}      # acquire location (LV ≥ 3)
+    return_site::Union{Nothing, String}   # return location (LV ≥ 3)
 end
 
 function Base.showerror(io::IO, e::PoolRuntimeEscapeError)
@@ -140,16 +143,47 @@ function Base.showerror(io::IO, e::PoolRuntimeEscapeError)
     printstyled(io, " pool memory, will be reclaimed at scope exit\n"; color=:light_black)
 
     if has_callsite
+        # Parse callsite: "file:line" or "file:line\nexpr"
+        parts = split(e.callsite, '\n'; limit=2)
+        location = String(parts[1])
+        expr_text = length(parts) >= 2 ? String(parts[2]) : nothing
+
+        # Shorten the file path (shorter of relpath vs ~/…-contracted)
+        location = _shorten_location(location)
+
         printstyled(io, "      ← acquired at "; color=:light_black)
-        printstyled(io, e.callsite; color=:cyan, bold=true)
+        printstyled(io, location; color=:cyan, bold=true)
         println(io)
+
+        if expr_text !== nothing
+            printstyled(io, "        "; color=:normal)
+            printstyled(io, expr_text; color=:cyan)
+            println(io)
+        end
+    end
+
+    has_return_site = e.return_site !== nothing
+    if has_return_site
+        parts = split(e.return_site, '\n'; limit=2)
+        location = _shorten_location(String(parts[1]))
+        expr_text = length(parts) >= 2 ? String(parts[2]) : nothing
+
+        printstyled(io, "      ← escapes at "; color=:light_black)
+        printstyled(io, location; color=:magenta, bold=true)
+        println(io)
+
+        if expr_text !== nothing
+            printstyled(io, "        "; color=:normal)
+            printstyled(io, expr_text; color=:magenta)
+            println(io)
+        end
     end
 
     println(io)
     printstyled(io, "  Fix: "; bold=true)
-    printstyled(io, "Return "; color=:light_black)
-    printstyled(io, "collect(x)"; bold=true)
-    printstyled(io, " to copy, or compute a result before returning.\n"; color=:light_black)
+    printstyled(io, "Wrap with "; color=:light_black)
+    printstyled(io, "collect()"; bold=true)
+    printstyled(io, " to return an owned copy, or compute a scalar result.\n"; color=:light_black)
 
     if !has_callsite
         println(io)
@@ -162,8 +196,8 @@ end
 
 Base.showerror(io::IO, e::PoolRuntimeEscapeError, ::Any; backtrace=true) = showerror(io, e)
 
-@noinline function _throw_pool_escape_error(val, pool_eltype, callsite::Union{Nothing, String}=nothing)
-    throw(PoolRuntimeEscapeError(summary(val), string(pool_eltype), callsite))
+@noinline function _throw_pool_escape_error(val, pool_eltype, callsite::Union{Nothing, String}=nothing, return_site::Union{Nothing, String}=nothing)
+    throw(PoolRuntimeEscapeError(summary(val), string(pool_eltype), callsite, return_site))
 end
 
 # Recursive inspection of container types (Tuple, NamedTuple, Pair, Dict, Set).
@@ -233,6 +267,35 @@ before `resize!` zeroes the lengths.
         _poison_fill!(@inbounds tp.vectors[i])
     end
     return nothing
+end
+
+# ==============================================================================
+# Path Shortening (for readable callsite display)
+# ==============================================================================
+#
+# Picks the shortest human-readable representation of a file path:
+# relative to pwd, ~/…-contracted, or the original absolute path.
+# Adapted from Infiltrator.jl (src/breakpoints.jl).
+
+function _short_path(f::String)
+    contracted = Base.contractuser(f)
+    try
+        rel = relpath(f)
+        return length(rel) < length(contracted) ? rel : contracted
+    catch
+        return contracted
+    end
+end
+
+# Shorten "file:line" location string using _short_path
+function _shorten_location(location::String)
+    colon_idx = findlast(':', location)
+    if colon_idx !== nothing
+        file = location[1:prevind(location, colon_idx)]
+        line_part = location[colon_idx:end]
+        return _short_path(file) * line_part
+    end
+    return location
 end
 
 # ==============================================================================

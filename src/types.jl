@@ -352,6 +352,7 @@ mutable struct AdaptiveArrayPool <: AbstractArrayPool
 
     # Borrow registry (POOL_SAFETY_LV >= 3 only)
     _pending_callsite::String                        # "" = no pending; set by macro before acquire
+    _pending_return_site::String                     # "" = no pending; set by macro before validate
     _borrow_log::Union{Nothing, IdDict{Any, String}} # vector_obj => callsite string
 end
 
@@ -370,6 +371,7 @@ function AdaptiveArrayPool()
         [UInt16(0)],    # _touched_type_masks: sentinel (no bits set)
         [false],        # _touched_has_others: sentinel (no others)
         "",             # _pending_callsite: no pending
+        "",             # _pending_return_site: no pending
         nothing         # _borrow_log: lazily created at LV >= 3
     )
 end
