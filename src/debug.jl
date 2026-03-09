@@ -90,7 +90,8 @@ function _check_pointer_overlap(arr::Array, pool::AdaptiveArrayPool, original_va
             v_len = length(v) * sizeof(eltype(v))
             v_end = v_ptr + v_len
             if !(arr_end <= v_ptr || v_end <= arr_ptr)
-                _throw_pool_escape_error(original_val, eltype(v))
+                callsite = _lookup_borrow_callsite(pool, v)
+                _throw_pool_escape_error(original_val, eltype(v), callsite)
             end
         end
         return
@@ -119,11 +120,15 @@ This is the runtime counterpart of [`PoolEscapeError`](@ref) (compile-time).
 struct PoolRuntimeEscapeError <: Exception
     val_summary::String
     pool_eltype::String
+    callsite::Union{Nothing, String}   # acquire location (LV ≥ 3)
 end
 
 function Base.showerror(io::IO, e::PoolRuntimeEscapeError)
+    has_callsite = e.callsite !== nothing
+    lv_label = has_callsite ? "POOL_SAFETY_LV ≥ 3" : "POOL_SAFETY_LV ≥ 2"
+
     printstyled(io, "PoolEscapeError"; color=:red, bold=true)
-    printstyled(io, " (runtime, POOL_SAFETY_LV ≥ 2)"; color=:light_black)
+    printstyled(io, " (runtime, ", lv_label, ")"; color=:light_black)
     println(io)
 
     println(io)
@@ -134,23 +139,31 @@ function Base.showerror(io::IO, e::PoolRuntimeEscapeError)
     printstyled(io, e.pool_eltype; color=:yellow)
     printstyled(io, " pool memory, will be reclaimed at scope exit\n"; color=:light_black)
 
+    if has_callsite
+        printstyled(io, "      ← acquired at "; color=:light_black)
+        printstyled(io, e.callsite; color=:cyan, bold=true)
+        println(io)
+    end
+
     println(io)
     printstyled(io, "  Fix: "; bold=true)
     printstyled(io, "Return "; color=:light_black)
     printstyled(io, "collect(x)"; bold=true)
     printstyled(io, " to copy, or compute a result before returning.\n"; color=:light_black)
 
-    println(io)
-    printstyled(io, "  Tip: "; bold=true)
-    printstyled(io, "set "; color=:light_black)
-    printstyled(io, "POOL_SAFETY_LV[] = 3"; bold=true)
-    printstyled(io, " for acquire!() call-site tracking.\n"; color=:light_black)
+    if !has_callsite
+        println(io)
+        printstyled(io, "  Tip: "; bold=true)
+        printstyled(io, "set "; color=:light_black)
+        printstyled(io, "POOL_SAFETY_LV[] = 3"; bold=true)
+        printstyled(io, " for acquire!() call-site tracking.\n"; color=:light_black)
+    end
 end
 
 Base.showerror(io::IO, e::PoolRuntimeEscapeError, ::Any; backtrace=true) = showerror(io, e)
 
-@noinline function _throw_pool_escape_error(val, pool_eltype)
-    throw(PoolRuntimeEscapeError(summary(val), string(pool_eltype)))
+@noinline function _throw_pool_escape_error(val, pool_eltype, callsite::Union{Nothing, String}=nothing)
+    throw(PoolRuntimeEscapeError(summary(val), string(pool_eltype), callsite))
 end
 
 # Recursive inspection of container types (Tuple, NamedTuple, Pair, Dict, Set).
@@ -220,4 +233,43 @@ before `resize!` zeroes the lengths.
         _poison_fill!(@inbounds tp.vectors[i])
     end
     return nothing
+end
+
+# ==============================================================================
+# Borrow Registry: Call-site tracking for acquire! (POOL_SAFETY_LV >= 3)
+# ==============================================================================
+#
+# Records where each acquire! call originated (file:line) so escape errors
+# can point to the exact source location. The macro sets `_pending_callsite`
+# before each acquire call; the _*_impl! functions call _record_borrow_from_pending!
+# after claiming a slot.
+
+"""
+    _record_borrow_from_pending!(pool, tp)
+
+Record the pending callsite for the most recently claimed slot in `tp`.
+Called from `_acquire_impl!` / `_unsafe_acquire_impl!` when `POOL_SAFETY_LV[] >= 3`.
+"""
+@noinline function _record_borrow_from_pending!(pool::AdaptiveArrayPool, tp::AbstractTypedPool)
+    callsite = pool._pending_callsite
+    isempty(callsite) && return nothing
+    log = pool._borrow_log
+    if log === nothing
+        log = IdDict{Any, String}()
+        pool._borrow_log = log
+    end
+    @inbounds log[tp.vectors[tp.n_active]] = callsite
+    return nothing
+end
+
+"""
+    _lookup_borrow_callsite(pool, v) -> Union{Nothing, String}
+
+Look up the callsite string for a pool backing vector. Returns `nothing` if
+no borrow was recorded (LV < 3 or non-macro path without callsite info).
+"""
+@noinline function _lookup_borrow_callsite(pool::AdaptiveArrayPool, v)::Union{Nothing, String}
+    log = pool._borrow_log
+    log === nothing && return nothing
+    return get(log, v, nothing)
 end

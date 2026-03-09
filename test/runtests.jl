@@ -27,6 +27,7 @@ else
         include("test_task_local_pool.jl")
         include("test_utils.jl")
         include("test_debug.jl")
+        include("test_borrow_registry.jl")
         include("test_safety.jl")
         include("test_compile_escape.jl")
         include("test_macro_expansion.jl")

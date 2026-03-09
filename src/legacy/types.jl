@@ -76,7 +76,8 @@ Runtime safety level for pool operations. Only effective when `STATIC_POOL_CHECK
 
 - `0`: Off — no safety checks (Ref read only, ~1ns)
 - `1`: Guard — structural invalidation on rewind (resize + setfield!, ~1ns/slot)
-- `2`: Full — guard + escape detection on scope exit (future: + poisoning)
+- `2`: Full — guard + escape detection on scope exit + poisoning
+- `3`: Debug — full + borrow registry (acquire call-site tracking in error messages)
 
 Default: `1` (guard mode)
 """
@@ -397,6 +398,10 @@ mutable struct AdaptiveArrayPool <: AbstractArrayPool
     _current_depth::Int             # Current scope depth (1 = global scope)
     _touched_type_masks::Vector{UInt16}  # Per-depth: which fixed slots were touched + mode flags
     _touched_has_others::Vector{Bool}    # Per-depth: any non-fixed-slot type touched?
+
+    # Borrow registry (POOL_SAFETY_LV >= 3 only, modern path only)
+    _pending_callsite::String                        # "" = no pending
+    _borrow_log::Union{Nothing, IdDict{Any, String}} # vector_obj => callsite string
 end
 
 function AdaptiveArrayPool()
@@ -412,7 +417,9 @@ function AdaptiveArrayPool()
         IdDict{DataType, Any}(),
         1,              # _current_depth: 1 = global scope (sentinel)
         [UInt16(0)],    # _touched_type_masks: sentinel (no bits set)
-        [false]         # _touched_has_others: sentinel (no others)
+        [false],        # _touched_has_others: sentinel (no others)
+        "",             # _pending_callsite: no pending
+        nothing         # _borrow_log: lazily created at LV >= 3
     )
 end
 

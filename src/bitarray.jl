@@ -139,17 +139,29 @@ end
 # Bit type: returns BitArray{N} with shared chunks (SIMD optimized, N-D cached)
 @inline function _unsafe_acquire_impl!(pool::AbstractArrayPool, ::Type{Bit}, n::Int)
     tp = get_typed_pool!(pool, Bit)::BitTypedPool
-    return get_bitarray!(tp, n)
+    result = get_bitarray!(tp, n)
+    @static if STATIC_POOL_CHECKS
+        POOL_SAFETY_LV[] >= 3 && _record_borrow_from_pending!(pool, tp)
+    end
+    return result
 end
 
 @inline function _unsafe_acquire_impl!(pool::AbstractArrayPool, ::Type{Bit}, dims::Vararg{Int, N}) where {N}
     tp = get_typed_pool!(pool, Bit)::BitTypedPool
-    return get_bitarray!(tp, dims)
+    result = get_bitarray!(tp, dims)
+    @static if STATIC_POOL_CHECKS
+        POOL_SAFETY_LV[] >= 3 && _record_borrow_from_pending!(pool, tp)
+    end
+    return result
 end
 
 @inline function _unsafe_acquire_impl!(pool::AbstractArrayPool, ::Type{Bit}, dims::NTuple{N, Int}) where {N}
     tp = get_typed_pool!(pool, Bit)::BitTypedPool
-    return get_bitarray!(tp, dims)
+    result = get_bitarray!(tp, dims)
+    @static if STATIC_POOL_CHECKS
+        POOL_SAFETY_LV[] >= 3 && _record_borrow_from_pending!(pool, tp)
+    end
+    return result
 end
 
 # ==============================================================================
@@ -205,7 +217,8 @@ function _check_bitchunks_overlap(arr::BitArray, pool::AdaptiveArrayPool, origin
         v_len = length(v_chunks) * sizeof(UInt64)
         v_end = v_ptr + v_len
         if !(arr_end <= v_ptr || v_end <= arr_ptr)
-            _throw_pool_escape_error(original_val, Bit)
+            callsite = _lookup_borrow_callsite(pool, v)
+            _throw_pool_escape_error(original_val, Bit, callsite)
         end
     end
     return nothing

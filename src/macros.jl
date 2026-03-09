@@ -479,6 +479,11 @@ function _generate_pool_code(pool_name, expr, force_enable; source::Union{LineNu
     # For dynamic path: keep acquire! untransformed so _record_type_touch! is called
     transformed_expr = use_typed ? _transform_acquire_calls(expr, pool_name) : expr
 
+    # Inject borrow callsite recording (LV≥3 at runtime; gated by STATIC_POOL_CHECKS at compile time)
+    if STATIC_POOL_CHECKS
+        transformed_expr = _inject_pending_callsite(transformed_expr, pool_name)
+    end
+
     if use_typed
         checkpoint_call = _generate_typed_checkpoint_call(esc(pool_name), static_types)
     else
@@ -573,6 +578,9 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, forc
         # For typed path: transform acquire! → _acquire_impl! (bypasses type touch recording)
         # For dynamic path: keep acquire! untransformed so _record_type_touch! is called
         transformed_expr = use_typed ? _transform_acquire_calls(expr, pool_name) : expr
+        if STATIC_POOL_CHECKS
+            transformed_expr = _inject_pending_callsite(transformed_expr, pool_name)
+        end
         pool_getter = :($_get_pool_for_backend($(Val{backend}())))
 
         if use_typed
@@ -622,6 +630,9 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, forc
     # For typed path: transform acquire! → _acquire_impl! (bypasses type touch recording)
     # For dynamic path: keep acquire! untransformed so _record_type_touch! is called
     transformed_expr = use_typed ? _transform_acquire_calls(expr, pool_name) : expr
+    if STATIC_POOL_CHECKS
+        transformed_expr = _inject_pending_callsite(transformed_expr, pool_name)
+    end
 
     # Use Val{backend}() for compile-time dispatch - fully inlinable
     pool_getter = :($_get_pool_for_backend($(Val{backend}())))
@@ -691,6 +702,9 @@ function _generate_function_pool_code_with_backend(backend::Symbol, pool_name, f
     # For typed path: transform acquire! → _acquire_impl! (bypasses type touch recording)
     # For dynamic path: keep acquire! untransformed so _record_type_touch! is called
     transformed_body = use_typed ? _transform_acquire_calls(body, pool_name) : body
+    if STATIC_POOL_CHECKS
+        transformed_body = _inject_pending_callsite(transformed_body, pool_name)
+    end
 
     # Use Val{backend}() for compile-time dispatch
     pool_getter = :($_get_pool_for_backend($(Val{backend}())))
@@ -777,6 +791,9 @@ function _generate_function_pool_code(pool_name, func_def, force_enable, disable
     # For typed path: transform acquire! → _acquire_impl! (bypasses type touch recording)
     # For dynamic path: keep acquire! untransformed so _record_type_touch! is called
     transformed_body = use_typed ? _transform_acquire_calls(body, pool_name) : body
+    if STATIC_POOL_CHECKS
+        transformed_body = _inject_pending_callsite(transformed_body, pool_name)
+    end
 
     if use_typed
         checkpoint_call = _generate_typed_checkpoint_call(esc(pool_name), static_types)
@@ -1287,6 +1304,91 @@ function _transform_acquire_calls(expr, pool_name)
         return Expr(expr.head, new_args...)
     end
     return expr
+end
+
+# ==============================================================================
+# Internal: Borrow Callsite Injection (POOL_SAFETY_LV >= 3)
+# ==============================================================================
+#
+# Second-pass AST transformation that inserts `pool._pending_callsite = "file:line"`
+# before each statement containing an acquire call. This enables borrow registry
+# error messages to show WHERE the problematic acquire originated.
+#
+# Works with both typed path (_*_impl! GlobalRefs) and dynamic path (original
+# acquire!/zeros!/etc. calls). The injection is gated behind STATIC_POOL_CHECKS
+# at macro expansion time, and POOL_SAFETY_LV[] >= 3 at runtime.
+
+const _POOL_SAFETY_LV_REF = GlobalRef(@__MODULE__, :POOL_SAFETY_LV)
+
+"""Set of all transformed `_*_impl!` function names (GlobalRef targets)."""
+const _IMPL_FUNC_NAMES = Set{Symbol}([
+    :_acquire_impl!, :_unsafe_acquire_impl!,
+    :_zeros_impl!, :_ones_impl!, :_trues_impl!, :_falses_impl!,
+    :_similar_impl!, :_reshape_impl!,
+    :_unsafe_zeros_impl!, :_unsafe_ones_impl!, :_unsafe_similar_impl!,
+])
+
+"""
+    _contains_acquire_call(expr, pool_name) -> Bool
+
+Detect if `expr` (or any sub-expression) contains a pool acquire call.
+Matches both transformed (`GlobalRef`-based `_*_impl!`) and original
+(`acquire!`, `zeros!`, etc.) call forms.
+"""
+function _contains_acquire_call(expr, pool_name)
+    expr isa Expr || return false
+    if expr.head == :call && length(expr.args) >= 2
+        fn = expr.args[1]
+        # Transformed _*_impl! calls (GlobalRef from typed path)
+        if fn isa GlobalRef && fn.name in _IMPL_FUNC_NAMES
+            return true
+        end
+        # Original acquire calls (dynamic path, or pre-transform)
+        if _is_acquire_call(expr, pool_name)
+            return true
+        end
+    end
+    return any(arg -> _contains_acquire_call(arg, pool_name), expr.args)
+end
+
+"""
+    _inject_pending_callsite(expr, pool_name) -> Expr
+
+Walk block-level statements, track `LineNumberNode`s, and insert
+`POOL_SAFETY_LV[] >= 3 && (pool._pending_callsite = "file:line")`
+before each statement containing a pool acquire call.
+
+Only processes `:block` expressions. Non-block expressions are recursed
+into to find nested blocks.
+"""
+function _inject_pending_callsite(expr, pool_name)
+    expr isa Expr || return expr
+    if expr.head == :block
+        new_args = Any[]
+        current_lnn = nothing
+        for arg in expr.args
+            if arg isa LineNumberNode
+                current_lnn = arg
+                push!(new_args, arg)
+            else
+                processed = _inject_pending_callsite(arg, pool_name)
+                if current_lnn !== nothing && _contains_acquire_call(processed, pool_name)
+                    callsite_str = "$(current_lnn.file):$(current_lnn.line)"
+                    inject = Expr(:&&,
+                        Expr(:call, :>=, Expr(:ref, _POOL_SAFETY_LV_REF), 3),
+                        Expr(:(=),
+                            Expr(:., pool_name, QuoteNode(:_pending_callsite)),
+                            callsite_str))
+                    push!(new_args, inject)
+                end
+                push!(new_args, processed)
+            end
+        end
+        return Expr(:block, new_args...)
+    else
+        new_args = Any[_inject_pending_callsite(arg, pool_name) for arg in expr.args]
+        return Expr(expr.head, new_args...)
+    end
 end
 
 # ==============================================================================

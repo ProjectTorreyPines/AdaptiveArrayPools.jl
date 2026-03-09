@@ -605,6 +605,10 @@ function reset!(pool::AdaptiveArrayPool)
     empty!(pool._touched_has_others)
     push!(pool._touched_has_others, false)         # Sentinel: no others
 
+    # Clear borrow registry
+    pool._pending_callsite = ""
+    pool._borrow_log = nothing
+
     return pool
 end
 
