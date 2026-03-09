@@ -53,11 +53,27 @@ function _validate_pool_return(val, pool::AdaptiveArrayPool)
         return
     end
 
-    # 3. Check raw Array (from unsafe_acquire!)
-    return if val isa Array
-        _check_pointer_overlap(val, pool)
+    # 3. Check raw Array (from unsafe_acquire!) + element recursion
+    if val isa Array
+        # Pool vectors always have concrete eltypes — skip overlap check for abstract
+        if isconcretetype(eltype(val))
+            _check_pointer_overlap(val, pool)
+        end
+        # Recurse into elements for containers like Vector{SubArray}
+        if _eltype_may_contain_arrays(eltype(val))
+            for x in val
+                _validate_pool_return(x, pool)
+            end
+        end
     end
 end
+
+# Eltype guard: skip element iteration for leaf types (perf optimization in debug mode)
+_eltype_may_contain_arrays(::Type{<:Number}) = false
+_eltype_may_contain_arrays(::Type{<:AbstractString}) = false
+_eltype_may_contain_arrays(::Type{Symbol}) = false
+_eltype_may_contain_arrays(::Type{Char}) = false
+_eltype_may_contain_arrays(::Type) = true
 
 # Check if array memory overlaps with any pool vector
 function _check_pointer_overlap(arr::Array, pool::AdaptiveArrayPool)
@@ -90,9 +106,10 @@ function _check_pointer_overlap(arr::Array, pool::AdaptiveArrayPool)
     return
 end
 
-# Recursive inspection of common container types (Tuple, NamedTuple, Pair).
-# These are the primary "lightweight wrapper" types in Julia through which
-# pool-backed arrays escape undetected when hidden inside return values.
+# Recursive inspection of container types (Tuple, NamedTuple, Pair, Dict, Set).
+# These are common wrapper types in Julia through which pool-backed arrays
+# can escape undetected when hidden inside return values.
+# Note: Array element recursion is handled in the main function via _eltype_may_contain_arrays.
 
 function _validate_pool_return(val::Tuple, pool::AdaptiveArrayPool)
     for x in val
@@ -109,6 +126,18 @@ end
 function _validate_pool_return(val::Pair, pool::AdaptiveArrayPool)
     _validate_pool_return(val.first, pool)
     _validate_pool_return(val.second, pool)
+end
+
+function _validate_pool_return(val::AbstractDict, pool::AdaptiveArrayPool)
+    for p in val  # each p is a Pair — reuses Pair dispatch
+        _validate_pool_return(p, pool)
+    end
+end
+
+function _validate_pool_return(val::AbstractSet, pool::AdaptiveArrayPool)
+    for x in val
+        _validate_pool_return(x, pool)
+    end
 end
 
 _validate_pool_return(val, ::DisabledPool) = nothing

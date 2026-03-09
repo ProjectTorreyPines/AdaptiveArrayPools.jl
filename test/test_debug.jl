@@ -1,4 +1,4 @@
-import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap
+import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap, _eltype_may_contain_arrays
 
 @testset "POOL_DEBUG and Safety Validation" begin
 
@@ -447,6 +447,125 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap
         # N-D ReshapedArray inside NamedTuple
         mat = acquire!(pool, Float64, 5, 5)
         @test_throws ErrorException _validate_pool_return((matrix=mat, size=(5,5)), pool)
+
+        rewind!(pool)
+    end
+
+    # ==============================================================================
+    # _validate_pool_return — Dict, Set, and Vector-of-arrays container inspection
+    # ==============================================================================
+
+    @testset "_eltype_may_contain_arrays guard" begin
+        @test _eltype_may_contain_arrays(Float64) == false
+        @test _eltype_may_contain_arrays(Int32) == false
+        @test _eltype_may_contain_arrays(ComplexF64) == false
+        @test _eltype_may_contain_arrays(String) == false
+        @test _eltype_may_contain_arrays(Symbol) == false
+        @test _eltype_may_contain_arrays(Char) == false
+        @test _eltype_may_contain_arrays(Any) == true
+        @test _eltype_may_contain_arrays(SubArray) == true
+        @test _eltype_may_contain_arrays(AbstractArray) == true
+        @test _eltype_may_contain_arrays(Vector{Float64}) == true
+    end
+
+    @testset "_validate_pool_return with Dict" begin
+        pool = AdaptiveArrayPool()
+        checkpoint!(pool)
+
+        v = acquire!(pool, Float64, 10)
+
+        # Pool array as Dict value → caught
+        @test_throws ErrorException _validate_pool_return(Dict(:data => v), pool)
+
+        # Pool array as Dict key (unusual but possible) → caught
+        @test_throws ErrorException _validate_pool_return(Dict(v => :data), pool)
+
+        # Multiple pool arrays in Dict values
+        w = acquire!(pool, Int64, 5)
+        @test_throws ErrorException _validate_pool_return(Dict(:a => v, :b => w), pool)
+
+        # Safe Dict → passes
+        _validate_pool_return(Dict(:a => 1, :b => 2), pool)
+        _validate_pool_return(Dict{String, Float64}("x" => 1.0), pool)
+
+        rewind!(pool)
+    end
+
+    @testset "_validate_pool_return with nested Dict" begin
+        pool = AdaptiveArrayPool()
+        checkpoint!(pool)
+
+        v = acquire!(pool, Float64, 10)
+
+        # Dict inside Tuple → caught
+        @test_throws ErrorException _validate_pool_return((1, Dict(:data => v)), pool)
+
+        # Dict inside NamedTuple → caught
+        @test_throws ErrorException _validate_pool_return((result=Dict(:buf => v),), pool)
+
+        # Nested Dict (Dict of Dict) → caught
+        @test_throws ErrorException _validate_pool_return(Dict(:outer => Dict(:inner => v)), pool)
+
+        rewind!(pool)
+    end
+
+    @testset "_validate_pool_return with Set" begin
+        pool = AdaptiveArrayPool()
+        checkpoint!(pool)
+
+        v = acquire!(pool, Float64, 10)
+
+        # Pool array inside Set → caught
+        @test_throws ErrorException _validate_pool_return(Set([v]), pool)
+
+        # Safe Set → passes
+        _validate_pool_return(Set([1, 2, 3]), pool)
+
+        rewind!(pool)
+    end
+
+    @testset "_validate_pool_return with Vector-of-arrays (element recursion)" begin
+        pool = AdaptiveArrayPool()
+        checkpoint!(pool)
+
+        v = acquire!(pool, Float64, 10)
+
+        # Vector{SubArray} — pool array as element → caught
+        external_container = Any[v]
+        @test_throws ErrorException _validate_pool_return(external_container, pool)
+
+        # Multiple pool arrays in Vector
+        w = acquire!(pool, Int64, 5)
+        @test_throws ErrorException _validate_pool_return(Any[v, w], pool)
+
+        # Nested: Vector inside Tuple
+        @test_throws ErrorException _validate_pool_return((42, Any[v]), pool)
+
+        # Safe Vector{Float64} — passes (eltype guard skips element iteration)
+        _validate_pool_return([1.0, 2.0, 3.0], pool)
+        _validate_pool_return(zeros(1000), pool)  # large but still fast (eltype guard)
+
+        # Vector{Any} with safe values — passes
+        _validate_pool_return(Any[1, "hello", :sym], pool)
+
+        rewind!(pool)
+    end
+
+    @testset "_validate_pool_return Vector-of-arrays with unsafe_acquire!" begin
+        pool = AdaptiveArrayPool()
+        checkpoint!(pool)
+
+        # unsafe_acquire! Array inside Vector → caught
+        raw = unsafe_acquire!(pool, Float64, 100)
+        @test_throws ErrorException _validate_pool_return(Any[raw], pool)
+
+        # BitVector inside Vector → caught
+        bv = acquire!(pool, Bit, 50)
+        @test_throws ErrorException _validate_pool_return(Any[bv], pool)
+
+        # ReshapedArray inside Vector → caught
+        mat = acquire!(pool, Float64, 5, 5)
+        @test_throws ErrorException _validate_pool_return(Any[mat], pool)
 
         rewind!(pool)
     end
