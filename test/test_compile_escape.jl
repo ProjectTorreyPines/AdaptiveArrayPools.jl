@@ -2,7 +2,8 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
     _find_direct_exposure, _remove_flat_reassigned!, _check_compile_time_escape,
     _collect_all_return_values, _collect_explicit_returns!, _collect_implicit_return_values!,
     _get_last_expression_with_line, _render_return_expr,
-    _acquire_call_kind, _classify_escaped_vars
+    _acquire_call_kind, _classify_escaped_vars,
+    DeclarationSite, _extract_declaration_sites
 
 @testset "Compile-Time Escape Detection" begin
 
@@ -1295,6 +1296,12 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
         @test occursin("collect(v)", msg)
         @test occursin("False positive?", msg)
         @test occursin("Escaping return", msg)
+        @test occursin("escape the @with_pool scope", msg)
+        # Declaration sites populated
+        @test !isempty(err.declarations)
+        @test any(d -> d.var === :v, err.declarations)
+        @test occursin("Declarations:", msg)
+        @test occursin("acquire!(pool, Float64, 10)", msg)
 
         # Different variable name
         err = try @macroexpand(@with_pool pool begin
@@ -1303,6 +1310,7 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
         end) catch e; e end
         @test err isa PoolEscapeError
         @test err.vars == [:data]
+        @test any(d -> d.var === :data, err.declarations)
 
         # Function form
         err = try @macroexpand(@with_pool pool function msg_fn(n)
@@ -1333,6 +1341,11 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
         msg = sprint(showerror, err)
         @test occursin("collect(v)", msg)
         @test occursin("collect(w)", msg)
+        # Multi-variable: both declarations present
+        @test length(err.declarations) == 2
+        @test err.declarations[1].var === :v
+        @test err.declarations[2].var === :w
+        @test occursin("2 variables escape", msg)
 
         # Source location captured
         @test err.file !== nothing
@@ -1506,6 +1519,98 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
             t
         end) catch e; e end
         @test err.var_info[:t] == (:container, [:v])
+    end
+
+    # ==============================================================================
+    # Declaration site extraction
+    # ==============================================================================
+
+    @testset "_extract_declaration_sites" begin
+        # Single acquire: captures var, expr, and line
+        sites = _extract_declaration_sites(
+            quote
+                v = acquire!(pool, Float64, 10)
+                v
+            end,
+            Set([:v])
+        )
+        @test length(sites) == 1
+        @test sites[1].var === :v
+        @test sites[1].line !== nothing
+        @test string(sites[1].expr) == "v = acquire!(pool, Float64, 10)"
+
+        # Multiple declarations sorted by line
+        sites = _extract_declaration_sites(
+            quote
+                v = acquire!(pool, Float64, 10)
+                w = zeros!(pool, 5)
+                (v, w)
+            end,
+            Set([:v, :w])
+        )
+        @test length(sites) == 2
+        @test sites[1].var === :v
+        @test sites[2].var === :w
+        @test sites[1].line < sites[2].line
+
+        # Container declaration captured
+        sites = _extract_declaration_sites(
+            quote
+                v = acquire!(pool, Float64, 10)
+                a = [v, 1]
+                a
+            end,
+            Set([:v, :a])
+        )
+        @test length(sites) == 2
+        @test sites[1].var === :v
+        @test sites[2].var === :a
+
+        # Alias declaration captured
+        sites = _extract_declaration_sites(
+            quote
+                v = acquire!(pool, Float64, 10)
+                d = v
+                d
+            end,
+            Set([:v, :d])
+        )
+        @test length(sites) == 2
+        @test sites[1].var === :v
+        @test sites[2].var === :d
+
+        # Only escaped vars captured (non-escaped ignored)
+        sites = _extract_declaration_sites(
+            quote
+                v = acquire!(pool, Float64, 10)
+                w = acquire!(pool, Float64, 5)
+                v
+            end,
+            Set([:v])  # only v escapes
+        )
+        @test length(sites) == 1
+        @test sites[1].var === :v
+    end
+
+    # ==============================================================================
+    # Formatted message: declarations and escape points with locations
+    # ==============================================================================
+
+    @testset "showerror shows declarations and escape locations" begin
+        # Container: declarations show both v and a
+        err = try @macroexpand(@with_pool pool begin
+            v = acquire!(pool, Float64, 10)
+            a = [v, 1]
+            return (v, a)
+        end) catch e; e end
+        msg = sprint(showerror, err)
+        @test occursin("Declarations:", msg)
+        @test occursin("Escaping return:", msg)
+        @test occursin("acquire!(pool, Float64, 10)", msg)
+        @test occursin("[v, 1]", msg)
+        @test occursin("return", msg)
+        # Location markers present (@ followed by path)
+        @test occursin("@", msg)
     end
 
 end # Compile-Time Escape Detection

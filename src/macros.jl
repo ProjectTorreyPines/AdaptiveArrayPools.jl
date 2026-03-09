@@ -13,6 +13,14 @@ struct EscapePoint
     vars::Vector{Symbol}
 end
 
+"""Per-variable declaration site: where an escaping variable was assigned."""
+struct DeclarationSite
+    var::Symbol
+    expr::Any
+    line::Union{Int, Nothing}
+    file::Union{Symbol, Nothing}
+end
+
 """
     PoolEscapeError <: Exception
 
@@ -27,10 +35,14 @@ struct PoolEscapeError <: Exception
     line::Union{Int, Nothing}
     points::Vector{EscapePoint}
     var_info::Dict{Symbol, Tuple{Symbol, Vector{Symbol}}}  # var => (kind, source_vars)
+    declarations::Vector{DeclarationSite}
 end
 
 PoolEscapeError(vars, file, line, points) =
-    PoolEscapeError(vars, file, line, points, Dict{Symbol, Tuple{Symbol, Vector{Symbol}}}())
+    PoolEscapeError(vars, file, line, points, Dict{Symbol, Tuple{Symbol, Vector{Symbol}}}(), DeclarationSite[])
+
+PoolEscapeError(vars, file, line, points, var_info) =
+    PoolEscapeError(vars, file, line, points, var_info, DeclarationSite[])
 
 """Render an expression with escaped variable names highlighted in red.
 Handles return, tuple, NamedTuple, array literal; falls back to print for others."""
@@ -75,11 +87,16 @@ function Base.showerror(io::IO, e::PoolEscapeError)
     # Header
     printstyled(io, "PoolEscapeError"; color=:red, bold=true)
     printstyled(io, " (compile-time)"; color=:light_black)
-    if e.file !== nothing
-        printstyled(io, " at "; color=:light_black)
-        printstyled(io, string(e.file, ":", e.line); color=:light_black)
-    end
     println(io)
+
+    # Descriptive message
+    println(io)
+    n = length(e.vars)
+    if n == 1
+        printstyled(io, "  The following variable escapes the @with_pool scope:\n"; color=:light_black)
+    else
+        printstyled(io, "  The following ", n, " variables escape the @with_pool scope:\n"; color=:light_black)
+    end
 
     # Escaped variables — one per line with classification
     println(io)
@@ -105,18 +122,40 @@ function Base.showerror(io::IO, e::PoolEscapeError)
         end
     end
 
-    # Show escaping return points with highlighted expressions
+    # Declaration sites — where each escaping variable was assigned
+    if !isempty(e.declarations)
+        println(io)
+        printstyled(io, "  Declarations:\n"; bold=true)
+        for (idx, decl) in enumerate(e.declarations)
+            printstyled(io, "    [", idx, "]  "; color=:light_black)
+            printstyled(io, string(decl.expr); color=:cyan)
+            # Fall back to macro source file when body LineNumberNode has :none (REPL/eval)
+            decl_file = (decl.file !== nothing && decl.file !== :none) ? decl.file : e.file
+            loc = _format_location_str(decl_file, decl.line)
+            if loc !== nothing
+                printstyled(io, "  ["; color=:cyan)
+                printstyled(io, loc; color=:cyan)
+                printstyled(io, "] "; color=:cyan)
+            end
+            println(io)
+        end
+    end
+
+    # Escaping return points with highlighted expressions
     if !isempty(e.points)
         println(io)
         label = length(e.points) == 1 ? "  Escaping return:" : "  Escaping returns:"
         printstyled(io, label, "\n"; bold=true)
         escaped_set = Set{Symbol}(e.vars)
         for (idx, pt) in enumerate(e.points)
-            printstyled(io, "    [", idx, "] "; color=:light_black)
-            if pt.line !== nothing
-                printstyled(io, "line ", pt.line, ": "; color=:light_black)
-            end
+            printstyled(io, "    [", idx, "]  "; color=:light_black)
             _render_return_expr(io, pt.expr, escaped_set)
+            loc = _format_point_location(e.file, pt.line)
+            if loc !== nothing
+                printstyled(io, "  ["; color=:magenta) 
+                printstyled(io, loc; color=:magenta) 
+                printstyled(io, "] "; color=:magenta) 
+            end
             println(io)
         end
     end
@@ -152,6 +191,30 @@ function Base.showerror(io::IO, e::PoolEscapeError)
     printstyled(io, "    Please file an issue at "; color=:light_black)
     printstyled(io, "https://github.com/ProjectTorreyPines/AdaptiveArrayPools.jl/issues"; bold=true)
     printstyled(io, "\n    with a minimal reproducer so we can improve the escape detector.\n"; color=:light_black)
+end
+
+# Location formatting helpers (uses _short_path from debug.jl)
+function _format_location_str(file, line)
+    file_str = file !== nothing ? string(file) : nothing
+    # Skip "none" — Julia's placeholder for REPL/eval contexts
+    if file_str !== nothing && file_str != "none"
+        short = _short_path(file_str)
+        return line !== nothing ? short * ":" * string(line) : short
+    elseif line !== nothing
+        return "line " * string(line)
+    end
+    return nothing
+end
+
+function _format_point_location(file::Union{String, Nothing}, line::Union{Int, Nothing})
+    # Skip "none" — Julia's placeholder for REPL/eval contexts
+    if file !== nothing && file != "none"
+        short = _short_path(file)
+        return line !== nothing ? short * ":" * string(line) : short
+    elseif line !== nothing
+        return "line " * string(line)
+    end
+    return nothing
 end
 
 # Suppress stacktrace — LoadError delegates to this via showerror(io, ex.error, bt)
@@ -2005,6 +2068,54 @@ function _classify_walk!(info, expr, target_pool, escaped_set, acquired)
 end
 
 """
+    _extract_declaration_sites(expr, escaped)
+
+Walk the AST to find assignment sites for escaped variables.
+Returns a `Vector{DeclarationSite}` sorted by line number.
+"""
+function _extract_declaration_sites(expr, escaped::Set{Symbol})
+    sites = DeclarationSite[]
+    seen = Set{Symbol}()
+    _collect_declaration_sites!(sites, seen, expr, escaped, nothing, nothing)
+    sort!(sites; by = s -> something(s.line, typemax(Int)))
+    return sites
+end
+
+function _collect_declaration_sites!(sites, seen, expr, escaped, current_line, current_file)
+    expr isa Expr || return
+    if expr.head == :block
+        line = current_line
+        file = current_file
+        for arg in expr.args
+            if arg isa LineNumberNode
+                line = arg.line
+                file = arg.file
+            else
+                _collect_declaration_sites!(sites, seen, arg, escaped, line, file)
+            end
+        end
+    elseif expr.head == :(=) && length(expr.args) >= 2
+        lhs = expr.args[1]
+        if lhs isa Symbol && lhs in escaped && lhs ∉ seen
+            push!(sites, DeclarationSite(lhs, expr, current_line, current_file))
+            push!(seen, lhs)
+        elseif Meta.isexpr(lhs, :tuple)
+            for l in lhs.args
+                if l isa Symbol && l in escaped && l ∉ seen
+                    push!(sites, DeclarationSite(l, expr, current_line, current_file))
+                    push!(seen, l)
+                end
+            end
+        end
+        _collect_declaration_sites!(sites, seen, expr.args[2], escaped, current_line, current_file)
+    else
+        for arg in expr.args
+            _collect_declaration_sites!(sites, seen, arg, escaped, current_line, current_file)
+        end
+    end
+end
+
+"""
     _check_compile_time_escape(expr, pool_name, source)
 
 Compile-time (macro expansion time) escape detection.
@@ -2051,7 +2162,8 @@ function _check_compile_time_escape(expr, pool_name, source::Union{LineNumberNod
 
     sorted = sort!(collect(all_escaped))
     var_info = _classify_escaped_vars(expr, pool_name, sorted, acquired)
+    declarations = _extract_declaration_sites(expr, all_escaped)
     file = source !== nothing ? string(source.file) : nothing
     line = source !== nothing ? source.line : nothing
-    return PoolEscapeError(sorted, file, line, points, var_info)
+    return PoolEscapeError(sorted, file, line, points, var_info, declarations)
 end
