@@ -768,7 +768,7 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
         # Function call on acquired var → safe (can't determine return type)
         @test_nowarn @macroexpand @with_pool pool begin
             v = acquire!(pool, Float64, 10)
-            identity(v)
+            sum(v)
         end
 
         # Indexing → safe (element access, not array itself)
@@ -1101,7 +1101,7 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
         # Function call wrapping acquired var
         @test_nowarn @macroexpand @with_pool pool function fn_safe5(n)
             v = acquire!(pool, Float64, n)
-            identity(v)
+            sum(v)
         end
 
         # Multiple acquires, safe return
@@ -1292,7 +1292,7 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
         @test :v in err.points[1].vars
         msg = sprint(showerror, err)
         @test occursin("collect(v)", msg)
-        @test occursin("identity()", msg)
+        @test occursin("@skip_check_vars", msg)
         @test occursin("Escaping return", msg)
 
         # Different variable name

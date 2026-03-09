@@ -69,7 +69,7 @@ end
 
 function Base.showerror(io::IO, e::PoolEscapeError)
     # Header
-    printstyled(io, "PoolEscapeError"; bold=true)
+    printstyled(io, "PoolEscapeError"; color=:red, bold=true)
     printstyled(io, " (compile-time)"; color=:light_black)
     if e.file !== nothing
         printstyled(io, " at "; color=:light_black)
@@ -101,22 +101,40 @@ function Base.showerror(io::IO, e::PoolEscapeError)
         end
     end
 
-    # Suggestion 1: trace the definition
+    # Suggestion 1: fix
     println(io)
     collects_str = join(["collect($v)" for v in e.vars], ", ")
-    printstyled(io, "  Fix:\n"; bold=true)
-    printstyled(io, "    Use "; color=:light_black)
-    printstyled(io, collects_str; bold=true, color=:light_black)
+    printstyled(io, "  Fix: "; bold=true)
+    printstyled(io, "Use "; color=:light_black)
+    printstyled(io, collects_str; bold=true)
     printstyled(io, " to return owned copies.\n"; color=:light_black)
+    printstyled(io, "       Or use a regular Julia array (zeros()/Array{T}()) if it must outlive the pool scope.\n"; color=:light_black)
 
     # Suggestion 2: false positive escape hatch
     println(io)
     printstyled(io, "  False positive?\n"; bold=true)
-    printstyled(io, "    Wrap with identity() to suppress this check.\n"; color=:light_black)
+    printstyled(io, "    Add "; color=:light_black)
+    vars_str = join(["$v" for v in e.vars], " ")
+    printstyled(io, "@skip_check_vars $vars_str";)
+    printstyled(io, " in the @with_pool body to suppress this check.\n"; color=:light_black)
 end
 
 # Suppress stacktrace — LoadError delegates to this via showerror(io, ex.error, bt)
 Base.showerror(io::IO, e::PoolEscapeError, ::Any; backtrace=true) = showerror(io, e)
+
+
+"""
+    @skip_check_vars x y z ...
+
+Suppress compile-time pool escape checking for the listed variables.
+Use when the escape detector flags a false positive.
+
+This is a no-op at runtime — it only affects `@with_pool` / `@maybe_with_pool`
+macro expansion.
+"""
+macro skip_check_vars(vars...)
+    nothing
+end
 
 # ==============================================================================
 # Backend Dispatch (for extensibility)
@@ -1345,10 +1363,19 @@ function _extract_acquired_vars(expr, target_pool, vars = Set{Symbol}())
             rhs = expr.args[2]
             if lhs isa Symbol && _is_acquire_call(rhs, target_pool)
                 push!(vars, lhs)
+            elseif lhs isa Symbol && rhs isa Symbol && rhs in vars
+                # Simple alias: d = z where z is acquired
+                push!(vars, lhs)
+            elseif lhs isa Symbol && _literal_contains_acquired(rhs, vars)
+                # Container wrapping: d = (z,), d = [z, w], etc.
+                push!(vars, lhs)
             elseif Meta.isexpr(lhs, :tuple) && Meta.isexpr(rhs, :tuple)
                 # Destructuring with tuple literal RHS: (v, w) = (acquire!(...), expr)
                 for (l, r) in zip(lhs.args, rhs.args)
                     if l isa Symbol && _is_acquire_call(r, target_pool)
+                        push!(vars, l)
+                    elseif l isa Symbol && r isa Symbol && r in vars
+                        # Destructuring alias: (a, d) = (..., z)
                         push!(vars, l)
                     end
                 end
@@ -1483,14 +1510,17 @@ function _remove_flat_reassigned!(expr, acquired, target_pool)
         if arg isa Expr && arg.head == :(=) && length(arg.args) >= 2
             lhs = arg.args[1]
             rhs = arg.args[2]
-            if lhs isa Symbol && lhs in acquired && !_is_acquire_call(rhs, target_pool)
+            if lhs isa Symbol && lhs in acquired && !_is_acquire_call(rhs, target_pool) &&
+                    !(rhs isa Symbol && rhs in acquired) &&  # keep aliases
+                    !_literal_contains_acquired(rhs, acquired)  # keep container wrapping
                 delete!(acquired, lhs)
             elseif Meta.isexpr(lhs, :tuple)
                 # Destructuring: (a, v, b) = expr
                 if Meta.isexpr(rhs, :tuple) && length(rhs.args) == length(lhs.args)
                     # RHS is tuple literal — check each element pair
                     for (l, r) in zip(lhs.args, rhs.args)
-                        if l isa Symbol && l in acquired && !_is_acquire_call(r, target_pool)
+                        if l isa Symbol && l in acquired && !_is_acquire_call(r, target_pool) &&
+                                !(r isa Symbol && r in acquired)  # keep aliases
                             delete!(acquired, l)
                         end
                     end
@@ -1520,6 +1550,30 @@ Only catches high-confidence patterns:
 
 Does NOT recurse into function calls (can't know what `f(v)` returns).
 """
+
+"""Check if a literal expression (symbol, identity call, tuple/vect) transitively contains any acquired var."""
+function _literal_contains_acquired(expr, acquired)
+    expr isa Symbol && return expr in acquired
+    if expr isa Expr
+        # identity(x) — transparent, look through
+        if expr.head == :call && length(expr.args) >= 2 && expr.args[1] === :identity
+            return _literal_contains_acquired(expr.args[2], acquired)
+        end
+        if expr.head in (:tuple, :vect)
+            for arg in expr.args
+                if Meta.isexpr(arg, :(=)) && length(arg.args) >= 2
+                    _literal_contains_acquired(arg.args[2], acquired) && return true
+                elseif Meta.isexpr(arg, :kw) && length(arg.args) >= 2
+                    _literal_contains_acquired(arg.args[2], acquired) && return true
+                else
+                    _literal_contains_acquired(arg, acquired) && return true
+                end
+            end
+        end
+    end
+    return false
+end
+
 function _find_direct_exposure(expr, acquired)
     found = Set{Symbol}()
     if expr isa Symbol
@@ -1534,31 +1588,45 @@ function _find_direct_exposure(expr, acquired)
                 union!(found, _find_direct_exposure(arg, acquired))
             end
         elseif expr.head in (:tuple, :vect)
-            # (v, w) or [v, w]
+            # (v, w), [v, w], nested (a, (b, v)), (key=(a, v),)
             for arg in expr.args
-                if arg isa Symbol && arg in acquired
-                    push!(found, arg)
-                elseif Meta.isexpr(arg, :(=)) && length(arg.args) >= 2
-                    # NamedTuple: (a=v,)
-                    val = arg.args[2]
-                    if val isa Symbol && val in acquired
-                        push!(found, val)
-                    end
+                if Meta.isexpr(arg, :(=)) && length(arg.args) >= 2
+                    # NamedTuple: (a=v,) or (a=(b,v),)
+                    union!(found, _find_direct_exposure(arg.args[2], acquired))
+                else
+                    union!(found, _find_direct_exposure(arg, acquired))
                 end
             end
         elseif expr.head == :parameters
-            # (a=v,) style named tuple parameters
+            # (; a=v) style named tuple parameters
             for arg in expr.args
                 if Meta.isexpr(arg, :kw) && length(arg.args) >= 2
-                    val = arg.args[2]
-                    if val isa Symbol && val in acquired
-                        push!(found, val)
-                    end
+                    union!(found, _find_direct_exposure(arg.args[2], acquired))
                 end
             end
+        elseif expr.head == :call && length(expr.args) >= 2 && expr.args[1] === :identity
+            # identity(x) — transparent, look through
+            union!(found, _find_direct_exposure(expr.args[2], acquired))
         end
     end
     return found
+end
+
+"""Collect symbols listed in `@skip_check_vars` directives anywhere in the body."""
+function _collect_skip_check_vars(expr)
+    skipped = Set{Symbol}()
+    expr isa Expr || return skipped
+    if expr.head == :macrocall && length(expr.args) >= 1 &&
+            expr.args[1] === Symbol("@skip_check_vars")
+        for arg in expr.args[2:end]
+            arg isa Symbol && push!(skipped, arg)
+        end
+    else
+        for arg in expr.args
+            union!(skipped, _collect_skip_check_vars(arg))
+        end
+    end
+    return skipped
 end
 
 """
@@ -1578,6 +1646,10 @@ Skipped when `STATIC_POOLING = false` (pooling disabled, acquire returns normal 
 function _check_compile_time_escape(expr, pool_name, source::Union{LineNumberNode, Nothing})
     # Extract variables assigned from acquire calls
     acquired = _extract_acquired_vars(expr, pool_name)
+    isempty(acquired) && return
+
+    # Remove user-excluded vars (@skip_check_vars x y z)
+    setdiff!(acquired, _collect_skip_check_vars(expr))
     isempty(acquired) && return
 
     # Remove vars that were unconditionally reassigned to non-acquire values
