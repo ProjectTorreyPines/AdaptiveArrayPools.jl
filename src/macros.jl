@@ -482,6 +482,7 @@ function _generate_pool_code(pool_name, expr, force_enable; source::Union{LineNu
     # Inject borrow callsite recording (LV≥3 at runtime; gated by STATIC_POOL_CHECKS at compile time)
     if STATIC_POOL_CHECKS
         transformed_expr = _inject_pending_callsite(transformed_expr, pool_name)
+        transformed_expr = _transform_return_stmts(transformed_expr, pool_name)
     end
 
     if use_typed
@@ -580,6 +581,7 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, forc
         transformed_expr = use_typed ? _transform_acquire_calls(expr, pool_name) : expr
         if STATIC_POOL_CHECKS
             transformed_expr = _inject_pending_callsite(transformed_expr, pool_name)
+            transformed_expr = _transform_return_stmts(transformed_expr, pool_name)
         end
         pool_getter = :($_get_pool_for_backend($(Val{backend}())))
 
@@ -632,6 +634,7 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, forc
     transformed_expr = use_typed ? _transform_acquire_calls(expr, pool_name) : expr
     if STATIC_POOL_CHECKS
         transformed_expr = _inject_pending_callsite(transformed_expr, pool_name)
+        transformed_expr = _transform_return_stmts(transformed_expr, pool_name)
     end
 
     # Use Val{backend}() for compile-time dispatch - fully inlinable
@@ -704,6 +707,7 @@ function _generate_function_pool_code_with_backend(backend::Symbol, pool_name, f
     transformed_body = use_typed ? _transform_acquire_calls(body, pool_name) : body
     if STATIC_POOL_CHECKS
         transformed_body = _inject_pending_callsite(transformed_body, pool_name)
+        transformed_body = _transform_return_stmts(transformed_body, pool_name)
     end
 
     # Use Val{backend}() for compile-time dispatch
@@ -793,6 +797,7 @@ function _generate_function_pool_code(pool_name, func_def, force_enable, disable
     transformed_body = use_typed ? _transform_acquire_calls(body, pool_name) : body
     if STATIC_POOL_CHECKS
         transformed_body = _inject_pending_callsite(transformed_body, pool_name)
+        transformed_body = _transform_return_stmts(transformed_body, pool_name)
     end
 
     if use_typed
@@ -1389,6 +1394,61 @@ function _inject_pending_callsite(expr, pool_name)
         new_args = Any[_inject_pending_callsite(arg, pool_name) for arg in expr.args]
         return Expr(expr.head, new_args...)
     end
+end
+
+# ==============================================================================
+# Internal: Return Statement Validation (POOL_SAFETY_LV >= 2)
+# ==============================================================================
+#
+# Transforms `return expr` → `begin local _ret = expr; validate(_ret); return _ret end`
+# so that explicit `return` statements in @with_pool function bodies are validated
+# before exiting. Without this, `return` bypasses the post-body _validate_pool_return
+# check because it exits the function before that line is reached.
+#
+# Stops recursion at :function and :-> boundaries (nested function return statements
+# belong to the inner function, not the @with_pool scope).
+
+const _POOL_DEBUG_REF = GlobalRef(@__MODULE__, :POOL_DEBUG)
+const _VALIDATE_POOL_RETURN_REF = GlobalRef(@__MODULE__, :_validate_pool_return)
+
+"""
+    _transform_return_stmts(expr, pool_name) -> Expr
+
+Walk AST and wrap explicit `return value` statements with escape validation.
+Generates: `local _ret = value; if (LV≥2 || DEBUG) validate(_ret, pool); end; return _ret`
+
+Does NOT recurse into nested `:function` or `:->` expressions (inner functions
+have their own `return` semantics).
+"""
+function _transform_return_stmts(expr, pool_name)
+    expr isa Expr || return expr
+
+    # Don't recurse into nested function definitions (return belongs to inner function)
+    if expr.head in (:function, :->)
+        return expr
+    end
+
+    if expr.head == :return && length(expr.args) >= 1
+        value_expr = expr.args[1]
+        # Bare return (return nothing) — skip validation
+        if value_expr === nothing
+            return expr
+        end
+        # Recurse into the value expression first (may contain nested returns in ternary etc.)
+        value_expr = _transform_return_stmts(value_expr, pool_name)
+        retvar = gensym(:_pool_ret)
+        return Expr(:block,
+            Expr(:local, Expr(:(=), retvar, value_expr)),
+            Expr(:if,
+                Expr(:||,
+                    Expr(:call, :>=, Expr(:ref, _POOL_SAFETY_LV_REF), 2),
+                    Expr(:ref, _POOL_DEBUG_REF)),
+                Expr(:call, _VALIDATE_POOL_RETURN_REF, retvar, pool_name)),
+            Expr(:return, retvar))
+    end
+
+    new_args = Any[_transform_return_stmts(arg, pool_name) for arg in expr.args]
+    return Expr(expr.head, new_args...)
 end
 
 # ==============================================================================

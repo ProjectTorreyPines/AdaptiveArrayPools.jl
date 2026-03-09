@@ -289,4 +289,94 @@ import AdaptiveArrayPools: _validate_pool_return, _lookup_borrow_callsite,
         POOL_SAFETY_LV[] = old_lv
     end
 
+    # ==============================================================================
+    # Return statement validation: explicit return in function form
+    # ==============================================================================
+
+    @testset "Function form: explicit return triggers escape detection" begin
+        old_lv = POOL_SAFETY_LV[]
+        POOL_SAFETY_LV[] = 2
+
+        # Function with explicit return of pool-backed array should throw
+        @with_pool pool function _test_return_escape()
+            v = acquire!(pool, Float64, 10)
+            @skip_check_vars v
+            return identity(v)
+        end
+
+        @test_throws PoolRuntimeEscapeError _test_return_escape()
+
+        POOL_SAFETY_LV[] = old_lv
+    end
+
+    @testset "Function form: safe return passes validation" begin
+        old_lv = POOL_SAFETY_LV[]
+        POOL_SAFETY_LV[] = 2
+
+        @with_pool pool function _test_safe_return()
+            v = acquire!(pool, Float64, 5)
+            v .= 3.0
+            return sum(v)  # scalar — safe
+        end
+
+        @test _test_safe_return() == 15.0
+
+        POOL_SAFETY_LV[] = old_lv
+    end
+
+    @testset "Function form: bare return (nothing) passes" begin
+        old_lv = POOL_SAFETY_LV[]
+        POOL_SAFETY_LV[] = 2
+
+        @with_pool pool function _test_bare_return()
+            _ = acquire!(pool, Float64, 10)
+            return
+        end
+
+        @test _test_bare_return() === nothing
+
+        POOL_SAFETY_LV[] = old_lv
+    end
+
+    @testset "Function form: return with callsite at LV=3" begin
+        old_lv = POOL_SAFETY_LV[]
+        POOL_SAFETY_LV[] = 3
+
+        @with_pool pool function _test_return_callsite()
+            v = acquire!(pool, Float64, 10)
+            @skip_check_vars v
+            return identity(v)
+        end
+
+        err = try
+            _test_return_callsite()
+            nothing
+        catch e
+            e
+        end
+
+        @test err isa PoolRuntimeEscapeError
+        @test err.callsite !== nothing
+        @test contains(err.callsite, ":")
+
+        POOL_SAFETY_LV[] = old_lv
+    end
+
+    @testset "Block form: return in enclosing function triggers validation" begin
+        old_lv = POOL_SAFETY_LV[]
+        POOL_SAFETY_LV[] = 2
+
+        function _test_block_return_escape()
+            @with_pool pool begin
+                v = acquire!(pool, Float64, 10)
+                @skip_check_vars v
+                return identity(v)
+            end
+        end
+
+        @test_throws PoolRuntimeEscapeError _test_block_return_escape()
+
+        POOL_SAFETY_LV[] = old_lv
+    end
+
 end
