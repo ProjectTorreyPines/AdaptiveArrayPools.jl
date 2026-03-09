@@ -1,7 +1,8 @@
 import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
     _find_direct_exposure, _remove_flat_reassigned!, _check_compile_time_escape,
     _collect_all_return_values, _collect_explicit_returns!, _collect_implicit_return_values!,
-    _get_last_expression_with_line, _render_return_expr
+    _get_last_expression_with_line, _render_return_expr,
+    _acquire_call_kind, _classify_escaped_vars
 
 @testset "Compile-Time Escape Detection" begin
 
@@ -1292,7 +1293,7 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
         @test :v in err.points[1].vars
         msg = sprint(showerror, err)
         @test occursin("collect(v)", msg)
-        @test occursin("@skip_check_vars", msg)
+        @test occursin("False positive?", msg)
         @test occursin("Escaping return", msg)
 
         # Different variable name
@@ -1384,6 +1385,127 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
         # The rendered return expression appears in the message
         @test occursin("return", msg)
         @test occursin("data", msg)
+    end
+
+    # ==============================================================================
+    # Variable classification: view vs array vs bitarray vs container vs alias
+    # ==============================================================================
+
+    @testset "_acquire_call_kind classification" begin
+        # View-returning functions
+        @test _acquire_call_kind(:(acquire!(pool, Float64, 10)), :pool) === :pool_view
+        @test _acquire_call_kind(:(zeros!(pool, 10)), :pool) === :pool_view
+        @test _acquire_call_kind(:(ones!(pool, Int64, 3)), :pool) === :pool_view
+        @test _acquire_call_kind(:(similar!(pool, arr)), :pool) === :pool_view
+        @test _acquire_call_kind(:(reshape!(pool, arr, 3, 4)), :pool) === :pool_view
+
+        # Array-returning functions (unsafe_wrap)
+        @test _acquire_call_kind(:(unsafe_acquire!(pool, Float64, 10)), :pool) === :pool_array
+        @test _acquire_call_kind(:(acquire_array!(pool, Float64, 10)), :pool) === :pool_array
+
+        # BitArray-returning functions
+        @test _acquire_call_kind(:(trues!(pool, 100)), :pool) === :pool_bitarray
+        @test _acquire_call_kind(:(falses!(pool, 50)), :pool) === :pool_bitarray
+
+        # Non-acquire → nothing
+        @test _acquire_call_kind(:(sum(data)), :pool) === nothing
+        @test _acquire_call_kind(:(rand(10)), :pool) === nothing
+
+        # Wrong pool → nothing
+        @test _acquire_call_kind(:(acquire!(other_pool, Float64, 10)), :pool) === nothing
+    end
+
+    @testset "var_info classification in PoolEscapeError" begin
+        # Direct pool view
+        err = try @macroexpand(@with_pool pool begin
+            v = acquire!(pool, Float64, 10)
+            v
+        end) catch e; e end
+        @test err.var_info[:v] == (:pool_view, Symbol[])
+        msg = sprint(showerror, err)
+        @test occursin("pool-acquired view", msg)
+
+        # Direct pool array (unsafe_acquire!)
+        err = try @macroexpand(@with_pool pool begin
+            v = unsafe_acquire!(pool, Float64, 10)
+            v
+        end) catch e; e end
+        @test err.var_info[:v] == (:pool_array, Symbol[])
+        msg = sprint(showerror, err)
+        @test occursin("pool-acquired array", msg)
+
+        # Direct pool BitArray
+        err = try @macroexpand(@with_pool pool begin
+            bv = trues!(pool, 100)
+            bv
+        end) catch e; e end
+        @test err.var_info[:bv] == (:pool_bitarray, Symbol[])
+        msg = sprint(showerror, err)
+        @test occursin("pool-acquired BitArray", msg)
+
+        # Container wrapping pool variable
+        err = try @macroexpand(@with_pool pool begin
+            v = acquire!(pool, Float64, 10)
+            a = [v, 1]
+            a
+        end) catch e; e end
+        @test err.var_info[:a] == (:container, [:v])
+        msg = sprint(showerror, err)
+        @test occursin("wraps pool variable (v)", msg)
+        # Fix suggests collect(v), not collect(a)
+        @test occursin("collect(v)", msg)
+        @test occursin("Copy pool variables before wrapping", msg)
+
+        # Container with multiple pool vars
+        err = try @macroexpand(@with_pool pool begin
+            v = acquire!(pool, Float64, 10)
+            w = acquire!(pool, Float64, 5)
+            a = [v, w]
+            a
+        end) catch e; e end
+        @test err.var_info[:a] == (:container, [:v, :w])
+        msg = sprint(showerror, err)
+        @test occursin("wraps pool variables (v, w)", msg)
+
+        # Alias of pool variable
+        err = try @macroexpand(@with_pool pool begin
+            v = acquire!(pool, Float64, 10)
+            d = v
+            d
+        end) catch e; e end
+        @test err.var_info[:d] == (:alias, [:v])
+        msg = sprint(showerror, err)
+        @test occursin("alias of pool variable (v)", msg)
+
+        # Mixed: direct pool var + container in same return
+        err = try @macroexpand(@with_pool pool begin
+            v = acquire!(pool, Float64, 10)
+            a = [v, 1]
+            return (v, a)
+        end) catch e; e end
+        @test err.var_info[:v] == (:pool_view, Symbol[])
+        @test err.var_info[:a] == (:container, [:v])
+        msg = sprint(showerror, err)
+        @test occursin("pool-acquired view", msg)
+        @test occursin("wraps pool variable (v)", msg)
+        # Fix section deduplicates: only collect(v), not collect(a)
+        @test occursin("collect(v)", msg)
+        @test !occursin("collect(a)", msg)
+
+        # zeros! classified as view
+        err = try @macroexpand(@with_pool pool begin
+            data = zeros!(pool, 10)
+            data
+        end) catch e; e end
+        @test err.var_info[:data] == (:pool_view, Symbol[])
+
+        # Tuple container
+        err = try @macroexpand(@with_pool pool begin
+            v = acquire!(pool, Float64, 10)
+            t = (v, 42)
+            t
+        end) catch e; e end
+        @test err.var_info[:t] == (:container, [:v])
     end
 
 end # Compile-Time Escape Detection

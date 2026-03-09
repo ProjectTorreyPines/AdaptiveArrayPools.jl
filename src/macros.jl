@@ -26,7 +26,11 @@ struct PoolEscapeError <: Exception
     file::Union{String, Nothing}
     line::Union{Int, Nothing}
     points::Vector{EscapePoint}
+    var_info::Dict{Symbol, Tuple{Symbol, Vector{Symbol}}}  # var => (kind, source_vars)
 end
+
+PoolEscapeError(vars, file, line, points) =
+    PoolEscapeError(vars, file, line, points, Dict{Symbol, Tuple{Symbol, Vector{Symbol}}}())
 
 """Render an expression with escaped variable names highlighted in red.
 Handles return, tuple, NamedTuple, array literal; falls back to print for others."""
@@ -77,12 +81,28 @@ function Base.showerror(io::IO, e::PoolEscapeError)
     end
     println(io)
 
-    # Escaped variables — one per line
+    # Escaped variables — one per line with classification
     println(io)
     for v in e.vars
         printstyled(io, "    "; color=:normal)
         printstyled(io, string(v); color=:red, bold=true)
-        printstyled(io, "  ← temporary array, must not escape @with_pool scope\n"; color=:light_black)
+        kind, sources = get(e.var_info, v, (:pool_buffer, Symbol[]))
+        if kind === :container
+            src_str = join(string.(sources), ", ")
+            printstyled(io, "  ← wraps pool variable"; color=:light_black)
+            length(sources) > 1 && printstyled(io, "s"; color=:light_black)
+            printstyled(io, " (", src_str, ")\n"; color=:light_black)
+        elseif kind === :alias
+            printstyled(io, "  ← alias of pool variable (", string(sources[1]), ")\n"; color=:light_black)
+        elseif kind === :pool_array
+            printstyled(io, "  ← pool-acquired array\n"; color=:light_black)
+        elseif kind === :pool_bitarray
+            printstyled(io, "  ← pool-acquired BitArray\n"; color=:light_black)
+        elseif kind === :pool_view
+            printstyled(io, "  ← pool-acquired view\n"; color=:light_black)
+        else
+            printstyled(io, "  ← pool-backed temporary\n"; color=:light_black)
+        end
     end
 
     # Show escaping return points with highlighted expressions
@@ -101,40 +121,43 @@ function Base.showerror(io::IO, e::PoolEscapeError)
         end
     end
 
-    # Suggestion 1: fix
+    # Suggestion 1: fix — collect targets are direct pool vars + container sources
     println(io)
-    collects_str = join(["collect($v)" for v in e.vars], ", ")
+    collect_targets = Symbol[]
+    has_containers = false
+    for v in e.vars
+        vkind, vsources = get(e.var_info, v, (:pool_buffer, Symbol[]))
+        if vkind === :container
+            append!(collect_targets, vsources)
+            has_containers = true
+        else
+            push!(collect_targets, v)
+        end
+    end
+    unique!(collect_targets)
+    sort!(collect_targets)
+    collects_str = join(["collect($v)" for v in collect_targets], ", ")
     printstyled(io, "  Fix: "; bold=true)
     printstyled(io, "Use "; color=:light_black)
     printstyled(io, collects_str; bold=true)
     printstyled(io, " to return owned copies.\n"; color=:light_black)
+    if has_containers
+        printstyled(io, "       Copy pool variables before wrapping in containers.\n"; color=:light_black)
+    end
     printstyled(io, "       Or use a regular Julia array (zeros()/Array{T}()) if it must outlive the pool scope.\n"; color=:light_black)
 
-    # Suggestion 2: false positive escape hatch
+    # Suggestion 2: false positive → file issue
     println(io)
     printstyled(io, "  False positive?\n"; bold=true)
-    printstyled(io, "    Add "; color=:light_black)
-    vars_str = join(["$v" for v in e.vars], " ")
-    printstyled(io, "@skip_check_vars $vars_str";)
-    printstyled(io, " in the @with_pool body to suppress this check.\n"; color=:light_black)
+    printstyled(io, "    Please file an issue at "; color=:light_black)
+    printstyled(io, "https://github.com/ProjectTorreyPines/AdaptiveArrayPools.jl/issues"; bold=true)
+    printstyled(io, "\n    with a minimal reproducer so we can improve the escape detector.\n"; color=:light_black)
 end
 
 # Suppress stacktrace — LoadError delegates to this via showerror(io, ex.error, bt)
 Base.showerror(io::IO, e::PoolEscapeError, ::Any; backtrace=true) = showerror(io, e)
 
 
-"""
-    @skip_check_vars x y z ...
-
-Suppress compile-time pool escape checking for the listed variables.
-Use when the escape detector flags a false positive.
-
-This is a no-op at runtime — it only affects `@with_pool` / `@maybe_with_pool`
-macro expansion.
-"""
-macro skip_check_vars(vars...)
-    nothing
-end
 
 # ==============================================================================
 # Backend Dispatch (for extensibility)
@@ -1546,6 +1569,24 @@ const _ALL_ACQUIRE_NAMES = Set{Symbol}([
     :trues!, :falses!,
 ])
 
+"""Function names that return views (SubArray) from pool memory."""
+const _VIEW_ACQUIRE_NAMES = Set{Symbol}([
+    :acquire!, :acquire_view!,
+    :zeros!, :ones!, :similar!,
+    :unsafe_zeros!, :unsafe_ones!, :unsafe_similar!,
+    :reshape!,
+])
+
+"""Function names that return raw Arrays backed by pool memory (unsafe_wrap)."""
+const _ARRAY_ACQUIRE_NAMES = Set{Symbol}([
+    :unsafe_acquire!, :acquire_array!,
+])
+
+"""Function names that return BitArrays from pool memory."""
+const _BITARRAY_ACQUIRE_NAMES = Set{Symbol}([
+    :trues!, :falses!,
+])
+
 """
     _is_acquire_call(expr, target_pool) -> Bool
 
@@ -1572,6 +1613,37 @@ function _is_acquire_call(expr, target_pool)
         end
     end
     return false
+end
+
+"""
+    _acquire_call_kind(expr, target_pool) -> Union{Symbol, Nothing}
+
+Return the classification of an acquire call: `:pool_view`, `:pool_array`, `:pool_bitarray`,
+or `nothing` if not an acquire call.
+"""
+function _acquire_call_kind(expr, target_pool)
+    if !(expr isa Expr && expr.head == :call && length(expr.args) >= 2)
+        return nothing
+    end
+    fn = expr.args[1]
+    pool_arg = expr.args[2]
+    pool_arg == target_pool || return nothing
+
+    fname = nothing
+    if fn isa Symbol
+        fname = fn
+    elseif fn isa Expr && fn.head == :. && length(fn.args) >= 2
+        qn = fn.args[end]
+        if qn isa QuoteNode && qn.value isa Symbol
+            fname = qn.value
+        end
+    end
+    fname === nothing && return nothing
+
+    fname in _VIEW_ACQUIRE_NAMES && return :pool_view
+    fname in _ARRAY_ACQUIRE_NAMES && return :pool_array
+    fname in _BITARRAY_ACQUIRE_NAMES && return :pool_bitarray
+    return nothing
 end
 
 """
@@ -1807,6 +1879,10 @@ function _literal_contains_acquired(expr, acquired)
     return false
 end
 
+"""Check if a call target is `identity` or `Base.identity`."""
+_is_identity_call(x) = x === :identity ||
+    (x isa Expr && x.head == :. && x.args == [:Base, QuoteNode(:identity)])
+
 function _find_direct_exposure(expr, acquired)
     found = Set{Symbol}()
     if expr isa Symbol
@@ -1837,29 +1913,90 @@ function _find_direct_exposure(expr, acquired)
                     union!(found, _find_direct_exposure(arg.args[2], acquired))
                 end
             end
-        elseif expr.head == :call && length(expr.args) >= 2 && expr.args[1] === :identity
-            # identity(x) — transparent, look through
+        elseif expr.head == :call && length(expr.args) >= 2 && _is_identity_call(expr.args[1])
+            # identity(x) / Base.identity(x) — transparent, look through
             union!(found, _find_direct_exposure(expr.args[2], acquired))
         end
     end
     return found
 end
 
-"""Collect symbols listed in `@skip_check_vars` directives anywhere in the body."""
-function _collect_skip_check_vars(expr)
-    skipped = Set{Symbol}()
-    expr isa Expr || return skipped
-    if expr.head == :macrocall && length(expr.args) >= 1 &&
-            expr.args[1] === Symbol("@skip_check_vars")
-        for arg in expr.args[2:end]
-            arg isa Symbol && push!(skipped, arg)
-        end
-    else
-        for arg in expr.args
-            union!(skipped, _collect_skip_check_vars(arg))
+
+"""Collect acquired variable names contained in a literal expression (symbol, tuple, vect)."""
+function _collect_acquired_in_literal(expr, acquired_keys::Set{Symbol})
+    found = Symbol[]
+    _collect_acquired_in_literal!(found, expr, acquired_keys)
+    return found
+end
+
+function _collect_acquired_in_literal!(found, expr, acquired_keys)
+    if expr isa Symbol
+        expr in acquired_keys && push!(found, expr)
+    elseif expr isa Expr
+        if expr.head == :call && length(expr.args) >= 2 && expr.args[1] === :identity
+            _collect_acquired_in_literal!(found, expr.args[2], acquired_keys)
+        elseif expr.head in (:tuple, :vect)
+            for arg in expr.args
+                if Meta.isexpr(arg, :(=)) && length(arg.args) >= 2
+                    _collect_acquired_in_literal!(found, arg.args[2], acquired_keys)
+                elseif Meta.isexpr(arg, :kw) && length(arg.args) >= 2
+                    _collect_acquired_in_literal!(found, arg.args[2], acquired_keys)
+                else
+                    _collect_acquired_in_literal!(found, arg, acquired_keys)
+                end
+            end
         end
     end
-    return skipped
+end
+
+"""
+    _classify_escaped_vars(expr, target_pool, escaped, acquired)
+
+Classify each escaped variable by its origin for better error messages:
+- `:pool_view` — from acquire!, zeros!, etc. (returns SubArray)
+- `:pool_array` — from unsafe_acquire! (returns Array via unsafe_wrap)
+- `:pool_bitarray` — from trues!, falses! (returns BitArray)
+- `:alias` — alias of another acquired variable (e.g., `d = v`)
+- `:container` — wraps acquired variables in a literal (e.g., `d = [v, 1]`)
+
+Returns `Dict{Symbol, Tuple{Symbol, Vector{Symbol}}}` mapping var → (kind, source_vars).
+"""
+function _classify_escaped_vars(expr, target_pool, escaped::Vector{Symbol}, acquired::Set{Symbol})
+    info = Dict{Symbol, Tuple{Symbol, Vector{Symbol}}}()
+    escaped_set = Set(escaped)
+    _classify_walk!(info, expr, target_pool, escaped_set, acquired)
+    return info
+end
+
+function _classify_walk!(info, expr, target_pool, escaped_set, acquired)
+    expr isa Expr || return
+    if expr.head == :block
+        for arg in expr.args
+            _classify_walk!(info, arg, target_pool, escaped_set, acquired)
+        end
+    elseif expr.head == :(=) && length(expr.args) >= 2
+        lhs = expr.args[1]
+        rhs = expr.args[2]
+        if lhs isa Symbol && lhs in escaped_set
+            kind = _acquire_call_kind(rhs, target_pool)
+            if kind !== nothing
+                info[lhs] = (kind, Symbol[])
+            elseif rhs isa Symbol && rhs in acquired
+                info[lhs] = (:alias, [rhs])
+            else
+                sources = _collect_acquired_in_literal(rhs, acquired)
+                if !isempty(sources)
+                    info[lhs] = (:container, sort!(sources))
+                end
+            end
+        end
+        # Recurse into RHS for nested blocks
+        _classify_walk!(info, rhs, target_pool, escaped_set, acquired)
+    else
+        for arg in expr.args
+            _classify_walk!(info, arg, target_pool, escaped_set, acquired)
+        end
+    end
 end
 
 """
@@ -1879,10 +2016,6 @@ Skipped when `STATIC_POOLING = false` (pooling disabled, acquire returns normal 
 function _check_compile_time_escape(expr, pool_name, source::Union{LineNumberNode, Nothing})
     # Extract variables assigned from acquire calls
     acquired = _extract_acquired_vars(expr, pool_name)
-    isempty(acquired) && return
-
-    # Remove user-excluded vars (@skip_check_vars x y z)
-    setdiff!(acquired, _collect_skip_check_vars(expr))
     isempty(acquired) && return
 
     # Remove vars that were unconditionally reassigned to non-acquire values
@@ -1912,7 +2045,8 @@ function _check_compile_time_escape(expr, pool_name, source::Union{LineNumberNod
     isempty(all_escaped) && return
 
     sorted = sort!(collect(all_escaped))
+    var_info = _classify_escaped_vars(expr, pool_name, sorted, acquired)
     file = source !== nothing ? string(source.file) : nothing
     line = source !== nothing ? source.line : nothing
-    throw(PoolEscapeError(sorted, file, line, points))
+    throw(PoolEscapeError(sorted, file, line, points, var_info))
 end
