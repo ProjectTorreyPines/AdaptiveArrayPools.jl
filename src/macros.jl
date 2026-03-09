@@ -486,7 +486,8 @@ function _generate_pool_code(pool_name, expr, force_enable; source::Union{LineNu
     end
 
     # Compile-time escape detection (zero runtime cost)
-    _check_compile_time_escape(expr, pool_name, source)
+    _esc = _check_compile_time_escape(expr, pool_name, source)
+    _esc !== nothing && return :(throw($_esc))
 
     # Block logic
     # Extract types from acquire! calls for optimized checkpoint/rewind
@@ -592,7 +593,8 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, forc
         end
 
         # Compile-time escape detection (zero runtime cost)
-        _check_compile_time_escape(expr, pool_name, source)
+        _esc = _check_compile_time_escape(expr, pool_name, source)
+        _esc !== nothing && return :(throw($_esc))
 
         # Block logic with runtime check
         all_types = _extract_acquire_types(expr, pool_name)
@@ -642,7 +644,8 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, forc
     end
 
     # Compile-time escape detection (zero runtime cost)
-    _check_compile_time_escape(expr, pool_name, source)
+    _esc = _check_compile_time_escape(expr, pool_name, source)
+    _esc !== nothing && return :(throw($_esc))
 
     # Block logic: Extract types from acquire! calls for optimized checkpoint/rewind
     all_types = _extract_acquire_types(expr, pool_name)
@@ -717,7 +720,8 @@ function _generate_function_pool_code_with_backend(backend::Symbol, pool_name, f
     end
 
     # Compile-time escape detection (zero runtime cost)
-    _check_compile_time_escape(body, pool_name, source)
+    _esc = _check_compile_time_escape(body, pool_name, source)
+    _esc !== nothing && return :(throw($_esc))
 
     # Analyze body for types
     all_types = _extract_acquire_types(body, pool_name)
@@ -807,7 +811,8 @@ function _generate_function_pool_code(pool_name, func_def, force_enable, disable
     end
 
     # Compile-time escape detection (zero runtime cost)
-    _check_compile_time_escape(body, pool_name, source)
+    _esc = _check_compile_time_escape(body, pool_name, source)
+    _esc !== nothing && return :(throw($_esc))
 
     # Analyze body for types
     all_types = _extract_acquire_types(body, pool_name)
@@ -2048,5 +2053,5 @@ function _check_compile_time_escape(expr, pool_name, source::Union{LineNumberNod
     var_info = _classify_escaped_vars(expr, pool_name, sorted, acquired)
     file = source !== nothing ? string(source.file) : nothing
     line = source !== nothing ? source.line : nothing
-    throw(PoolEscapeError(sorted, file, line, points, var_info))
+    return PoolEscapeError(sorted, file, line, points, var_info)
 end
