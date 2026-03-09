@@ -193,7 +193,7 @@ end
 # ==============================================================================
 
 # Check if BitArray chunks overlap with the pool's BitTypedPool storage
-function _check_bitchunks_overlap(arr::BitArray, pool::AdaptiveArrayPool)
+function _check_bitchunks_overlap(arr::BitArray, pool::AdaptiveArrayPool, original_val=arr)
     arr_chunks = arr.chunks
     arr_ptr = UInt(pointer(arr_chunks))
     arr_len = length(arr_chunks) * sizeof(UInt64)
@@ -205,7 +205,7 @@ function _check_bitchunks_overlap(arr::BitArray, pool::AdaptiveArrayPool)
         v_len = length(v_chunks) * sizeof(UInt64)
         v_end = v_ptr + v_len
         if !(arr_end <= v_ptr || v_end <= arr_ptr)
-            error("Safety Violation: The function returned a BitArray backed by pool memory. This is unsafe as the memory will be reclaimed. Please return a copy (copy) or a scalar.")
+            _throw_pool_escape_error(original_val, Bit)
         end
     end
     return nothing

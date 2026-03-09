@@ -31,9 +31,9 @@ function _validate_pool_return(val, pool::AdaptiveArrayPool)
         # - acquire!() 1D returns: SubArray backed by pool's internal Vector
         # - view(unsafe_acquire!()): SubArray backed by unsafe_wrap'd Array
         if p isa Array
-            _check_pointer_overlap(p, pool)
+            _check_pointer_overlap(p, pool, val)
         elseif p isa BitArray
-            _check_bitchunks_overlap(p, pool)
+            _check_bitchunks_overlap(p, pool, val)
         end
         return
     end
@@ -45,9 +45,9 @@ function _validate_pool_return(val, pool::AdaptiveArrayPool)
         if p isa SubArray
             pp = parent(p)
             if pp isa Array
-                _check_pointer_overlap(pp, pool)
+                _check_pointer_overlap(pp, pool, val)
             elseif pp isa BitArray
-                _check_bitchunks_overlap(pp, pool)
+                _check_bitchunks_overlap(pp, pool, val)
             end
         end
         return
@@ -75,8 +75,10 @@ _eltype_may_contain_arrays(::Type{Symbol}) = false
 _eltype_may_contain_arrays(::Type{Char}) = false
 _eltype_may_contain_arrays(::Type) = true
 
-# Check if array memory overlaps with any pool vector
-function _check_pointer_overlap(arr::Array, pool::AdaptiveArrayPool)
+# Check if array memory overlaps with any pool vector.
+# `original_val` is the user-visible value (e.g., SubArray) for error reporting;
+# `arr` may be its parent Array used for the actual pointer comparison.
+function _check_pointer_overlap(arr::Array, pool::AdaptiveArrayPool, original_val=arr)
     arr_ptr = UInt(pointer(arr))
     arr_len = length(arr) * sizeof(eltype(arr))
     arr_end = arr_ptr + arr_len
@@ -88,7 +90,7 @@ function _check_pointer_overlap(arr::Array, pool::AdaptiveArrayPool)
             v_len = length(v) * sizeof(eltype(v))
             v_end = v_ptr + v_len
             if !(arr_end <= v_ptr || v_end <= arr_ptr)
-                error("Safety Violation: The function returned an Array backed by pool memory. This is unsafe as the memory will be reclaimed. Please return a copy (collect) or a scalar.")
+                _throw_pool_escape_error(original_val, eltype(v))
             end
         end
         return
@@ -104,6 +106,13 @@ function _check_pointer_overlap(arr::Array, pool::AdaptiveArrayPool)
         check_overlap(tp)
     end
     return
+end
+
+@noinline function _throw_pool_escape_error(val, pool_eltype)
+    error("Pool escape detected: $(summary(val)) is backed by $(pool_eltype) pool memory. " *
+          "Memory will be reclaimed at @with_pool scope exit. " *
+          "Return collect(x) or a computed result instead.\n" *
+          "Tip: set POOL_SAFETY_LV[] = 3 for acquire!() call-site tracking.")
 end
 
 # Recursive inspection of container types (Tuple, NamedTuple, Pair, Dict, Set).
