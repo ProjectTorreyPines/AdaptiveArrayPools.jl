@@ -90,6 +90,27 @@ function _check_pointer_overlap(arr::Array, pool::AdaptiveArrayPool)
     return
 end
 
+# Recursive inspection of common container types (Tuple, NamedTuple, Pair).
+# These are the primary "lightweight wrapper" types in Julia through which
+# pool-backed arrays escape undetected when hidden inside return values.
+
+function _validate_pool_return(val::Tuple, pool::AdaptiveArrayPool)
+    for x in val
+        _validate_pool_return(x, pool)
+    end
+end
+
+function _validate_pool_return(val::NamedTuple, pool::AdaptiveArrayPool)
+    for x in values(val)
+        _validate_pool_return(x, pool)
+    end
+end
+
+function _validate_pool_return(val::Pair, pool::AdaptiveArrayPool)
+    _validate_pool_return(val.first, pool)
+    _validate_pool_return(val.second, pool)
+end
+
 _validate_pool_return(val, ::DisabledPool) = nothing
 
 # ==============================================================================

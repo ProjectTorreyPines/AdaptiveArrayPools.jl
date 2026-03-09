@@ -303,12 +303,12 @@ import AdaptiveArrayPools: _invalidate_released_slots!
         old_safety = POOL_SAFETY_LV[]
 
         # POOL_DEBUG=true still triggers escape detection (regardless of POOL_SAFETY_LV)
-        # (identity() bypasses compile-time error; runtime _validate_pool_return catches it)
         POOL_DEBUG[] = true
         POOL_SAFETY_LV[] = 0
         @test_throws ErrorException @with_pool pool begin
             v = acquire!(pool, Float64, 10)
-            identity(v)  # Bypass compile-time; caught by runtime LV2
+            @skip_check_vars v
+            identity(v)  # compile-time suppressed; caught by runtime LV2
         end
 
         # POOL_SAFETY_LV=2 also triggers escape detection (without POOL_DEBUG)
@@ -316,7 +316,8 @@ import AdaptiveArrayPools: _invalidate_released_slots!
         POOL_SAFETY_LV[] = 2
         @test_throws ErrorException @with_pool pool begin
             v = acquire!(pool, Float64, 10)
-            identity(v)  # Bypass compile-time; caught by runtime LV2
+            @skip_check_vars v
+            identity(v)  # compile-time suppressed; caught by runtime LV2
         end
 
         # Neither flag -> no escape detection
@@ -324,7 +325,8 @@ import AdaptiveArrayPools: _invalidate_released_slots!
         POOL_SAFETY_LV[] = 1
         result = @with_pool pool begin
             v = acquire!(pool, Float64, 10)
-            identity(v)  # Bypass compile-time; runtime LV<2 won't catch
+            @skip_check_vars v
+            identity(v)  # compile-time suppressed; runtime LV<2 won't catch
         end
         @test result isa SubArray
 
