@@ -1,4 +1,4 @@
-import AdaptiveArrayPools: _invalidate_released_slots!
+import AdaptiveArrayPools: _invalidate_released_slots!, PoolRuntimeEscapeError
 
 @testset "POOL_SAFETY_LV Guard-Level Invalidation" begin
 
@@ -305,7 +305,7 @@ import AdaptiveArrayPools: _invalidate_released_slots!
         # POOL_DEBUG=true still triggers escape detection (regardless of POOL_SAFETY_LV)
         POOL_DEBUG[] = true
         POOL_SAFETY_LV[] = 0
-        @test_throws ErrorException @with_pool pool begin
+        @test_throws PoolRuntimeEscapeError @with_pool pool begin
             v = acquire!(pool, Float64, 10)
             @skip_check_vars v
             identity(v)  # compile-time suppressed; caught by runtime LV2
@@ -314,7 +314,7 @@ import AdaptiveArrayPools: _invalidate_released_slots!
         # POOL_SAFETY_LV=2 also triggers escape detection (without POOL_DEBUG)
         POOL_DEBUG[] = false
         POOL_SAFETY_LV[] = 2
-        @test_throws ErrorException @with_pool pool begin
+        @test_throws PoolRuntimeEscapeError @with_pool pool begin
             v = acquire!(pool, Float64, 10)
             @skip_check_vars v
             identity(v)  # compile-time suppressed; caught by runtime LV2

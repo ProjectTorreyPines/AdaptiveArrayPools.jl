@@ -108,11 +108,49 @@ function _check_pointer_overlap(arr::Array, pool::AdaptiveArrayPool, original_va
     return
 end
 
+"""
+    PoolRuntimeEscapeError <: Exception
+
+Thrown at runtime when `_validate_pool_return` detects a pool-backed array
+escaping from an `@with_pool` scope (requires `POOL_SAFETY_LV[] >= 2`).
+
+This is the runtime counterpart of [`PoolEscapeError`](@ref) (compile-time).
+"""
+struct PoolRuntimeEscapeError <: Exception
+    val_summary::String
+    pool_eltype::String
+end
+
+function Base.showerror(io::IO, e::PoolRuntimeEscapeError)
+    printstyled(io, "PoolEscapeError"; color=:red, bold=true)
+    printstyled(io, " (runtime, POOL_SAFETY_LV ≥ 2)"; color=:light_black)
+    println(io)
+
+    println(io)
+    printstyled(io, "    "; color=:normal)
+    printstyled(io, e.val_summary; color=:red, bold=true)
+    println(io)
+    printstyled(io, "      ← backed by "; color=:light_black)
+    printstyled(io, e.pool_eltype; color=:yellow)
+    printstyled(io, " pool memory, will be reclaimed at scope exit\n"; color=:light_black)
+
+    println(io)
+    printstyled(io, "  Fix: "; bold=true)
+    printstyled(io, "Return "; color=:light_black)
+    printstyled(io, "collect(x)"; bold=true)
+    printstyled(io, " to copy, or compute a result before returning.\n"; color=:light_black)
+
+    println(io)
+    printstyled(io, "  Tip: "; bold=true)
+    printstyled(io, "set "; color=:light_black)
+    printstyled(io, "POOL_SAFETY_LV[] = 3"; bold=true)
+    printstyled(io, " for acquire!() call-site tracking.\n"; color=:light_black)
+end
+
+Base.showerror(io::IO, e::PoolRuntimeEscapeError, ::Any; backtrace=true) = showerror(io, e)
+
 @noinline function _throw_pool_escape_error(val, pool_eltype)
-    error("Pool escape detected: $(summary(val)) is backed by $(pool_eltype) pool memory. " *
-          "Memory will be reclaimed at @with_pool scope exit. " *
-          "Return collect(x) or a computed result instead.\n" *
-          "Tip: set POOL_SAFETY_LV[] = 3 for acquire!() call-site tracking.")
+    throw(PoolRuntimeEscapeError(summary(val), string(pool_eltype)))
 end
 
 # Recursive inspection of container types (Tuple, NamedTuple, Pair, Dict, Set).

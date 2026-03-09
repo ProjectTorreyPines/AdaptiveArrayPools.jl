@@ -1,4 +1,4 @@
-import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap, _eltype_may_contain_arrays
+import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap, _eltype_may_contain_arrays, PoolRuntimeEscapeError
 
 @testset "POOL_DEBUG and Safety Validation" begin
 
@@ -28,7 +28,7 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap, _elt
         POOL_DEBUG[] = true
 
         # Should throw error when returning SubArray with debug on
-        @test_throws ErrorException @with_pool pool begin
+        @test_throws PoolRuntimeEscapeError @with_pool pool begin
             v = acquire!(pool, Float64, 10)
             @skip_check_vars v
             identity(v)  # compile-time suppressed; caught by runtime LV2
@@ -74,14 +74,14 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap, _elt
 
         # SubArray from pool fails validation (fixed slot)
         pool_view = acquire!(pool, Float64, 10)
-        @test_throws ErrorException _validate_pool_return(pool_view, pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(pool_view, pool)
 
         rewind!(pool)
 
         # Test with fallback type (others)
         checkpoint!(pool)
         pool_view_uint8 = acquire!(pool, UInt8, 10)
-        @test_throws ErrorException _validate_pool_return(pool_view_uint8, pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(pool_view_uint8, pool)
         rewind!(pool)
 
         # DisabledPool always passes
@@ -102,13 +102,13 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap, _elt
         v_c32 = acquire!(pool, ComplexF32, 5)
         v_bool = acquire!(pool, Bool, 5)
 
-        @test_throws ErrorException _validate_pool_return(v_f64, pool)
-        @test_throws ErrorException _validate_pool_return(v_f32, pool)
-        @test_throws ErrorException _validate_pool_return(v_i64, pool)
-        @test_throws ErrorException _validate_pool_return(v_i32, pool)
-        @test_throws ErrorException _validate_pool_return(v_c64, pool)
-        @test_throws ErrorException _validate_pool_return(v_c32, pool)
-        @test_throws ErrorException _validate_pool_return(v_bool, pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(v_f64, pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(v_f32, pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(v_i64, pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(v_i32, pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(v_c64, pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(v_c32, pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(v_bool, pool)
 
         rewind!(pool)
     end
@@ -120,12 +120,12 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap, _elt
         # N-D ReshapedArray from pool should fail validation (pointer overlap check)
         mat = acquire!(pool, Float64, 10, 10)
         @test mat isa Base.ReshapedArray{Float64, 2}
-        @test_throws ErrorException _validate_pool_return(mat, pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(mat, pool)
 
         # 3D ReshapedArray should also fail
         tensor = acquire!(pool, Float64, 5, 5, 5)
         @test tensor isa Base.ReshapedArray{Float64, 3}
-        @test_throws ErrorException _validate_pool_return(tensor, pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(tensor, pool)
 
         rewind!(pool)
     end
@@ -137,17 +137,17 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap, _elt
         # Raw Vector from unsafe_acquire! should fail validation
         v = unsafe_acquire!(pool, Float64, 100)
         @test v isa Vector{Float64}
-        @test_throws ErrorException _validate_pool_return(v, pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(v, pool)
 
         # Raw Matrix from unsafe_acquire! should fail validation
         mat = unsafe_acquire!(pool, Float64, 10, 10)
         @test mat isa Matrix{Float64}
-        @test_throws ErrorException _validate_pool_return(mat, pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(mat, pool)
 
         # Raw 3D Array from unsafe_acquire! should fail validation
         tensor = unsafe_acquire!(pool, Float64, 5, 5, 5)
         @test tensor isa Array{Float64, 3}
-        @test_throws ErrorException _validate_pool_return(tensor, pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(tensor, pool)
 
         rewind!(pool)
     end
@@ -164,17 +164,17 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap, _elt
         v_view = view(v, :)
         @test v_view isa SubArray
         @test parent(v_view) === v  # Parent is unsafe_wrap'd Vector, not pool's internal vector
-        @test_throws ErrorException _validate_pool_return(v_view, pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(v_view, pool)
 
         # Partial view should also fail
         v_partial = view(v, 1:50)
-        @test_throws ErrorException _validate_pool_return(v_partial, pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(v_partial, pool)
 
         # 2D: view(unsafe_acquire!(...), :, :) should fail validation
         mat = unsafe_acquire!(pool, Float64, 10, 10)
         mat_view = view(mat, :, :)
         @test mat_view isa SubArray
-        @test_throws ErrorException _validate_pool_return(mat_view, pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(mat_view, pool)
 
         rewind!(pool)
     end
@@ -204,14 +204,14 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap, _elt
         POOL_DEBUG[] = true
 
         # N-D ReshapedArray should throw error when returned
-        @test_throws ErrorException @with_pool pool begin
+        @test_throws PoolRuntimeEscapeError @with_pool pool begin
             mat = acquire!(pool, Float64, 10, 10)
             @skip_check_vars mat
             identity(mat)  # compile-time suppressed; caught by runtime LV2
         end
 
         # Raw Array from unsafe_acquire! should throw error when returned
-        @test_throws ErrorException @with_pool pool begin
+        @test_throws PoolRuntimeEscapeError @with_pool pool begin
             mat = unsafe_acquire!(pool, Float64, 10, 10)
             @skip_check_vars mat
             identity(mat)  # compile-time suppressed; caught by runtime LV2
@@ -247,17 +247,17 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap, _elt
         # 1D BitVector from pool - should detect overlap
         bv = acquire!(pool, Bit, 100)
         @test bv isa BitVector
-        @test_throws ErrorException _check_bitchunks_overlap(bv, pool)
+        @test_throws PoolRuntimeEscapeError _check_bitchunks_overlap(bv, pool)
 
         # N-D BitArray from pool - should detect overlap (shares chunks with pool)
         ba = acquire!(pool, Bit, 10, 10)
         @test ba isa BitMatrix
-        @test_throws ErrorException _check_bitchunks_overlap(ba, pool)
+        @test_throws PoolRuntimeEscapeError _check_bitchunks_overlap(ba, pool)
 
         # 3D BitArray from pool
         ba3 = acquire!(pool, Bit, 4, 5, 3)
         @test ba3 isa BitArray{3}
-        @test_throws ErrorException _check_bitchunks_overlap(ba3, pool)
+        @test_throws PoolRuntimeEscapeError _check_bitchunks_overlap(ba3, pool)
 
         rewind!(pool)
     end
@@ -291,11 +291,11 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap, _elt
 
         # Direct BitVector from pool fails validation
         bv = acquire!(pool, Bit, 100)
-        @test_throws ErrorException _validate_pool_return(bv, pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(bv, pool)
 
         # Direct BitMatrix from pool fails validation
         ba = acquire!(pool, Bit, 10, 10)
-        @test_throws ErrorException _validate_pool_return(ba, pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(ba, pool)
 
         # External BitArray passes validation
         external_bv = BitVector(undef, 50)
@@ -313,7 +313,7 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap, _elt
         bv_view = view(bv, 1:50)
         @test bv_view isa SubArray
         @test parent(bv_view) isa BitVector
-        @test_throws ErrorException _validate_pool_return(bv_view, pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(bv_view, pool)
 
         # View of external BitVector should pass
         external_bv = BitVector(undef, 100)
@@ -328,14 +328,14 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap, _elt
         POOL_DEBUG[] = true
 
         # BitVector from pool should throw error when returned with debug on
-        @test_throws ErrorException @with_pool pool begin
+        @test_throws PoolRuntimeEscapeError @with_pool pool begin
             bv = acquire!(pool, Bit, 100)
             @skip_check_vars bv
             identity(bv)  # compile-time suppressed; caught by runtime LV2
         end
 
         # BitMatrix from pool should throw error when returned
-        @test_throws ErrorException @with_pool pool begin
+        @test_throws PoolRuntimeEscapeError @with_pool pool begin
             ba = acquire!(pool, Bit, 10, 10)
             @skip_check_vars ba
             identity(ba)  # compile-time suppressed; caught by runtime LV2
@@ -375,11 +375,11 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap, _elt
         v = acquire!(pool, Float64, 10)
 
         # Pool array inside tuple → caught
-        @test_throws ErrorException _validate_pool_return((42, v), pool)
-        @test_throws ErrorException _validate_pool_return((v,), pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return((42, v), pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return((v,), pool)
 
         # Nested tuple: pool array deep inside → caught
-        @test_throws ErrorException _validate_pool_return((1, (2, v)), pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return((1, (2, v)), pool)
 
         # Safe tuple (no pool arrays) → passes
         _validate_pool_return((1, 2, 3), pool)
@@ -395,11 +395,11 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap, _elt
         v = acquire!(pool, Float64, 10)
 
         # Pool array inside NamedTuple → caught
-        @test_throws ErrorException _validate_pool_return((data=v, n=10), pool)
-        @test_throws ErrorException _validate_pool_return((result=42, buffer=v), pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return((data=v, n=10), pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return((result=42, buffer=v), pool)
 
         # Nested: NamedTuple containing tuple with pool array
-        @test_throws ErrorException _validate_pool_return((meta=(v, 1),), pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return((meta=(v, 1),), pool)
 
         # Safe NamedTuple → passes
         _validate_pool_return((a=1, b="hello"), pool)
@@ -414,10 +414,10 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap, _elt
         v = acquire!(pool, Float64, 10)
 
         # Pool array as Pair value → caught
-        @test_throws ErrorException _validate_pool_return(:data => v, pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(:data => v, pool)
 
         # Pool array as Pair key (unusual but possible) → caught
-        @test_throws ErrorException _validate_pool_return(v => :data, pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(v => :data, pool)
 
         # Safe Pair → passes
         _validate_pool_return(:a => 42, pool)
@@ -433,20 +433,20 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap, _elt
         bv = acquire!(pool, Bit, 50)
 
         # Tuple containing NamedTuple with pool array
-        @test_throws ErrorException _validate_pool_return((1, (data=v,)), pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return((1, (data=v,)), pool)
 
         # Pair inside tuple
-        @test_throws ErrorException _validate_pool_return((:key => v, 42), pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return((:key => v, 42), pool)
 
         # BitVector inside tuple
-        @test_throws ErrorException _validate_pool_return((bv, 1), pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return((bv, 1), pool)
 
         # Multiple pool arrays in different container positions
-        @test_throws ErrorException _validate_pool_return((v, bv), pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return((v, bv), pool)
 
         # N-D ReshapedArray inside NamedTuple
         mat = acquire!(pool, Float64, 5, 5)
-        @test_throws ErrorException _validate_pool_return((matrix=mat, size=(5,5)), pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return((matrix=mat, size=(5,5)), pool)
 
         rewind!(pool)
     end
@@ -475,14 +475,14 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap, _elt
         v = acquire!(pool, Float64, 10)
 
         # Pool array as Dict value → caught
-        @test_throws ErrorException _validate_pool_return(Dict(:data => v), pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(Dict(:data => v), pool)
 
         # Pool array as Dict key (unusual but possible) → caught
-        @test_throws ErrorException _validate_pool_return(Dict(v => :data), pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(Dict(v => :data), pool)
 
         # Multiple pool arrays in Dict values
         w = acquire!(pool, Int64, 5)
-        @test_throws ErrorException _validate_pool_return(Dict(:a => v, :b => w), pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(Dict(:a => v, :b => w), pool)
 
         # Safe Dict → passes
         _validate_pool_return(Dict(:a => 1, :b => 2), pool)
@@ -498,13 +498,13 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap, _elt
         v = acquire!(pool, Float64, 10)
 
         # Dict inside Tuple → caught
-        @test_throws ErrorException _validate_pool_return((1, Dict(:data => v)), pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return((1, Dict(:data => v)), pool)
 
         # Dict inside NamedTuple → caught
-        @test_throws ErrorException _validate_pool_return((result=Dict(:buf => v),), pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return((result=Dict(:buf => v),), pool)
 
         # Nested Dict (Dict of Dict) → caught
-        @test_throws ErrorException _validate_pool_return(Dict(:outer => Dict(:inner => v)), pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(Dict(:outer => Dict(:inner => v)), pool)
 
         rewind!(pool)
     end
@@ -516,7 +516,7 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap, _elt
         v = acquire!(pool, Float64, 10)
 
         # Pool array inside Set → caught
-        @test_throws ErrorException _validate_pool_return(Set([v]), pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(Set([v]), pool)
 
         # Safe Set → passes
         _validate_pool_return(Set([1, 2, 3]), pool)
@@ -532,14 +532,14 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap, _elt
 
         # Vector{SubArray} — pool array as element → caught
         external_container = Any[v]
-        @test_throws ErrorException _validate_pool_return(external_container, pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(external_container, pool)
 
         # Multiple pool arrays in Vector
         w = acquire!(pool, Int64, 5)
-        @test_throws ErrorException _validate_pool_return(Any[v, w], pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(Any[v, w], pool)
 
         # Nested: Vector inside Tuple
-        @test_throws ErrorException _validate_pool_return((42, Any[v]), pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return((42, Any[v]), pool)
 
         # Safe Vector{Float64} — passes (eltype guard skips element iteration)
         _validate_pool_return([1.0, 2.0, 3.0], pool)
@@ -557,15 +557,15 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap, _elt
 
         # unsafe_acquire! Array inside Vector → caught
         raw = unsafe_acquire!(pool, Float64, 100)
-        @test_throws ErrorException _validate_pool_return(Any[raw], pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(Any[raw], pool)
 
         # BitVector inside Vector → caught
         bv = acquire!(pool, Bit, 50)
-        @test_throws ErrorException _validate_pool_return(Any[bv], pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(Any[bv], pool)
 
         # ReshapedArray inside Vector → caught
         mat = acquire!(pool, Float64, 5, 5)
-        @test_throws ErrorException _validate_pool_return(Any[mat], pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(Any[mat], pool)
 
         rewind!(pool)
     end
@@ -575,14 +575,14 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap, _elt
         POOL_SAFETY_LV[] = 2
 
         # Tuple containing pool array — caught at runtime
-        @test_throws ErrorException @with_pool pool begin
+        @test_throws PoolRuntimeEscapeError @with_pool pool begin
             v = acquire!(pool, Float64, 10)
             @skip_check_vars v
             identity((sum(v), v))  # compile-time suppressed; runtime LV2 catches v inside tuple
         end
 
         # NamedTuple containing pool array — caught at runtime
-        @test_throws ErrorException @with_pool pool begin
+        @test_throws PoolRuntimeEscapeError @with_pool pool begin
             v = acquire!(pool, Float64, 10)
             @skip_check_vars v
             identity((data=v, n=10))  # compile-time suppressed; runtime LV2 catches v inside NamedTuple
@@ -609,14 +609,14 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap, _elt
 
         # @skip_check_vars prevents compile-time PoolEscapeError,
         # but runtime _validate_pool_return at LV2 still catches the escape.
-        @test_throws ErrorException @with_pool pool begin
+        @test_throws PoolRuntimeEscapeError @with_pool pool begin
             v = acquire!(pool, Float64, 10)
             @skip_check_vars v
             identity(v)  # compile-time suppressed; runtime LV2 catches
         end
 
         # Multiple vars: suppress some, escape detection still works for suppressed ones at runtime
-        @test_throws ErrorException @with_pool pool begin
+        @test_throws PoolRuntimeEscapeError @with_pool pool begin
             v = acquire!(pool, Float64, 10)
             w = acquire!(pool, Float64, 5)
             @skip_check_vars v w
@@ -666,7 +666,7 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap, _elt
             @skip_check_vars v
             identity(v)  # compile-time suppressed; caught by runtime LV2
         end
-        @test_throws ErrorException _test_debug_func_unsafe(10)
+        @test_throws PoolRuntimeEscapeError _test_debug_func_unsafe(10)
 
         # Safe: function returns scalar
         @with_pool pool function _test_debug_func_safe(n)
@@ -691,7 +691,7 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap, _elt
             @skip_check_vars mat
             identity(mat)  # compile-time suppressed; caught by runtime LV2
         end
-        @test_throws ErrorException _test_debug_func_nd(3, 4)
+        @test_throws PoolRuntimeEscapeError _test_debug_func_nd(3, 4)
 
         # Unsafe: BitVector from function
         @with_pool pool function _test_debug_func_bit(n)
@@ -700,7 +700,7 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap, _elt
             @skip_check_vars bv
             identity(bv)  # compile-time suppressed; caught by runtime LV2
         end
-        @test_throws ErrorException _test_debug_func_bit(100)
+        @test_throws PoolRuntimeEscapeError _test_debug_func_bit(100)
 
         POOL_DEBUG[] = old_debug
     end
@@ -718,7 +718,7 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap, _elt
             @skip_check_vars v
             identity(v)  # compile-time suppressed; caught by runtime LV2
         end
-        @test_throws ErrorException _test_maybe_debug_unsafe(10)
+        @test_throws PoolRuntimeEscapeError _test_maybe_debug_unsafe(10)
 
         # Safe: function returns scalar
         @maybe_with_pool pool function _test_maybe_debug_safe(n)
@@ -753,7 +753,7 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap, _elt
             @skip_check_vars v
             identity(v)  # compile-time suppressed; caught by runtime LV2
         end
-        @test_throws ErrorException _test_backend_debug_unsafe(10)
+        @test_throws PoolRuntimeEscapeError _test_backend_debug_unsafe(10)
 
         # Safe: returns scalar
         @with_pool :cpu pool function _test_backend_debug_safe(n)
