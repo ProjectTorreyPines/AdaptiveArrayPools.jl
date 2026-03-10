@@ -89,9 +89,9 @@ function set_cuda_safety_level!(level::Int)
         )
     end
 
-    # Replace all pools
-    for (dev_id, old_pool) in pools
-        old = old_pool::CuAdaptiveArrayPool
+    # Replace all pools (collect keys to avoid mutating Dict during iteration)
+    for dev_id in collect(keys(pools))
+        old = pools[dev_id]::CuAdaptiveArrayPool
         pools[dev_id] = _make_cuda_pool(level, old)
     end
 

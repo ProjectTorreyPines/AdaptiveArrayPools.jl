@@ -54,14 +54,12 @@ end
         tp::CuTypedPool{T}, old_n_active::Int, S::Int
     ) where {T}
     new_n = tp.n_active
-    # Poison released CuVectors with sentinel values
     for i in (new_n + 1):old_n_active
+        # Poison released CuVectors with sentinel values
         _cuda_poison_fill!(@inbounds tp.vectors[i])
-    end
-    # Invalidate N-way cache entries for released slots.
-    # After poisoning, cached views point at poisoned data — clear them so
-    # re-acquire creates fresh views instead of returning stale poisoned ones.
-    for i in (new_n + 1):old_n_active
+        # Invalidate N-way cache entries for released slots.
+        # After poisoning, cached views point at poisoned data — clear them so
+        # re-acquire creates fresh views instead of returning stale poisoned ones.
         base = (i - 1) * CACHE_WAYS
         for k in 1:CACHE_WAYS
             @inbounds tp.views[base + k] = nothing
@@ -124,13 +122,23 @@ function AdaptiveArrayPools._validate_pool_return(val, pool::CuAdaptiveArrayPool
 end
 
 function _validate_cuda_return(val, pool::CuAdaptiveArrayPool)
+    # Note: Container recursion (Tuple, NamedTuple, Pair, Dict, Set, AbstractArray)
+    # is duplicated from CPU's _validate_pool_return dispatch chain (src/debug.jl).
+    # CPU uses multiple dispatch on pool::AdaptiveArrayPool for each container type,
+    # which doesn't cover CuAdaptiveArrayPool. We could add CuAdaptiveArrayPool methods
+    # for each container, but that creates 6+ method definitions vs. this single function.
+    # Trade-off: if a new container type is added to the CPU path, it must also be added here.
+
     # CuArray (CuVector, CuMatrix, etc.)
     if val isa CuArray
         _check_cuda_pointer_overlap(val, pool)
         return
     end
 
-    # SubArray of CuArray (if someone does view(cuarray, ...))
+    # SubArray / ReshapedArray of CuArray — defensive code.
+    # Current CUDA.jl: view(CuVector, 1:n) returns CuArray via GPUArrays derive(),
+    # NOT SubArray. These branches guard against future CUDA.jl behavior changes
+    # or user-constructed SubArray{T,N,CuArray} / ReshapedArray wrappers.
     if val isa SubArray
         p = parent(val)
         if p isa CuArray
@@ -139,7 +147,6 @@ function _validate_cuda_return(val, pool::CuAdaptiveArrayPool)
         return
     end
 
-    # ReshapedArray (from reshape of CuArray view)
     if val isa Base.ReshapedArray
         p = parent(val)
         if p isa CuArray
@@ -220,27 +227,30 @@ function _check_cuda_pointer_overlap(arr::CuArray, pool::CuAdaptiveArrayPool, or
         isempty(rs) ? nothing : rs
     end
 
-    _check = function (tp)
-        for v in tp.vectors
-            v_ptr = UInt(pointer(v))
-            v_bytes = length(v) * sizeof(eltype(v))
-            v_end = v_ptr + v_bytes
-            if !(arr_end <= v_ptr || v_end <= arr_ptr)
-                callsite = _cuda_lookup_borrow_callsite(pool, v)
-                _throw_pool_escape_error(original_val, eltype(v), callsite, return_site)
-            end
-        end
-        return
-    end
-
     # Check fixed slots
     AdaptiveArrayPools.foreach_fixed_slot(pool) do tp
-        _check(tp)
+        _check_tp_cuda_overlap(tp, arr_ptr, arr_end, pool, return_site, original_val)
     end
 
     # Check others
     for tp in values(pool.others)
-        _check(tp)
+        _check_tp_cuda_overlap(tp, arr_ptr, arr_end, pool, return_site, original_val)
+    end
+    return
+end
+
+@noinline function _check_tp_cuda_overlap(
+        tp::AbstractTypedPool, arr_ptr::UInt, arr_end::UInt,
+        pool::CuAdaptiveArrayPool, return_site, original_val
+    )
+    for v in tp.vectors
+        v_ptr = UInt(pointer(v))
+        v_bytes = length(v) * sizeof(eltype(v))
+        v_end = v_ptr + v_bytes
+        if !(arr_end <= v_ptr || v_end <= arr_ptr)
+            callsite = _cuda_lookup_borrow_callsite(pool, v)
+            _throw_pool_escape_error(original_val, eltype(v), callsite, return_site)
+        end
     end
     return
 end

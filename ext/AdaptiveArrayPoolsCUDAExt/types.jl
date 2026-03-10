@@ -192,7 +192,15 @@ Reset: `_pending_callsite/return_site` (transient macro state),
        `_borrow_log` (created fresh when `s >= 3`).
 """
 @noinline function _make_cuda_pool(s::Int, old::CuAdaptiveArrayPool)
-    _new(::Val{V}) where {V} = CuAdaptiveArrayPool{V}(
+    s <= 0 && return _transfer_cuda_pool(Val(0), old)
+    s == 1 && return _transfer_cuda_pool(Val(1), old)
+    s == 2 && return _transfer_cuda_pool(Val(2), old)
+    return _transfer_cuda_pool(Val(3), old)
+end
+
+"""Transfer cached arrays and scope state from `old` pool into a new `CuAdaptiveArrayPool{V}`."""
+function _transfer_cuda_pool(::Val{V}, old::CuAdaptiveArrayPool) where {V}
+    return CuAdaptiveArrayPool{V}(
         old.float32, old.float64, old.float16,
         old.int32, old.int64,
         old.complexf32, old.complexf64, old.bool,
@@ -205,10 +213,6 @@ Reset: `_pending_callsite/return_site` (transient macro state),
         "",       # _pending_return_site: reset
         V >= 3 ? IdDict{Any, String}() : nothing  # _borrow_log
     )
-    s <= 0 && return _new(Val(0))
-    s == 1 && return _new(Val(1))
-    s == 2 && return _new(Val(2))
-    return _new(Val(3))
 end
 
 """Human-readable safety level label."""
