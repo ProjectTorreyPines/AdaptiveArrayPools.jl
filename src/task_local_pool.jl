@@ -166,8 +166,16 @@ See also: [`_safety_level`], [`POOL_SAFETY_LV`]
 """
 function set_safety_level!(level::Int)
     0 <= level <= 3 || throw(ArgumentError("Safety level must be 0-3; got $level"))
-    POOL_SAFETY_LV[] = level
     old_pool = get(task_local_storage(), _POOL_KEY, nothing)
+    if old_pool isa AdaptiveArrayPool
+        depth = getfield(old_pool, :_current_depth)
+        depth != 1 && throw(
+            ArgumentError(
+                "set_safety_level! cannot be called inside an active @with_pool scope (depth=$depth)"
+            )
+        )
+    end
+    POOL_SAFETY_LV[] = level
     new_pool = old_pool === nothing ? _make_pool(level) : _make_pool(level, old_pool::AdaptiveArrayPool)
     task_local_storage(_POOL_KEY, new_pool)
     return new_pool

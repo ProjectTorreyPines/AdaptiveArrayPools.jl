@@ -241,6 +241,8 @@ function _validate_pool_return(val::AbstractSet, pool::AdaptiveArrayPool)
 end
 
 _validate_pool_return(val, ::DisabledPool) = nothing
+# No-op fallback for non-CPU pools (e.g. CuAdaptiveArrayPool) that lack borrow tracking fields
+_validate_pool_return(val, ::AbstractArrayPool) = nothing
 
 # ==============================================================================
 # Poisoning: Fill released vectors with sentinel values (POOL_SAFETY_LV >= 2)

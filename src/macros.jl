@@ -1413,8 +1413,8 @@ end
 # error messages to show WHERE the problematic acquire originated.
 #
 # Works with both typed path (_*_impl! GlobalRefs) and dynamic path (original
-# acquire!/zeros!/etc. calls). The injection is gated behind STATIC_POOL_CHECKS
-# at macro expansion time, and POOL_SAFETY_LV[] >= 3 at runtime.
+# acquire!/zeros!/etc. calls). Always injected — gated at runtime by
+# `_safety_level(pool) >= 3 || POOL_DEBUG[]` (dead-code-eliminated at S<3).
 
 const _POOL_SAFETY_LV_REF = GlobalRef(@__MODULE__, :POOL_SAFETY_LV)
 const _DISPATCH_POOL_SCOPE_REF = GlobalRef(@__MODULE__, :_dispatch_pool_scope)
