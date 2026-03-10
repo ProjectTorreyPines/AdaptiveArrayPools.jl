@@ -15,10 +15,15 @@
     ff2 = zeros!(pool, Bit, 100)
 
     C = similar!(pool, tt1)
+    nothing  # avoid compile-time escape error (C is pool-backed)
 end
 
 
 @testset "zero allocation on reuse" begin
+    # Disable safety invalidation: rewind-time resize!/setfield! forces cache misses
+    # (new SubArray views on legacy, new BitArray wrappers), breaking zero-alloc invariant.
+    old_safety = POOL_SAFETY_LV[]
+    POOL_SAFETY_LV[] = 0
 
     # First call: JIT + initial cache miss (pool arrays + N-way bitarray cache)
     alloc1 = @allocated foo()
@@ -35,4 +40,6 @@ end
     alloc3 = @allocated foo()
     @test alloc2 == 0
     @test alloc3 == 0
+
+    POOL_SAFETY_LV[] = old_safety
 end

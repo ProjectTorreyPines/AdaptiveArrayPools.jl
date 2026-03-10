@@ -236,6 +236,79 @@ Decrements _current_depth once after all types are rewound.
     end
 end
 
+# ==============================================================================
+# Safety: Structural Invalidation on Rewind (POOL_SAFETY_LV >= 1)
+# ==============================================================================
+#
+# When released, backing vectors are resize!'d to 0 and cached Array/BitArray
+# wrappers have their size set to (0,...). This makes stale SubArrays and Arrays
+# throw BoundsError on access instead of silently returning corrupted data.
+#
+# @noinline keeps invalidation code off the inlined hot path of _rewind_typed_pool!.
+
+# No-op fallback for extension types (e.g. CuTypedPool)
+_invalidate_released_slots!(::AbstractTypedPool, ::Int) = nothing
+
+@noinline function _invalidate_released_slots!(tp::TypedPool{T}, old_n_active::Int) where {T}
+    new_n = tp.n_active
+    # Level 2+: poison vectors with NaN/sentinel before structural invalidation.
+    # Especially useful on legacy (1.10) where unsafe_acquire! Array wrappers
+    # can't be structurally invalidated (Array is a C struct, no setfield!).
+    if POOL_SAFETY_LV[] >= 2
+        _poison_released_vectors!(tp, old_n_active)
+    end
+    # Level 1+: resize backing vectors to length 0 (invalidates SubArrays from acquire!)
+    # Note: Array wrapper invalidation (setfield! :size) requires Julia 1.11+.
+    # On legacy (1.10), only SubArray invalidation via resize! is available.
+    for i in (new_n + 1):old_n_active
+        @inbounds resize!(tp.vectors[i], 0)
+    end
+    # Invalidate view cache: reset view_lengths so get_view! forces cache miss
+    # instead of returning stale cached SubArrays pointing to empty vectors.
+    for i in (new_n + 1):min(old_n_active, length(tp.view_lengths))
+        @inbounds tp.view_lengths[i] = 0
+    end
+    return nothing
+end
+
+@noinline function _invalidate_released_slots!(tp::BitTypedPool, old_n_active::Int)
+    new_n = tp.n_active
+    # Level 2+: poison BitVectors (all bits set to true)
+    if POOL_SAFETY_LV[] >= 2
+        _poison_released_vectors!(tp, old_n_active)
+    end
+    # Level 1+: resize backing BitVectors to length 0
+    for i in (new_n + 1):old_n_active
+        @inbounds resize!(tp.vectors[i], 0)
+    end
+    # Invalidate N-D BitArray wrappers (N-way cache layout)
+    # Also zero nd_ptrs to force cache misses on re-acquire:
+    # After resize!(bv, 0) → resize!(bv, n), the pointer may stay the same
+    # (capacity preserved), causing a stale cache hit that returns a
+    # BitArray with len=0/dims=(0,...) instead of creating a fresh one.
+    ways = CACHE_WAYS
+    for i in (new_n + 1):old_n_active
+        base = (i - 1) * ways
+        for w in 1:ways
+            idx = base + w
+            idx > length(tp.nd_arrays) && break
+            @inbounds tp.nd_ptrs[idx] = UInt(0)  # force cache miss
+            ba = @inbounds tp.nd_arrays[idx]
+            ba === nothing && continue
+            dims = @inbounds tp.nd_dims[idx]
+            dims === nothing && continue
+            N = length(dims::Tuple)
+            setfield!(ba::BitArray, :len, 0)
+            setfield!(ba::BitArray, :dims, ntuple(_ -> 0, N))
+        end
+    end
+    return nothing
+end
+
+# ==============================================================================
+# Internal: Rewind with Orphan Cleanup
+# ==============================================================================
+
 # Internal helper for rewind with orphan cleanup (works for any AbstractTypedPool)
 # Uses 1-based sentinel pattern: no isempty checks needed (sentinel [0] guarantees non-empty)
 @inline function _rewind_typed_pool!(tp::AbstractTypedPool, current_depth::Int)
@@ -247,6 +320,11 @@ end
     while @inbounds tp._checkpoint_depths[end] > current_depth
         pop!(tp._checkpoint_depths)
         pop!(tp._checkpoint_n_active)
+    end
+
+    # Capture n_active before restore (for safety invalidation)
+    @static if STATIC_POOL_CHECKS
+        _old_n_active = tp.n_active
     end
 
     # 2. Normal Rewind Logic (Sentinel Pattern)
@@ -262,6 +340,14 @@ end
         # - If sentinel (_checkpoint_n_active=[0]), restores to n_active=0
         tp.n_active = @inbounds tp._checkpoint_n_active[end]
     end
+
+    # 3. Safety: invalidate released slots (Level 1+)
+    @static if STATIC_POOL_CHECKS
+        if POOL_SAFETY_LV[] >= 1 && _old_n_active > tp.n_active
+            _invalidate_released_slots!(tp, _old_n_active)
+        end
+    end
+
     return nothing
 end
 
@@ -459,12 +545,20 @@ Reset state without clearing allocated storage.
 Sets `n_active = 0` and restores checkpoint stacks to sentinel state.
 """
 function reset!(tp::AbstractTypedPool)
+    @static if STATIC_POOL_CHECKS
+        _old_n_active = tp.n_active
+    end
     tp.n_active = 0
     # Restore sentinel values (1-based sentinel pattern)
     empty!(tp._checkpoint_n_active)
     push!(tp._checkpoint_n_active, 0)   # Sentinel: n_active=0 at depth=0
     empty!(tp._checkpoint_depths)
     push!(tp._checkpoint_depths, 0)     # Sentinel: depth=0 = no checkpoint
+    @static if STATIC_POOL_CHECKS
+        if POOL_SAFETY_LV[] >= 1 && _old_n_active > 0
+            _invalidate_released_slots!(tp, _old_n_active)
+        end
+    end
     return tp
 end
 
@@ -525,6 +619,11 @@ function reset!(pool::AdaptiveArrayPool)
     push!(pool._touched_type_masks, UInt16(0))   # Sentinel: no bits set
     empty!(pool._touched_has_others)
     push!(pool._touched_has_others, false)         # Sentinel: no others
+
+    # Clear borrow registry and return-site tracking
+    pool._pending_callsite = ""
+    pool._pending_return_site = ""
+    pool._borrow_log = nothing
 
     return pool
 end

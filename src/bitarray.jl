@@ -139,17 +139,23 @@ end
 # Bit type: returns BitArray{N} with shared chunks (SIMD optimized, N-D cached)
 @inline function _unsafe_acquire_impl!(pool::AbstractArrayPool, ::Type{Bit}, n::Int)
     tp = get_typed_pool!(pool, Bit)::BitTypedPool
-    return get_bitarray!(tp, n)
+    result = get_bitarray!(tp, n)
+    _maybe_record_borrow!(pool, tp)
+    return result
 end
 
 @inline function _unsafe_acquire_impl!(pool::AbstractArrayPool, ::Type{Bit}, dims::Vararg{Int, N}) where {N}
     tp = get_typed_pool!(pool, Bit)::BitTypedPool
-    return get_bitarray!(tp, dims)
+    result = get_bitarray!(tp, dims)
+    _maybe_record_borrow!(pool, tp)
+    return result
 end
 
 @inline function _unsafe_acquire_impl!(pool::AbstractArrayPool, ::Type{Bit}, dims::NTuple{N, Int}) where {N}
     tp = get_typed_pool!(pool, Bit)::BitTypedPool
-    return get_bitarray!(tp, dims)
+    result = get_bitarray!(tp, dims)
+    _maybe_record_borrow!(pool, tp)
+    return result
 end
 
 # ==============================================================================
@@ -193,11 +199,15 @@ end
 # ==============================================================================
 
 # Check if BitArray chunks overlap with the pool's BitTypedPool storage
-function _check_bitchunks_overlap(arr::BitArray, pool::AdaptiveArrayPool)
+function _check_bitchunks_overlap(arr::BitArray, pool::AdaptiveArrayPool, original_val = arr)
     arr_chunks = arr.chunks
     arr_ptr = UInt(pointer(arr_chunks))
     arr_len = length(arr_chunks) * sizeof(UInt64)
     arr_end = arr_ptr + arr_len
+
+    return_site = let rs = pool._pending_return_site
+        isempty(rs) ? nothing : rs
+    end
 
     for v in pool.bits.vectors
         v_chunks = v.chunks
@@ -205,7 +215,8 @@ function _check_bitchunks_overlap(arr::BitArray, pool::AdaptiveArrayPool)
         v_len = length(v_chunks) * sizeof(UInt64)
         v_end = v_ptr + v_len
         if !(arr_end <= v_ptr || v_end <= arr_ptr)
-            error("Safety Violation: The function returned a BitArray backed by pool memory. This is unsafe as the memory will be reclaimed. Please return a copy (copy) or a scalar.")
+            callsite = _lookup_borrow_callsite(pool, v)
+            _throw_pool_escape_error(original_val, Bit, callsite, return_site)
         end
     end
     return nothing

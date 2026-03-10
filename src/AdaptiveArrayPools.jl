@@ -9,7 +9,8 @@ export zeros!, ones!, trues!, falses!, similar!, reshape!, default_eltype  # Con
 export unsafe_zeros!, unsafe_ones!, unsafe_similar!  # Unsafe convenience functions
 export Bit  # Sentinel type for BitArray (use with acquire!, trues!, falses!)
 export @with_pool, @maybe_with_pool
-export STATIC_POOLING, MAYBE_POOLING, POOL_DEBUG
+export STATIC_POOLING, MAYBE_POOLING, POOL_DEBUG, POOL_SAFETY_LV, STATIC_POOL_CHECKS
+export PoolEscapeError, EscapePoint
 export USE_POOLING, MAYBE_POOLING_ENABLED  # Deprecated aliases (backward compat)
 export checkpoint!, rewind!, reset!
 export get_task_local_cuda_pool, get_task_local_cuda_pools  # CUDA (stubs, overridden by extension)
@@ -28,6 +29,7 @@ export DisabledPool, DISABLED_CPU, pooling_enabled  # Disabled pool support
     include("convenience.jl")
     include("state.jl")
     include("task_local_pool.jl")
+    include("debug.jl")
     include("macros.jl")
 else
     export CACHE_WAYS, set_cache_ways!  # N-way cache configuration (legacy only)
@@ -38,6 +40,7 @@ else
     include("convenience.jl")
     include("legacy/state.jl")
     include("task_local_pool.jl")
+    include("debug.jl")
     include("macros.jl")
 end
 

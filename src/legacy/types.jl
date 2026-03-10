@@ -62,6 +62,28 @@ function set_cache_ways!(n::Int)
 end
 
 # ==============================================================================
+# Safety Configuration (2-Tier Toggle)
+# ==============================================================================
+#   Tier 1: STATIC_POOL_CHECKS (compile-time const)
+#   Tier 2: POOL_SAFETY_LV (runtime Ref{Int}, levels 0/1/2)
+
+const STATIC_POOL_CHECKS = @load_preference("pool_checks", true)::Bool
+
+"""
+    POOL_SAFETY_LV
+
+Runtime safety level for pool operations. Only effective when `STATIC_POOL_CHECKS` is `true`.
+
+- `0`: Off — no safety checks (Ref read only, ~1ns)
+- `1`: Guard — structural invalidation on rewind (resize + setfield!, ~1ns/slot)
+- `2`: Full — guard + escape detection on scope exit + poisoning
+- `3`: Debug — full + borrow registry (acquire call-site tracking in error messages)
+
+Default: `1` (guard mode)
+"""
+const POOL_SAFETY_LV = Ref(1)
+
+# ==============================================================================
 # Abstract Type Hierarchy (for extensibility)
 # ==============================================================================
 
@@ -376,6 +398,11 @@ mutable struct AdaptiveArrayPool <: AbstractArrayPool
     _current_depth::Int             # Current scope depth (1 = global scope)
     _touched_type_masks::Vector{UInt16}  # Per-depth: which fixed slots were touched + mode flags
     _touched_has_others::Vector{Bool}    # Per-depth: any non-fixed-slot type touched?
+
+    # Borrow registry (POOL_SAFETY_LV >= 3 only, modern path only)
+    _pending_callsite::String                        # "" = no pending
+    _pending_return_site::String                     # "" = no pending
+    _borrow_log::Union{Nothing, IdDict{Any, String}} # vector_obj => callsite string
 end
 
 function AdaptiveArrayPool()
@@ -391,7 +418,10 @@ function AdaptiveArrayPool()
         IdDict{DataType, Any}(),
         1,              # _current_depth: 1 = global scope (sentinel)
         [UInt16(0)],    # _touched_type_masks: sentinel (no bits set)
-        [false]         # _touched_has_others: sentinel (no others)
+        [false],        # _touched_has_others: sentinel (no others)
+        "",             # _pending_callsite: no pending
+        "",             # _pending_return_site: no pending
+        nothing         # _borrow_log: lazily created at LV >= 3
     )
 end
 
@@ -445,3 +475,44 @@ Apply `f` to each fixed slot TypedPool. Zero allocation via compile-time unrolli
         nothing
     end
 end
+
+# ==============================================================================
+# Safety Tag Dispatch (compile-time, zero-cost when STATIC_POOL_CHECKS=false)
+# ==============================================================================
+#
+# Instead of `@static if STATIC_POOL_CHECKS` at every call site, we dispatch on
+# a singleton tag.  The compiler resolves `const _POOL_CHECK_TAG` at compile time,
+# monomorphizes the call, and dead-code-eliminates the unused path entirely.
+
+"""Singleton tag: pool safety checks enabled."""
+struct _CheckOn end
+
+"""Singleton tag: pool safety checks disabled (all safety helpers become no-ops)."""
+struct _CheckOff end
+
+"""Compile-time tag selected by `STATIC_POOL_CHECKS`."""
+const _POOL_CHECK_TAG = STATIC_POOL_CHECKS ? _CheckOn() : _CheckOff()
+
+# --- Active implementations (_CheckOn) ---
+
+@inline function _set_pending_callsite!(::_CheckOn, pool::AbstractArrayPool, msg::String)
+    POOL_SAFETY_LV[] >= 3 && isempty(pool._pending_callsite) && (pool._pending_callsite = msg)
+    return nothing
+end
+
+@inline function _maybe_record_borrow!(::_CheckOn, pool::AbstractArrayPool, tp::AbstractTypedPool)
+    POOL_SAFETY_LV[] >= 3 && _record_borrow_from_pending!(pool, tp)
+    return nothing
+end
+
+# --- No-op implementations (_CheckOff) ---
+
+@inline _set_pending_callsite!(::_CheckOff, ::AbstractArrayPool, ::String) = nothing
+@inline _maybe_record_borrow!(::_CheckOff, ::AbstractArrayPool, ::AbstractTypedPool) = nothing
+
+# --- Convenience wrappers (auto-dispatch via const tag) ---
+
+@inline _set_pending_callsite!(pool::AbstractArrayPool, msg::String) =
+    _set_pending_callsite!(_POOL_CHECK_TAG, pool, msg)
+@inline _maybe_record_borrow!(pool::AbstractArrayPool, tp::AbstractTypedPool) =
+    _maybe_record_borrow!(_POOL_CHECK_TAG, pool, tp)

@@ -3,6 +3,225 @@
 # ==============================================================================
 
 # ==============================================================================
+# PoolEscapeError — Compile-time escape detection error
+# ==============================================================================
+
+"""Per-return-point escape detail: which expression, at which line, leaks which vars."""
+struct EscapePoint
+    expr::Any
+    line::Union{Int, Nothing}
+    vars::Vector{Symbol}
+end
+
+"""Per-variable declaration site: where an escaping variable was assigned."""
+struct DeclarationSite
+    var::Symbol
+    expr::Any
+    line::Union{Int, Nothing}
+    file::Union{Symbol, Nothing}
+end
+
+"""
+    PoolEscapeError <: Exception
+
+Thrown at macro expansion time when pool-backed variables are detected in
+return position of `@with_pool` / `@maybe_with_pool` blocks.
+
+This is a compile-time check with zero runtime cost.
+"""
+struct PoolEscapeError <: Exception
+    vars::Vector{Symbol}
+    file::Union{String, Nothing}
+    line::Union{Int, Nothing}
+    points::Vector{EscapePoint}
+    var_info::Dict{Symbol, Tuple{Symbol, Vector{Symbol}}}  # var => (kind, source_vars)
+    declarations::Vector{DeclarationSite}
+end
+
+PoolEscapeError(vars, file, line, points) =
+    PoolEscapeError(vars, file, line, points, Dict{Symbol, Tuple{Symbol, Vector{Symbol}}}(), DeclarationSite[])
+
+PoolEscapeError(vars, file, line, points, var_info) =
+    PoolEscapeError(vars, file, line, points, var_info, DeclarationSite[])
+
+"""Render an expression with escaped variable names highlighted in red.
+Handles return, tuple, NamedTuple, array literal; falls back to print for others."""
+function _render_return_expr(io::IO, expr, escaped::Set{Symbol})
+    return if expr isa Symbol
+        if expr in escaped
+            printstyled(io, string(expr); color = :red, bold = true)
+        else
+            print(io, expr)
+        end
+    elseif expr isa Expr
+        if expr.head == :return && !isempty(expr.args)
+            printstyled(io, "return "; color = :light_black)
+            _render_return_expr(io, expr.args[1], escaped)
+        elseif expr.head == :tuple
+            print(io, "(")
+            for (i, arg) in enumerate(expr.args)
+                i > 1 && print(io, ", ")
+                _render_return_expr(io, arg, escaped)
+            end
+            print(io, ")")
+        elseif expr.head == :(=) && length(expr.args) >= 2
+            # NamedTuple key = value — only highlight value
+            print(io, expr.args[1], " = ")
+            _render_return_expr(io, expr.args[2], escaped)
+        elseif expr.head == :vect
+            print(io, "[")
+            for (i, arg) in enumerate(expr.args)
+                i > 1 && print(io, ", ")
+                _render_return_expr(io, arg, escaped)
+            end
+            print(io, "]")
+        else
+            print(io, expr)
+        end
+    else
+        print(io, expr)
+    end
+end
+
+function Base.showerror(io::IO, e::PoolEscapeError)
+    # Header
+    printstyled(io, "PoolEscapeError"; color = :red, bold = true)
+    printstyled(io, " (compile-time)"; color = :light_black)
+    println(io)
+
+    # Descriptive message
+    println(io)
+    n = length(e.vars)
+    if n == 1
+        printstyled(io, "  The following variable escapes the @with_pool scope:\n"; color = :light_black)
+    else
+        printstyled(io, "  The following ", n, " variables escape the @with_pool scope:\n"; color = :light_black)
+    end
+
+    # Escaped variables — one per line with classification
+    println(io)
+    for v in e.vars
+        printstyled(io, "    "; color = :normal)
+        printstyled(io, string(v); color = :red, bold = true)
+        kind, sources = get(e.var_info, v, (:pool_buffer, Symbol[]))
+        if kind === :container
+            src_str = join(string.(sources), ", ")
+            printstyled(io, "  ← wraps pool variable"; color = :light_black)
+            length(sources) > 1 && printstyled(io, "s"; color = :light_black)
+            printstyled(io, " (", src_str, ")\n"; color = :light_black)
+        elseif kind === :alias
+            printstyled(io, "  ← alias of pool variable (", string(sources[1]), ")\n"; color = :light_black)
+        elseif kind === :pool_array
+            printstyled(io, "  ← pool-acquired array\n"; color = :light_black)
+        elseif kind === :pool_bitarray
+            printstyled(io, "  ← pool-acquired BitArray\n"; color = :light_black)
+        elseif kind === :pool_view
+            printstyled(io, "  ← pool-acquired view\n"; color = :light_black)
+        else
+            printstyled(io, "  ← pool-backed temporary\n"; color = :light_black)
+        end
+    end
+
+    # Declaration sites — where each escaping variable was assigned
+    if !isempty(e.declarations)
+        println(io)
+        printstyled(io, "  Declarations:\n"; bold = true)
+        for (idx, decl) in enumerate(e.declarations)
+            printstyled(io, "    [", idx, "]  "; color = :light_black)
+            printstyled(io, string(decl.expr); color = :cyan)
+            # Fall back to macro source file when body LineNumberNode has :none (REPL/eval)
+            decl_file = (decl.file !== nothing && decl.file !== :none) ? decl.file : e.file
+            loc = _format_location_str(decl_file, decl.line)
+            if loc !== nothing
+                printstyled(io, "  ["; color = :cyan, bold = true)
+                printstyled(io, loc; color = :cyan, bold = true)
+                printstyled(io, "] "; color = :cyan, bold = true)
+            end
+            println(io)
+        end
+    end
+
+    # Escaping return points with highlighted expressions
+    if !isempty(e.points)
+        println(io)
+        label = length(e.points) == 1 ? "  Escaping return:" : "  Escaping returns:"
+        printstyled(io, label, "\n"; bold = true)
+        escaped_set = Set{Symbol}(e.vars)
+        for (idx, pt) in enumerate(e.points)
+            printstyled(io, "    [", idx, "]  "; color = :light_black)
+            _render_return_expr(io, pt.expr, escaped_set)
+            loc = _format_point_location(e.file, pt.line)
+            if loc !== nothing
+                printstyled(io, "  ["; color = :magenta, bold = true)
+                printstyled(io, loc; color = :magenta, bold = true)
+                printstyled(io, "] "; color = :magenta, bold = true)
+            end
+            println(io)
+        end
+    end
+
+    # Suggestion 1: fix — collect targets are direct pool vars + container sources
+    println(io)
+    collect_targets = Symbol[]
+    has_containers = false
+    for v in e.vars
+        vkind, vsources = get(e.var_info, v, (:pool_buffer, Symbol[]))
+        if vkind === :container
+            append!(collect_targets, vsources)
+            has_containers = true
+        else
+            push!(collect_targets, v)
+        end
+    end
+    unique!(collect_targets)
+    sort!(collect_targets)
+    collects_str = join(["collect($v)" for v in collect_targets], ", ")
+    printstyled(io, "  Fix: "; bold = true)
+    printstyled(io, "Use "; color = :light_black)
+    printstyled(io, collects_str; bold = true)
+    printstyled(io, " to return owned copies.\n"; color = :light_black)
+    if has_containers
+        printstyled(io, "       Copy pool variables before wrapping in containers.\n"; color = :light_black)
+    end
+    printstyled(io, "       Or use a regular Julia array (zeros()/Array{T}()) if it must outlive the pool scope.\n"; color = :light_black)
+
+    # Suggestion 2: false positive → file issue
+    println(io)
+    printstyled(io, "  False positive?\n"; bold = true)
+    printstyled(io, "    Please file an issue at "; color = :light_black)
+    printstyled(io, "https://github.com/ProjectTorreyPines/AdaptiveArrayPools.jl/issues"; bold = true)
+    return printstyled(io, "\n    with a minimal reproducer so we can improve the escape detector.\n"; color = :light_black)
+end
+
+# Location formatting helpers (uses _short_path from debug.jl)
+function _format_location_str(file, line)
+    file_str = file !== nothing ? string(file) : nothing
+    # Skip "none" — Julia's placeholder for REPL/eval contexts
+    if file_str !== nothing && file_str != "none"
+        short = _short_path(file_str)
+        return line !== nothing ? short * ":" * string(line) : short
+    elseif line !== nothing
+        return "line " * string(line)
+    end
+    return nothing
+end
+
+function _format_point_location(file::Union{String, Nothing}, line::Union{Int, Nothing})
+    # Skip "none" — Julia's placeholder for REPL/eval contexts
+    if file !== nothing && file != "none"
+        short = _short_path(file)
+        return line !== nothing ? short * ":" * string(line) : short
+    elseif line !== nothing
+        return "line " * string(line)
+    end
+    return nothing
+end
+
+# Suppress stacktrace — LoadError delegates to this via showerror(io, ex.error, bt)
+Base.showerror(io::IO, e::PoolEscapeError, ::Any; backtrace = true) = showerror(io, e)
+
+
+# ==============================================================================
 # Backend Dispatch (for extensibility)
 # ==============================================================================
 
@@ -328,6 +547,10 @@ function _generate_pool_code(pool_name, expr, force_enable; source::Union{LineNu
         return _generate_function_pool_code(pool_name, expr, force_enable, false; source)
     end
 
+    # Compile-time escape detection (zero runtime cost)
+    _esc = _check_compile_time_escape(expr, pool_name, source)
+    _esc !== nothing && return :(throw($_esc))
+
     # Block logic
     # Extract types from acquire! calls for optimized checkpoint/rewind
     # Only extract types for calls to the target pool (pool_name)
@@ -341,6 +564,12 @@ function _generate_pool_code(pool_name, expr, force_enable; source::Union{LineNu
     # For typed path: transform acquire! → _acquire_impl! (bypasses type touch recording)
     # For dynamic path: keep acquire! untransformed so _record_type_touch! is called
     transformed_expr = use_typed ? _transform_acquire_calls(expr, pool_name) : expr
+
+    # Inject borrow callsite recording (LV≥3 at runtime; gated by STATIC_POOL_CHECKS at compile time)
+    if STATIC_POOL_CHECKS
+        transformed_expr = _inject_pending_callsite(transformed_expr, pool_name, expr)
+        transformed_expr = _transform_return_stmts(transformed_expr, pool_name)
+    end
 
     if use_typed
         checkpoint_call = _generate_typed_checkpoint_call(esc(pool_name), static_types)
@@ -360,7 +589,7 @@ function _generate_pool_code(pool_name, expr, force_enable; source::Union{LineNu
             $checkpoint_call
             try
                 local _result = $(esc(transformed_expr))
-                if $POOL_DEBUG[]
+                if ($POOL_SAFETY_LV[] >= 2 || $POOL_DEBUG[])
                     $_validate_pool_return(_result, $(esc(pool_name)))
                 end
                 _result
@@ -376,7 +605,7 @@ function _generate_pool_code(pool_name, expr, force_enable; source::Union{LineNu
                 $checkpoint_call
                 try
                     local _result = $(esc(transformed_expr))
-                    if $POOL_DEBUG[]
+                    if ($POOL_SAFETY_LV[] >= 2 || $POOL_DEBUG[])
                         $_validate_pool_return(_result, $(esc(pool_name)))
                     end
                     _result
@@ -425,6 +654,10 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, forc
             return _generate_function_pool_code_with_backend(backend, pool_name, expr, false, false; source)
         end
 
+        # Compile-time escape detection (zero runtime cost)
+        _esc = _check_compile_time_escape(expr, pool_name, source)
+        _esc !== nothing && return :(throw($_esc))
+
         # Block logic with runtime check
         all_types = _extract_acquire_types(expr, pool_name)
         local_vars = _extract_local_assignments(expr)
@@ -433,6 +666,10 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, forc
         # For typed path: transform acquire! → _acquire_impl! (bypasses type touch recording)
         # For dynamic path: keep acquire! untransformed so _record_type_touch! is called
         transformed_expr = use_typed ? _transform_acquire_calls(expr, pool_name) : expr
+        if STATIC_POOL_CHECKS
+            transformed_expr = _inject_pending_callsite(transformed_expr, pool_name, expr)
+            transformed_expr = _transform_return_stmts(transformed_expr, pool_name)
+        end
         pool_getter = :($_get_pool_for_backend($(Val{backend}())))
 
         if use_typed
@@ -449,7 +686,7 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, forc
                 $checkpoint_call
                 try
                     local _result = $(esc(transformed_expr))
-                    if $POOL_DEBUG[]
+                    if ($POOL_SAFETY_LV[] >= 2 || $POOL_DEBUG[])
                         $_validate_pool_return(_result, $(esc(pool_name)))
                     end
                     _result
@@ -468,6 +705,10 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, forc
         return _generate_function_pool_code_with_backend(backend, pool_name, expr, true, false; source)
     end
 
+    # Compile-time escape detection (zero runtime cost)
+    _esc = _check_compile_time_escape(expr, pool_name, source)
+    _esc !== nothing && return :(throw($_esc))
+
     # Block logic: Extract types from acquire! calls for optimized checkpoint/rewind
     all_types = _extract_acquire_types(expr, pool_name)
     local_vars = _extract_local_assignments(expr)
@@ -479,6 +720,10 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, forc
     # For typed path: transform acquire! → _acquire_impl! (bypasses type touch recording)
     # For dynamic path: keep acquire! untransformed so _record_type_touch! is called
     transformed_expr = use_typed ? _transform_acquire_calls(expr, pool_name) : expr
+    if STATIC_POOL_CHECKS
+        transformed_expr = _inject_pending_callsite(transformed_expr, pool_name, expr)
+        transformed_expr = _transform_return_stmts(transformed_expr, pool_name)
+    end
 
     # Use Val{backend}() for compile-time dispatch - fully inlinable
     pool_getter = :($_get_pool_for_backend($(Val{backend}())))
@@ -500,7 +745,7 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, forc
         $checkpoint_call
         try
             local _result = $(esc(transformed_expr))
-            if $POOL_DEBUG[]
+            if ($POOL_SAFETY_LV[] >= 2 || $POOL_DEBUG[])
                 $_validate_pool_return(_result, $(esc(pool_name)))
             end
             _result
@@ -536,6 +781,10 @@ function _generate_function_pool_code_with_backend(backend::Symbol, pool_name, f
         return Expr(def_head, esc(call_expr), new_body)
     end
 
+    # Compile-time escape detection (zero runtime cost)
+    _esc = _check_compile_time_escape(body, pool_name, source)
+    _esc !== nothing && return :(throw($_esc))
+
     # Analyze body for types
     all_types = _extract_acquire_types(body, pool_name)
     local_vars = _extract_local_assignments(body)
@@ -545,6 +794,10 @@ function _generate_function_pool_code_with_backend(backend::Symbol, pool_name, f
     # For typed path: transform acquire! → _acquire_impl! (bypasses type touch recording)
     # For dynamic path: keep acquire! untransformed so _record_type_touch! is called
     transformed_body = use_typed ? _transform_acquire_calls(body, pool_name) : body
+    if STATIC_POOL_CHECKS
+        transformed_body = _inject_pending_callsite(transformed_body, pool_name, body)
+        transformed_body = _transform_return_stmts(transformed_body, pool_name)
+    end
 
     # Use Val{backend}() for compile-time dispatch
     pool_getter = :($_get_pool_for_backend($(Val{backend}())))
@@ -562,7 +815,13 @@ function _generate_function_pool_code_with_backend(backend::Symbol, pool_name, f
             local $(esc(pool_name)) = $pool_getter
             $checkpoint_call
             try
-                $(esc(transformed_body))
+                local _result = begin
+                    $(esc(transformed_body))
+                end
+                if ($POOL_SAFETY_LV[] >= 2 || $POOL_DEBUG[])
+                    $_validate_pool_return(_result, $(esc(pool_name)))
+                end
+                _result
             finally
                 $rewind_call
             end
@@ -574,7 +833,13 @@ function _generate_function_pool_code_with_backend(backend::Symbol, pool_name, f
                 local $(esc(pool_name)) = $pool_getter
                 $checkpoint_call
                 try
-                    $(esc(transformed_body))
+                    local _result = begin
+                        $(esc(transformed_body))
+                    end
+                    if ($POOL_SAFETY_LV[] >= 2 || $POOL_DEBUG[])
+                        $_validate_pool_return(_result, $(esc(pool_name)))
+                    end
+                    _result
                 finally
                     $rewind_call
                 end
@@ -607,6 +872,10 @@ function _generate_function_pool_code(pool_name, func_def, force_enable, disable
         return Expr(def_head, esc(call_expr), new_body)
     end
 
+    # Compile-time escape detection (zero runtime cost)
+    _esc = _check_compile_time_escape(body, pool_name, source)
+    _esc !== nothing && return :(throw($_esc))
+
     # Analyze body for types
     all_types = _extract_acquire_types(body, pool_name)
     local_vars = _extract_local_assignments(body)
@@ -616,6 +885,10 @@ function _generate_function_pool_code(pool_name, func_def, force_enable, disable
     # For typed path: transform acquire! → _acquire_impl! (bypasses type touch recording)
     # For dynamic path: keep acquire! untransformed so _record_type_touch! is called
     transformed_body = use_typed ? _transform_acquire_calls(body, pool_name) : body
+    if STATIC_POOL_CHECKS
+        transformed_body = _inject_pending_callsite(transformed_body, pool_name, body)
+        transformed_body = _transform_return_stmts(transformed_body, pool_name)
+    end
 
     if use_typed
         checkpoint_call = _generate_typed_checkpoint_call(esc(pool_name), static_types)
@@ -634,7 +907,13 @@ function _generate_function_pool_code(pool_name, func_def, force_enable, disable
             local $(esc(pool_name)) = get_task_local_pool()
             $checkpoint_call
             try
-                $(esc(transformed_body))
+                local _result = begin
+                    $(esc(transformed_body))
+                end
+                if ($POOL_SAFETY_LV[] >= 2 || $POOL_DEBUG[])
+                    $_validate_pool_return(_result, $(esc(pool_name)))
+                end
+                _result
             finally
                 $rewind_call
             end
@@ -646,7 +925,13 @@ function _generate_function_pool_code(pool_name, func_def, force_enable, disable
                 local $(esc(pool_name)) = get_task_local_pool()
                 $checkpoint_call
                 try
-                    $(esc(transformed_body))
+                    local _result = begin
+                        $(esc(transformed_body))
+                    end
+                    if ($POOL_SAFETY_LV[] >= 2 || $POOL_DEBUG[])
+                        $_validate_pool_return(_result, $(esc(pool_name)))
+                    end
+                    _result
                 finally
                     $rewind_call
                 end
@@ -1114,4 +1399,797 @@ function _transform_acquire_calls(expr, pool_name)
         return Expr(expr.head, new_args...)
     end
     return expr
+end
+
+# ==============================================================================
+# Internal: Borrow Callsite Injection (POOL_SAFETY_LV >= 3)
+# ==============================================================================
+#
+# Second-pass AST transformation that inserts `pool._pending_callsite = "file:line"`
+# before each statement containing an acquire call. This enables borrow registry
+# error messages to show WHERE the problematic acquire originated.
+#
+# Works with both typed path (_*_impl! GlobalRefs) and dynamic path (original
+# acquire!/zeros!/etc. calls). The injection is gated behind STATIC_POOL_CHECKS
+# at macro expansion time, and POOL_SAFETY_LV[] >= 3 at runtime.
+
+const _POOL_SAFETY_LV_REF = GlobalRef(@__MODULE__, :POOL_SAFETY_LV)
+
+"""Set of all transformed `_*_impl!` function names (GlobalRef targets)."""
+const _IMPL_FUNC_NAMES = Set{Symbol}(
+    [
+        :_acquire_impl!, :_unsafe_acquire_impl!,
+        :_zeros_impl!, :_ones_impl!, :_trues_impl!, :_falses_impl!,
+        :_similar_impl!, :_reshape_impl!,
+        :_unsafe_zeros_impl!, :_unsafe_ones_impl!, :_unsafe_similar_impl!,
+    ]
+)
+
+"""
+    _contains_acquire_call(expr, pool_name) -> Bool
+
+Detect if `expr` (or any sub-expression) contains a pool acquire call.
+Matches both transformed (`GlobalRef`-based `_*_impl!`) and original
+(`acquire!`, `zeros!`, etc.) call forms.
+"""
+function _contains_acquire_call(expr, pool_name)
+    expr isa Expr || return false
+    if expr.head == :call && length(expr.args) >= 2
+        fn = expr.args[1]
+        # Transformed _*_impl! calls (GlobalRef from typed path)
+        if fn isa GlobalRef && fn.name in _IMPL_FUNC_NAMES
+            return true
+        end
+        # Original acquire calls (dynamic path, or pre-transform)
+        if _is_acquire_call(expr, pool_name)
+            return true
+        end
+    end
+    return any(arg -> _contains_acquire_call(arg, pool_name), expr.args)
+end
+
+"""
+    _find_acquire_call_expr(expr, pool_name) -> Union{Expr, Nothing}
+
+Find the first acquire call expression in `expr` targeting `pool_name`.
+Returns the original call Expr (e.g., `:(zeros!(pool, Float64, 10))`) or `nothing`.
+Used to capture the user's source expression for debug display.
+"""
+function _find_acquire_call_expr(expr, pool_name)
+    expr isa Expr || return nothing
+    if _is_acquire_call(expr, pool_name)
+        return expr
+    end
+    for arg in expr.args
+        result = _find_acquire_call_expr(arg, pool_name)
+        result !== nothing && return result
+    end
+    return nothing
+end
+
+"""
+    _inject_pending_callsite(expr, pool_name, original_expr=expr) -> Expr
+
+Walk block-level statements, track `LineNumberNode`s, and insert
+`POOL_SAFETY_LV[] >= 3 && (pool._pending_callsite = "file:line\\nexpr")`
+before each statement containing a pool acquire call.
+
+When `original_expr` differs from `expr` (i.e., after `_transform_acquire_calls`),
+the original untransformed AST is used to extract the user's source expression
+(e.g., `zeros!(pool, Float64, 10)` instead of `_zeros_impl!(pool, Float64, 10)`).
+
+Only processes `:block` expressions. Non-block expressions are recursed
+into to find nested blocks.
+"""
+function _inject_pending_callsite(expr, pool_name, original_expr = expr)
+    expr isa Expr || return expr
+    if expr.head == :block
+        new_args = Any[]
+        current_lnn = nothing
+        orig_args = (original_expr isa Expr && original_expr.head == :block) ? original_expr.args : nothing
+        for (i, arg) in enumerate(expr.args)
+            if arg isa LineNumberNode
+                current_lnn = arg
+                push!(new_args, arg)
+            else
+                orig_arg = (orig_args !== nothing && i <= length(orig_args)) ? orig_args[i] : arg
+                processed = _inject_pending_callsite(arg, pool_name, orig_arg)
+                if current_lnn !== nothing && _contains_acquire_call(processed, pool_name)
+                    # Use the full original statement for debug display
+                    expr_text = string(orig_arg)
+                    callsite_str = isempty(expr_text) ?
+                        "$(current_lnn.file):$(current_lnn.line)" :
+                        "$(current_lnn.file):$(current_lnn.line)\n$(expr_text)"
+                    inject = Expr(
+                        :&&,
+                        Expr(:call, :>=, Expr(:ref, _POOL_SAFETY_LV_REF), 3),
+                        Expr(
+                            :(=),
+                            Expr(:., pool_name, QuoteNode(:_pending_callsite)),
+                            callsite_str
+                        )
+                    )
+                    push!(new_args, inject)
+                end
+                push!(new_args, processed)
+            end
+        end
+        return Expr(:block, new_args...)
+    else
+        orig_expr_args = (original_expr isa Expr) ? original_expr.args : nothing
+        new_args = Any[]
+        for (i, arg) in enumerate(expr.args)
+            orig_arg = (orig_expr_args !== nothing && i <= length(orig_expr_args)) ? orig_expr_args[i] : arg
+            push!(new_args, _inject_pending_callsite(arg, pool_name, orig_arg))
+        end
+        return Expr(expr.head, new_args...)
+    end
+end
+
+# ==============================================================================
+# Internal: Return Statement Validation (POOL_SAFETY_LV >= 2)
+# ==============================================================================
+#
+# Transforms `return expr` → `begin local _ret = expr; validate(_ret); return _ret end`
+# so that explicit `return` statements in @with_pool function bodies are validated
+# before exiting. Without this, `return` bypasses the post-body _validate_pool_return
+# check because it exits the function before that line is reached.
+#
+# Stops recursion at :function and :-> boundaries (nested function return statements
+# belong to the inner function, not the @with_pool scope).
+
+const _POOL_DEBUG_REF = GlobalRef(@__MODULE__, :POOL_DEBUG)
+const _VALIDATE_POOL_RETURN_REF = GlobalRef(@__MODULE__, :_validate_pool_return)
+
+"""
+    _transform_return_stmts(expr, pool_name) -> Expr
+
+Walk AST and wrap explicit `return value` statements with escape validation.
+Generates: `local _ret = value; if (LV≥2 || DEBUG) validate(_ret, pool); end; return _ret`
+
+Does NOT recurse into nested `:function` or `:->` expressions (inner functions
+have their own `return` semantics).
+"""
+function _transform_return_stmts(expr, pool_name, current_lnn = nothing)
+    expr isa Expr || return expr
+
+    # Don't recurse into nested function definitions (return belongs to inner function)
+    if expr.head in (:function, :->)
+        return expr
+    end
+
+    if expr.head == :return && length(expr.args) >= 1
+        value_expr = expr.args[1]
+        # Bare return (return nothing) — skip validation
+        if value_expr === nothing
+            return expr
+        end
+        # Recurse into the value expression first (may contain nested returns in ternary etc.)
+        value_expr = _transform_return_stmts(value_expr, pool_name, current_lnn)
+        retvar = gensym(:_pool_ret)
+
+        # Build return-site string for LV ≥ 3 display (e.g. "file:line\nreturn v")
+        return_site_str = if current_lnn !== nothing
+            "$(current_lnn.file):$(current_lnn.line)\n$(string(expr))"
+        else
+            ""
+        end
+
+        # Conditionally set _pending_return_site before validation
+        validate_expr = if !isempty(return_site_str)
+            Expr(
+                :block,
+                Expr(
+                    :&&,
+                    Expr(:call, :>=, Expr(:ref, _POOL_SAFETY_LV_REF), 3),
+                    Expr(
+                        :(=),
+                        Expr(:., pool_name, QuoteNode(:_pending_return_site)),
+                        return_site_str
+                    )
+                ),
+                Expr(:call, _VALIDATE_POOL_RETURN_REF, retvar, pool_name)
+            )
+        else
+            Expr(:call, _VALIDATE_POOL_RETURN_REF, retvar, pool_name)
+        end
+
+        return Expr(
+            :block,
+            Expr(:local, Expr(:(=), retvar, value_expr)),
+            Expr(
+                :if,
+                Expr(
+                    :||,
+                    Expr(:call, :>=, Expr(:ref, _POOL_SAFETY_LV_REF), 2),
+                    Expr(:ref, _POOL_DEBUG_REF)
+                ),
+                validate_expr
+            ),
+            Expr(:return, retvar)
+        )
+    end
+
+    # For blocks, track LineNumberNodes
+    if expr.head == :block
+        new_args = Any[]
+        lnn = current_lnn
+        for arg in expr.args
+            if arg isa LineNumberNode
+                lnn = arg
+                push!(new_args, arg)
+            else
+                push!(new_args, _transform_return_stmts(arg, pool_name, lnn))
+            end
+        end
+        return Expr(:block, new_args...)
+    end
+
+    # Other expressions: recurse with current_lnn
+    new_args = Any[_transform_return_stmts(arg, pool_name, current_lnn) for arg in expr.args]
+    return Expr(expr.head, new_args...)
+end
+
+# ==============================================================================
+# Internal: Compile-Time Escape Detection
+# ==============================================================================
+#
+# Detects common pool escape patterns at macro expansion time (zero runtime cost).
+# - Error: bare acquired variable as last expression (100% escape)
+# - Warning: acquired variable inside tuple/array literal (likely escape)
+#
+# This catches the most common beginner mistake — returning a pool-backed array
+# from @with_pool — before the code even runs.
+
+"""
+    _ALL_ACQUIRE_NAMES
+
+Set of all function names that return pool-backed arrays.
+Used by `_extract_acquired_vars` to identify assignments like `v = acquire!(pool, ...)`.
+"""
+const _ALL_ACQUIRE_NAMES = Set{Symbol}(
+    [
+        :acquire!, :unsafe_acquire!, :acquire_view!, :acquire_array!,
+        :zeros!, :ones!, :similar!, :reshape!,
+        :unsafe_zeros!, :unsafe_ones!, :unsafe_similar!,
+        :trues!, :falses!,
+    ]
+)
+
+"""Function names that return views (SubArray) from pool memory."""
+const _VIEW_ACQUIRE_NAMES = Set{Symbol}(
+    [
+        :acquire!, :acquire_view!,
+        :zeros!, :ones!, :similar!,
+        :unsafe_zeros!, :unsafe_ones!, :unsafe_similar!,
+        :reshape!,
+    ]
+)
+
+"""Function names that return raw Arrays backed by pool memory (unsafe_wrap)."""
+const _ARRAY_ACQUIRE_NAMES = Set{Symbol}(
+    [
+        :unsafe_acquire!, :acquire_array!,
+    ]
+)
+
+"""Function names that return BitArrays from pool memory."""
+const _BITARRAY_ACQUIRE_NAMES = Set{Symbol}(
+    [
+        :trues!, :falses!,
+    ]
+)
+
+"""
+    _is_acquire_call(expr, target_pool) -> Bool
+
+Check if an expression is a call to any pool acquire/convenience function
+targeting `target_pool`.
+"""
+function _is_acquire_call(expr, target_pool)
+    if !(expr isa Expr && expr.head == :call && length(expr.args) >= 2)
+        return false
+    end
+    fn = expr.args[1]
+    pool_arg = expr.args[2]
+    pool_arg == target_pool || return false
+
+    # Direct name
+    if fn isa Symbol
+        return fn in _ALL_ACQUIRE_NAMES
+    end
+    # Qualified name: Module.acquire!
+    if fn isa Expr && fn.head == :. && length(fn.args) >= 2
+        qn = fn.args[end]
+        if qn isa QuoteNode && qn.value isa Symbol
+            return qn.value in _ALL_ACQUIRE_NAMES
+        end
+    end
+    return false
+end
+
+"""
+    _acquire_call_kind(expr, target_pool) -> Union{Symbol, Nothing}
+
+Return the classification of an acquire call: `:pool_view`, `:pool_array`, `:pool_bitarray`,
+or `nothing` if not an acquire call.
+"""
+function _acquire_call_kind(expr, target_pool)
+    if !(expr isa Expr && expr.head == :call && length(expr.args) >= 2)
+        return nothing
+    end
+    fn = expr.args[1]
+    pool_arg = expr.args[2]
+    pool_arg == target_pool || return nothing
+
+    fname = nothing
+    if fn isa Symbol
+        fname = fn
+    elseif fn isa Expr && fn.head == :. && length(fn.args) >= 2
+        qn = fn.args[end]
+        if qn isa QuoteNode && qn.value isa Symbol
+            fname = qn.value
+        end
+    end
+    fname === nothing && return nothing
+
+    fname in _VIEW_ACQUIRE_NAMES && return :pool_view
+    fname in _ARRAY_ACQUIRE_NAMES && return :pool_array
+    fname in _BITARRAY_ACQUIRE_NAMES && return :pool_bitarray
+    return nothing
+end
+
+"""
+    _extract_acquired_vars(expr, target_pool) -> Set{Symbol}
+
+Walk AST to find variable names assigned from acquire/convenience calls.
+Returns the set of symbols that hold pool-backed arrays.
+
+Only top-level assignments in a block are tracked (not inside branches).
+Handles both simple assignment (`v = acquire!(...)`) and tuple destructuring
+(`(v, w) = (acquire!(...), expr)`).
+"""
+function _extract_acquired_vars(expr, target_pool, vars = Set{Symbol}())
+    if expr isa Expr
+        if expr.head == :block
+            # Walk top-level statements only (for flat reassignment tracking)
+            for arg in expr.args
+                _extract_acquired_vars(arg, target_pool, vars)
+            end
+        elseif expr.head == :(=) && length(expr.args) >= 2
+            lhs = expr.args[1]
+            rhs = expr.args[2]
+            if lhs isa Symbol && _is_acquire_call(rhs, target_pool)
+                push!(vars, lhs)
+            elseif lhs isa Symbol && rhs isa Symbol && rhs in vars
+                # Simple alias: d = z where z is acquired
+                push!(vars, lhs)
+            elseif lhs isa Symbol && _literal_contains_acquired(rhs, vars)
+                # Container wrapping: d = (z,), d = [z, w], etc.
+                push!(vars, lhs)
+            elseif Meta.isexpr(lhs, :tuple) && Meta.isexpr(rhs, :tuple)
+                # Destructuring with tuple literal RHS: (v, w) = (acquire!(...), expr)
+                for (l, r) in zip(lhs.args, rhs.args)
+                    if l isa Symbol && _is_acquire_call(r, target_pool)
+                        push!(vars, l)
+                    elseif l isa Symbol && r isa Symbol && r in vars
+                        # Destructuring alias: (a, d) = (..., z)
+                        push!(vars, l)
+                    end
+                end
+            end
+            # Recurse into RHS (for nested blocks with acquire calls)
+            _extract_acquired_vars(rhs, target_pool, vars)
+        else
+            for arg in expr.args
+                _extract_acquired_vars(arg, target_pool, vars)
+            end
+        end
+    end
+    return vars
+end
+
+"""
+    _get_last_expression(expr) -> Any
+
+Return the last non-LineNumberNode expression from a block.
+For non-block expressions, returns the expression itself.
+"""
+function _get_last_expression(expr)
+    if expr isa Expr && expr.head == :block
+        for i in length(expr.args):-1:1
+            arg = expr.args[i]
+            arg isa LineNumberNode && continue
+            return _get_last_expression(arg)
+        end
+        return nothing
+    end
+    return expr
+end
+
+"""
+    _collect_all_return_values(expr) -> Vector{Tuple{Any, Union{Int,Nothing}}}
+
+Collect all (expression, line) pairs that could be returned from a block/function body:
+- Explicit `return expr` statements anywhere in the body (recursive, skips nested functions)
+- Implicit returns: the last expression, recursing into if/else/elseif branches
+"""
+function _collect_all_return_values(expr)
+    values = Tuple{Any, Union{Int, Nothing}}[]
+    _collect_explicit_returns!(values, expr, nothing)
+    last_expr, last_line = _get_last_expression_with_line(expr)
+    if last_expr !== nothing
+        _collect_implicit_return_values!(values, last_expr, last_line)
+    end
+    return values
+end
+
+"""Walk AST to find all explicit `return expr` statements with line numbers.
+Tracks LineNumberNodes through blocks. Skips nested function definitions."""
+function _collect_explicit_returns!(values, expr, current_line::Union{Int, Nothing})
+    expr isa Expr || return
+    expr.head in (:function, :(->)) && return
+    if expr.head == :return
+        push!(values, (expr, current_line))
+        return
+    end
+    return if expr.head == :block
+        line = current_line
+        for arg in expr.args
+            if arg isa LineNumberNode
+                line = arg.line
+            else
+                _collect_explicit_returns!(values, arg, line)
+            end
+        end
+    else
+        for arg in expr.args
+            _collect_explicit_returns!(values, arg, current_line)
+        end
+    end
+end
+
+"""Return the last non-LineNumberNode expression from a block, together with its line.
+Recurses into nested blocks."""
+function _get_last_expression_with_line(expr, default_line::Union{Int, Nothing} = nothing)
+    if !(expr isa Expr && expr.head == :block)
+        return (expr, default_line)
+    end
+    for i in length(expr.args):-1:1
+        arg = expr.args[i]
+        arg isa LineNumberNode && continue
+        # Find the LineNumberNode preceding this expression
+        line = default_line
+        for j in (i - 1):-1:1
+            if expr.args[j] isa LineNumberNode
+                line = expr.args[j].line
+                break
+            end
+        end
+        return _get_last_expression_with_line(arg, line)
+    end
+    return (nothing, default_line)
+end
+
+"""Expand implicit return values by recursing into if/elseif/else branches.
+Non-branch expressions are collected as (expr, line) pairs."""
+function _collect_implicit_return_values!(values, expr, current_line::Union{Int, Nothing})
+    return if expr isa Expr && expr.head in (:if, :elseif)
+        for i in 2:length(expr.args)
+            branch = expr.args[i]
+            if branch isa Expr && branch.head in (:if, :elseif)
+                _collect_implicit_return_values!(values, branch, current_line)
+            else
+                last_expr, last_line = _get_last_expression_with_line(branch, current_line)
+                if last_expr !== nothing
+                    _collect_implicit_return_values!(values, last_expr, last_line)
+                end
+            end
+        end
+    else
+        push!(values, (expr, current_line))
+    end
+end
+
+"""
+    _remove_flat_reassigned!(expr, acquired, target_pool)
+
+Walk top-level statements in order and remove variables from `acquired`
+if they are reassigned to a non-acquire call. Handles both simple assignment
+(`v = expr`) and tuple destructuring (`(a, v) = expr`).
+Only handles flat (non-branching) reassignment — conditional is conservatively kept.
+"""
+function _remove_flat_reassigned!(expr, acquired, target_pool)
+    if !(expr isa Expr && expr.head == :block)
+        return
+    end
+    for arg in expr.args
+        arg isa LineNumberNode && continue
+        if arg isa Expr && arg.head == :(=) && length(arg.args) >= 2
+            lhs = arg.args[1]
+            rhs = arg.args[2]
+            if lhs isa Symbol && lhs in acquired && !_is_acquire_call(rhs, target_pool) &&
+                    !(rhs isa Symbol && rhs in acquired) &&  # keep aliases
+                    !_literal_contains_acquired(rhs, acquired)  # keep container wrapping
+                delete!(acquired, lhs)
+            elseif Meta.isexpr(lhs, :tuple)
+                # Destructuring: (a, v, b) = expr
+                if Meta.isexpr(rhs, :tuple) && length(rhs.args) == length(lhs.args)
+                    # RHS is tuple literal — check each element pair
+                    for (l, r) in zip(lhs.args, rhs.args)
+                        if l isa Symbol && l in acquired && !_is_acquire_call(r, target_pool) &&
+                                !(r isa Symbol && r in acquired)  # keep aliases
+                            delete!(acquired, l)
+                        end
+                    end
+                else
+                    # RHS is function call or opaque expression —
+                    # acquired var is now reassigned to unknown value, remove it
+                    for l in lhs.args
+                        if l isa Symbol && l in acquired
+                            delete!(acquired, l)
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return
+end
+
+"""
+    _find_direct_exposure(expr, acquired) -> Set{Symbol}
+
+Check if the expression directly exposes any acquired variable.
+Only catches high-confidence patterns:
+- Bare Symbol: `v`
+- Explicit return: `return v`
+- Tuple/array literal containing a var: `(v, w)`, `[v, w]`
+- NamedTuple-style kw: `(a=v,)`
+
+Does NOT recurse into function calls (can't know what `f(v)` returns).
+"""
+
+"""Check if a literal expression (symbol, identity call, tuple/vect) transitively contains any acquired var."""
+function _literal_contains_acquired(expr, acquired)
+    expr isa Symbol && return expr in acquired
+    if expr isa Expr
+        # identity(x) — transparent, look through
+        if expr.head == :call && length(expr.args) >= 2 && expr.args[1] === :identity
+            return _literal_contains_acquired(expr.args[2], acquired)
+        end
+        if expr.head in (:tuple, :vect)
+            for arg in expr.args
+                if Meta.isexpr(arg, :(=)) && length(arg.args) >= 2
+                    _literal_contains_acquired(arg.args[2], acquired) && return true
+                elseif Meta.isexpr(arg, :kw) && length(arg.args) >= 2
+                    _literal_contains_acquired(arg.args[2], acquired) && return true
+                else
+                    _literal_contains_acquired(arg, acquired) && return true
+                end
+            end
+        end
+    end
+    return false
+end
+
+"""Check if a call target is `identity` or `Base.identity`."""
+_is_identity_call(x) = x === :identity ||
+    (x isa Expr && x.head == :. && x.args == [:Base, QuoteNode(:identity)])
+
+function _find_direct_exposure(expr, acquired)
+    found = Set{Symbol}()
+    if expr isa Symbol
+        # Bare variable: v
+        if expr in acquired
+            push!(found, expr)
+        end
+    elseif expr isa Expr
+        if expr.head == :return
+            # return v, return (v, w), etc.
+            for arg in expr.args
+                union!(found, _find_direct_exposure(arg, acquired))
+            end
+        elseif expr.head in (:tuple, :vect)
+            # (v, w), [v, w], nested (a, (b, v)), (key=(a, v),)
+            for arg in expr.args
+                if Meta.isexpr(arg, :(=)) && length(arg.args) >= 2
+                    # NamedTuple: (a=v,) or (a=(b,v),)
+                    union!(found, _find_direct_exposure(arg.args[2], acquired))
+                else
+                    union!(found, _find_direct_exposure(arg, acquired))
+                end
+            end
+        elseif expr.head == :parameters
+            # (; a=v) style named tuple parameters
+            for arg in expr.args
+                if Meta.isexpr(arg, :kw) && length(arg.args) >= 2
+                    union!(found, _find_direct_exposure(arg.args[2], acquired))
+                end
+            end
+        elseif expr.head == :call && length(expr.args) >= 2 && _is_identity_call(expr.args[1])
+            # identity(x) / Base.identity(x) — transparent, look through
+            union!(found, _find_direct_exposure(expr.args[2], acquired))
+        end
+    end
+    return found
+end
+
+
+"""Collect acquired variable names contained in a literal expression (symbol, tuple, vect)."""
+function _collect_acquired_in_literal(expr, acquired_keys::Set{Symbol})
+    found = Symbol[]
+    _collect_acquired_in_literal!(found, expr, acquired_keys)
+    return found
+end
+
+function _collect_acquired_in_literal!(found, expr, acquired_keys)
+    return if expr isa Symbol
+        expr in acquired_keys && push!(found, expr)
+    elseif expr isa Expr
+        if expr.head == :call && length(expr.args) >= 2 && expr.args[1] === :identity
+            _collect_acquired_in_literal!(found, expr.args[2], acquired_keys)
+        elseif expr.head in (:tuple, :vect)
+            for arg in expr.args
+                if Meta.isexpr(arg, :(=)) && length(arg.args) >= 2
+                    _collect_acquired_in_literal!(found, arg.args[2], acquired_keys)
+                elseif Meta.isexpr(arg, :kw) && length(arg.args) >= 2
+                    _collect_acquired_in_literal!(found, arg.args[2], acquired_keys)
+                else
+                    _collect_acquired_in_literal!(found, arg, acquired_keys)
+                end
+            end
+        end
+    end
+end
+
+"""
+    _classify_escaped_vars(expr, target_pool, escaped, acquired)
+
+Classify each escaped variable by its origin for better error messages:
+- `:pool_view` — from acquire!, zeros!, etc. (returns SubArray)
+- `:pool_array` — from unsafe_acquire! (returns Array via unsafe_wrap)
+- `:pool_bitarray` — from trues!, falses! (returns BitArray)
+- `:alias` — alias of another acquired variable (e.g., `d = v`)
+- `:container` — wraps acquired variables in a literal (e.g., `d = [v, 1]`)
+
+Returns `Dict{Symbol, Tuple{Symbol, Vector{Symbol}}}` mapping var → (kind, source_vars).
+"""
+function _classify_escaped_vars(expr, target_pool, escaped::Vector{Symbol}, acquired::Set{Symbol})
+    info = Dict{Symbol, Tuple{Symbol, Vector{Symbol}}}()
+    escaped_set = Set(escaped)
+    _classify_walk!(info, expr, target_pool, escaped_set, acquired)
+    return info
+end
+
+function _classify_walk!(info, expr, target_pool, escaped_set, acquired)
+    expr isa Expr || return
+    return if expr.head == :block
+        for arg in expr.args
+            _classify_walk!(info, arg, target_pool, escaped_set, acquired)
+        end
+    elseif expr.head == :(=) && length(expr.args) >= 2
+        lhs = expr.args[1]
+        rhs = expr.args[2]
+        if lhs isa Symbol && lhs in escaped_set
+            kind = _acquire_call_kind(rhs, target_pool)
+            if kind !== nothing
+                info[lhs] = (kind, Symbol[])
+            elseif rhs isa Symbol && rhs in acquired
+                info[lhs] = (:alias, [rhs])
+            else
+                sources = _collect_acquired_in_literal(rhs, acquired)
+                if !isempty(sources)
+                    info[lhs] = (:container, sort!(sources))
+                end
+            end
+        end
+        # Recurse into RHS for nested blocks
+        _classify_walk!(info, rhs, target_pool, escaped_set, acquired)
+    else
+        for arg in expr.args
+            _classify_walk!(info, arg, target_pool, escaped_set, acquired)
+        end
+    end
+end
+
+"""
+    _extract_declaration_sites(expr, escaped)
+
+Walk the AST to find assignment sites for escaped variables.
+Returns a `Vector{DeclarationSite}` sorted by line number.
+"""
+function _extract_declaration_sites(expr, escaped::Set{Symbol})
+    sites = DeclarationSite[]
+    seen = Set{Symbol}()
+    _collect_declaration_sites!(sites, seen, expr, escaped, nothing, nothing)
+    sort!(sites; by = s -> something(s.line, typemax(Int)))
+    return sites
+end
+
+function _collect_declaration_sites!(sites, seen, expr, escaped, current_line, current_file)
+    expr isa Expr || return
+    return if expr.head == :block
+        line = current_line
+        file = current_file
+        for arg in expr.args
+            if arg isa LineNumberNode
+                line = arg.line
+                file = arg.file
+            else
+                _collect_declaration_sites!(sites, seen, arg, escaped, line, file)
+            end
+        end
+    elseif expr.head == :(=) && length(expr.args) >= 2
+        lhs = expr.args[1]
+        if lhs isa Symbol && lhs in escaped && lhs ∉ seen
+            push!(sites, DeclarationSite(lhs, expr, current_line, current_file))
+            push!(seen, lhs)
+        elseif Meta.isexpr(lhs, :tuple)
+            for l in lhs.args
+                if l isa Symbol && l in escaped && l ∉ seen
+                    push!(sites, DeclarationSite(l, expr, current_line, current_file))
+                    push!(seen, l)
+                end
+            end
+        end
+        _collect_declaration_sites!(sites, seen, expr.args[2], escaped, current_line, current_file)
+    else
+        for arg in expr.args
+            _collect_declaration_sites!(sites, seen, arg, escaped, current_line, current_file)
+        end
+    end
+end
+
+"""
+    _check_compile_time_escape(expr, pool_name, source)
+
+Compile-time (macro expansion time) escape detection.
+
+Checks if the block/function body's return expression directly contains
+a pool-backed variable. This catches the most common beginner mistake
+at zero runtime cost.
+
+All detected escapes are errors — bare symbol (`v`), `return v`, and
+container patterns (`(v, w)`, `[v]`, `(key=v,)`).
+
+Skipped when `STATIC_POOLING = false` (pooling disabled, acquire returns normal arrays).
+"""
+function _check_compile_time_escape(expr, pool_name, source::Union{LineNumberNode, Nothing})
+    # Extract variables assigned from acquire calls
+    acquired = _extract_acquired_vars(expr, pool_name)
+    isempty(acquired) && return
+
+    # Remove vars that were unconditionally reassigned to non-acquire values
+    _remove_flat_reassigned!(expr, acquired, pool_name)
+    isempty(acquired) && return
+
+    # Collect ALL return points: explicit returns + implicit (last expr / if-else branches)
+    return_values = _collect_all_return_values(expr)
+    isempty(return_values) && return
+
+    # Check each return point for direct exposure of acquired vars
+    all_escaped = Set{Symbol}()
+    points = EscapePoint[]
+    seen_lines = Set{Int}()
+    for (ret_expr, ret_line) in return_values
+        # Deduplicate: explicit + implicit scanners can find the same return
+        if ret_line !== nothing && ret_line in seen_lines
+            continue
+        end
+        point_escaped = _find_direct_exposure(ret_expr, acquired)
+        if !isempty(point_escaped)
+            push!(points, EscapePoint(ret_expr, ret_line, sort!(collect(point_escaped))))
+            union!(all_escaped, point_escaped)
+            ret_line !== nothing && push!(seen_lines, ret_line)
+        end
+    end
+    isempty(all_escaped) && return
+
+    sorted = sort!(collect(all_escaped))
+    var_info = _classify_escaped_vars(expr, pool_name, sorted, acquired)
+    declarations = _extract_declaration_sites(expr, all_escaped)
+    file = source !== nothing ? string(source.file) : nothing
+    line = source !== nothing ? source.line : nothing
+    throw(PoolEscapeError(sorted, file, line, points, var_info, declarations))
 end
