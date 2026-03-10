@@ -10,8 +10,9 @@ _test_leak(x) = x
     # ==============================================================================
 
     @testset "Default configuration" begin
-        @test STATIC_POOL_CHECKS == true
-        @test POOL_SAFETY_LV[] == 1
+        # DEFAULT_SAFETY_LV depends on LocalPreferences.toml (0 when absent)
+        @test POOL_SAFETY_LV[] == DEFAULT_SAFETY_LV
+        @test STATIC_POOL_CHECKS == (DEFAULT_SAFETY_LV > 0)
     end
 
     # ==============================================================================
