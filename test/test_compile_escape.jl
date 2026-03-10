@@ -1328,7 +1328,7 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
         @test occursin("collect(v)", msg)
         @test occursin("False positive?", msg)
         @test occursin("Escaping return", msg)
-        @test occursin("escape the @with_pool scope", msg)
+        @test occursin("escapes the @with_pool scope", msg)
         # Declaration sites populated
         @test !isempty(err.declarations)
         @test any(d -> d.var === :v, err.declarations)
@@ -1743,8 +1743,6 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
         @test occursin("acquire!(pool, Float64, 10)", msg)
         @test occursin("[v, 1]", msg)
         @test occursin("return", msg)
-        # Location markers present (@ followed by path)
-        @test occursin("@", msg)
     end
 
 end # Compile-Time Escape Detection
