@@ -2,8 +2,12 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
     _find_direct_exposure, _remove_flat_reassigned!, _check_compile_time_escape,
     _collect_all_return_values, _collect_explicit_returns!, _collect_implicit_return_values!,
     _get_last_expression_with_line, _render_return_expr,
-    _acquire_call_kind, _classify_escaped_vars,
-    DeclarationSite, _extract_declaration_sites
+    _acquire_call_kind, _classify_escaped_vars, _is_acquire_call,
+    DeclarationSite, _extract_declaration_sites,
+    _format_location_str, _format_point_location,
+    _find_acquire_call_expr, _literal_contains_acquired,
+    _collect_acquired_in_literal,
+    _find_first_lnn_index, _ensure_body_has_toplevel_lnn
 
 @testset "Compile-Time Escape Detection" begin
 
@@ -1743,6 +1747,298 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
         @test occursin("acquire!(pool, Float64, 10)", msg)
         @test occursin("[v, 1]", msg)
         @test occursin("return", msg)
+    end
+
+    # ==============================================================================
+    # Coverage: PoolEscapeError convenience constructors
+    # ==============================================================================
+
+    @testset "PoolEscapeError convenience constructors" begin
+        pt = EscapePoint(:v, 1, [:v])
+
+        # 4-arg constructor (no var_info, no declarations)
+        err4 = PoolEscapeError([:v], "test.jl", 1, [pt])
+        @test isempty(err4.var_info)
+        @test isempty(err4.declarations)
+
+        # 5-arg constructor (no declarations)
+        vi = Dict{Symbol, Tuple{Symbol, Vector{Symbol}}}(:v => (:pool_view, Symbol[]))
+        err5 = PoolEscapeError([:v], "test.jl", 1, [pt], vi)
+        @test err5.var_info[:v][1] === :pool_view
+        @test isempty(err5.declarations)
+    end
+
+    # ==============================================================================
+    # Coverage: _render_return_expr branches
+    # ==============================================================================
+
+    @testset "_render_return_expr branch coverage" begin
+        escaped = Set([:v])
+
+        # Non-escaped symbol → plain print (line 54)
+        buf = sprint() do io
+            _render_return_expr(io, :x, escaped)
+        end
+        @test buf == "x"
+
+        # Array literal :vect (lines 71-77)
+        buf = sprint() do io
+            _render_return_expr(io, Expr(:vect, :v, :x), escaped)
+        end
+        @test occursin("[", buf)
+        @test occursin("]", buf)
+        @test occursin("x", buf)
+
+        # Fallback Expr (line 79) — e.g. a :ref expression
+        buf = sprint() do io
+            _render_return_expr(io, :(v[1]), escaped)
+        end
+        @test occursin("v", buf)
+
+        # Non-Expr, non-Symbol literal (line 82)
+        buf = sprint() do io
+            _render_return_expr(io, 42, escaped)
+        end
+        @test buf == "42"
+    end
+
+    # ==============================================================================
+    # Coverage: showerror with unknown var_info kind (line 121)
+    # ==============================================================================
+
+    @testset "showerror pool-backed temporary fallback" begin
+        vi = Dict{Symbol, Tuple{Symbol, Vector{Symbol}}}(:v => (:something_else, Symbol[]))
+        err = PoolEscapeError(
+            [:v], "test.jl", 1,
+            [EscapePoint(:v, 1, [:v])],
+            vi, DeclarationSite[]
+        )
+        msg = sprint(showerror, err)
+        @test occursin("pool-backed temporary", msg)
+    end
+
+    # ==============================================================================
+    # Coverage: _format_location_str / _format_point_location edge cases
+    # ==============================================================================
+
+    @testset "location formatting edge cases" begin
+        # file="none", line present → "line N" (lines 203-204)
+        @test _format_location_str("none", 42) == "line 42"
+        # file=nothing, line=nothing → nothing (line 206)
+        @test _format_location_str(nothing, nothing) === nothing
+        # file=nothing, line present → "line N"
+        @test _format_location_str(nothing, 7) == "line 7"
+
+        # Same for _format_point_location (lines 214-217)
+        @test _format_point_location("none", 42) == "line 42"
+        @test _format_point_location(nothing, nothing) === nothing
+        @test _format_point_location(nothing, 7) == "line 7"
+    end
+
+    # ==============================================================================
+    # Coverage: showerror 3-arg (backtrace suppression, line 221)
+    # ==============================================================================
+
+    @testset "showerror backtrace suppression" begin
+        err = try
+            @macroexpand(@with_pool pool begin
+                v = acquire!(pool, Float64, 10)
+                v
+            end)
+        catch e
+            e
+        end
+        @test err isa PoolEscapeError
+        # 3-arg showerror should produce same output as 2-arg
+        msg2 = sprint(showerror, err)
+        msg3 = sprint() do io
+            showerror(io, err, nothing)
+        end
+        @test msg2 == msg3
+    end
+
+    # ==============================================================================
+    # Coverage: _is_acquire_call / _acquire_call_kind with qualified names
+    # ==============================================================================
+
+    @testset "qualified acquire call detection" begin
+        # Module.acquire!(pool, ...) — qualified name (lines 1703-1705)
+        @test _is_acquire_call(
+            :(AdaptiveArrayPools.acquire!(pool, Float64, 10)), :pool
+        )
+        @test _is_acquire_call(
+            :(SomeModule.zeros!(pool, 10)), :pool
+        )
+        # Non-acquire qualified call
+        @test !_is_acquire_call(
+            :(Base.sum(pool, data)), :pool
+        )
+
+        # _acquire_call_kind with qualified names (lines 1728-1731)
+        @test _acquire_call_kind(
+            :(M.acquire!(pool, Float64, 10)), :pool
+        ) === :pool_view
+        @test _acquire_call_kind(
+            :(M.unsafe_acquire!(pool, Float64, 10)), :pool
+        ) === :pool_array
+        @test _acquire_call_kind(
+            :(M.trues!(pool, 10)), :pool
+        ) === :pool_bitarray
+
+        # Qualified non-acquire → nothing (line 1739)
+        @test _acquire_call_kind(
+            :(M.sum(pool, data)), :pool
+        ) === nothing
+    end
+
+    # ==============================================================================
+    # Coverage: _find_acquire_call_expr (lines 1458-1467)
+    # ==============================================================================
+
+    @testset "_find_acquire_call_expr" begin
+        # Direct acquire call
+        expr = :(acquire!(pool, Float64, 10))
+        @test _find_acquire_call_expr(expr, :pool) === expr
+
+        # Nested inside assignment
+        outer = :(v = acquire!(pool, Float64, 10))
+        result = _find_acquire_call_expr(outer, :pool)
+        @test result !== nothing
+        @test result.args[1] === :acquire!
+
+        # No acquire call → nothing
+        @test _find_acquire_call_expr(:(sum(data)), :pool) === nothing
+
+        # Non-Expr → nothing
+        @test _find_acquire_call_expr(:x, :pool) === nothing
+        @test _find_acquire_call_expr(42, :pool) === nothing
+    end
+
+    # ==============================================================================
+    # Coverage: _literal_contains_acquired — identity / named tuple / kw
+    # ==============================================================================
+
+    @testset "_literal_contains_acquired edge cases" begin
+        acquired = Set([:v, :w])
+
+        # identity(v) → detected (line 1959)
+        @test _literal_contains_acquired(:(identity(v)), acquired)
+
+        # identity(x) → not detected
+        @test !_literal_contains_acquired(:(identity(x)), acquired)
+
+        # Named tuple with = syntax: (a=v,) (line 1963-1964)
+        @test _literal_contains_acquired(
+            Expr(:tuple, Expr(:(=), :a, :v)), acquired
+        )
+
+        # Named tuple with kw syntax (line 1965-1966)
+        @test _literal_contains_acquired(
+            Expr(:tuple, Expr(:kw, :a, :v)), acquired
+        )
+
+        # Non-acquired kw
+        @test !_literal_contains_acquired(
+            Expr(:tuple, Expr(:kw, :a, :x)), acquired
+        )
+    end
+
+    # ==============================================================================
+    # Coverage: _collect_acquired_in_literal — identity / kw (lines 2031-2037)
+    # ==============================================================================
+
+    @testset "_collect_acquired_in_literal edge cases" begin
+        acquired = Set([:v, :w])
+
+        # identity(v)
+        found = _collect_acquired_in_literal(:(identity(v)), acquired)
+        @test :v in found
+
+        # Named tuple (a=v,)
+        found = _collect_acquired_in_literal(
+            Expr(:tuple, Expr(:(=), :a, :v)), acquired
+        )
+        @test :v in found
+
+        # kw syntax
+        found = _collect_acquired_in_literal(
+            Expr(:tuple, Expr(:kw, :a, :w)), acquired
+        )
+        @test :w in found
+
+        # Non-Expr/non-Symbol → empty
+        found = _collect_acquired_in_literal(42, acquired)
+        @test isempty(found)
+    end
+
+    # ==============================================================================
+    # Coverage: _find_direct_exposure — identity (line 2012)
+    # ==============================================================================
+
+    @testset "_find_direct_exposure identity" begin
+        acquired = Set([:v])
+
+        # identity(v) → detected
+        found = _find_direct_exposure(:(identity(v)), acquired)
+        @test :v in found
+
+        # Base.identity(v)
+        found = _find_direct_exposure(:(Base.identity(v)), acquired)
+        @test :v in found
+    end
+
+    # ==============================================================================
+    # Coverage: _find_first_lnn_index / _ensure_body_has_toplevel_lnn
+    # ==============================================================================
+
+    @testset "LNN handling edge cases" begin
+        # _find_first_lnn_index: :meta then LNN (lines 434-435)
+        args = Any[Expr(:meta, :inline), LineNumberNode(1, :test)]
+        @test _find_first_lnn_index(args) == 2
+
+        # _find_first_lnn_index: non-meta before LNN → nothing (lines 437-440)
+        args2 = Any[:(x = 1), LineNumberNode(1, :test)]
+        @test _find_first_lnn_index(args2) === nothing
+
+        # _find_first_lnn_index: empty → nothing
+        @test _find_first_lnn_index(Any[]) === nothing
+
+        # _ensure_body_has_toplevel_lnn: source=nothing → identity
+        body = Expr(:block, :(x = 1))
+        @test _ensure_body_has_toplevel_lnn(body, nothing) === body
+
+        # source.file=:none → identity (line 458)
+        @test _ensure_body_has_toplevel_lnn(body, LineNumberNode(1, :none)) === body
+
+        # LNN already points to user file → identity (line 467)
+        body_with_lnn = Expr(:block, LineNumberNode(5, :myfile), :(x = 1))
+        result = _ensure_body_has_toplevel_lnn(body_with_lnn, LineNumberNode(5, :myfile))
+        @test result === body_with_lnn
+
+        # LNN points elsewhere → replaced (line 470-472)
+        body_wrong_lnn = Expr(:block, LineNumberNode(1, :macros), :(x = 1))
+        result = _ensure_body_has_toplevel_lnn(body_wrong_lnn, LineNumberNode(10, :user))
+        @test result.args[1] isa LineNumberNode
+        @test result.args[1].file === :user
+
+        # No LNN in block → prepend (lines 476)
+        body_no_lnn = Expr(:block, :(x = 1))
+        result = _ensure_body_has_toplevel_lnn(body_no_lnn, LineNumberNode(3, :src))
+        @test result.args[1] isa LineNumberNode
+        @test result.args[1].file === :src
+
+        # Empty block (lines 477-479)
+        empty_block = Expr(:block)
+        result = _ensure_body_has_toplevel_lnn(empty_block, LineNumberNode(1, :f))
+        @test length(result.args) == 1
+        @test result.args[1] isa LineNumberNode
+
+        # Non-block body (lines 481-482)
+        scalar_body = :(x + 1)
+        result = _ensure_body_has_toplevel_lnn(scalar_body, LineNumberNode(1, :f))
+        @test result.head === :block
+        @test result.args[1] isa LineNumberNode
+        @test result.args[2] == scalar_body
     end
 
 end # Compile-Time Escape Detection

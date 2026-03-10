@@ -1,4 +1,5 @@
-import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap, _eltype_may_contain_arrays, PoolRuntimeEscapeError
+import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap, _eltype_may_contain_arrays,
+    PoolRuntimeEscapeError, _poison_value, _shorten_location
 _test_leak(x) = x  # opaque to compile-time escape checker (only identity() is transparent)
 
 @testset "POOL_DEBUG and Safety Validation" begin
@@ -747,6 +748,78 @@ _test_leak(x) = x  # opaque to compile-time escape checker (only identity() is t
         @test _test_backend_debug_safe(10) == 10.0
 
         POOL_DEBUG[] = old_debug
+    end
+
+    # ==============================================================================
+    # Coverage: PoolRuntimeEscapeError showerror with return_site (LV3)
+    # ==============================================================================
+
+    @testset "PoolRuntimeEscapeError showerror with return_site" begin
+        # Construct error with both callsite and return_site to cover lines 169-180
+        err = PoolRuntimeEscapeError(
+            "SubArray{Float64,1}",
+            "Float64",
+            "test.jl:10\nacquire!(pool, Float64, 10)",
+            "test.jl:15\nreturn v"
+        )
+        msg = sprint(showerror, err)
+        @test occursin("escapes at", msg)
+        @test occursin("return v", msg)
+        @test occursin("acquired at", msg)
+
+        # Return site without expression text (no \n)
+        err2 = PoolRuntimeEscapeError(
+            "SubArray{Float64,1}",
+            "Float64",
+            "test.jl:10",
+            "test.jl:15"
+        )
+        msg2 = sprint(showerror, err2)
+        @test occursin("escapes at", msg2)
+    end
+
+    # ==============================================================================
+    # Coverage: PoolRuntimeEscapeError 3-arg showerror (backtrace suppression)
+    # ==============================================================================
+
+    @testset "PoolRuntimeEscapeError 3-arg showerror" begin
+        err = PoolRuntimeEscapeError("Vector{Float64}", "Float64", nothing, nothing)
+        msg2 = sprint(showerror, err)
+        msg3 = sprint() do io
+            showerror(io, err, nothing)
+        end
+        @test msg2 == msg3
+    end
+
+    # ==============================================================================
+    # Coverage: _poison_value generic fallback (line 258)
+    # ==============================================================================
+
+    @testset "_poison_value generic fallback" begin
+        # Rational is not AbstractFloat, Integer, or Complex → hits generic fallback
+        @test _poison_value(Rational{Int}) == zero(Rational{Int})
+
+        # Exercise through actual pool rewind at LV≥2 with a non-fixed-slot type
+        old_lv = POOL_SAFETY_LV[]
+        POOL_SAFETY_LV[] = 2
+        pool = AdaptiveArrayPool()
+        checkpoint!(pool)
+        v = acquire!(pool, Rational{Int}, 5)
+        v .= 1 // 3
+        rewind!(pool)  # triggers _poison_fill! → _poison_value(Rational{Int}) → zero(Rational)
+        POOL_SAFETY_LV[] = old_lv
+    end
+
+    # ==============================================================================
+    # Coverage: _shorten_location no-colon fallback (line 304)
+    # ==============================================================================
+
+    @testset "_shorten_location edge cases" begin
+        # Location without colon → returned as-is
+        @test _shorten_location("nocolon") == "nocolon"
+        # Location with colon → shortened
+        loc = _shorten_location("somefile.jl:42")
+        @test occursin("42", loc)
     end
 
 end # POOL_DEBUG and Safety Validation
