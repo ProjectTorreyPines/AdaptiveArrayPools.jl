@@ -484,40 +484,34 @@ function _ensure_body_has_toplevel_lnn(body, source::Union{LineNumberNode, Nothi
 end
 
 """
-    _fix_try_body_lnn!(expr, source)
+    _fix_generated_lnn!(expr, source)
 
-Fix LineNumberNodes inside try blocks to point to user source.
-Julia's stack trace uses the LAST LNN before error location for line numbers.
-By replacing the first LNN in try body with source LNN, we ensure correct
-line numbers in stack traces.
+Replace all macro-generated LineNumberNodes with user source location.
 
-Scans first few args to handle Expr(:meta, ...) from @inline etc.
+When `quote...end` blocks in macros.jl generate code, every line gets a LNN
+pointing to macros.jl. This causes Julia's stack traces to show macros.jl
+instead of the user's call site. This function walks the entire AST and
+replaces every LNN whose file differs from `source.file` with the source LNN.
+
+User code (inserted via `esc()`) retains its own LNNs since those already
+point to the user's file and won't be replaced.
+
 If source.file === :none (REPL/eval), don't clobber valid file LNNs.
 Modifies expr in-place and returns it.
 """
-function _fix_try_body_lnn!(expr, source::Union{LineNumberNode, Nothing})
+function _fix_generated_lnn!(expr, source::Union{LineNumberNode, Nothing})
     source === nothing && return expr
     # Don't clobber valid file info with :none from REPL/eval
     source.file === :none && return expr
     source_lnn = LineNumberNode(source.line, source.file)
 
     if expr isa Expr
-        if expr.head === :try && length(expr.args) >= 1
-            try_body = expr.args[1]
-            if try_body isa Expr && try_body.head === :block && !isempty(try_body.args)
-                lnn_idx = _find_first_lnn_index(try_body.args)
-                if lnn_idx !== nothing
-                    existing_lnn = try_body.args[lnn_idx]
-                    if existing_lnn.file != source.file
-                        # Replace macros.jl LNN with source LNN
-                        try_body.args[lnn_idx] = source_lnn
-                    end
-                end
+        for (i, arg) in enumerate(expr.args)
+            if arg isa LineNumberNode && arg.file != source.file
+                expr.args[i] = source_lnn
+            elseif arg isa Expr
+                _fix_generated_lnn!(arg, source)
             end
-        end
-        # Recurse into all args
-        for arg in expr.args
-            _fix_try_body_lnn!(arg, source)
         end
     end
     return expr
@@ -856,7 +850,7 @@ function _generate_function_pool_code_with_backend(backend::Symbol, pool_name, f
 
     # Ensure new_body has source location for proper stack traces
     new_body = _ensure_body_has_toplevel_lnn(new_body, source)
-    _fix_try_body_lnn!(new_body, source)  # Fix try block LNNs for accurate stack traces
+    _fix_generated_lnn!(new_body, source)  # Fix generated LNNs for accurate stack traces
     return Expr(def_head, esc(call_expr), new_body)
 end
 
@@ -951,7 +945,7 @@ function _generate_function_pool_code(pool_name, func_def, force_enable, disable
 
     # Ensure new_body has source location for proper stack traces
     new_body = _ensure_body_has_toplevel_lnn(new_body, source)
-    _fix_try_body_lnn!(new_body, source)  # Fix try block LNNs for accurate stack traces
+    _fix_generated_lnn!(new_body, source)  # Fix generated LNNs for accurate stack traces
     return Expr(def_head, esc(call_expr), new_body)
 end
 

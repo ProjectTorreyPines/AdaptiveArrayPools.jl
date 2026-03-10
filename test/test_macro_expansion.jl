@@ -574,7 +574,7 @@ end
     end
 
     # Test 10: Verify line numbers in stack trace are accurate (not from macros.jl)
-    # This tests the _fix_try_body_lnn! helper that replaces macros.jl LNNs
+    # This tests the _fix_generated_lnn! helper that replaces macros.jl LNNs
     @testset "Stack trace line numbers are accurate" begin
         # Track the line where the function is defined
         func_def_line = @__LINE__
