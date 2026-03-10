@@ -1841,10 +1841,12 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
 
     @testset "showerror backtrace suppression" begin
         err = try
-            @macroexpand(@with_pool pool begin
-                v = acquire!(pool, Float64, 10)
-                v
-            end)
+            @macroexpand(
+                @with_pool pool begin
+                    v = acquire!(pool, Float64, 10)
+                    v
+                end
+            )
         catch e
             e
         end
