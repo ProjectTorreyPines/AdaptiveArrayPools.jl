@@ -132,8 +132,12 @@ end
         return f(pool_any::AdaptiveArrayPool{1})
     elseif pool_any isa AdaptiveArrayPool{2}
         return f(pool_any::AdaptiveArrayPool{2})
-    else
+    elseif pool_any isa AdaptiveArrayPool{3}
         return f(pool_any::AdaptiveArrayPool{3})
+    else
+        # Non-CPU pools (e.g. CuAdaptiveArrayPool): pass through as-is.
+        # No union splitting needed — type is already concrete from the getter.
+        return f(pool_any)
     end
 end
 

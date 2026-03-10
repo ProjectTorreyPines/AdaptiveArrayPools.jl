@@ -175,22 +175,20 @@ end
         pool = get_task_local_cuda_pool()
         reset!(pool)
 
-        # Warmup (populates cache)
-        @with_pool :cuda p begin
-            acquire!(p, Float64, 10, 10)
-        end
-        @with_pool :cuda p begin
-            acquire!(p, Float64, 10, 10)
-        end
-
-        # Measure CPU allocation
-        cpu_alloc = @allocated begin
+        # Wrap in function for proper JIT warmup (_dispatch_pool_scope closure
+        # needs function boundary to avoid @allocated counting JIT artifacts)
+        function _test_cuda_nd_alloc!()
             @with_pool :cuda p begin
-                A = acquire!(p, Float64, 10, 10)
+                acquire!(p, Float64, 10, 10)
             end
         end
 
+        # Warmup (JIT + cache)
+        _test_cuda_nd_alloc!()
+        _test_cuda_nd_alloc!()
+
         # Cache hit should have minimal CPU allocation
+        cpu_alloc = @allocated _test_cuda_nd_alloc!()
         @test cpu_alloc < 100  # Allow some overhead
     end
 
@@ -198,22 +196,18 @@ end
         pool = get_task_local_cuda_pool()
         reset!(pool)
 
-        # Warmup (populates cache)
-        @with_pool :cuda p begin
-            unsafe_acquire!(p, Float64, 10, 10)
-        end
-        @with_pool :cuda p begin
-            unsafe_acquire!(p, Float64, 10, 10)
-        end
-
-        # After warmup, cache hit should be low/zero allocation
-        cpu_alloc = @allocated begin
+        function _test_cuda_unsafe_alloc!()
             @with_pool :cuda p begin
-                A = unsafe_acquire!(p, Float64, 10, 10)
+                unsafe_acquire!(p, Float64, 10, 10)
             end
         end
 
+        # Warmup (JIT + cache)
+        _test_cuda_unsafe_alloc!()
+        _test_cuda_unsafe_alloc!()
+
         # Cache hit should have minimal CPU allocation
+        cpu_alloc = @allocated _test_cuda_unsafe_alloc!()
         @test cpu_alloc < 100  # Allow some overhead
     end
 
@@ -221,21 +215,18 @@ end
         pool = get_task_local_cuda_pool()
         reset!(pool)
 
-        # Warmup
-        @with_pool :cuda p begin
-            acquire!(p, Float64, 100)
-        end
-        @with_pool :cuda p begin
-            acquire!(p, Float64, 100)
-        end
-
-        cpu_alloc = @allocated begin
+        function _test_cuda_1d_alloc!()
             @with_pool :cuda p begin
-                v = acquire!(p, Float64, 100)
+                acquire!(p, Float64, 100)
             end
         end
 
+        # Warmup (JIT + cache)
+        _test_cuda_1d_alloc!()
+        _test_cuda_1d_alloc!()
+
         # 1D acquire! uses view path, should be efficient
+        cpu_alloc = @allocated _test_cuda_1d_alloc!()
         @test cpu_alloc < 200
     end
 
