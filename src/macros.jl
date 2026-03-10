@@ -133,9 +133,9 @@ function Base.showerror(io::IO, e::PoolEscapeError)
             decl_file = (decl.file !== nothing && decl.file !== :none) ? decl.file : e.file
             loc = _format_location_str(decl_file, decl.line)
             if loc !== nothing
-                printstyled(io, "  ["; color = :cyan, bold=true)
-                printstyled(io, loc; color = :cyan, bold=true)
-                printstyled(io, "] "; color = :cyan, bold=true)
+                printstyled(io, "  ["; color = :cyan, bold = true)
+                printstyled(io, loc; color = :cyan, bold = true)
+                printstyled(io, "] "; color = :cyan, bold = true)
             end
             println(io)
         end
@@ -152,9 +152,9 @@ function Base.showerror(io::IO, e::PoolEscapeError)
             _render_return_expr(io, pt.expr, escaped_set)
             loc = _format_point_location(e.file, pt.line)
             if loc !== nothing
-                printstyled(io, "  ["; color = :magenta, bold=true)
-                printstyled(io, loc; color = :magenta, bold=true)
-                printstyled(io, "] "; color = :magenta, bold=true)
+                printstyled(io, "  ["; color = :magenta, bold = true)
+                printstyled(io, loc; color = :magenta, bold = true)
+                printstyled(io, "] "; color = :magenta, bold = true)
             end
             println(io)
         end
