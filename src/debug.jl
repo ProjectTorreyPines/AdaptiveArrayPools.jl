@@ -328,6 +328,7 @@ Called from `_acquire_impl!` / `_unsafe_acquire_impl!` when `POOL_SAFETY_LV[] >=
         pool._borrow_log = log
     end
     @inbounds log[tp.vectors[tp.n_active]] = callsite
+    pool._pending_callsite = ""   # Clear so next _set_pending_callsite! can set a fresh value
     return nothing
 end
 

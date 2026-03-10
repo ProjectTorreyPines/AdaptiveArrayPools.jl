@@ -299,8 +299,8 @@ const _TYPE_BITS_MASK = UInt16(0x00FF)  # bits 0-7: fixed-slot type bits
 #           Set via LocalPreferences.toml: pool_checks = true/false
 #           When false: all safety code elided at compile time (zero overhead)
 #
-#   Tier 2: POOL_SAFETY_LV (runtime Ref{Int}, levels 0/1/2)
-#           0 = off, 1 = guard (resize+setfield invalidation), 2 = full
+#   Tier 2: POOL_SAFETY_LV (runtime Ref{Int}, levels 0/1/2/3)
+#           0 = off, 1 = guard, 2 = full, 3 = debug (borrow registry)
 #           Default: 1 (guard mode — safe by default)
 
 using Preferences: @load_preference
