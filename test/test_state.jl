@@ -28,11 +28,7 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
 
     @testset "Warm-up pattern" begin
         # Use S=0 pool to test capacity preservation without invalidation
-        pool = @static if VERSION >= v"1.11-"
-            AdaptiveArrayPool{0}()
-        else
-            AdaptiveArrayPool()
-        end
+        pool = AdaptiveArrayPool{0}()
         checkpoint!(pool)
 
         # Warm-up: sizes may cause resize

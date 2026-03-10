@@ -56,11 +56,7 @@
     @testset "Slot reuse with resize via _claim_slot!" begin
         # Use S=0 pool: safety level is baked into type, so we need an explicit
         # AdaptiveArrayPool{0} to test capacity preservation without invalidation.
-        pool = @static if VERSION >= v"1.11-"
-            AdaptiveArrayPool{0}()
-        else
-            AdaptiveArrayPool()
-        end
+        pool = AdaptiveArrayPool{0}()
 
         # Acquire slot with small size, write sentinel data to slot 2
         checkpoint!(pool)

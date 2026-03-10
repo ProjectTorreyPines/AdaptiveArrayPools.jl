@@ -104,11 +104,8 @@ end
 # Union Splitting Dispatcher + Safety Level Control
 # ==============================================================================
 #
-# Modern path (≥1.11): AdaptiveArrayPool{S} is parametric — union splitting
-# narrows to concrete type for dead-code elimination.
-# Legacy path (≤1.10): AdaptiveArrayPool is a concrete struct — pass-through.
-
-@static if VERSION >= v"1.11-"
+# AdaptiveArrayPool{S} is parametric on both modern (≥1.11) and legacy (≤1.10).
+# Union splitting narrows to concrete type for dead-code elimination of safety branches.
 
 """
     _dispatch_pool_scope(f, pool_any)
@@ -167,20 +164,6 @@ function set_safety_level!(level::Int)
     task_local_storage(_POOL_KEY, new_pool)
     return new_pool
 end
-
-else  # Legacy path (Julia ≤1.10)
-
-# Pass-through: no type parameter, pool is already concrete
-@inline _dispatch_pool_scope(f, pool) = f(pool)
-
-# Legacy: just update the Ref (no pool replacement, no type parameter)
-function set_safety_level!(level::Int)
-    0 <= level <= 3 || throw(ArgumentError("Safety level must be 0-3; got $level"))
-    POOL_SAFETY_LV[] = level
-    return nothing
-end
-
-end  # @static if
 
 # ==============================================================================
 # CUDA Pool Stubs (overridden by extension when CUDA is loaded)
