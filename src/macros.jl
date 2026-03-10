@@ -530,9 +530,11 @@ Generates: `_dispatch_pool_scope(pool_name -> inner_body, pool_getter)`
 Inside the closure, `pool_name` has concrete type `AdaptiveArrayPool{S}`.
 """
 function _wrap_with_dispatch(pool_name_esc, pool_getter, inner_body)
-    return Expr(:call, _DISPATCH_POOL_SCOPE_REF,
+    return Expr(
+        :call, _DISPATCH_POOL_SCOPE_REF,
         Expr(:(->), pool_name_esc, inner_body),
-        pool_getter)
+        pool_getter
+    )
 end
 
 # ==============================================================================
@@ -1505,7 +1507,8 @@ function _inject_pending_callsite(expr, pool_name, original_expr = expr)
                         "$(current_lnn.file):$(current_lnn.line)\n$(expr_text)"
                     inject = Expr(
                         :&&,
-                        Expr(:||,
+                        Expr(
+                            :||,
                             Expr(:call, :>=, Expr(:call, _SAFETY_LEVEL_REF, pool_name), 3),
                             Expr(:ref, _POOL_DEBUG_REF)
                         ),
@@ -1587,7 +1590,8 @@ function _transform_return_stmts(expr, pool_name, current_lnn = nothing)
                 :block,
                 Expr(
                     :&&,
-                    Expr(:||,
+                    Expr(
+                        :||,
                         Expr(:call, :>=, Expr(:call, _SAFETY_LEVEL_REF, pool_name), 3),
                         Expr(:ref, _POOL_DEBUG_REF)
                     ),
@@ -1608,7 +1612,8 @@ function _transform_return_stmts(expr, pool_name, current_lnn = nothing)
             Expr(:local, Expr(:(=), retvar, value_expr)),
             Expr(
                 :if,
-                Expr(:||,
+                Expr(
+                    :||,
                     Expr(:call, :>=, Expr(:call, _SAFETY_LEVEL_REF, pool_name), 2),
                     Expr(:ref, _POOL_DEBUG_REF)
                 ),
