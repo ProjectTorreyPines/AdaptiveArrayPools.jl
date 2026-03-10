@@ -135,11 +135,7 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
         rewind!(pool)
 
         # Test capacity preservation with S=0 pool (no invalidation on rewind)
-        pool0 = @static if VERSION >= v"1.11-"
-            AdaptiveArrayPool{0}()
-        else
-            AdaptiveArrayPool()
-        end
+        pool0 = AdaptiveArrayPool{0}()
         checkpoint!(pool0)
         acquire!(pool0, Float64, 200)
         rewind!(pool0)  # S=0 → backing vector stays at 200
