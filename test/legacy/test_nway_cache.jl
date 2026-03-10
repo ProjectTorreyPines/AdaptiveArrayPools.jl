@@ -138,17 +138,20 @@ end
             @test size(arr) == (100, 100)
         end
 
-        # Warmup again with new size
-        @with_pool pool begin
-            unsafe_acquire!(pool, Float64, 100, 100)
-        end
-
-        # Now should be zero allocation
-        allocs = @allocated begin
+        # Wrap in function for proper JIT warmup (closure in @with_pool
+        # needs function boundary to avoid @allocated counting JIT artifacts)
+        function _test_resize_cache!()
             @with_pool pool begin
                 unsafe_acquire!(pool, Float64, 100, 100)
             end
         end
+
+        # Warmup (JIT + cache)
+        _test_resize_cache!()
+        _test_resize_cache!()
+
+        # Now should be zero allocation
+        allocs = @allocated _test_resize_cache!()
         @test allocs == 0
     end
 
@@ -167,22 +170,32 @@ end
             end
         end
 
-        # Both slots should have their shapes cached
-        allocs = @allocated begin
+        # Wrap in functions for proper JIT warmup
+        function _test_multi_slot_a!()
             @with_pool pool begin
                 unsafe_acquire!(pool, Float64, 5, 5)
                 unsafe_acquire!(pool, Float64, 10, 10)
             end
         end
-        @test allocs == 0
-
-        # Alternating dims should also hit cache
-        allocs = @allocated begin
+        function _test_multi_slot_b!()
             @with_pool pool begin
                 unsafe_acquire!(pool, Float64, 6, 6)
                 unsafe_acquire!(pool, Float64, 12, 12)
             end
         end
+
+        # Warmup
+        _test_multi_slot_a!()
+        _test_multi_slot_b!()
+        _test_multi_slot_a!()
+        _test_multi_slot_b!()
+
+        # Both slots should have their shapes cached
+        allocs = @allocated _test_multi_slot_a!()
+        @test allocs == 0
+
+        # Alternating dims should also hit cache
+        allocs = @allocated _test_multi_slot_b!()
         @test allocs == 0
     end
 
