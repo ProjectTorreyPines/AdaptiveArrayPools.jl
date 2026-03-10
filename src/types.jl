@@ -445,6 +445,34 @@ Levels outside 0-3 are clamped (≤0 → 0, ≥3 → 3).
     return AdaptiveArrayPool{3}()
 end
 
+"""
+    _make_pool(s::Int, old::AdaptiveArrayPool) -> AdaptiveArrayPool{s}
+
+Create a new pool at safety level `s`, transferring cached arrays and scope state
+from `old`.  Only reference copies — no memory allocation for the underlying buffers.
+
+Transferred: all TypedPool/BitTypedPool slots, `others`, depth & touch tracking.
+Reset: `_pending_callsite/return_site` (transient macro state),
+       `_borrow_log` (created fresh when `s >= 3`).
+"""
+@noinline function _make_pool(s::Int, old::AdaptiveArrayPool)
+    _new(::Val{S}) where {S} = AdaptiveArrayPool{S}(
+        old.float64, old.float32, old.int64, old.int32,
+        old.complexf64, old.complexf32, old.bool, old.bits,
+        old.others,
+        old._current_depth,
+        old._touched_type_masks,
+        old._touched_has_others,
+        "",       # _pending_callsite: reset
+        "",       # _pending_return_site: reset
+        S >= 3 ? IdDict{Any, String}() : nothing  # _borrow_log
+    )
+    s <= 0 && return _new(Val(0))
+    s == 1 && return _new(Val(1))
+    s == 2 && return _new(Val(2))
+    return _new(Val(3))
+end
+
 # ==============================================================================
 # Type Dispatch (Zero-cost for Fixed Slots)
 # ==============================================================================

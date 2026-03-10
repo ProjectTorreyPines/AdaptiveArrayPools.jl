@@ -140,11 +140,14 @@ end
 """
     set_safety_level!(level::Int) -> AdaptiveArrayPool
 
-Replace the task-local pool with a new `AdaptiveArrayPool{level}`.
+Replace the task-local pool with a new `AdaptiveArrayPool{level}`,
+preserving all cached arrays and scope state from the old pool.
 
-The new pool starts fresh (empty state). Old pool is GC'd.
+Cached TypedPool/BitTypedPool slots, the `others` IdDict, depth tracking,
+and touch masks are transferred by reference (zero copy).
+Transient borrow-tracking state (`_pending_callsite`, `_borrow_log`) is reset.
+
 One-time JIT cost for new `S` specialization.
-
 Also updates `POOL_SAFETY_LV[]` so that `AdaptiveArrayPool()` creates pools
 at the new level.
 
@@ -152,7 +155,7 @@ at the new level.
 ```julia
 set_safety_level!(2)  # Enable full safety (escape detection + poisoning)
 # ... run suspicious code ...
-set_safety_level!(0)  # Back to zero overhead
+set_safety_level!(0)  # Back to zero overhead — cached arrays still available
 ```
 
 See also: [`_safety_level`], [`POOL_SAFETY_LV`]
@@ -160,7 +163,8 @@ See also: [`_safety_level`], [`POOL_SAFETY_LV`]
 function set_safety_level!(level::Int)
     0 <= level <= 3 || throw(ArgumentError("Safety level must be 0-3; got $level"))
     POOL_SAFETY_LV[] = level
-    new_pool = _make_pool(level)
+    old_pool = get(task_local_storage(), _POOL_KEY, nothing)
+    new_pool = old_pool === nothing ? _make_pool(level) : _make_pool(level, old_pool::AdaptiveArrayPool)
     task_local_storage(_POOL_KEY, new_pool)
     return new_pool
 end
