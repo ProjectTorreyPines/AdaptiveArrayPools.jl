@@ -426,3 +426,58 @@ Apply `f` to each fixed slot TypedPool. Zero allocation via compile-time unrolli
         nothing
     end
 end
+
+# ==============================================================================
+# Safety Tag Dispatch (compile-time, zero-cost when STATIC_POOL_CHECKS=false)
+# ==============================================================================
+#
+# Instead of `@static if STATIC_POOL_CHECKS` at every call site, we dispatch on
+# a singleton tag.  The compiler resolves `const _POOL_CHECK_TAG` at compile time,
+# monomorphizes the call, and dead-code-eliminates the unused path entirely.
+
+"""Singleton tag: pool safety checks enabled."""
+struct _CheckOn end
+
+"""Singleton tag: pool safety checks disabled (all safety helpers become no-ops)."""
+struct _CheckOff end
+
+"""Compile-time tag selected by `STATIC_POOL_CHECKS`."""
+const _POOL_CHECK_TAG = STATIC_POOL_CHECKS ? _CheckOn() : _CheckOff()
+
+# --- Active implementations (_CheckOn) ---
+
+"""
+    _set_pending_callsite!(pool, msg::String)
+
+Record a pending callsite string for borrow tracking (safety level ≥ 3).
+Only sets the callsite if no prior callsite is pending (macro-injected ones take priority).
+Dispatches to no-op when `STATIC_POOL_CHECKS` is `false`.
+"""
+@inline function _set_pending_callsite!(::_CheckOn, pool::AbstractArrayPool, msg::String)
+    POOL_SAFETY_LV[] >= 3 && isempty(pool._pending_callsite) && (pool._pending_callsite = msg)
+    return nothing
+end
+
+"""
+    _maybe_record_borrow!(pool, tp::AbstractTypedPool)
+
+Flush the pending callsite into the borrow log (safety level ≥ 3).
+Delegates to `_record_borrow_from_pending!` (defined in `debug.jl`).
+Dispatches to no-op when `STATIC_POOL_CHECKS` is `false`.
+"""
+@inline function _maybe_record_borrow!(::_CheckOn, pool::AbstractArrayPool, tp::AbstractTypedPool)
+    POOL_SAFETY_LV[] >= 3 && _record_borrow_from_pending!(pool, tp)
+    return nothing
+end
+
+# --- No-op implementations (_CheckOff) ---
+
+@inline _set_pending_callsite!(::_CheckOff, ::AbstractArrayPool, ::String) = nothing
+@inline _maybe_record_borrow!(::_CheckOff, ::AbstractArrayPool, ::AbstractTypedPool) = nothing
+
+# --- Convenience wrappers (auto-dispatch via const tag) ---
+
+@inline _set_pending_callsite!(pool::AbstractArrayPool, msg::String) =
+    _set_pending_callsite!(_POOL_CHECK_TAG, pool, msg)
+@inline _maybe_record_borrow!(pool::AbstractArrayPool, tp::AbstractTypedPool) =
+    _maybe_record_borrow!(_POOL_CHECK_TAG, pool, tp)

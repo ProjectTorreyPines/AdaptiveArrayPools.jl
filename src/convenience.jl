@@ -44,33 +44,25 @@ See also: [`ones!`](@ref), [`similar!`](@ref), [`acquire!`](@ref)
 """
 @inline function zeros!(pool::AbstractArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
     _record_type_touch!(pool, T)
-    @static if STATIC_POOL_CHECKS
-        POOL_SAFETY_LV[] >= 3 && isempty(pool._pending_callsite) && (pool._pending_callsite = "<direct zeros! call>")
-    end
+    _set_pending_callsite!(pool, "<direct zeros! call>")
     return _zeros_impl!(pool, T, dims...)
 end
 
 @inline function zeros!(pool::AbstractArrayPool, dims::Vararg{Int, N}) where {N}
     _record_type_touch!(pool, default_eltype(pool))
-    @static if STATIC_POOL_CHECKS
-        POOL_SAFETY_LV[] >= 3 && isempty(pool._pending_callsite) && (pool._pending_callsite = "<direct zeros! call>")
-    end
+    _set_pending_callsite!(pool, "<direct zeros! call>")
     return _zeros_impl!(pool, default_eltype(pool), dims...)
 end
 
 @inline function zeros!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
     _record_type_touch!(pool, T)
-    @static if STATIC_POOL_CHECKS
-        POOL_SAFETY_LV[] >= 3 && isempty(pool._pending_callsite) && (pool._pending_callsite = "<direct zeros! call>")
-    end
+    _set_pending_callsite!(pool, "<direct zeros! call>")
     return _zeros_impl!(pool, T, dims...)
 end
 
 @inline function zeros!(pool::AbstractArrayPool, dims::NTuple{N, Int}) where {N}
     _record_type_touch!(pool, default_eltype(pool))
-    @static if STATIC_POOL_CHECKS
-        POOL_SAFETY_LV[] >= 3 && isempty(pool._pending_callsite) && (pool._pending_callsite = "<direct zeros! call>")
-    end
+    _set_pending_callsite!(pool, "<direct zeros! call>")
     return _zeros_impl!(pool, default_eltype(pool), dims...)
 end
 
@@ -129,33 +121,25 @@ See also: [`zeros!`](@ref), [`similar!`](@ref), [`acquire!`](@ref)
 """
 @inline function ones!(pool::AbstractArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
     _record_type_touch!(pool, T)
-    @static if STATIC_POOL_CHECKS
-        POOL_SAFETY_LV[] >= 3 && isempty(pool._pending_callsite) && (pool._pending_callsite = "<direct ones! call>")
-    end
+    _set_pending_callsite!(pool, "<direct ones! call>")
     return _ones_impl!(pool, T, dims...)
 end
 
 @inline function ones!(pool::AbstractArrayPool, dims::Vararg{Int, N}) where {N}
     _record_type_touch!(pool, default_eltype(pool))
-    @static if STATIC_POOL_CHECKS
-        POOL_SAFETY_LV[] >= 3 && isempty(pool._pending_callsite) && (pool._pending_callsite = "<direct ones! call>")
-    end
+    _set_pending_callsite!(pool, "<direct ones! call>")
     return _ones_impl!(pool, default_eltype(pool), dims...)
 end
 
 @inline function ones!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
     _record_type_touch!(pool, T)
-    @static if STATIC_POOL_CHECKS
-        POOL_SAFETY_LV[] >= 3 && isempty(pool._pending_callsite) && (pool._pending_callsite = "<direct ones! call>")
-    end
+    _set_pending_callsite!(pool, "<direct ones! call>")
     return _ones_impl!(pool, T, dims...)
 end
 
 @inline function ones!(pool::AbstractArrayPool, dims::NTuple{N, Int}) where {N}
     _record_type_touch!(pool, default_eltype(pool))
-    @static if STATIC_POOL_CHECKS
-        POOL_SAFETY_LV[] >= 3 && isempty(pool._pending_callsite) && (pool._pending_callsite = "<direct ones! call>")
-    end
+    _set_pending_callsite!(pool, "<direct ones! call>")
     return _ones_impl!(pool, default_eltype(pool), dims...)
 end
 
@@ -211,16 +195,12 @@ See also: [`falses!`](@ref), [`ones!`](@ref), [`acquire!`](@ref)
 """
 @inline function trues!(pool::AbstractArrayPool, dims::Vararg{Int, N}) where {N}
     _record_type_touch!(pool, Bit)
-    @static if STATIC_POOL_CHECKS
-        POOL_SAFETY_LV[] >= 3 && isempty(pool._pending_callsite) && (pool._pending_callsite = "<direct trues! call>")
-    end
+    _set_pending_callsite!(pool, "<direct trues! call>")
     return _trues_impl!(pool, dims...)
 end
 @inline function trues!(pool::AbstractArrayPool, dims::NTuple{N, Int}) where {N}
     _record_type_touch!(pool, Bit)
-    @static if STATIC_POOL_CHECKS
-        POOL_SAFETY_LV[] >= 3 && isempty(pool._pending_callsite) && (pool._pending_callsite = "<direct trues! call>")
-    end
+    _set_pending_callsite!(pool, "<direct trues! call>")
     return _trues_impl!(pool, dims...)
 end
 
@@ -257,16 +237,12 @@ See also: [`trues!`](@ref), [`zeros!`](@ref), [`acquire!`](@ref)
 """
 @inline function falses!(pool::AbstractArrayPool, dims::Vararg{Int, N}) where {N}
     _record_type_touch!(pool, Bit)
-    @static if STATIC_POOL_CHECKS
-        POOL_SAFETY_LV[] >= 3 && isempty(pool._pending_callsite) && (pool._pending_callsite = "<direct falses! call>")
-    end
+    _set_pending_callsite!(pool, "<direct falses! call>")
     return _falses_impl!(pool, dims...)
 end
 @inline function falses!(pool::AbstractArrayPool, dims::NTuple{N, Int}) where {N}
     _record_type_touch!(pool, Bit)
-    @static if STATIC_POOL_CHECKS
-        POOL_SAFETY_LV[] >= 3 && isempty(pool._pending_callsite) && (pool._pending_callsite = "<direct falses! call>")
-    end
+    _set_pending_callsite!(pool, "<direct falses! call>")
     return _falses_impl!(pool, dims...)
 end
 
@@ -310,33 +286,25 @@ See also: [`zeros!`](@ref), [`ones!`](@ref), [`acquire!`](@ref)
 """
 @inline function similar!(pool::AbstractArrayPool, x::AbstractArray)
     _record_type_touch!(pool, eltype(x))
-    @static if STATIC_POOL_CHECKS
-        POOL_SAFETY_LV[] >= 3 && isempty(pool._pending_callsite) && (pool._pending_callsite = "<direct similar! call>")
-    end
+    _set_pending_callsite!(pool, "<direct similar! call>")
     return _similar_impl!(pool, x)
 end
 
 @inline function similar!(pool::AbstractArrayPool, x::AbstractArray, ::Type{T}) where {T}
     _record_type_touch!(pool, T)
-    @static if STATIC_POOL_CHECKS
-        POOL_SAFETY_LV[] >= 3 && isempty(pool._pending_callsite) && (pool._pending_callsite = "<direct similar! call>")
-    end
+    _set_pending_callsite!(pool, "<direct similar! call>")
     return _similar_impl!(pool, x, T)
 end
 
 @inline function similar!(pool::AbstractArrayPool, x::AbstractArray, dims::Vararg{Int, N}) where {N}
     _record_type_touch!(pool, eltype(x))
-    @static if STATIC_POOL_CHECKS
-        POOL_SAFETY_LV[] >= 3 && isempty(pool._pending_callsite) && (pool._pending_callsite = "<direct similar! call>")
-    end
+    _set_pending_callsite!(pool, "<direct similar! call>")
     return _similar_impl!(pool, x, dims...)
 end
 
 @inline function similar!(pool::AbstractArrayPool, x::AbstractArray, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
     _record_type_touch!(pool, T)
-    @static if STATIC_POOL_CHECKS
-        POOL_SAFETY_LV[] >= 3 && isempty(pool._pending_callsite) && (pool._pending_callsite = "<direct similar! call>")
-    end
+    _set_pending_callsite!(pool, "<direct similar! call>")
     return _similar_impl!(pool, x, T, dims...)
 end
 
@@ -446,33 +414,25 @@ See also: [`unsafe_ones!`](@ref), [`zeros!`](@ref), [`unsafe_acquire!`](@ref)
 """
 @inline function unsafe_zeros!(pool::AbstractArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
     _record_type_touch!(pool, T)
-    @static if STATIC_POOL_CHECKS
-        POOL_SAFETY_LV[] >= 3 && isempty(pool._pending_callsite) && (pool._pending_callsite = "<direct unsafe_zeros! call>")
-    end
+    _set_pending_callsite!(pool, "<direct unsafe_zeros! call>")
     return _unsafe_zeros_impl!(pool, T, dims...)
 end
 
 @inline function unsafe_zeros!(pool::AbstractArrayPool, dims::Vararg{Int, N}) where {N}
     _record_type_touch!(pool, default_eltype(pool))
-    @static if STATIC_POOL_CHECKS
-        POOL_SAFETY_LV[] >= 3 && isempty(pool._pending_callsite) && (pool._pending_callsite = "<direct unsafe_zeros! call>")
-    end
+    _set_pending_callsite!(pool, "<direct unsafe_zeros! call>")
     return _unsafe_zeros_impl!(pool, default_eltype(pool), dims...)
 end
 
 @inline function unsafe_zeros!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
     _record_type_touch!(pool, T)
-    @static if STATIC_POOL_CHECKS
-        POOL_SAFETY_LV[] >= 3 && isempty(pool._pending_callsite) && (pool._pending_callsite = "<direct unsafe_zeros! call>")
-    end
+    _set_pending_callsite!(pool, "<direct unsafe_zeros! call>")
     return _unsafe_zeros_impl!(pool, T, dims...)
 end
 
 @inline function unsafe_zeros!(pool::AbstractArrayPool, dims::NTuple{N, Int}) where {N}
     _record_type_touch!(pool, default_eltype(pool))
-    @static if STATIC_POOL_CHECKS
-        POOL_SAFETY_LV[] >= 3 && isempty(pool._pending_callsite) && (pool._pending_callsite = "<direct unsafe_zeros! call>")
-    end
+    _set_pending_callsite!(pool, "<direct unsafe_zeros! call>")
     return _unsafe_zeros_impl!(pool, default_eltype(pool), dims...)
 end
 
@@ -525,33 +485,25 @@ See also: [`unsafe_zeros!`](@ref), [`ones!`](@ref), [`unsafe_acquire!`](@ref)
 """
 @inline function unsafe_ones!(pool::AbstractArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
     _record_type_touch!(pool, T)
-    @static if STATIC_POOL_CHECKS
-        POOL_SAFETY_LV[] >= 3 && isempty(pool._pending_callsite) && (pool._pending_callsite = "<direct unsafe_ones! call>")
-    end
+    _set_pending_callsite!(pool, "<direct unsafe_ones! call>")
     return _unsafe_ones_impl!(pool, T, dims...)
 end
 
 @inline function unsafe_ones!(pool::AbstractArrayPool, dims::Vararg{Int, N}) where {N}
     _record_type_touch!(pool, default_eltype(pool))
-    @static if STATIC_POOL_CHECKS
-        POOL_SAFETY_LV[] >= 3 && isempty(pool._pending_callsite) && (pool._pending_callsite = "<direct unsafe_ones! call>")
-    end
+    _set_pending_callsite!(pool, "<direct unsafe_ones! call>")
     return _unsafe_ones_impl!(pool, default_eltype(pool), dims...)
 end
 
 @inline function unsafe_ones!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
     _record_type_touch!(pool, T)
-    @static if STATIC_POOL_CHECKS
-        POOL_SAFETY_LV[] >= 3 && isempty(pool._pending_callsite) && (pool._pending_callsite = "<direct unsafe_ones! call>")
-    end
+    _set_pending_callsite!(pool, "<direct unsafe_ones! call>")
     return _unsafe_ones_impl!(pool, T, dims...)
 end
 
 @inline function unsafe_ones!(pool::AbstractArrayPool, dims::NTuple{N, Int}) where {N}
     _record_type_touch!(pool, default_eltype(pool))
-    @static if STATIC_POOL_CHECKS
-        POOL_SAFETY_LV[] >= 3 && isempty(pool._pending_callsite) && (pool._pending_callsite = "<direct unsafe_ones! call>")
-    end
+    _set_pending_callsite!(pool, "<direct unsafe_ones! call>")
     return _unsafe_ones_impl!(pool, default_eltype(pool), dims...)
 end
 
@@ -607,33 +559,25 @@ See also: [`similar!`](@ref), [`unsafe_acquire!`](@ref)
 """
 @inline function unsafe_similar!(pool::AbstractArrayPool, x::AbstractArray)
     _record_type_touch!(pool, eltype(x))
-    @static if STATIC_POOL_CHECKS
-        POOL_SAFETY_LV[] >= 3 && isempty(pool._pending_callsite) && (pool._pending_callsite = "<direct unsafe_similar! call>")
-    end
+    _set_pending_callsite!(pool, "<direct unsafe_similar! call>")
     return _unsafe_similar_impl!(pool, x)
 end
 
 @inline function unsafe_similar!(pool::AbstractArrayPool, x::AbstractArray, ::Type{T}) where {T}
     _record_type_touch!(pool, T)
-    @static if STATIC_POOL_CHECKS
-        POOL_SAFETY_LV[] >= 3 && isempty(pool._pending_callsite) && (pool._pending_callsite = "<direct unsafe_similar! call>")
-    end
+    _set_pending_callsite!(pool, "<direct unsafe_similar! call>")
     return _unsafe_similar_impl!(pool, x, T)
 end
 
 @inline function unsafe_similar!(pool::AbstractArrayPool, x::AbstractArray, dims::Vararg{Int, N}) where {N}
     _record_type_touch!(pool, eltype(x))
-    @static if STATIC_POOL_CHECKS
-        POOL_SAFETY_LV[] >= 3 && isempty(pool._pending_callsite) && (pool._pending_callsite = "<direct unsafe_similar! call>")
-    end
+    _set_pending_callsite!(pool, "<direct unsafe_similar! call>")
     return _unsafe_similar_impl!(pool, x, dims...)
 end
 
 @inline function unsafe_similar!(pool::AbstractArrayPool, x::AbstractArray, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
     _record_type_touch!(pool, T)
-    @static if STATIC_POOL_CHECKS
-        POOL_SAFETY_LV[] >= 3 && isempty(pool._pending_callsite) && (pool._pending_callsite = "<direct unsafe_similar! call>")
-    end
+    _set_pending_callsite!(pool, "<direct unsafe_similar! call>")
     return _unsafe_similar_impl!(pool, x, T, dims...)
 end
 

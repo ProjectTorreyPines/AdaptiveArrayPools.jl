@@ -140,27 +140,21 @@ end
 @inline function _unsafe_acquire_impl!(pool::AbstractArrayPool, ::Type{Bit}, n::Int)
     tp = get_typed_pool!(pool, Bit)::BitTypedPool
     result = get_bitarray!(tp, n)
-    @static if STATIC_POOL_CHECKS
-        POOL_SAFETY_LV[] >= 3 && _record_borrow_from_pending!(pool, tp)
-    end
+    _maybe_record_borrow!(pool, tp)
     return result
 end
 
 @inline function _unsafe_acquire_impl!(pool::AbstractArrayPool, ::Type{Bit}, dims::Vararg{Int, N}) where {N}
     tp = get_typed_pool!(pool, Bit)::BitTypedPool
     result = get_bitarray!(tp, dims)
-    @static if STATIC_POOL_CHECKS
-        POOL_SAFETY_LV[] >= 3 && _record_borrow_from_pending!(pool, tp)
-    end
+    _maybe_record_borrow!(pool, tp)
     return result
 end
 
 @inline function _unsafe_acquire_impl!(pool::AbstractArrayPool, ::Type{Bit}, dims::NTuple{N, Int}) where {N}
     tp = get_typed_pool!(pool, Bit)::BitTypedPool
     result = get_bitarray!(tp, dims)
-    @static if STATIC_POOL_CHECKS
-        POOL_SAFETY_LV[] >= 3 && _record_borrow_from_pending!(pool, tp)
-    end
+    _maybe_record_borrow!(pool, tp)
     return result
 end
 

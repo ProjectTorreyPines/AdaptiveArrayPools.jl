@@ -328,18 +328,14 @@ Internal implementation of acquire!. Called directly by macro-transformed code
 @inline function _acquire_impl!(pool::AbstractArrayPool, ::Type{T}, n::Int) where {T}
     tp = get_typed_pool!(pool, T)
     result = get_view!(tp, n)
-    @static if STATIC_POOL_CHECKS
-        POOL_SAFETY_LV[] >= 3 && _record_borrow_from_pending!(pool, tp)
-    end
+    _maybe_record_borrow!(pool, tp)
     return result
 end
 
 @inline function _acquire_impl!(pool::AbstractArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
     tp = get_typed_pool!(pool, T)
     result = get_view!(tp, dims)
-    @static if STATIC_POOL_CHECKS
-        POOL_SAFETY_LV[] >= 3 && _record_borrow_from_pending!(pool, tp)
-    end
+    _maybe_record_borrow!(pool, tp)
     return result
 end
 
@@ -358,27 +354,21 @@ Internal implementation of unsafe_acquire!. Called directly by macro-transformed
 @inline function _unsafe_acquire_impl!(pool::AbstractArrayPool, ::Type{T}, n::Int) where {T}
     tp = get_typed_pool!(pool, T)
     result = get_array!(tp, (n,))
-    @static if STATIC_POOL_CHECKS
-        POOL_SAFETY_LV[] >= 3 && _record_borrow_from_pending!(pool, tp)
-    end
+    _maybe_record_borrow!(pool, tp)
     return result
 end
 
 @inline function _unsafe_acquire_impl!(pool::AbstractArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
     tp = get_typed_pool!(pool, T)
     result = get_array!(tp, dims)
-    @static if STATIC_POOL_CHECKS
-        POOL_SAFETY_LV[] >= 3 && _record_borrow_from_pending!(pool, tp)
-    end
+    _maybe_record_borrow!(pool, tp)
     return result
 end
 
 @inline function _unsafe_acquire_impl!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
     tp = get_typed_pool!(pool, T)
     result = get_array!(tp, dims)
-    @static if STATIC_POOL_CHECKS
-        POOL_SAFETY_LV[] >= 3 && _record_borrow_from_pending!(pool, tp)
-    end
+    _maybe_record_borrow!(pool, tp)
     return result
 end
 
@@ -423,27 +413,21 @@ See also: [`unsafe_acquire!`](@ref) for native array access.
 """
 @inline function acquire!(pool::AbstractArrayPool, ::Type{T}, n::Int) where {T}
     _record_type_touch!(pool, T)
-    @static if STATIC_POOL_CHECKS
-        POOL_SAFETY_LV[] >= 3 && isempty(pool._pending_callsite) && (pool._pending_callsite = "<direct acquire! call>")
-    end
+    _set_pending_callsite!(pool, "<direct acquire! call>")
     return _acquire_impl!(pool, T, n)
 end
 
 # Multi-dimensional support (zero-allocation with N-D cache)
 @inline function acquire!(pool::AbstractArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
     _record_type_touch!(pool, T)
-    @static if STATIC_POOL_CHECKS
-        POOL_SAFETY_LV[] >= 3 && isempty(pool._pending_callsite) && (pool._pending_callsite = "<direct acquire! call>")
-    end
+    _set_pending_callsite!(pool, "<direct acquire! call>")
     return _acquire_impl!(pool, T, dims...)
 end
 
 # Tuple support: allows acquire!(pool, T, size(A)) where size(A) returns NTuple{N,Int}
 @inline function acquire!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
     _record_type_touch!(pool, T)
-    @static if STATIC_POOL_CHECKS
-        POOL_SAFETY_LV[] >= 3 && isempty(pool._pending_callsite) && (pool._pending_callsite = "<direct acquire! call>")
-    end
+    _set_pending_callsite!(pool, "<direct acquire! call>")
     return _acquire_impl!(pool, T, dims...)
 end
 
@@ -464,9 +448,7 @@ end
 """
 @inline function acquire!(pool::AbstractArrayPool, x::AbstractArray)
     _record_type_touch!(pool, eltype(x))
-    @static if STATIC_POOL_CHECKS
-        POOL_SAFETY_LV[] >= 3 && isempty(pool._pending_callsite) && (pool._pending_callsite = "<direct acquire! call>")
-    end
+    _set_pending_callsite!(pool, "<direct acquire! call>")
     return _acquire_impl!(pool, eltype(x), size(x))
 end
 
@@ -522,26 +504,20 @@ See also: [`acquire!`](@ref) for view-based access.
 """
 @inline function unsafe_acquire!(pool::AbstractArrayPool, ::Type{T}, n::Int) where {T}
     _record_type_touch!(pool, T)
-    @static if STATIC_POOL_CHECKS
-        POOL_SAFETY_LV[] >= 3 && isempty(pool._pending_callsite) && (pool._pending_callsite = "<direct unsafe_acquire! call>")
-    end
+    _set_pending_callsite!(pool, "<direct unsafe_acquire! call>")
     return _unsafe_acquire_impl!(pool, T, n)
 end
 
 @inline function unsafe_acquire!(pool::AbstractArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
     _record_type_touch!(pool, T)
-    @static if STATIC_POOL_CHECKS
-        POOL_SAFETY_LV[] >= 3 && isempty(pool._pending_callsite) && (pool._pending_callsite = "<direct unsafe_acquire! call>")
-    end
+    _set_pending_callsite!(pool, "<direct unsafe_acquire! call>")
     return _unsafe_acquire_impl!(pool, T, dims...)
 end
 
 # Tuple support
 @inline function unsafe_acquire!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
     _record_type_touch!(pool, T)
-    @static if STATIC_POOL_CHECKS
-        POOL_SAFETY_LV[] >= 3 && isempty(pool._pending_callsite) && (pool._pending_callsite = "<direct unsafe_acquire! call>")
-    end
+    _set_pending_callsite!(pool, "<direct unsafe_acquire! call>")
     return _unsafe_acquire_impl!(pool, T, dims)
 end
 
@@ -562,9 +538,7 @@ end
 """
 @inline function unsafe_acquire!(pool::AbstractArrayPool, x::AbstractArray)
     _record_type_touch!(pool, eltype(x))
-    @static if STATIC_POOL_CHECKS
-        POOL_SAFETY_LV[] >= 3 && isempty(pool._pending_callsite) && (pool._pending_callsite = "<direct unsafe_acquire! call>")
-    end
+    _set_pending_callsite!(pool, "<direct unsafe_acquire! call>")
     return _unsafe_acquire_impl!(pool, eltype(x), size(x))
 end
 
