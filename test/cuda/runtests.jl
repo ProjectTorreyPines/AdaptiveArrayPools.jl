@@ -41,4 +41,5 @@ else
     include("test_display.jl")
     include("test_convenience.jl")
     include("test_disabled_pool.jl")
+    include("test_cuda_safety.jl")
 end

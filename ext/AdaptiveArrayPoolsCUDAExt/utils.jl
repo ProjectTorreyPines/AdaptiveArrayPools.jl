@@ -57,11 +57,14 @@ end
 
 Print statistics for a CUDA adaptive array pool.
 """
-function AdaptiveArrayPools.pool_stats(pool::CuAdaptiveArrayPool; io::IO = stdout)
-    # Header with device info
+function AdaptiveArrayPools.pool_stats(pool::CuAdaptiveArrayPool{S}; io::IO = stdout) where {S}
+    # Header with device info and safety level
     printstyled(io, "CuAdaptiveArrayPool", bold = true, color = :green)
+    printstyled(io, "{$S}", color = :yellow)
     printstyled(io, " (device ", color = :dark_gray)
     printstyled(io, pool.device_id, color = :blue)
+    printstyled(io, ", safety=", color = :dark_gray)
+    printstyled(io, _cuda_safety_label(S), color = :yellow)
     printstyled(io, ")\n", color = :dark_gray)
 
     has_content = false
@@ -112,7 +115,7 @@ end
 # ==============================================================================
 
 # Compact one-line show
-function Base.show(io::IO, pool::CuAdaptiveArrayPool)
+function Base.show(io::IO, pool::CuAdaptiveArrayPool{S}) where {S}
     n_types = Ref(0)
     total_vectors = Ref(0)
     total_active = Ref(0)
@@ -131,7 +134,7 @@ function Base.show(io::IO, pool::CuAdaptiveArrayPool)
         total_active[] += tp.n_active
     end
 
-    return print(io, "CuAdaptiveArrayPool(device=$(pool.device_id), types=$(n_types[]), slots=$(total_vectors[]), active=$(total_active[]))")
+    return print(io, "CuAdaptiveArrayPool{$S}(safety=$(_cuda_safety_label(S)), device=$(pool.device_id), types=$(n_types[]), slots=$(total_vectors[]), active=$(total_active[]))")
 end
 
 # Multi-line show

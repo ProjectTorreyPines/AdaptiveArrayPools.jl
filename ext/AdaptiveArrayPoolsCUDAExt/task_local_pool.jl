@@ -2,11 +2,12 @@
 # Task-Local CUDA Pool (Multi-Device Aware)
 # ==============================================================================
 # Each Task gets one pool per GPU device to prevent cross-device memory access.
+# Pools are parameterized by safety level S (CuAdaptiveArrayPool{S}).
 
 const _CU_POOL_KEY = :ADAPTIVE_ARRAY_POOL_CUDA
 
 """
-    get_task_local_cuda_pool() -> CuAdaptiveArrayPool
+    get_task_local_cuda_pool() -> CuAdaptiveArrayPool{S}
 
 Retrieves (or creates) the `CuAdaptiveArrayPool` for the current Task and current GPU device.
 
@@ -18,6 +19,7 @@ a dictionary of pools (one per device) in task-local storage, ensuring that:
 
 ## Implementation
 Uses `Dict{Int, CuAdaptiveArrayPool}` in task-local storage, keyed by device ID.
+Values are `CuAdaptiveArrayPool{S}` — use `_dispatch_pool_scope` for union splitting.
 """
 @inline function AdaptiveArrayPools.get_task_local_cuda_pool()
     # 1. Get or create the pools dictionary
@@ -33,7 +35,7 @@ Uses `Dict{Int, CuAdaptiveArrayPool}` in task-local storage, keyed by device ID.
     # 3. Get or create pool for this device
     pool = get(pools, dev_id, nothing)
     if pool === nothing
-        pool = CuAdaptiveArrayPool()  # Constructor captures device_id
+        pool = CuAdaptiveArrayPool()  # Constructor uses POOL_SAFETY_LV[]
         pools[dev_id] = pool
     end
 
@@ -52,5 +54,46 @@ Useful for diagnostics or bulk operations across all devices.
         pools = Dict{Int, CuAdaptiveArrayPool}()
         task_local_storage(_CU_POOL_KEY, pools)
     end
-    return pools::Dict{Int, CuAdaptiveArrayPool}
+    return pools
+end
+
+"""
+    set_cuda_safety_level!(level::Int) -> Nothing
+
+Replace all CUDA pools across all devices with new `CuAdaptiveArrayPool{level}` pools,
+preserving cached GPU arrays and scope state (zero-copy transfer).
+
+Cannot be called inside an active `@with_pool :cuda` scope (any device).
+
+## Example
+```julia
+set_cuda_safety_level!(2)  # Enable escape detection on all GPU devices
+# ... run suspicious code ...
+set_cuda_safety_level!(0)  # Back to zero overhead — cached arrays still available
+```
+"""
+function set_cuda_safety_level!(level::Int)
+    0 <= level <= 3 || throw(ArgumentError("Safety level must be 0-3; got $level"))
+    pools = get(task_local_storage(), _CU_POOL_KEY, nothing)
+    pools === nothing && return nothing
+
+    # Check that no pool is inside an active scope
+    for (dev_id, old_pool) in pools
+        old = old_pool::CuAdaptiveArrayPool
+        depth = old._current_depth
+        depth != 1 && throw(
+            ArgumentError(
+                "set_cuda_safety_level! cannot be called inside an active @with_pool scope " *
+                    "(device=$dev_id, depth=$depth)"
+            )
+        )
+    end
+
+    # Replace all pools
+    for (dev_id, old_pool) in pools
+        old = old_pool::CuAdaptiveArrayPool
+        pools[dev_id] = _make_cuda_pool(level, old)
+    end
+
+    return nothing
 end
