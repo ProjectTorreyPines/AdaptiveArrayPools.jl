@@ -81,6 +81,9 @@ Retrieves (or creates) the `AdaptiveArrayPool` for the current Task.
 
 Each Task gets its own pool instance via `task_local_storage()`,
 ensuring thread safety without locks.
+
+Returns the pool as-is (type `Any` from task_local_storage).
+Use `_dispatch_pool_scope` in macro-generated code to narrow to concrete `AdaptiveArrayPool{S}`.
 """
 @inline function get_task_local_pool()
     # 1. Fast Path: Try to get existing pool
@@ -96,6 +99,88 @@ ensuring thread safety without locks.
 
     return pool::AdaptiveArrayPool
 end
+
+# ==============================================================================
+# Union Splitting Dispatcher + Safety Level Control
+# ==============================================================================
+#
+# Modern path (≥1.11): AdaptiveArrayPool{S} is parametric — union splitting
+# narrows to concrete type for dead-code elimination.
+# Legacy path (≤1.10): AdaptiveArrayPool is a concrete struct — pass-through.
+
+@static if VERSION >= v"1.11-"
+
+"""
+    _dispatch_pool_scope(f, pool_any)
+
+Union splitting barrier: converts abstract pool → concrete `AdaptiveArrayPool{S}`.
+
+Inside `f`, the pool argument has concrete type, enabling:
+- `_safety_level(pool)` → compile-time constant S
+- Dead-code elimination of safety branches at S=0
+- Zero-allocation try/finally (no Core.Box)
+
+Called from macro-generated code as:
+```julia
+_dispatch_pool_scope(get_task_local_pool()) do pool
+    checkpoint!(pool)
+    try ... finally rewind!(pool) end
+end
+```
+"""
+@inline function _dispatch_pool_scope(f, pool_any)
+    if pool_any isa AdaptiveArrayPool{0}
+        return f(pool_any::AdaptiveArrayPool{0})
+    elseif pool_any isa AdaptiveArrayPool{1}
+        return f(pool_any::AdaptiveArrayPool{1})
+    elseif pool_any isa AdaptiveArrayPool{2}
+        return f(pool_any::AdaptiveArrayPool{2})
+    else
+        return f(pool_any::AdaptiveArrayPool{3})
+    end
+end
+
+"""
+    set_safety_level!(level::Int) -> AdaptiveArrayPool
+
+Replace the task-local pool with a new `AdaptiveArrayPool{level}`.
+
+The new pool starts fresh (empty state). Old pool is GC'd.
+One-time JIT cost for new `S` specialization.
+
+Also updates `POOL_SAFETY_LV[]` so that `AdaptiveArrayPool()` creates pools
+at the new level.
+
+## Example
+```julia
+set_safety_level!(2)  # Enable full safety (escape detection + poisoning)
+# ... run suspicious code ...
+set_safety_level!(0)  # Back to zero overhead
+```
+
+See also: [`_safety_level`], [`POOL_SAFETY_LV`]
+"""
+function set_safety_level!(level::Int)
+    0 <= level <= 3 || throw(ArgumentError("Safety level must be 0-3; got $level"))
+    POOL_SAFETY_LV[] = level
+    new_pool = _make_pool(level)
+    task_local_storage(_POOL_KEY, new_pool)
+    return new_pool
+end
+
+else  # Legacy path (Julia ≤1.10)
+
+# Pass-through: no type parameter, pool is already concrete
+@inline _dispatch_pool_scope(f, pool) = f(pool)
+
+# Legacy: just update the Ref (no pool replacement, no type parameter)
+function set_safety_level!(level::Int)
+    0 <= level <= 3 || throw(ArgumentError("Safety level must be 0-3; got $level"))
+    POOL_SAFETY_LV[] = level
+    return nothing
+end
+
+end  # @static if
 
 # ==============================================================================
 # CUDA Pool Stubs (overridden by extension when CUDA is loaded)

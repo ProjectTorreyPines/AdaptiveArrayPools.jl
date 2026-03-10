@@ -20,7 +20,7 @@ _test_leak(x) = x
 
     @testset "acquire! SubArray invalidated on rewind" begin
         old_safety = POOL_SAFETY_LV[]
-        POOL_SAFETY_LV[] = 1
+        set_safety_level!(1)
 
         pool = AdaptiveArrayPool()
         checkpoint!(pool)
@@ -34,12 +34,12 @@ _test_leak(x) = x
         # Accessing stale SubArray should throw BoundsError
         @test_throws BoundsError v[1]
 
-        POOL_SAFETY_LV[] = old_safety
+        set_safety_level!(old_safety)
     end
 
     @testset "acquire! N-D ReshapedArray invalidated on rewind" begin
         old_safety = POOL_SAFETY_LV[]
-        POOL_SAFETY_LV[] = 1
+        set_safety_level!(1)
 
         pool = AdaptiveArrayPool()
         checkpoint!(pool)
@@ -51,7 +51,7 @@ _test_leak(x) = x
         @test length(parent(parent(mat))) == 0
         @test_throws BoundsError mat[1, 1]
 
-        POOL_SAFETY_LV[] = old_safety
+        set_safety_level!(old_safety)
     end
 
     # ==============================================================================
@@ -62,7 +62,7 @@ _test_leak(x) = x
     @static if VERSION >= v"1.11-"
         @testset "unsafe_acquire! Array wrapper invalidated on rewind" begin
             old_safety = POOL_SAFETY_LV[]
-            POOL_SAFETY_LV[] = 1
+            set_safety_level!(1)
 
             pool = AdaptiveArrayPool()
             checkpoint!(pool)
@@ -75,12 +75,12 @@ _test_leak(x) = x
             @test size(arr) == (0,)
             @test_throws BoundsError arr[1]
 
-            POOL_SAFETY_LV[] = old_safety
+            set_safety_level!(old_safety)
         end
 
         @testset "unsafe_acquire! N-D Array wrapper invalidated on rewind" begin
             old_safety = POOL_SAFETY_LV[]
-            POOL_SAFETY_LV[] = 1
+            set_safety_level!(1)
 
             pool = AdaptiveArrayPool()
             checkpoint!(pool)
@@ -92,7 +92,7 @@ _test_leak(x) = x
             @test size(mat) == (0, 0)
             @test_throws BoundsError mat[1, 1]
 
-            POOL_SAFETY_LV[] = old_safety
+            set_safety_level!(old_safety)
         end
     end
 
@@ -102,7 +102,7 @@ _test_leak(x) = x
 
     @testset "acquire! BitVector invalidated on rewind" begin
         old_safety = POOL_SAFETY_LV[]
-        POOL_SAFETY_LV[] = 1
+        set_safety_level!(1)
 
         pool = AdaptiveArrayPool()
         checkpoint!(pool)
@@ -115,12 +115,12 @@ _test_leak(x) = x
         # Accessing stale BitVector - len was set to 0 via setfield!
         @test length(bv) == 0
 
-        POOL_SAFETY_LV[] = old_safety
+        set_safety_level!(old_safety)
     end
 
     @testset "acquire! BitMatrix invalidated on rewind" begin
         old_safety = POOL_SAFETY_LV[]
-        POOL_SAFETY_LV[] = 1
+        set_safety_level!(1)
 
         pool = AdaptiveArrayPool()
         checkpoint!(pool)
@@ -133,7 +133,7 @@ _test_leak(x) = x
         @test size(ba) == (0, 0)
         @test length(ba) == 0
 
-        POOL_SAFETY_LV[] = old_safety
+        set_safety_level!(old_safety)
     end
 
     # ==============================================================================
@@ -142,7 +142,7 @@ _test_leak(x) = x
 
     @testset "POOL_SAFETY_LV=0 bypasses invalidation" begin
         old_safety = POOL_SAFETY_LV[]
-        POOL_SAFETY_LV[] = 0
+        set_safety_level!(0)
 
         pool = AdaptiveArrayPool()
         checkpoint!(pool)
@@ -155,7 +155,7 @@ _test_leak(x) = x
         # Stale access works (this is the unsafe behavior we're protecting against)
         @test v[1] == 7.0
 
-        POOL_SAFETY_LV[] = old_safety
+        set_safety_level!(old_safety)
     end
 
     # ==============================================================================
@@ -164,7 +164,7 @@ _test_leak(x) = x
 
     @testset "Re-acquire after invalidation restores vectors" begin
         old_safety = POOL_SAFETY_LV[]
-        POOL_SAFETY_LV[] = 1
+        set_safety_level!(1)
 
         pool = AdaptiveArrayPool()
 
@@ -187,13 +187,13 @@ _test_leak(x) = x
         @test parent(v2) === pool.float64.vectors[1]
         rewind!(pool)
 
-        POOL_SAFETY_LV[] = old_safety
+        set_safety_level!(old_safety)
     end
 
     @static if VERSION >= v"1.11-"
         @testset "Re-acquire unsafe_acquire! after invalidation" begin
             old_safety = POOL_SAFETY_LV[]
-            POOL_SAFETY_LV[] = 1
+            set_safety_level!(1)
 
             pool = AdaptiveArrayPool()
 
@@ -212,7 +212,7 @@ _test_leak(x) = x
             @test arr2[1] == 4.0
             rewind!(pool)
 
-            POOL_SAFETY_LV[] = old_safety
+            set_safety_level!(old_safety)
         end
     end
 
@@ -222,7 +222,7 @@ _test_leak(x) = x
 
     @testset "Nested checkpoint/rewind: inner invalidated, outer valid" begin
         old_safety = POOL_SAFETY_LV[]
-        POOL_SAFETY_LV[] = 1
+        set_safety_level!(1)
 
         pool = AdaptiveArrayPool()
         checkpoint!(pool)
@@ -247,7 +247,7 @@ _test_leak(x) = x
         # Now outer is also invalidated
         @test length(parent(v_outer)) == 0
 
-        POOL_SAFETY_LV[] = old_safety
+        set_safety_level!(old_safety)
     end
 
     # ==============================================================================
@@ -256,7 +256,7 @@ _test_leak(x) = x
 
     @testset "reset! invalidates all active slots" begin
         old_safety = POOL_SAFETY_LV[]
-        POOL_SAFETY_LV[] = 1
+        set_safety_level!(1)
 
         pool = AdaptiveArrayPool()
         checkpoint!(pool)
@@ -271,7 +271,7 @@ _test_leak(x) = x
         @test length(pool.float64.vectors[1]) == 0
         @test length(pool.float64.vectors[2]) == 0
 
-        POOL_SAFETY_LV[] = old_safety
+        set_safety_level!(old_safety)
     end
 
     # ==============================================================================
@@ -280,7 +280,7 @@ _test_leak(x) = x
 
     @testset "Fallback type invalidation" begin
         old_safety = POOL_SAFETY_LV[]
-        POOL_SAFETY_LV[] = 1
+        set_safety_level!(1)
 
         pool = AdaptiveArrayPool()
         checkpoint!(pool)
@@ -294,7 +294,7 @@ _test_leak(x) = x
         @test length(tp.vectors[1]) == 0
         @test length(parent(v)) == 0
 
-        POOL_SAFETY_LV[] = old_safety
+        set_safety_level!(old_safety)
     end
 
     # ==============================================================================
@@ -307,7 +307,7 @@ _test_leak(x) = x
 
         # POOL_DEBUG=true still triggers escape detection (regardless of POOL_SAFETY_LV)
         POOL_DEBUG[] = true
-        POOL_SAFETY_LV[] = 0
+        set_safety_level!(0)
         @test_throws PoolRuntimeEscapeError @with_pool pool begin
             v = acquire!(pool, Float64, 10)
             _test_leak(v)  # bypasses compile-time check; caught by runtime LV2
@@ -315,7 +315,7 @@ _test_leak(x) = x
 
         # POOL_SAFETY_LV=2 also triggers escape detection (without POOL_DEBUG)
         POOL_DEBUG[] = false
-        POOL_SAFETY_LV[] = 2
+        set_safety_level!(2)
         @test_throws PoolRuntimeEscapeError @with_pool pool begin
             v = acquire!(pool, Float64, 10)
             _test_leak(v)  # bypasses compile-time check; caught by runtime LV2
@@ -323,7 +323,7 @@ _test_leak(x) = x
 
         # Neither flag -> no escape detection
         POOL_DEBUG[] = false
-        POOL_SAFETY_LV[] = 1
+        set_safety_level!(1)
         result = @with_pool pool begin
             v = acquire!(pool, Float64, 10)
             _test_leak(v)  # bypasses compile-time check; runtime LV<2 won't catch
@@ -331,7 +331,7 @@ _test_leak(x) = x
         @test result isa SubArray
 
         POOL_DEBUG[] = old_debug
-        POOL_SAFETY_LV[] = old_safety
+        set_safety_level!(old_safety)
     end
 
     # ==============================================================================
@@ -340,7 +340,7 @@ _test_leak(x) = x
 
     @testset "Multiple types invalidated together" begin
         old_safety = POOL_SAFETY_LV[]
-        POOL_SAFETY_LV[] = 1
+        set_safety_level!(1)
 
         pool = AdaptiveArrayPool()
         checkpoint!(pool)
@@ -356,7 +356,7 @@ _test_leak(x) = x
         @test length(parent(vi)) == 0
         @test length(vb) == 0
 
-        POOL_SAFETY_LV[] = old_safety
+        set_safety_level!(old_safety)
     end
 
     # ==============================================================================
@@ -365,7 +365,7 @@ _test_leak(x) = x
 
     @testset "@with_pool invalidates on scope exit" begin
         old_safety = POOL_SAFETY_LV[]
-        POOL_SAFETY_LV[] = 1
+        set_safety_level!(1)
 
         pool_ref = Ref{AdaptiveArrayPool}()
         stale_ref = Ref{Any}()
@@ -384,7 +384,7 @@ _test_leak(x) = x
         @test length(parent(v)) == 0
         @test_throws BoundsError v[1]
 
-        POOL_SAFETY_LV[] = old_safety
+        set_safety_level!(old_safety)
     end
 
     # ==============================================================================
@@ -393,7 +393,7 @@ _test_leak(x) = x
 
     @testset "Level 2: Float64 poisoned with NaN on rewind" begin
         old_safety = POOL_SAFETY_LV[]
-        POOL_SAFETY_LV[] = 2
+        set_safety_level!(2)
 
         pool = AdaptiveArrayPool()
         checkpoint!(pool)
@@ -408,12 +408,12 @@ _test_leak(x) = x
         @test all(isnan, v2)
         rewind!(pool)
 
-        POOL_SAFETY_LV[] = old_safety
+        set_safety_level!(old_safety)
     end
 
     @testset "Level 2: Int64 poisoned with typemax on rewind" begin
         old_safety = POOL_SAFETY_LV[]
-        POOL_SAFETY_LV[] = 2
+        set_safety_level!(2)
 
         pool = AdaptiveArrayPool()
         checkpoint!(pool)
@@ -426,12 +426,12 @@ _test_leak(x) = x
         @test all(==(typemax(Int64)), v2)
         rewind!(pool)
 
-        POOL_SAFETY_LV[] = old_safety
+        set_safety_level!(old_safety)
     end
 
     @testset "Level 2: ComplexF64 poisoned with NaN+NaN*im on rewind" begin
         old_safety = POOL_SAFETY_LV[]
-        POOL_SAFETY_LV[] = 2
+        set_safety_level!(2)
 
         pool = AdaptiveArrayPool()
         checkpoint!(pool)
@@ -444,12 +444,12 @@ _test_leak(x) = x
         @test all(z -> isnan(real(z)) && isnan(imag(z)), v2)
         rewind!(pool)
 
-        POOL_SAFETY_LV[] = old_safety
+        set_safety_level!(old_safety)
     end
 
     @testset "Level 1 does NOT poison" begin
         old_safety = POOL_SAFETY_LV[]
-        POOL_SAFETY_LV[] = 1
+        set_safety_level!(1)
 
         pool = AdaptiveArrayPool()
         checkpoint!(pool)
@@ -465,7 +465,7 @@ _test_leak(x) = x
         @test v2[1] == 42.0
         rewind!(pool)
 
-        POOL_SAFETY_LV[] = old_safety
+        set_safety_level!(old_safety)
     end
 
 end # POOL_SAFETY_LV Guard-Level Invalidation

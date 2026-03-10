@@ -516,3 +516,15 @@ end
     _set_pending_callsite!(_POOL_CHECK_TAG, pool, msg)
 @inline _maybe_record_borrow!(pool::AbstractArrayPool, tp::AbstractTypedPool) =
     _maybe_record_borrow!(_POOL_CHECK_TAG, pool, tp)
+
+# ==============================================================================
+# Legacy Stubs for Shared Code (macros.jl, task_local_pool.jl)
+# ==============================================================================
+# Modern path uses AdaptiveArrayPool{S} type parameter for compile-time safety.
+# Legacy has no type parameter — these stubs provide runtime fallbacks.
+
+"""Default safety level (legacy approximation from STATIC_POOL_CHECKS)."""
+const DEFAULT_SAFETY_LV = STATIC_POOL_CHECKS ? 1 : 0
+
+"""Legacy: read POOL_SAFETY_LV[] at runtime (no compile-time constant)."""
+@inline _safety_level(::AbstractArrayPool) = POOL_SAFETY_LV[]

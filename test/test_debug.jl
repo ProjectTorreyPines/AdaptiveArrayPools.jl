@@ -568,7 +568,7 @@ _test_leak(x) = x  # opaque to compile-time escape checker (only identity() is t
 
     @testset "_validate_pool_return containers via @with_pool macro (LV2)" begin
         old_safety = POOL_SAFETY_LV[]
-        POOL_SAFETY_LV[] = 2
+        set_safety_level!(2)  # creates Pool{2} — safety level baked into type
 
         # Tuple containing pool array — caught at runtime
         @test_throws PoolRuntimeEscapeError @with_pool pool begin
@@ -590,7 +590,7 @@ _test_leak(x) = x  # opaque to compile-time escape checker (only identity() is t
         end
         @test result == (30.0, 10)
 
-        POOL_SAFETY_LV[] = old_safety
+        set_safety_level!(old_safety)
     end
 
     # ==============================================================================
@@ -599,7 +599,7 @@ _test_leak(x) = x  # opaque to compile-time escape checker (only identity() is t
 
     @testset "Runtime LV2 catches escapes through opaque function calls" begin
         old_safety = POOL_SAFETY_LV[]
-        POOL_SAFETY_LV[] = 2
+        set_safety_level!(2)  # creates Pool{2} — safety level baked into type
 
         # Opaque function call bypasses compile-time PoolEscapeError,
         # but runtime _validate_pool_return at LV2 still catches the escape.
@@ -623,12 +623,12 @@ _test_leak(x) = x  # opaque to compile-time escape checker (only identity() is t
         end
         @test result == 10.0
 
-        POOL_SAFETY_LV[] = old_safety
+        set_safety_level!(old_safety)
     end
 
     @testset "LV1 does not perform runtime escape check" begin
         old_safety = POOL_SAFETY_LV[]
-        POOL_SAFETY_LV[] = 1
+        set_safety_level!(1)  # creates Pool{1} — only structural invalidation
 
         # At LV1, opaque call bypasses compile-time and runtime doesn't check escapes
         # (only structural invalidation), so the SubArray escapes silently.
@@ -638,7 +638,7 @@ _test_leak(x) = x  # opaque to compile-time escape checker (only identity() is t
         end
         @test result isa SubArray  # Escapes — no runtime check at LV1
 
-        POOL_SAFETY_LV[] = old_safety
+        set_safety_level!(old_safety)
     end
 
     # ==============================================================================
@@ -801,13 +801,13 @@ _test_leak(x) = x  # opaque to compile-time escape checker (only identity() is t
 
         # Exercise through actual pool rewind at LV≥2 with a non-fixed-slot type
         old_lv = POOL_SAFETY_LV[]
-        POOL_SAFETY_LV[] = 2
+        set_safety_level!(2)
         pool = AdaptiveArrayPool()
         checkpoint!(pool)
         v = acquire!(pool, Rational{Int}, 5)
         v .= 1 // 3
         rewind!(pool)  # triggers _poison_fill! → _poison_value(Rational{Int}) → zero(Rational)
-        POOL_SAFETY_LV[] = old_lv
+        set_safety_level!(old_lv)
     end
 
     # ==============================================================================
