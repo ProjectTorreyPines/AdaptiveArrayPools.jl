@@ -27,7 +27,8 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
     end
 
     @testset "Warm-up pattern" begin
-        pool = AdaptiveArrayPool()
+        # Use S=0 pool to test capacity preservation without invalidation
+        pool = AdaptiveArrayPool{0}()
         checkpoint!(pool)
 
         # Warm-up: sizes may cause resize
@@ -38,16 +39,12 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
             acquire!(pool, Float64, 30)
             acquire!(pool, Float64, 7)
         end
-        # Disable safety invalidation to check capacity preservation
-        old_safety = POOL_SAFETY_LV[]
-        POOL_SAFETY_LV[] = 0
-        rewind!(pool)
+        rewind!(pool)  # S=0 → no invalidation
 
         # After warm-up, vectors should be properly sized
         @test length(pool.float64.vectors[1]) >= 101
         @test length(pool.float64.vectors[2]) >= 30
         @test length(pool.float64.vectors[3]) >= 7
-        POOL_SAFETY_LV[] = old_safety
     end
 
     @testset "checkpoint and rewind API" begin
@@ -135,17 +132,19 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
         v3 = acquire!(pool, Float64, 200)
         @test length(v3) == 200
         @test length(parent(v3)) >= 200  # Backing vector was resized
-        old_safety = POOL_SAFETY_LV[]
-        POOL_SAFETY_LV[] = 0  # disable invalidation so backing vector length is preserved
         rewind!(pool)
-        POOL_SAFETY_LV[] = old_safety
 
-        # Smaller size - cache miss, but no resize needed
-        checkpoint!(pool)
-        v4 = acquire!(pool, Float64, 50)
+        # Test capacity preservation with S=0 pool (no invalidation on rewind)
+        pool0 = AdaptiveArrayPool{0}()
+        checkpoint!(pool0)
+        acquire!(pool0, Float64, 200)
+        rewind!(pool0)  # S=0 → backing vector stays at 200
+
+        checkpoint!(pool0)
+        v4 = acquire!(pool0, Float64, 50)
         @test length(v4) == 50
         @test length(parent(v4)) >= 200  # Backing vector still large
-        rewind!(pool)
+        rewind!(pool0)
     end
 
     @testset "Fallback types checkpoint/rewind" begin

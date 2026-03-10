@@ -484,43 +484,57 @@ function _ensure_body_has_toplevel_lnn(body, source::Union{LineNumberNode, Nothi
 end
 
 """
-    _fix_try_body_lnn!(expr, source)
+    _fix_generated_lnn!(expr, source)
 
-Fix LineNumberNodes inside try blocks to point to user source.
-Julia's stack trace uses the LAST LNN before error location for line numbers.
-By replacing the first LNN in try body with source LNN, we ensure correct
-line numbers in stack traces.
+Replace all macro-generated LineNumberNodes with user source location.
 
-Scans first few args to handle Expr(:meta, ...) from @inline etc.
+When `quote...end` blocks in macros.jl generate code, every line gets a LNN
+pointing to macros.jl. This causes Julia's stack traces to show macros.jl
+instead of the user's call site. This function walks the entire AST and
+replaces every LNN whose file differs from `source.file` with the source LNN.
+
+User code (inserted via `esc()`) retains its own LNNs since those already
+point to the user's file and won't be replaced.
+
 If source.file === :none (REPL/eval), don't clobber valid file LNNs.
 Modifies expr in-place and returns it.
 """
-function _fix_try_body_lnn!(expr, source::Union{LineNumberNode, Nothing})
+function _fix_generated_lnn!(expr, source::Union{LineNumberNode, Nothing})
     source === nothing && return expr
     # Don't clobber valid file info with :none from REPL/eval
     source.file === :none && return expr
     source_lnn = LineNumberNode(source.line, source.file)
 
     if expr isa Expr
-        if expr.head === :try && length(expr.args) >= 1
-            try_body = expr.args[1]
-            if try_body isa Expr && try_body.head === :block && !isempty(try_body.args)
-                lnn_idx = _find_first_lnn_index(try_body.args)
-                if lnn_idx !== nothing
-                    existing_lnn = try_body.args[lnn_idx]
-                    if existing_lnn.file != source.file
-                        # Replace macros.jl LNN with source LNN
-                        try_body.args[lnn_idx] = source_lnn
-                    end
-                end
+        for (i, arg) in enumerate(expr.args)
+            if arg isa LineNumberNode && arg.file != source.file
+                expr.args[i] = source_lnn
+            elseif arg isa Expr
+                _fix_generated_lnn!(arg, source)
             end
-        end
-        # Recurse into all args
-        for arg in expr.args
-            _fix_try_body_lnn!(arg, source)
         end
     end
     return expr
+end
+
+# ==============================================================================
+# Internal: Union Splitting Wrapper Helper
+# ==============================================================================
+
+"""
+    _wrap_with_dispatch(pool_name_esc, pool_getter, inner_body)
+
+Wrap `inner_body` in a `_dispatch_pool_scope` closure call.
+Generates: `_dispatch_pool_scope(pool_name -> inner_body, pool_getter)`
+
+Inside the closure, `pool_name` has concrete type `AdaptiveArrayPool{S}`.
+"""
+function _wrap_with_dispatch(pool_name_esc, pool_getter, inner_body)
+    return Expr(
+        :call, _DISPATCH_POOL_SCOPE_REF,
+        Expr(:(->), pool_name_esc, inner_body),
+        pool_getter
+    )
 end
 
 # ==============================================================================
@@ -565,11 +579,10 @@ function _generate_pool_code(pool_name, expr, force_enable; source::Union{LineNu
     # For dynamic path: keep acquire! untransformed so _record_type_touch! is called
     transformed_expr = use_typed ? _transform_acquire_calls(expr, pool_name) : expr
 
-    # Inject borrow callsite recording (LV≥3 at runtime; gated by STATIC_POOL_CHECKS at compile time)
-    if STATIC_POOL_CHECKS
-        transformed_expr = _inject_pending_callsite(transformed_expr, pool_name, expr)
-        transformed_expr = _transform_return_stmts(transformed_expr, pool_name)
-    end
+    # Inject borrow callsite recording + return validation.
+    # Always injected — _safety_level(pool) gates at runtime (dead-code-eliminated at S=0).
+    transformed_expr = _inject_pending_callsite(transformed_expr, pool_name, expr)
+    transformed_expr = _transform_return_stmts(transformed_expr, pool_name)
 
     if use_typed
         checkpoint_call = _generate_typed_checkpoint_call(esc(pool_name), static_types)
@@ -583,38 +596,34 @@ function _generate_pool_code(pool_name, expr, force_enable; source::Union{LineNu
         rewind_call = _generate_lazy_rewind_call(esc(pool_name))
     end
 
-    if force_enable
-        return quote
-            local $(esc(pool_name)) = get_task_local_pool()
-            $checkpoint_call
-            try
-                local _result = $(esc(transformed_expr))
-                if ($POOL_SAFETY_LV[] >= 2 || $POOL_DEBUG[])
-                    $_validate_pool_return(_result, $(esc(pool_name)))
-                end
-                _result
-            finally
-                $rewind_call
+    # Build the inner body (runs inside _dispatch_pool_scope closure where pool is concrete)
+    inner = quote
+        $checkpoint_call
+        try
+            local _result = $(esc(transformed_expr))
+            if ($_SAFETY_LEVEL_REF($(esc(pool_name))) >= 2 || $_POOL_DEBUG_REF[])
+                $_validate_pool_return(_result, $(esc(pool_name)))
             end
+            _result
+        finally
+            $rewind_call
         end
+    end
+
+    if force_enable
+        return _wrap_with_dispatch(esc(pool_name), :(get_task_local_pool()), inner)
     else
         # Split branches completely to avoid Union boxing
+        enabled_branch = _wrap_with_dispatch(esc(pool_name), :(get_task_local_pool()), inner)
         return quote
             if $MAYBE_POOLING[]
-                local $(esc(pool_name)) = get_task_local_pool()
-                $checkpoint_call
-                try
-                    local _result = $(esc(transformed_expr))
-                    if ($POOL_SAFETY_LV[] >= 2 || $POOL_DEBUG[])
-                        $_validate_pool_return(_result, $(esc(pool_name)))
-                    end
-                    _result
-                finally
-                    $rewind_call
-                end
+                $enabled_branch
             else
-                local $(esc(pool_name)) = $DISABLED_CPU
-                $(esc(expr))
+                # let block isolates scope — prevents user variables from being
+                # captured by the dispatch closure in the if-branch (Core.Box)
+                let $(esc(pool_name)) = $DISABLED_CPU
+                    $(esc(expr))
+                end
             end
         end
     end
@@ -666,10 +675,8 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, forc
         # For typed path: transform acquire! → _acquire_impl! (bypasses type touch recording)
         # For dynamic path: keep acquire! untransformed so _record_type_touch! is called
         transformed_expr = use_typed ? _transform_acquire_calls(expr, pool_name) : expr
-        if STATIC_POOL_CHECKS
-            transformed_expr = _inject_pending_callsite(transformed_expr, pool_name, expr)
-            transformed_expr = _transform_return_stmts(transformed_expr, pool_name)
-        end
+        transformed_expr = _inject_pending_callsite(transformed_expr, pool_name, expr)
+        transformed_expr = _transform_return_stmts(transformed_expr, pool_name)
         pool_getter = :($_get_pool_for_backend($(Val{backend}())))
 
         if use_typed
@@ -680,22 +687,26 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, forc
             rewind_call = _generate_lazy_rewind_call(esc(pool_name))
         end
 
+        inner = quote
+            $checkpoint_call
+            try
+                local _result = $(esc(transformed_expr))
+                if ($_SAFETY_LEVEL_REF($(esc(pool_name))) >= 2 || $_POOL_DEBUG_REF[])
+                    $_validate_pool_return(_result, $(esc(pool_name)))
+                end
+                _result
+            finally
+                $rewind_call
+            end
+        end
+        enabled_branch = _wrap_with_dispatch(esc(pool_name), pool_getter, inner)
         return quote
             if $MAYBE_POOLING[]
-                local $(esc(pool_name)) = $pool_getter
-                $checkpoint_call
-                try
-                    local _result = $(esc(transformed_expr))
-                    if ($POOL_SAFETY_LV[] >= 2 || $POOL_DEBUG[])
-                        $_validate_pool_return(_result, $(esc(pool_name)))
-                    end
-                    _result
-                finally
-                    $rewind_call
-                end
+                $enabled_branch
             else
-                local $(esc(pool_name)) = $disabled_pool
-                $(esc(expr))
+                let $(esc(pool_name)) = $disabled_pool
+                    $(esc(expr))
+                end
             end
         end
     end
@@ -720,10 +731,8 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, forc
     # For typed path: transform acquire! → _acquire_impl! (bypasses type touch recording)
     # For dynamic path: keep acquire! untransformed so _record_type_touch! is called
     transformed_expr = use_typed ? _transform_acquire_calls(expr, pool_name) : expr
-    if STATIC_POOL_CHECKS
-        transformed_expr = _inject_pending_callsite(transformed_expr, pool_name, expr)
-        transformed_expr = _transform_return_stmts(transformed_expr, pool_name)
-    end
+    transformed_expr = _inject_pending_callsite(transformed_expr, pool_name, expr)
+    transformed_expr = _transform_return_stmts(transformed_expr, pool_name)
 
     # Use Val{backend}() for compile-time dispatch - fully inlinable
     pool_getter = :($_get_pool_for_backend($(Val{backend}())))
@@ -740,12 +749,11 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, forc
         rewind_call = _generate_lazy_rewind_call(esc(pool_name))
     end
 
-    return quote
-        local $(esc(pool_name)) = $pool_getter
+    inner = quote
         $checkpoint_call
         try
             local _result = $(esc(transformed_expr))
-            if ($POOL_SAFETY_LV[] >= 2 || $POOL_DEBUG[])
+            if ($_SAFETY_LEVEL_REF($(esc(pool_name))) >= 2 || $_POOL_DEBUG_REF[])
                 $_validate_pool_return(_result, $(esc(pool_name)))
             end
             _result
@@ -753,6 +761,7 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, forc
             $rewind_call
         end
     end
+    return _wrap_with_dispatch(esc(pool_name), pool_getter, inner)
 end
 
 """
@@ -794,10 +803,8 @@ function _generate_function_pool_code_with_backend(backend::Symbol, pool_name, f
     # For typed path: transform acquire! → _acquire_impl! (bypasses type touch recording)
     # For dynamic path: keep acquire! untransformed so _record_type_touch! is called
     transformed_body = use_typed ? _transform_acquire_calls(body, pool_name) : body
-    if STATIC_POOL_CHECKS
-        transformed_body = _inject_pending_callsite(transformed_body, pool_name, body)
-        transformed_body = _transform_return_stmts(transformed_body, pool_name)
-    end
+    transformed_body = _inject_pending_callsite(transformed_body, pool_name, body)
+    transformed_body = _transform_return_stmts(transformed_body, pool_name)
 
     # Use Val{backend}() for compile-time dispatch
     pool_getter = :($_get_pool_for_backend($(Val{backend}())))
@@ -810,49 +817,42 @@ function _generate_function_pool_code_with_backend(backend::Symbol, pool_name, f
         rewind_call = _generate_lazy_rewind_call(esc(pool_name))
     end
 
+    inner = quote
+        $checkpoint_call
+        try
+            local _result = begin
+                $(esc(transformed_body))
+            end
+            if ($_SAFETY_LEVEL_REF($(esc(pool_name))) >= 2 || $_POOL_DEBUG_REF[])
+                $_validate_pool_return(_result, $(esc(pool_name)))
+            end
+            _result
+        finally
+            $rewind_call
+        end
+    end
+
     if force_enable
         new_body = quote
-            local $(esc(pool_name)) = $pool_getter
-            $checkpoint_call
-            try
-                local _result = begin
-                    $(esc(transformed_body))
-                end
-                if ($POOL_SAFETY_LV[] >= 2 || $POOL_DEBUG[])
-                    $_validate_pool_return(_result, $(esc(pool_name)))
-                end
-                _result
-            finally
-                $rewind_call
-            end
+            $(_wrap_with_dispatch(esc(pool_name), pool_getter, inner))
         end
     else
         disabled_pool = _disabled_pool_expr(backend)
+        enabled_branch = _wrap_with_dispatch(esc(pool_name), pool_getter, inner)
         new_body = quote
             if $MAYBE_POOLING[]
-                local $(esc(pool_name)) = $pool_getter
-                $checkpoint_call
-                try
-                    local _result = begin
-                        $(esc(transformed_body))
-                    end
-                    if ($POOL_SAFETY_LV[] >= 2 || $POOL_DEBUG[])
-                        $_validate_pool_return(_result, $(esc(pool_name)))
-                    end
-                    _result
-                finally
-                    $rewind_call
-                end
+                $enabled_branch
             else
-                local $(esc(pool_name)) = $disabled_pool
-                $(esc(body))
+                let $(esc(pool_name)) = $disabled_pool
+                    $(esc(body))
+                end
             end
         end
     end
 
     # Ensure new_body has source location for proper stack traces
     new_body = _ensure_body_has_toplevel_lnn(new_body, source)
-    _fix_try_body_lnn!(new_body, source)  # Fix try block LNNs for accurate stack traces
+    _fix_generated_lnn!(new_body, source)  # Fix generated LNNs for accurate stack traces
     return Expr(def_head, esc(call_expr), new_body)
 end
 
@@ -885,10 +885,9 @@ function _generate_function_pool_code(pool_name, func_def, force_enable, disable
     # For typed path: transform acquire! → _acquire_impl! (bypasses type touch recording)
     # For dynamic path: keep acquire! untransformed so _record_type_touch! is called
     transformed_body = use_typed ? _transform_acquire_calls(body, pool_name) : body
-    if STATIC_POOL_CHECKS
-        transformed_body = _inject_pending_callsite(transformed_body, pool_name, body)
-        transformed_body = _transform_return_stmts(transformed_body, pool_name)
-    end
+    # Safety transforms — always inject; dead-code-eliminated at S=0 inside dispatch closure
+    transformed_body = _inject_pending_callsite(transformed_body, pool_name, body)
+    transformed_body = _transform_return_stmts(transformed_body, pool_name)
 
     if use_typed
         checkpoint_call = _generate_typed_checkpoint_call(esc(pool_name), static_types)
@@ -903,14 +902,13 @@ function _generate_function_pool_code(pool_name, func_def, force_enable, disable
     end
 
     if force_enable
-        new_body = quote
-            local $(esc(pool_name)) = get_task_local_pool()
+        inner = quote
             $checkpoint_call
             try
                 local _result = begin
                     $(esc(transformed_body))
                 end
-                if ($POOL_SAFETY_LV[] >= 2 || $POOL_DEBUG[])
+                if ($_SAFETY_LEVEL_REF($(esc(pool_name))) >= 2 || $_POOL_DEBUG_REF[])
                     $_validate_pool_return(_result, $(esc(pool_name)))
                 end
                 _result
@@ -918,33 +916,38 @@ function _generate_function_pool_code(pool_name, func_def, force_enable, disable
                 $rewind_call
             end
         end
+        new_body = _wrap_with_dispatch(esc(pool_name), :(get_task_local_pool()), inner)
     else
         disabled_pool = _disabled_pool_expr(backend)
+        inner = quote
+            $checkpoint_call
+            try
+                local _result = begin
+                    $(esc(transformed_body))
+                end
+                if ($_SAFETY_LEVEL_REF($(esc(pool_name))) >= 2 || $_POOL_DEBUG_REF[])
+                    $_validate_pool_return(_result, $(esc(pool_name)))
+                end
+                _result
+            finally
+                $rewind_call
+            end
+        end
+        enabled_branch = _wrap_with_dispatch(esc(pool_name), :(get_task_local_pool()), inner)
         new_body = quote
             if $MAYBE_POOLING[]
-                local $(esc(pool_name)) = get_task_local_pool()
-                $checkpoint_call
-                try
-                    local _result = begin
-                        $(esc(transformed_body))
-                    end
-                    if ($POOL_SAFETY_LV[] >= 2 || $POOL_DEBUG[])
-                        $_validate_pool_return(_result, $(esc(pool_name)))
-                    end
-                    _result
-                finally
-                    $rewind_call
-                end
+                $enabled_branch
             else
-                local $(esc(pool_name)) = $disabled_pool
-                $(esc(body))
+                let $(esc(pool_name)) = $disabled_pool
+                    $(esc(body))
+                end
             end
         end
     end
 
     # Ensure new_body has source location for proper stack traces
     new_body = _ensure_body_has_toplevel_lnn(new_body, source)
-    _fix_try_body_lnn!(new_body, source)  # Fix try block LNNs for accurate stack traces
+    _fix_generated_lnn!(new_body, source)  # Fix generated LNNs for accurate stack traces
     return Expr(def_head, esc(call_expr), new_body)
 end
 
@@ -1410,10 +1413,12 @@ end
 # error messages to show WHERE the problematic acquire originated.
 #
 # Works with both typed path (_*_impl! GlobalRefs) and dynamic path (original
-# acquire!/zeros!/etc. calls). The injection is gated behind STATIC_POOL_CHECKS
-# at macro expansion time, and POOL_SAFETY_LV[] >= 3 at runtime.
+# acquire!/zeros!/etc. calls). Always injected — gated at runtime by
+# `_safety_level(pool) >= 3 || POOL_DEBUG[]` (dead-code-eliminated at S<3).
 
 const _POOL_SAFETY_LV_REF = GlobalRef(@__MODULE__, :POOL_SAFETY_LV)
+const _DISPATCH_POOL_SCOPE_REF = GlobalRef(@__MODULE__, :_dispatch_pool_scope)
+const _SAFETY_LEVEL_REF = GlobalRef(@__MODULE__, :_safety_level)
 
 """Set of all transformed `_*_impl!` function names (GlobalRef targets)."""
 const _IMPL_FUNC_NAMES = Set{Symbol}(
@@ -1502,7 +1507,11 @@ function _inject_pending_callsite(expr, pool_name, original_expr = expr)
                         "$(current_lnn.file):$(current_lnn.line)\n$(expr_text)"
                     inject = Expr(
                         :&&,
-                        Expr(:call, :>=, Expr(:ref, _POOL_SAFETY_LV_REF), 3),
+                        Expr(
+                            :||,
+                            Expr(:call, :>=, Expr(:call, _SAFETY_LEVEL_REF, pool_name), 3),
+                            Expr(:ref, _POOL_DEBUG_REF)
+                        ),
                         Expr(
                             :(=),
                             Expr(:., pool_name, QuoteNode(:_pending_callsite)),
@@ -1581,7 +1590,11 @@ function _transform_return_stmts(expr, pool_name, current_lnn = nothing)
                 :block,
                 Expr(
                     :&&,
-                    Expr(:call, :>=, Expr(:ref, _POOL_SAFETY_LV_REF), 3),
+                    Expr(
+                        :||,
+                        Expr(:call, :>=, Expr(:call, _SAFETY_LEVEL_REF, pool_name), 3),
+                        Expr(:ref, _POOL_DEBUG_REF)
+                    ),
                     Expr(
                         :(=),
                         Expr(:., pool_name, QuoteNode(:_pending_return_site)),
@@ -1601,7 +1614,7 @@ function _transform_return_stmts(expr, pool_name, current_lnn = nothing)
                 :if,
                 Expr(
                     :||,
-                    Expr(:call, :>=, Expr(:ref, _POOL_SAFETY_LV_REF), 2),
+                    Expr(:call, :>=, Expr(:call, _SAFETY_LEVEL_REF, pool_name), 2),
                     Expr(:ref, _POOL_DEBUG_REF)
                 ),
                 validate_expr

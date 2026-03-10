@@ -9,6 +9,13 @@ _vector_bytes(v::Vector) = Base.summarysize(v)
 
 _count_label(::TypedPool) = "elements"
 
+# Safety level labels for display
+_safety_label(::Val{0}) = "off"
+_safety_label(::Val{1}) = "guard"
+_safety_label(::Val{2}) = "guard+escape"
+_safety_label(::Val{3}) = "guard+escape+borrow"
+_safety_label(s::Int) = _safety_label(Val(s))
+
 """
     pool_stats(tp::AbstractTypedPool; io::IO=stdout, indent::Int=0, name::String="")
 
@@ -62,7 +69,10 @@ end
 """
 function pool_stats(pool::AdaptiveArrayPool; io::IO = stdout)
     # Header
+    S = _safety_level(pool)
     printstyled(io, "AdaptiveArrayPool", bold = true, color = :white)
+    printstyled(io, "{$S}", color = :yellow)
+    printstyled(io, " (safety=$(_safety_label(S)))", color = :dark_gray)
     println(io)
 
     has_content = false
@@ -180,7 +190,8 @@ function Base.show(io::IO, pool::AdaptiveArrayPool)
         total_active[] += tp.n_active
     end
 
-    return print(io, "AdaptiveArrayPool(types=$(n_types[]), slots=$(total_vectors[]), active=$(total_active[]))")
+    S = _safety_level(pool)
+    return print(io, "AdaptiveArrayPool{$S}(safety=$(_safety_label(S)), types=$(n_types[]), slots=$(total_vectors[]), active=$(total_active[]))")
 end
 
 # Multi-line show for AdaptiveArrayPool

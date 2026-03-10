@@ -54,7 +54,9 @@
     end
 
     @testset "Slot reuse with resize via _claim_slot!" begin
-        pool = AdaptiveArrayPool()
+        # Use S=0 pool: safety level is baked into type, so we need an explicit
+        # AdaptiveArrayPool{0} to test capacity preservation without invalidation.
+        pool = AdaptiveArrayPool{0}()
 
         # Acquire slot with small size, write sentinel data to slot 2
         checkpoint!(pool)
@@ -81,10 +83,7 @@
         # Verify independence: writing to v1_big doesn't corrupt v2_reuse
         v1_big .= 99.0
         @test all(v2_reuse .== 3.0)
-        old_safety = POOL_SAFETY_LV[]
-        POOL_SAFETY_LV[] = 0  # disable invalidation so backing vector length is preserved
-        rewind!(pool)
-        POOL_SAFETY_LV[] = old_safety
+        rewind!(pool)  # S=0 → no invalidation, backing vectors preserved
 
         # Re-acquire slot 1 with SMALLER size — no resize needed, backing vec stays large
         checkpoint!(pool)

@@ -23,7 +23,7 @@ end
     # Disable safety invalidation: rewind-time resize!/setfield! forces cache misses
     # (new SubArray views on legacy, new BitArray wrappers), breaking zero-alloc invariant.
     old_safety = POOL_SAFETY_LV[]
-    POOL_SAFETY_LV[] = 0
+    set_safety_level!(0)
 
     # First call: JIT + initial cache miss (pool arrays + N-way bitarray cache)
     alloc1 = @allocated foo()
@@ -41,5 +41,5 @@ end
     @test alloc2 == 0
     @test alloc3 == 0
 
-    POOL_SAFETY_LV[] = old_safety
+    set_safety_level!(old_safety)
 end

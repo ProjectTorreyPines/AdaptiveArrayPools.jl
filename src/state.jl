@@ -149,7 +149,7 @@ automatically delegates to `reset!` to safely clear all n_active counters.
 
 See also: [`checkpoint!`](@ref), [`reset!`](@ref), [`@with_pool`](@ref)
 """
-function rewind!(pool::AdaptiveArrayPool)
+function rewind!(pool::AdaptiveArrayPool{S}) where {S}
 
     cur_depth = pool._current_depth
 
@@ -162,12 +162,12 @@ function rewind!(pool::AdaptiveArrayPool)
 
     # Fixed slots - zero allocation via @generated iteration
     foreach_fixed_slot(pool) do tp
-        _rewind_typed_pool!(tp, cur_depth)
+        _rewind_typed_pool!(tp, cur_depth, S)
     end
 
     # Process fallback types
     for tp in values(pool.others)
-        _rewind_typed_pool!(tp, cur_depth)
+        _rewind_typed_pool!(tp, cur_depth, S)
     end
 
     pop!(pool._touched_type_masks)
@@ -183,14 +183,14 @@ end
 Restore state for a specific type only.
 Also updates _current_depth and bitmask state.
 """
-@inline function rewind!(pool::AdaptiveArrayPool, ::Type{T}) where {T}
+@inline function rewind!(pool::AdaptiveArrayPool{S}, ::Type{T}) where {S, T}
 
     # Safety guard: at global scope (depth=1), delegate to reset!
     if pool._current_depth == 1
-        reset!(get_typed_pool!(pool, T))
+        reset!(get_typed_pool!(pool, T), S)
         return nothing
     end
-    _rewind_typed_pool!(get_typed_pool!(pool, T), pool._current_depth)
+    _rewind_typed_pool!(get_typed_pool!(pool, T), pool._current_depth, S)
     pop!(pool._touched_type_masks)
     pop!(pool._touched_has_others)
     pool._current_depth -= 1
@@ -203,7 +203,7 @@ end
 Restore state for multiple specific types in reverse order.
 Decrements _current_depth once after all types are rewound.
 """
-@generated function rewind!(pool::AdaptiveArrayPool, types::Type...)
+@generated function rewind!(pool::AdaptiveArrayPool{S}, types::Type...) where {S}
 
     # Deduplicate types at compile time (e.g., Float64, Float64 → Float64)
     seen = Set{Any}()
@@ -214,8 +214,8 @@ Decrements _current_depth once after all types are rewound.
             push!(unique_indices, i)
         end
     end
-    rewind_exprs = [:(_rewind_typed_pool!(get_typed_pool!(pool, types[$i]), pool._current_depth)) for i in reverse(unique_indices)]
-    reset_exprs = [:(reset!(get_typed_pool!(pool, types[$i]))) for i in unique_indices]
+    rewind_exprs = [:(_rewind_typed_pool!(get_typed_pool!(pool, types[$i]), pool._current_depth, $S)) for i in reverse(unique_indices)]
+    reset_exprs = [:(reset!(get_typed_pool!(pool, types[$i]), $S)) for i in unique_indices]
     return quote
         # Safety guard: at global scope (depth=1), delegate to reset!
         if pool._current_depth == 1
@@ -241,12 +241,13 @@ end
 # @noinline keeps invalidation code off the inlined hot path of _rewind_typed_pool!.
 
 # No-op fallback for extension types (e.g. CuTypedPool)
-_invalidate_released_slots!(::AbstractTypedPool, ::Int) = nothing
+_invalidate_released_slots!(::AbstractTypedPool, ::Int, ::Int) = nothing
+_invalidate_released_slots!(::AbstractTypedPool, ::Int) = nothing  # legacy 2-arg compat
 
-@noinline function _invalidate_released_slots!(tp::TypedPool{T}, old_n_active::Int) where {T}
+@noinline function _invalidate_released_slots!(tp::TypedPool{T}, old_n_active::Int, S::Int = POOL_SAFETY_LV[]) where {T}
     new_n = tp.n_active
     # Level 2+: poison vectors with NaN/sentinel before structural invalidation
-    if POOL_SAFETY_LV[] >= 2
+    if S >= 2
         _poison_released_vectors!(tp, old_n_active)
     end
     # Level 1+: resize backing vectors to length 0 (invalidates SubArrays from acquire!)
@@ -267,10 +268,10 @@ _invalidate_released_slots!(::AbstractTypedPool, ::Int) = nothing
     return nothing
 end
 
-@noinline function _invalidate_released_slots!(tp::BitTypedPool, old_n_active::Int)
+@noinline function _invalidate_released_slots!(tp::BitTypedPool, old_n_active::Int, S::Int = POOL_SAFETY_LV[])
     new_n = tp.n_active
     # Level 2+: poison BitVectors (all bits set to true)
-    if POOL_SAFETY_LV[] >= 2
+    if S >= 2
         _poison_released_vectors!(tp, old_n_active)
     end
     # Level 1+: resize backing BitVectors to length 0 (invalidates chunks)
@@ -299,7 +300,11 @@ end
 
 # Internal helper for rewind with orphan cleanup (works for any AbstractTypedPool)
 # Uses 1-based sentinel pattern: no isempty checks needed (sentinel [0] guarantees non-empty)
-@inline function _rewind_typed_pool!(tp::AbstractTypedPool, current_depth::Int)
+#
+# S parameter: safety level. When called from AdaptiveArrayPool{S} callers, S is a
+# compile-time constant → `S >= 1` dead-code-eliminates the invalidation branch at S=0.
+# Default S = POOL_SAFETY_LV[] preserves backward compat for CUDA ext and legacy callers.
+@inline function _rewind_typed_pool!(tp::AbstractTypedPool, current_depth::Int, S::Int = POOL_SAFETY_LV[])
 
     # 1. Orphaned Checkpoints Cleanup
     # If there are checkpoints from deeper scopes (depth > current), pop them first.
@@ -310,10 +315,8 @@ end
         pop!(tp._checkpoint_n_active)
     end
 
-    # Capture n_active before restore (for safety invalidation)
-    @static if STATIC_POOL_CHECKS
-        _old_n_active = tp.n_active
-    end
+    # Capture n_active before restore (compiler eliminates dead variable at S=0)
+    _old_n_active = tp.n_active
 
     # 2. Normal Rewind Logic (Sentinel Pattern)
     # Now the stack top is guaranteed to be at depth <= current depth.
@@ -330,10 +333,9 @@ end
     end
 
     # 3. Safety: invalidate released slots (Level 1+)
-    @static if STATIC_POOL_CHECKS
-        if POOL_SAFETY_LV[] >= 1 && _old_n_active > tp.n_active
-            _invalidate_released_slots!(tp, _old_n_active)
-        end
+    # At S=0: `0 >= 1` is false → entire branch eliminated (dead code)
+    if S >= 1 && _old_n_active > tp.n_active
+        _invalidate_released_slots!(tp, _old_n_active, S)
     end
 
     return nothing
@@ -350,14 +352,14 @@ whose bits are set, handles any `others` entries, then pops the depth metadata.
 Called directly from the macro-generated `finally` clause as a single function call
 (matching the structure of `_lazy_checkpoint!` for symmetry and performance).
 """
-@inline function _lazy_rewind!(pool::AdaptiveArrayPool)
+@inline function _lazy_rewind!(pool::AdaptiveArrayPool{S}) where {S}
 
     d = pool._current_depth
     bits = @inbounds(pool._touched_type_masks[d]) & _TYPE_BITS_MASK
-    _selective_rewind_fixed_slots!(pool, bits)
+    _selective_rewind_fixed_slots!(pool, bits)  # S propagated via pool type
     if @inbounds(pool._touched_has_others[d])
         for tp in values(pool.others)
-            _rewind_typed_pool!(tp, d)
+            _rewind_typed_pool!(tp, d, S)
         end
     end
     pop!(pool._touched_type_masks)
@@ -413,15 +415,15 @@ statically-tracked set). Rewinds only pools whose bits are set in
 `tracked_mask | touched_mask`. All touched types have Case A checkpoints,
 guaranteed by the `_TYPED_LAZY_BIT` mode set in `_typed_lazy_checkpoint!`.
 """
-@inline function _typed_lazy_rewind!(pool::AdaptiveArrayPool, tracked_mask::UInt16)
+@inline function _typed_lazy_rewind!(pool::AdaptiveArrayPool{S}, tracked_mask::UInt16) where {S}
 
     d = pool._current_depth
     touched = @inbounds(pool._touched_type_masks[d]) & _TYPE_BITS_MASK
     combined = tracked_mask | touched
-    _selective_rewind_fixed_slots!(pool, combined)
+    _selective_rewind_fixed_slots!(pool, combined)  # S propagated via pool type
     if @inbounds(pool._touched_has_others[d])
         for tp in values(pool.others)
-            _rewind_typed_pool!(tp, d)
+            _rewind_typed_pool!(tp, d, S)
         end
     end
     pop!(pool._touched_type_masks)
@@ -442,17 +444,17 @@ before passing the mask (e.g. `mask & _TYPE_BITS_MASK`).
 Unset bits are skipped entirely: for pools that were acquired without a matching
 checkpoint, `_rewind_typed_pool!` Case B safely restores from the parent checkpoint.
 """
-@inline function _selective_rewind_fixed_slots!(pool::AdaptiveArrayPool, mask::UInt16)
+@inline function _selective_rewind_fixed_slots!(pool::AdaptiveArrayPool{S}, mask::UInt16) where {S}
 
     d = pool._current_depth
-    _has_bit(mask, Float64)    && _rewind_typed_pool!(pool.float64, d)
-    _has_bit(mask, Float32)    && _rewind_typed_pool!(pool.float32, d)
-    _has_bit(mask, Int64)      && _rewind_typed_pool!(pool.int64, d)
-    _has_bit(mask, Int32)      && _rewind_typed_pool!(pool.int32, d)
-    _has_bit(mask, ComplexF64) && _rewind_typed_pool!(pool.complexf64, d)
-    _has_bit(mask, ComplexF32) && _rewind_typed_pool!(pool.complexf32, d)
-    _has_bit(mask, Bool)       && _rewind_typed_pool!(pool.bool, d)
-    _has_bit(mask, Bit)        && _rewind_typed_pool!(pool.bits, d)
+    _has_bit(mask, Float64)    && _rewind_typed_pool!(pool.float64, d, S)
+    _has_bit(mask, Float32)    && _rewind_typed_pool!(pool.float32, d, S)
+    _has_bit(mask, Int64)      && _rewind_typed_pool!(pool.int64, d, S)
+    _has_bit(mask, Int32)      && _rewind_typed_pool!(pool.int32, d, S)
+    _has_bit(mask, ComplexF64) && _rewind_typed_pool!(pool.complexf64, d, S)
+    _has_bit(mask, ComplexF32) && _rewind_typed_pool!(pool.complexf32, d, S)
+    _has_bit(mask, Bool)       && _rewind_typed_pool!(pool.bool, d, S)
+    _has_bit(mask, Bit)        && _rewind_typed_pool!(pool.bits, d, S)
     return nothing
 end
 
@@ -529,20 +531,16 @@ end
 Reset state without clearing allocated storage.
 Sets `n_active = 0` and restores checkpoint stacks to sentinel state.
 """
-function reset!(tp::AbstractTypedPool)
-    @static if STATIC_POOL_CHECKS
-        _old_n_active = tp.n_active
-    end
+function reset!(tp::AbstractTypedPool, S::Int = POOL_SAFETY_LV[])
+    _old_n_active = tp.n_active
     tp.n_active = 0
     # Restore sentinel values (1-based sentinel pattern)
     empty!(tp._checkpoint_n_active)
     push!(tp._checkpoint_n_active, 0)   # Sentinel: n_active=0 at depth=0
     empty!(tp._checkpoint_depths)
     push!(tp._checkpoint_depths, 0)     # Sentinel: depth=0 = no checkpoint
-    @static if STATIC_POOL_CHECKS
-        if POOL_SAFETY_LV[] >= 1 && _old_n_active > 0
-            _invalidate_released_slots!(tp, _old_n_active)
-        end
+    if S >= 1 && _old_n_active > 0
+        _invalidate_released_slots!(tp, _old_n_active, S)
     end
     return tp
 end
@@ -587,15 +585,15 @@ reset!(pool)  # Restore state, keep allocated memory
 
 See also: [`empty!`](@ref), [`rewind!`](@ref)
 """
-function reset!(pool::AdaptiveArrayPool)
+function reset!(pool::AdaptiveArrayPool{S}) where {S}
     # Fixed slots - zero allocation via @generated iteration
     foreach_fixed_slot(pool) do tp
-        reset!(tp)
+        reset!(tp, S)
     end
 
     # Others - reset all TypedPools
     for tp in values(pool.others)
-        reset!(tp)
+        reset!(tp, S)
     end
 
     # Reset type touch tracking state (1-based sentinel pattern)
@@ -621,8 +619,8 @@ to sentinel state while preserving allocated vectors.
 
 See also: [`reset!(::AdaptiveArrayPool)`](@ref), [`rewind!`](@ref)
 """
-@inline function reset!(pool::AdaptiveArrayPool, ::Type{T}) where {T}
-    reset!(get_typed_pool!(pool, T))
+@inline function reset!(pool::AdaptiveArrayPool{S}, ::Type{T}) where {S, T}
+    reset!(get_typed_pool!(pool, T), S)
     return pool
 end
 
@@ -634,8 +632,8 @@ compile-time unrolling.
 
 See also: [`reset!(::AdaptiveArrayPool)`](@ref), [`rewind!`](@ref)
 """
-@generated function reset!(pool::AdaptiveArrayPool, types::Type...)
-    reset_exprs = [:(reset!(get_typed_pool!(pool, types[$i]))) for i in 1:length(types)]
+@generated function reset!(pool::AdaptiveArrayPool{S}, types::Type...) where {S}
+    reset_exprs = [:(reset!(get_typed_pool!(pool, types[$i]), $S)) for i in 1:length(types)]
     return quote
         $(reset_exprs...)
         pool
