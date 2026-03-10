@@ -268,8 +268,10 @@ _test_leak(x) = x
     end
 
     @testset "showerror: expression text shown when present in callsite" begin
-        err = PoolRuntimeEscapeError("SubArray{Float64, 1}", "Float64",
-            "test.jl:42\nzeros!(pool, Float64, 10)", nothing)
+        err = PoolRuntimeEscapeError(
+            "SubArray{Float64, 1}", "Float64",
+            "test.jl:42\nzeros!(pool, Float64, 10)", nothing
+        )
         io = IOBuffer()
         showerror(io, err)
         msg = String(take!(io))
@@ -280,8 +282,10 @@ _test_leak(x) = x
     end
 
     @testset "showerror: short path used for absolute paths" begin
-        err = PoolRuntimeEscapeError("SubArray{Float64, 1}", "Float64",
-            "$(homedir())/.julia/dev/Foo/src/bar.jl:99\nacquire!(pool, Float64, 5)", nothing)
+        err = PoolRuntimeEscapeError(
+            "SubArray{Float64, 1}", "Float64",
+            "$(homedir())/.julia/dev/Foo/src/bar.jl:99\nacquire!(pool, Float64, 5)", nothing
+        )
         io = IOBuffer()
         showerror(io, err)
         msg = String(take!(io))

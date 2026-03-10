@@ -54,7 +54,7 @@ function _validate_pool_return(val, pool::AdaptiveArrayPool)
     end
 
     # 3. Check raw Array (from unsafe_acquire!) + element recursion
-    if val isa Array
+    return if val isa Array
         # Pool vectors always have concrete eltypes — skip overlap check for abstract
         if isconcretetype(eltype(val))
             _check_pointer_overlap(val, pool)
@@ -78,12 +78,14 @@ _eltype_may_contain_arrays(::Type) = true
 # Check if array memory overlaps with any pool vector.
 # `original_val` is the user-visible value (e.g., SubArray) for error reporting;
 # `arr` may be its parent Array used for the actual pointer comparison.
-function _check_pointer_overlap(arr::Array, pool::AdaptiveArrayPool, original_val=arr)
+function _check_pointer_overlap(arr::Array, pool::AdaptiveArrayPool, original_val = arr)
     arr_ptr = UInt(pointer(arr))
     arr_len = length(arr) * sizeof(eltype(arr))
     arr_end = arr_ptr + arr_len
 
-    return_site = let rs = pool._pending_return_site; isempty(rs) ? nothing : rs end
+    return_site = let rs = pool._pending_return_site
+        isempty(rs) ? nothing : rs
+    end
 
     check_overlap = function (tp)
         for v in tp.vectors
@@ -130,73 +132,73 @@ function Base.showerror(io::IO, e::PoolRuntimeEscapeError)
     has_callsite = e.callsite !== nothing
     lv_label = has_callsite ? "POOL_SAFETY_LV ≥ 3" : "POOL_SAFETY_LV ≥ 2"
 
-    printstyled(io, "PoolEscapeError"; color=:red, bold=true)
-    printstyled(io, " (runtime, ", lv_label, ")"; color=:light_black)
+    printstyled(io, "PoolEscapeError"; color = :red, bold = true)
+    printstyled(io, " (runtime, ", lv_label, ")"; color = :light_black)
     println(io)
 
     println(io)
-    printstyled(io, "    "; color=:normal)
-    printstyled(io, e.val_summary; color=:red, bold=true)
+    printstyled(io, "    "; color = :normal)
+    printstyled(io, e.val_summary; color = :red, bold = true)
     println(io)
-    printstyled(io, "      ← backed by "; color=:light_black)
-    printstyled(io, e.pool_eltype; color=:yellow)
-    printstyled(io, " pool memory, will be reclaimed at scope exit\n"; color=:light_black)
+    printstyled(io, "      ← backed by "; color = :light_black)
+    printstyled(io, e.pool_eltype; color = :yellow)
+    printstyled(io, " pool memory, will be reclaimed at scope exit\n"; color = :light_black)
 
     if has_callsite
         # Parse callsite: "file:line" or "file:line\nexpr"
-        parts = split(e.callsite, '\n'; limit=2)
+        parts = split(e.callsite, '\n'; limit = 2)
         location = String(parts[1])
         expr_text = length(parts) >= 2 ? String(parts[2]) : nothing
 
         # Shorten the file path (shorter of relpath vs ~/…-contracted)
         location = _shorten_location(location)
 
-        printstyled(io, "      ← acquired at "; color=:light_black)
-        printstyled(io, location; color=:cyan, bold=true)
+        printstyled(io, "      ← acquired at "; color = :light_black)
+        printstyled(io, location; color = :cyan, bold = true)
         println(io)
 
         if expr_text !== nothing
-            printstyled(io, "        "; color=:normal)
-            printstyled(io, expr_text; color=:cyan)
+            printstyled(io, "        "; color = :normal)
+            printstyled(io, expr_text; color = :cyan)
             println(io)
         end
     end
 
     has_return_site = e.return_site !== nothing
     if has_return_site
-        parts = split(e.return_site, '\n'; limit=2)
+        parts = split(e.return_site, '\n'; limit = 2)
         location = _shorten_location(String(parts[1]))
         expr_text = length(parts) >= 2 ? String(parts[2]) : nothing
 
-        printstyled(io, "      ← escapes at "; color=:light_black)
-        printstyled(io, location; color=:magenta, bold=true)
+        printstyled(io, "      ← escapes at "; color = :light_black)
+        printstyled(io, location; color = :magenta, bold = true)
         println(io)
 
         if expr_text !== nothing
-            printstyled(io, "        "; color=:normal)
-            printstyled(io, expr_text; color=:magenta)
+            printstyled(io, "        "; color = :normal)
+            printstyled(io, expr_text; color = :magenta)
             println(io)
         end
     end
 
     println(io)
-    printstyled(io, "  Fix: "; bold=true)
-    printstyled(io, "Wrap with "; color=:light_black)
-    printstyled(io, "collect()"; bold=true)
-    printstyled(io, " to return an owned copy, or compute a scalar result.\n"; color=:light_black)
+    printstyled(io, "  Fix: "; bold = true)
+    printstyled(io, "Wrap with "; color = :light_black)
+    printstyled(io, "collect()"; bold = true)
+    printstyled(io, " to return an owned copy, or compute a scalar result.\n"; color = :light_black)
 
-    if !has_callsite
+    return if !has_callsite
         println(io)
-        printstyled(io, "  Tip: "; bold=true)
-        printstyled(io, "set "; color=:light_black)
-        printstyled(io, "POOL_SAFETY_LV[] = 3"; bold=true)
-        printstyled(io, " for acquire!() call-site tracking.\n"; color=:light_black)
+        printstyled(io, "  Tip: "; bold = true)
+        printstyled(io, "set "; color = :light_black)
+        printstyled(io, "POOL_SAFETY_LV[] = 3"; bold = true)
+        printstyled(io, " for acquire!() call-site tracking.\n"; color = :light_black)
     end
 end
 
-Base.showerror(io::IO, e::PoolRuntimeEscapeError, ::Any; backtrace=true) = showerror(io, e)
+Base.showerror(io::IO, e::PoolRuntimeEscapeError, ::Any; backtrace = true) = showerror(io, e)
 
-@noinline function _throw_pool_escape_error(val, pool_eltype, callsite::Union{Nothing, String}=nothing, return_site::Union{Nothing, String}=nothing)
+@noinline function _throw_pool_escape_error(val, pool_eltype, callsite::Union{Nothing, String} = nothing, return_site::Union{Nothing, String} = nothing)
     throw(PoolRuntimeEscapeError(summary(val), string(pool_eltype), callsite, return_site))
 end
 
@@ -209,29 +211,33 @@ function _validate_pool_return(val::Tuple, pool::AdaptiveArrayPool)
     for x in val
         _validate_pool_return(x, pool)
     end
+    return
 end
 
 function _validate_pool_return(val::NamedTuple, pool::AdaptiveArrayPool)
     for x in values(val)
         _validate_pool_return(x, pool)
     end
+    return
 end
 
 function _validate_pool_return(val::Pair, pool::AdaptiveArrayPool)
     _validate_pool_return(val.first, pool)
-    _validate_pool_return(val.second, pool)
+    return _validate_pool_return(val.second, pool)
 end
 
 function _validate_pool_return(val::AbstractDict, pool::AdaptiveArrayPool)
     for p in val  # each p is a Pair — reuses Pair dispatch
         _validate_pool_return(p, pool)
     end
+    return
 end
 
 function _validate_pool_return(val::AbstractSet, pool::AdaptiveArrayPool)
     for x in val
         _validate_pool_return(x, pool)
     end
+    return
 end
 
 _validate_pool_return(val, ::DisabledPool) = nothing

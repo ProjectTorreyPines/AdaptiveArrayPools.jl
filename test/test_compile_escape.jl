@@ -111,11 +111,13 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
 
     @testset "_get_last_expression" begin
         # Simple block
-        @test _get_last_expression(quote
-            a = 1
-            b = 2
-            c
-        end) == :c
+        @test _get_last_expression(
+            quote
+                a = 1
+                b = 2
+                c
+            end
+        ) == :c
 
         # Block ending with LineNumberNode → skip it
         block = Expr(:block, :a, LineNumberNode(1, :test))
@@ -126,11 +128,13 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
         @test _get_last_expression(42) == 42
 
         # Nested block
-        @test _get_last_expression(quote
-            begin
-                x
+        @test _get_last_expression(
+            quote
+                begin
+                    x
+                end
             end
-        end) == :x
+        ) == :x
 
         # Empty block
         @test _get_last_expression(Expr(:block)) === nothing
@@ -453,102 +457,120 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
 
     @testset "_collect_all_return_values (expr, line) pairs" begin
         # Simple block: implicit return only
-        vals = _collect_all_return_values(quote
-            x = 1
-            x
-        end)
+        vals = _collect_all_return_values(
+            quote
+                x = 1
+                x
+            end
+        )
         exprs = first.(vals)
         @test any(e -> e isa Symbol && e == :x, exprs)
 
         # Explicit return inside if branch
-        vals = _collect_all_return_values(quote
-            v = acquire!(pool, Float64, 10)
-            if cond
-                return v
+        vals = _collect_all_return_values(
+            quote
+                v = acquire!(pool, Float64, 10)
+                if cond
+                    return v
+                end
+                sum(v)
             end
-            sum(v)
-        end)
+        )
         exprs = first.(vals)
         @test any(e -> e isa Expr && e.head == :return, exprs)
         @test any(e -> e isa Expr && e.head == :call, exprs)
 
         # Both branches have explicit return
-        vals = _collect_all_return_values(quote
-            if a > 0.5
-                return (v = 0.5, data = a)
-            else
-                return (v = v, data = z)
+        vals = _collect_all_return_values(
+            quote
+                if a > 0.5
+                    return (v = 0.5, data = a)
+                else
+                    return (v = v, data = z)
+                end
             end
-        end)
+        )
         returns = filter(((e, _),) -> e isa Expr && e.head == :return, vals)
         @test length(returns) >= 2
 
         # Implicit return from if/else branches (no explicit return keyword)
-        vals = _collect_all_return_values(quote
-            if cond
-                v
-            else
-                sum(v)
+        vals = _collect_all_return_values(
+            quote
+                if cond
+                    v
+                else
+                    sum(v)
+                end
             end
-        end)
+        )
         exprs = first.(vals)
         @test any(e -> e isa Symbol && e == :v, exprs)
         @test any(e -> e isa Expr && e.head == :call, exprs)
 
         # elseif branches
-        vals = _collect_all_return_values(quote
-            if cond1
-                v
-            elseif cond2
-                w
-            else
-                sum(v)
+        vals = _collect_all_return_values(
+            quote
+                if cond1
+                    v
+                elseif cond2
+                    w
+                else
+                    sum(v)
+                end
             end
-        end)
+        )
         exprs = first.(vals)
         @test any(e -> e isa Symbol && e == :v, exprs)
         @test any(e -> e isa Symbol && e == :w, exprs)
 
         # Nested if inside branch
-        vals = _collect_all_return_values(quote
-            if outer
-                if inner
-                    v
+        vals = _collect_all_return_values(
+            quote
+                if outer
+                    if inner
+                        v
+                    else
+                        w
+                    end
                 else
-                    w
+                    sum(v)
                 end
-            else
-                sum(v)
             end
-        end)
+        )
         exprs = first.(vals)
         @test any(e -> e isa Symbol && e == :v, exprs)
         @test any(e -> e isa Symbol && e == :w, exprs)
 
         # Skips nested function definitions
-        vals = _collect_all_return_values(quote
-            f = function()
-                return v  # belongs to inner function, not our scope
+        vals = _collect_all_return_values(
+            quote
+                f = function ()
+                    return v  # belongs to inner function, not our scope
+                end
+                sum(v)
             end
-            sum(v)
-        end)
+        )
         returns = filter(((e, _),) -> e isa Expr && e.head == :return, vals)
         @test isempty(returns)
 
         # Ternary operator (same AST as if/else)
-        vals = _collect_all_return_values(quote
-            cond ? v : sum(v)
-        end)
+        vals = _collect_all_return_values(
+            quote
+                cond ? v : sum(v)
+            end
+        )
         exprs = first.(vals)
         @test any(e -> e isa Symbol && e == :v, exprs)
 
         # Line numbers are tracked
-        vals = _collect_all_return_values(quote
-            if cond
-                return v  # this will have a line number
+        vals = _collect_all_return_values(
+            quote
+                if cond
+                    return v  # this will have a line number
+                end
+                sum(v)
             end
-            sum(v)
-        end)
+        )
         explicit_returns = filter(((e, _),) -> e isa Expr && e.head == :return, vals)
         @test !isempty(explicit_returns)
         @test last(explicit_returns[1]) !== nothing  # line is captured
@@ -665,18 +687,22 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
         )
 
         # Multi-variable across branches: reports all
-        err = try _check_compile_time_escape(
-            quote
-                v = acquire!(pool, Float64, 10)
-                w = acquire!(pool, Float64, 5)
-                if cond
-                    return v
-                else
-                    return w
-                end
-            end,
-            :pool, src
-        ) catch e; e end
+        err = try
+            _check_compile_time_escape(
+                quote
+                    v = acquire!(pool, Float64, 10)
+                    w = acquire!(pool, Float64, 5)
+                    if cond
+                        return v
+                    else
+                        return w
+                    end
+                end,
+                :pool, src
+            )
+        catch e
+            e
+        end
         @test err isa PoolEscapeError
         @test :v in err.vars
         @test :w in err.vars
@@ -1284,10 +1310,16 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
 
     @testset "PoolEscapeError carries variable names, points, and formatted message" begin
         # Single variable: bare return
-        err = try @macroexpand(@with_pool pool begin
-            v = acquire!(pool, Float64, 10)
-            v
-        end) catch e; e end
+        err = try
+            @macroexpand(
+                @with_pool pool begin
+                    v = acquire!(pool, Float64, 10)
+                    v
+                end
+            )
+        catch e
+            e
+        end
         @test err isa PoolEscapeError
         @test err.vars == [:v]
         @test !isempty(err.points)
@@ -1304,38 +1336,62 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
         @test occursin("acquire!(pool, Float64, 10)", msg)
 
         # Different variable name
-        err = try @macroexpand(@with_pool pool begin
-            data = zeros!(pool, 10)
-            data
-        end) catch e; e end
+        err = try
+            @macroexpand(
+                @with_pool pool begin
+                    data = zeros!(pool, 10)
+                    data
+                end
+            )
+        catch e
+            e
+        end
         @test err isa PoolEscapeError
         @test err.vars == [:data]
         @test any(d -> d.var === :data, err.declarations)
 
         # Function form
-        err = try @macroexpand(@with_pool pool function msg_fn(n)
-            result = acquire!(pool, Float64, n)
-            result
-        end) catch e; e end
+        err = try
+            @macroexpand(
+                @with_pool pool function msg_fn(n)
+                    result = acquire!(pool, Float64, n)
+                    result
+                end
+            )
+        catch e
+            e
+        end
         @test err isa PoolEscapeError
         @test err.vars == [:result]
 
         # Container: only w escapes, not sum(v)
-        err = try @macroexpand(@with_pool pool begin
-            v = acquire!(pool, Float64, 10)
-            w = acquire!(pool, Float64, 5)
-            (sum(v), w)
-        end) catch e; e end
+        err = try
+            @macroexpand(
+                @with_pool pool begin
+                    v = acquire!(pool, Float64, 10)
+                    w = acquire!(pool, Float64, 5)
+                    (sum(v), w)
+                end
+            )
+        catch e
+            e
+        end
         @test err isa PoolEscapeError
         @test err.vars == [:w]
         @test :v ∉ err.vars
 
         # Multi-variable: both appear, sorted
-        err = try @macroexpand(@with_pool pool begin
-            v = acquire!(pool, Float64, 10)
-            w = acquire!(pool, Float64, 5)
-            (v, w)
-        end) catch e; e end
+        err = try
+            @macroexpand(
+                @with_pool pool begin
+                    v = acquire!(pool, Float64, 10)
+                    w = acquire!(pool, Float64, 5)
+                    (v, w)
+                end
+            )
+        catch e
+            e
+        end
         @test err isa PoolEscapeError
         @test err.vars == [:v, :w]
         msg = sprint(showerror, err)
@@ -1351,14 +1407,20 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
         @test err.file !== nothing
 
         # Branch escapes: points track per-return-point info
-        err = try @macroexpand(@with_pool pool function branch_msg(n)
-            v = acquire!(pool, Float64, n)
-            if n > 0
-                return sum(v)
-            else
-                return v
-            end
-        end) catch e; e end
+        err = try
+            @macroexpand(
+                @with_pool pool function branch_msg(n)
+                    v = acquire!(pool, Float64, n)
+                    if n > 0
+                        return sum(v)
+                    else
+                        return v
+                    end
+                end
+            )
+        catch e
+            e
+        end
         @test err isa PoolEscapeError
         @test err.vars == [:v]
         @test length(err.points) == 1  # only the unsafe return
@@ -1366,15 +1428,21 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
         @test err.points[1].line !== nothing
 
         # Multiple escape points across branches
-        err = try @macroexpand(@with_pool pool function multi_pt(n)
-            v = acquire!(pool, Float64, n)
-            w = acquire!(pool, Float64, n)
-            if n > 0
-                return v
-            else
-                return w
-            end
-        end) catch e; e end
+        err = try
+            @macroexpand(
+                @with_pool pool function multi_pt(n)
+                    v = acquire!(pool, Float64, n)
+                    w = acquire!(pool, Float64, n)
+                    if n > 0
+                        return v
+                    else
+                        return w
+                    end
+                end
+            )
+        catch e
+            e
+        end
         @test err isa PoolEscapeError
         @test err.vars == [:v, :w]
         @test length(err.points) == 2
@@ -1383,15 +1451,21 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
         @test occursin("[2]", msg)
 
         # Rendered expression shows highlighted vars
-        err = try @macroexpand(@with_pool pool begin
-            v = acquire!(pool, Float64, 10)
-            z = similar!(pool, v)
-            if rand() > 0.5
-                return (v = 0.5, data = 1.0)
-            else
-                return (v = v, data = z)
-            end
-        end) catch e; e end
+        err = try
+            @macroexpand(
+                @with_pool pool begin
+                    v = acquire!(pool, Float64, 10)
+                    z = similar!(pool, v)
+                    if rand() > 0.5
+                        return (v = 0.5, data = 1.0)
+                    else
+                        return (v = v, data = z)
+                    end
+                end
+            )
+        catch e
+            e
+        end
         @test err isa PoolEscapeError
         @test err.vars == [:v, :z]
         msg = sprint(showerror, err)
@@ -1430,38 +1504,62 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
 
     @testset "var_info classification in PoolEscapeError" begin
         # Direct pool view
-        err = try @macroexpand(@with_pool pool begin
-            v = acquire!(pool, Float64, 10)
-            v
-        end) catch e; e end
+        err = try
+            @macroexpand(
+                @with_pool pool begin
+                    v = acquire!(pool, Float64, 10)
+                    v
+                end
+            )
+        catch e
+            e
+        end
         @test err.var_info[:v] == (:pool_view, Symbol[])
         msg = sprint(showerror, err)
         @test occursin("pool-acquired view", msg)
 
         # Direct pool array (unsafe_acquire!)
-        err = try @macroexpand(@with_pool pool begin
-            v = unsafe_acquire!(pool, Float64, 10)
-            v
-        end) catch e; e end
+        err = try
+            @macroexpand(
+                @with_pool pool begin
+                    v = unsafe_acquire!(pool, Float64, 10)
+                    v
+                end
+            )
+        catch e
+            e
+        end
         @test err.var_info[:v] == (:pool_array, Symbol[])
         msg = sprint(showerror, err)
         @test occursin("pool-acquired array", msg)
 
         # Direct pool BitArray
-        err = try @macroexpand(@with_pool pool begin
-            bv = trues!(pool, 100)
-            bv
-        end) catch e; e end
+        err = try
+            @macroexpand(
+                @with_pool pool begin
+                    bv = trues!(pool, 100)
+                    bv
+                end
+            )
+        catch e
+            e
+        end
         @test err.var_info[:bv] == (:pool_bitarray, Symbol[])
         msg = sprint(showerror, err)
         @test occursin("pool-acquired BitArray", msg)
 
         # Container wrapping pool variable
-        err = try @macroexpand(@with_pool pool begin
-            v = acquire!(pool, Float64, 10)
-            a = [v, 1]
-            a
-        end) catch e; e end
+        err = try
+            @macroexpand(
+                @with_pool pool begin
+                    v = acquire!(pool, Float64, 10)
+                    a = [v, 1]
+                    a
+                end
+            )
+        catch e
+            e
+        end
         @test err.var_info[:a] == (:container, [:v])
         msg = sprint(showerror, err)
         @test occursin("wraps pool variable (v)", msg)
@@ -1470,32 +1568,50 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
         @test occursin("Copy pool variables before wrapping", msg)
 
         # Container with multiple pool vars
-        err = try @macroexpand(@with_pool pool begin
-            v = acquire!(pool, Float64, 10)
-            w = acquire!(pool, Float64, 5)
-            a = [v, w]
-            a
-        end) catch e; e end
+        err = try
+            @macroexpand(
+                @with_pool pool begin
+                    v = acquire!(pool, Float64, 10)
+                    w = acquire!(pool, Float64, 5)
+                    a = [v, w]
+                    a
+                end
+            )
+        catch e
+            e
+        end
         @test err.var_info[:a] == (:container, [:v, :w])
         msg = sprint(showerror, err)
         @test occursin("wraps pool variables (v, w)", msg)
 
         # Alias of pool variable
-        err = try @macroexpand(@with_pool pool begin
-            v = acquire!(pool, Float64, 10)
-            d = v
-            d
-        end) catch e; e end
+        err = try
+            @macroexpand(
+                @with_pool pool begin
+                    v = acquire!(pool, Float64, 10)
+                    d = v
+                    d
+                end
+            )
+        catch e
+            e
+        end
         @test err.var_info[:d] == (:alias, [:v])
         msg = sprint(showerror, err)
         @test occursin("alias of pool variable (v)", msg)
 
         # Mixed: direct pool var + container in same return
-        err = try @macroexpand(@with_pool pool begin
-            v = acquire!(pool, Float64, 10)
-            a = [v, 1]
-            return (v, a)
-        end) catch e; e end
+        err = try
+            @macroexpand(
+                @with_pool pool begin
+                    v = acquire!(pool, Float64, 10)
+                    a = [v, 1]
+                    return (v, a)
+                end
+            )
+        catch e
+            e
+        end
         @test err.var_info[:v] == (:pool_view, Symbol[])
         @test err.var_info[:a] == (:container, [:v])
         msg = sprint(showerror, err)
@@ -1506,18 +1622,30 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
         @test !occursin("collect(a)", msg)
 
         # zeros! classified as view
-        err = try @macroexpand(@with_pool pool begin
-            data = zeros!(pool, 10)
-            data
-        end) catch e; e end
+        err = try
+            @macroexpand(
+                @with_pool pool begin
+                    data = zeros!(pool, 10)
+                    data
+                end
+            )
+        catch e
+            e
+        end
         @test err.var_info[:data] == (:pool_view, Symbol[])
 
         # Tuple container
-        err = try @macroexpand(@with_pool pool begin
-            v = acquire!(pool, Float64, 10)
-            t = (v, 42)
-            t
-        end) catch e; e end
+        err = try
+            @macroexpand(
+                @with_pool pool begin
+                    v = acquire!(pool, Float64, 10)
+                    t = (v, 42)
+                    t
+                end
+            )
+        catch e
+            e
+        end
         @test err.var_info[:t] == (:container, [:v])
     end
 
@@ -1598,11 +1726,17 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
 
     @testset "showerror shows declarations and escape locations" begin
         # Container: declarations show both v and a
-        err = try @macroexpand(@with_pool pool begin
-            v = acquire!(pool, Float64, 10)
-            a = [v, 1]
-            return (v, a)
-        end) catch e; e end
+        err = try
+            @macroexpand(
+                @with_pool pool begin
+                    v = acquire!(pool, Float64, 10)
+                    a = [v, 1]
+                    return (v, a)
+                end
+            )
+        catch e
+            e
+        end
         msg = sprint(showerror, err)
         @test occursin("Declarations:", msg)
         @test occursin("Escaping return:", msg)

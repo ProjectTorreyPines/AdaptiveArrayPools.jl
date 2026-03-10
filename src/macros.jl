@@ -47,15 +47,15 @@ PoolEscapeError(vars, file, line, points, var_info) =
 """Render an expression with escaped variable names highlighted in red.
 Handles return, tuple, NamedTuple, array literal; falls back to print for others."""
 function _render_return_expr(io::IO, expr, escaped::Set{Symbol})
-    if expr isa Symbol
+    return if expr isa Symbol
         if expr in escaped
-            printstyled(io, string(expr); color=:red, bold=true)
+            printstyled(io, string(expr); color = :red, bold = true)
         else
             print(io, expr)
         end
     elseif expr isa Expr
         if expr.head == :return && !isempty(expr.args)
-            printstyled(io, "return "; color=:light_black)
+            printstyled(io, "return "; color = :light_black)
             _render_return_expr(io, expr.args[1], escaped)
         elseif expr.head == :tuple
             print(io, "(")
@@ -85,57 +85,57 @@ end
 
 function Base.showerror(io::IO, e::PoolEscapeError)
     # Header
-    printstyled(io, "PoolEscapeError"; color=:red, bold=true)
-    printstyled(io, " (compile-time)"; color=:light_black)
+    printstyled(io, "PoolEscapeError"; color = :red, bold = true)
+    printstyled(io, " (compile-time)"; color = :light_black)
     println(io)
 
     # Descriptive message
     println(io)
     n = length(e.vars)
     if n == 1
-        printstyled(io, "  The following variable escapes the @with_pool scope:\n"; color=:light_black)
+        printstyled(io, "  The following variable escapes the @with_pool scope:\n"; color = :light_black)
     else
-        printstyled(io, "  The following ", n, " variables escape the @with_pool scope:\n"; color=:light_black)
+        printstyled(io, "  The following ", n, " variables escape the @with_pool scope:\n"; color = :light_black)
     end
 
     # Escaped variables — one per line with classification
     println(io)
     for v in e.vars
-        printstyled(io, "    "; color=:normal)
-        printstyled(io, string(v); color=:red, bold=true)
+        printstyled(io, "    "; color = :normal)
+        printstyled(io, string(v); color = :red, bold = true)
         kind, sources = get(e.var_info, v, (:pool_buffer, Symbol[]))
         if kind === :container
             src_str = join(string.(sources), ", ")
-            printstyled(io, "  ← wraps pool variable"; color=:light_black)
-            length(sources) > 1 && printstyled(io, "s"; color=:light_black)
-            printstyled(io, " (", src_str, ")\n"; color=:light_black)
+            printstyled(io, "  ← wraps pool variable"; color = :light_black)
+            length(sources) > 1 && printstyled(io, "s"; color = :light_black)
+            printstyled(io, " (", src_str, ")\n"; color = :light_black)
         elseif kind === :alias
-            printstyled(io, "  ← alias of pool variable (", string(sources[1]), ")\n"; color=:light_black)
+            printstyled(io, "  ← alias of pool variable (", string(sources[1]), ")\n"; color = :light_black)
         elseif kind === :pool_array
-            printstyled(io, "  ← pool-acquired array\n"; color=:light_black)
+            printstyled(io, "  ← pool-acquired array\n"; color = :light_black)
         elseif kind === :pool_bitarray
-            printstyled(io, "  ← pool-acquired BitArray\n"; color=:light_black)
+            printstyled(io, "  ← pool-acquired BitArray\n"; color = :light_black)
         elseif kind === :pool_view
-            printstyled(io, "  ← pool-acquired view\n"; color=:light_black)
+            printstyled(io, "  ← pool-acquired view\n"; color = :light_black)
         else
-            printstyled(io, "  ← pool-backed temporary\n"; color=:light_black)
+            printstyled(io, "  ← pool-backed temporary\n"; color = :light_black)
         end
     end
 
     # Declaration sites — where each escaping variable was assigned
     if !isempty(e.declarations)
         println(io)
-        printstyled(io, "  Declarations:\n"; bold=true)
+        printstyled(io, "  Declarations:\n"; bold = true)
         for (idx, decl) in enumerate(e.declarations)
-            printstyled(io, "    [", idx, "]  "; color=:light_black)
-            printstyled(io, string(decl.expr); color=:cyan)
+            printstyled(io, "    [", idx, "]  "; color = :light_black)
+            printstyled(io, string(decl.expr); color = :cyan)
             # Fall back to macro source file when body LineNumberNode has :none (REPL/eval)
             decl_file = (decl.file !== nothing && decl.file !== :none) ? decl.file : e.file
             loc = _format_location_str(decl_file, decl.line)
             if loc !== nothing
-                printstyled(io, "  ["; color=:cyan)
-                printstyled(io, loc; color=:cyan)
-                printstyled(io, "] "; color=:cyan)
+                printstyled(io, "  ["; color = :cyan)
+                printstyled(io, loc; color = :cyan)
+                printstyled(io, "] "; color = :cyan)
             end
             println(io)
         end
@@ -145,16 +145,16 @@ function Base.showerror(io::IO, e::PoolEscapeError)
     if !isempty(e.points)
         println(io)
         label = length(e.points) == 1 ? "  Escaping return:" : "  Escaping returns:"
-        printstyled(io, label, "\n"; bold=true)
+        printstyled(io, label, "\n"; bold = true)
         escaped_set = Set{Symbol}(e.vars)
         for (idx, pt) in enumerate(e.points)
-            printstyled(io, "    [", idx, "]  "; color=:light_black)
+            printstyled(io, "    [", idx, "]  "; color = :light_black)
             _render_return_expr(io, pt.expr, escaped_set)
             loc = _format_point_location(e.file, pt.line)
             if loc !== nothing
-                printstyled(io, "  ["; color=:magenta) 
-                printstyled(io, loc; color=:magenta) 
-                printstyled(io, "] "; color=:magenta) 
+                printstyled(io, "  ["; color = :magenta)
+                printstyled(io, loc; color = :magenta)
+                printstyled(io, "] "; color = :magenta)
             end
             println(io)
         end
@@ -176,21 +176,21 @@ function Base.showerror(io::IO, e::PoolEscapeError)
     unique!(collect_targets)
     sort!(collect_targets)
     collects_str = join(["collect($v)" for v in collect_targets], ", ")
-    printstyled(io, "  Fix: "; bold=true)
-    printstyled(io, "Use "; color=:light_black)
-    printstyled(io, collects_str; bold=true)
-    printstyled(io, " to return owned copies.\n"; color=:light_black)
+    printstyled(io, "  Fix: "; bold = true)
+    printstyled(io, "Use "; color = :light_black)
+    printstyled(io, collects_str; bold = true)
+    printstyled(io, " to return owned copies.\n"; color = :light_black)
     if has_containers
-        printstyled(io, "       Copy pool variables before wrapping in containers.\n"; color=:light_black)
+        printstyled(io, "       Copy pool variables before wrapping in containers.\n"; color = :light_black)
     end
-    printstyled(io, "       Or use a regular Julia array (zeros()/Array{T}()) if it must outlive the pool scope.\n"; color=:light_black)
+    printstyled(io, "       Or use a regular Julia array (zeros()/Array{T}()) if it must outlive the pool scope.\n"; color = :light_black)
 
     # Suggestion 2: false positive → file issue
     println(io)
-    printstyled(io, "  False positive?\n"; bold=true)
-    printstyled(io, "    Please file an issue at "; color=:light_black)
-    printstyled(io, "https://github.com/ProjectTorreyPines/AdaptiveArrayPools.jl/issues"; bold=true)
-    printstyled(io, "\n    with a minimal reproducer so we can improve the escape detector.\n"; color=:light_black)
+    printstyled(io, "  False positive?\n"; bold = true)
+    printstyled(io, "    Please file an issue at "; color = :light_black)
+    printstyled(io, "https://github.com/ProjectTorreyPines/AdaptiveArrayPools.jl/issues"; bold = true)
+    return printstyled(io, "\n    with a minimal reproducer so we can improve the escape detector.\n"; color = :light_black)
 end
 
 # Location formatting helpers (uses _short_path from debug.jl)
@@ -218,8 +218,7 @@ function _format_point_location(file::Union{String, Nothing}, line::Union{Int, N
 end
 
 # Suppress stacktrace — LoadError delegates to this via showerror(io, ex.error, bt)
-Base.showerror(io::IO, e::PoolEscapeError, ::Any; backtrace=true) = showerror(io, e)
-
+Base.showerror(io::IO, e::PoolEscapeError, ::Any; backtrace = true) = showerror(io, e)
 
 
 # ==============================================================================
@@ -1417,12 +1416,14 @@ end
 const _POOL_SAFETY_LV_REF = GlobalRef(@__MODULE__, :POOL_SAFETY_LV)
 
 """Set of all transformed `_*_impl!` function names (GlobalRef targets)."""
-const _IMPL_FUNC_NAMES = Set{Symbol}([
-    :_acquire_impl!, :_unsafe_acquire_impl!,
-    :_zeros_impl!, :_ones_impl!, :_trues_impl!, :_falses_impl!,
-    :_similar_impl!, :_reshape_impl!,
-    :_unsafe_zeros_impl!, :_unsafe_ones_impl!, :_unsafe_similar_impl!,
-])
+const _IMPL_FUNC_NAMES = Set{Symbol}(
+    [
+        :_acquire_impl!, :_unsafe_acquire_impl!,
+        :_zeros_impl!, :_ones_impl!, :_trues_impl!, :_falses_impl!,
+        :_similar_impl!, :_reshape_impl!,
+        :_unsafe_zeros_impl!, :_unsafe_ones_impl!, :_unsafe_similar_impl!,
+    ]
+)
 
 """
     _contains_acquire_call(expr, pool_name) -> Bool
@@ -1480,7 +1481,7 @@ the original untransformed AST is used to extract the user's source expression
 Only processes `:block` expressions. Non-block expressions are recursed
 into to find nested blocks.
 """
-function _inject_pending_callsite(expr, pool_name, original_expr=expr)
+function _inject_pending_callsite(expr, pool_name, original_expr = expr)
     expr isa Expr || return expr
     if expr.head == :block
         new_args = Any[]
@@ -1499,11 +1500,15 @@ function _inject_pending_callsite(expr, pool_name, original_expr=expr)
                     callsite_str = isempty(expr_text) ?
                         "$(current_lnn.file):$(current_lnn.line)" :
                         "$(current_lnn.file):$(current_lnn.line)\n$(expr_text)"
-                    inject = Expr(:&&,
+                    inject = Expr(
+                        :&&,
                         Expr(:call, :>=, Expr(:ref, _POOL_SAFETY_LV_REF), 3),
-                        Expr(:(=),
+                        Expr(
+                            :(=),
                             Expr(:., pool_name, QuoteNode(:_pending_callsite)),
-                            callsite_str))
+                            callsite_str
+                        )
+                    )
                     push!(new_args, inject)
                 end
                 push!(new_args, processed)
@@ -1545,7 +1550,7 @@ Generates: `local _ret = value; if (LV≥2 || DEBUG) validate(_ret, pool); end; 
 Does NOT recurse into nested `:function` or `:->` expressions (inner functions
 have their own `return` semantics).
 """
-function _transform_return_stmts(expr, pool_name, current_lnn=nothing)
+function _transform_return_stmts(expr, pool_name, current_lnn = nothing)
     expr isa Expr || return expr
 
     # Don't recurse into nested function definitions (return belongs to inner function)
@@ -1572,25 +1577,37 @@ function _transform_return_stmts(expr, pool_name, current_lnn=nothing)
 
         # Conditionally set _pending_return_site before validation
         validate_expr = if !isempty(return_site_str)
-            Expr(:block,
-                Expr(:&&,
+            Expr(
+                :block,
+                Expr(
+                    :&&,
                     Expr(:call, :>=, Expr(:ref, _POOL_SAFETY_LV_REF), 3),
-                    Expr(:(=),
+                    Expr(
+                        :(=),
                         Expr(:., pool_name, QuoteNode(:_pending_return_site)),
-                        return_site_str)),
-                Expr(:call, _VALIDATE_POOL_RETURN_REF, retvar, pool_name))
+                        return_site_str
+                    )
+                ),
+                Expr(:call, _VALIDATE_POOL_RETURN_REF, retvar, pool_name)
+            )
         else
             Expr(:call, _VALIDATE_POOL_RETURN_REF, retvar, pool_name)
         end
 
-        return Expr(:block,
+        return Expr(
+            :block,
             Expr(:local, Expr(:(=), retvar, value_expr)),
-            Expr(:if,
-                Expr(:||,
+            Expr(
+                :if,
+                Expr(
+                    :||,
                     Expr(:call, :>=, Expr(:ref, _POOL_SAFETY_LV_REF), 2),
-                    Expr(:ref, _POOL_DEBUG_REF)),
-                validate_expr),
-            Expr(:return, retvar))
+                    Expr(:ref, _POOL_DEBUG_REF)
+                ),
+                validate_expr
+            ),
+            Expr(:return, retvar)
+        )
     end
 
     # For blocks, track LineNumberNodes
@@ -1630,30 +1647,38 @@ end
 Set of all function names that return pool-backed arrays.
 Used by `_extract_acquired_vars` to identify assignments like `v = acquire!(pool, ...)`.
 """
-const _ALL_ACQUIRE_NAMES = Set{Symbol}([
-    :acquire!, :unsafe_acquire!, :acquire_view!, :acquire_array!,
-    :zeros!, :ones!, :similar!, :reshape!,
-    :unsafe_zeros!, :unsafe_ones!, :unsafe_similar!,
-    :trues!, :falses!,
-])
+const _ALL_ACQUIRE_NAMES = Set{Symbol}(
+    [
+        :acquire!, :unsafe_acquire!, :acquire_view!, :acquire_array!,
+        :zeros!, :ones!, :similar!, :reshape!,
+        :unsafe_zeros!, :unsafe_ones!, :unsafe_similar!,
+        :trues!, :falses!,
+    ]
+)
 
 """Function names that return views (SubArray) from pool memory."""
-const _VIEW_ACQUIRE_NAMES = Set{Symbol}([
-    :acquire!, :acquire_view!,
-    :zeros!, :ones!, :similar!,
-    :unsafe_zeros!, :unsafe_ones!, :unsafe_similar!,
-    :reshape!,
-])
+const _VIEW_ACQUIRE_NAMES = Set{Symbol}(
+    [
+        :acquire!, :acquire_view!,
+        :zeros!, :ones!, :similar!,
+        :unsafe_zeros!, :unsafe_ones!, :unsafe_similar!,
+        :reshape!,
+    ]
+)
 
 """Function names that return raw Arrays backed by pool memory (unsafe_wrap)."""
-const _ARRAY_ACQUIRE_NAMES = Set{Symbol}([
-    :unsafe_acquire!, :acquire_array!,
-])
+const _ARRAY_ACQUIRE_NAMES = Set{Symbol}(
+    [
+        :unsafe_acquire!, :acquire_array!,
+    ]
+)
 
 """Function names that return BitArrays from pool memory."""
-const _BITARRAY_ACQUIRE_NAMES = Set{Symbol}([
-    :trues!, :falses!,
-])
+const _BITARRAY_ACQUIRE_NAMES = Set{Symbol}(
+    [
+        :trues!, :falses!,
+    ]
+)
 
 """
     _is_acquire_call(expr, target_pool) -> Bool
@@ -1790,7 +1815,7 @@ Collect all (expression, line) pairs that could be returned from a block/functio
 - Implicit returns: the last expression, recursing into if/else/elseif branches
 """
 function _collect_all_return_values(expr)
-    values = Tuple{Any, Union{Int,Nothing}}[]
+    values = Tuple{Any, Union{Int, Nothing}}[]
     _collect_explicit_returns!(values, expr, nothing)
     last_expr, last_line = _get_last_expression_with_line(expr)
     if last_expr !== nothing
@@ -1801,14 +1826,14 @@ end
 
 """Walk AST to find all explicit `return expr` statements with line numbers.
 Tracks LineNumberNodes through blocks. Skips nested function definitions."""
-function _collect_explicit_returns!(values, expr, current_line::Union{Int,Nothing})
+function _collect_explicit_returns!(values, expr, current_line::Union{Int, Nothing})
     expr isa Expr || return
     expr.head in (:function, :(->)) && return
     if expr.head == :return
         push!(values, (expr, current_line))
         return
     end
-    if expr.head == :block
+    return if expr.head == :block
         line = current_line
         for arg in expr.args
             if arg isa LineNumberNode
@@ -1826,7 +1851,7 @@ end
 
 """Return the last non-LineNumberNode expression from a block, together with its line.
 Recurses into nested blocks."""
-function _get_last_expression_with_line(expr, default_line::Union{Int,Nothing}=nothing)
+function _get_last_expression_with_line(expr, default_line::Union{Int, Nothing} = nothing)
     if !(expr isa Expr && expr.head == :block)
         return (expr, default_line)
     end
@@ -1848,8 +1873,8 @@ end
 
 """Expand implicit return values by recursing into if/elseif/else branches.
 Non-branch expressions are collected as (expr, line) pairs."""
-function _collect_implicit_return_values!(values, expr, current_line::Union{Int,Nothing})
-    if expr isa Expr && expr.head in (:if, :elseif)
+function _collect_implicit_return_values!(values, expr, current_line::Union{Int, Nothing})
+    return if expr isa Expr && expr.head in (:if, :elseif)
         for i in 2:length(expr.args)
             branch = expr.args[i]
             if branch isa Expr && branch.head in (:if, :elseif)
@@ -1909,6 +1934,7 @@ function _remove_flat_reassigned!(expr, acquired, target_pool)
             end
         end
     end
+    return
 end
 
 """
@@ -1998,7 +2024,7 @@ function _collect_acquired_in_literal(expr, acquired_keys::Set{Symbol})
 end
 
 function _collect_acquired_in_literal!(found, expr, acquired_keys)
-    if expr isa Symbol
+    return if expr isa Symbol
         expr in acquired_keys && push!(found, expr)
     elseif expr isa Expr
         if expr.head == :call && length(expr.args) >= 2 && expr.args[1] === :identity
@@ -2038,7 +2064,7 @@ end
 
 function _classify_walk!(info, expr, target_pool, escaped_set, acquired)
     expr isa Expr || return
-    if expr.head == :block
+    return if expr.head == :block
         for arg in expr.args
             _classify_walk!(info, arg, target_pool, escaped_set, acquired)
         end
@@ -2083,7 +2109,7 @@ end
 
 function _collect_declaration_sites!(sites, seen, expr, escaped, current_line, current_file)
     expr isa Expr || return
-    if expr.head == :block
+    return if expr.head == :block
         line = current_line
         file = current_file
         for arg in expr.args

@@ -378,7 +378,7 @@ _test_leak(x) = x  # opaque to compile-time escape checker (only identity() is t
 
         # Safe tuple (no pool arrays) → passes
         _validate_pool_return((1, 2, 3), pool)
-        _validate_pool_return((1, "hello", [1,2,3]), pool)
+        _validate_pool_return((1, "hello", [1, 2, 3]), pool)
 
         rewind!(pool)
     end
@@ -390,14 +390,14 @@ _test_leak(x) = x  # opaque to compile-time escape checker (only identity() is t
         v = acquire!(pool, Float64, 10)
 
         # Pool array inside NamedTuple → caught
-        @test_throws PoolRuntimeEscapeError _validate_pool_return((data=v, n=10), pool)
-        @test_throws PoolRuntimeEscapeError _validate_pool_return((result=42, buffer=v), pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return((data = v, n = 10), pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return((result = 42, buffer = v), pool)
 
         # Nested: NamedTuple containing tuple with pool array
-        @test_throws PoolRuntimeEscapeError _validate_pool_return((meta=(v, 1),), pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return((meta = (v, 1),), pool)
 
         # Safe NamedTuple → passes
-        _validate_pool_return((a=1, b="hello"), pool)
+        _validate_pool_return((a = 1, b = "hello"), pool)
 
         rewind!(pool)
     end
@@ -428,7 +428,7 @@ _test_leak(x) = x  # opaque to compile-time escape checker (only identity() is t
         bv = acquire!(pool, Bit, 50)
 
         # Tuple containing NamedTuple with pool array
-        @test_throws PoolRuntimeEscapeError _validate_pool_return((1, (data=v,)), pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return((1, (data = v,)), pool)
 
         # Pair inside tuple
         @test_throws PoolRuntimeEscapeError _validate_pool_return((:key => v, 42), pool)
@@ -441,7 +441,7 @@ _test_leak(x) = x  # opaque to compile-time escape checker (only identity() is t
 
         # N-D ReshapedArray inside NamedTuple
         mat = acquire!(pool, Float64, 5, 5)
-        @test_throws PoolRuntimeEscapeError _validate_pool_return((matrix=mat, size=(5,5)), pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return((matrix = mat, size = (5, 5)), pool)
 
         rewind!(pool)
     end
@@ -496,7 +496,7 @@ _test_leak(x) = x  # opaque to compile-time escape checker (only identity() is t
         @test_throws PoolRuntimeEscapeError _validate_pool_return((1, Dict(:data => v)), pool)
 
         # Dict inside NamedTuple → caught
-        @test_throws PoolRuntimeEscapeError _validate_pool_return((result=Dict(:buf => v),), pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return((result = Dict(:buf => v),), pool)
 
         # Nested Dict (Dict of Dict) → caught
         @test_throws PoolRuntimeEscapeError _validate_pool_return(Dict(:outer => Dict(:inner => v)), pool)
@@ -578,7 +578,7 @@ _test_leak(x) = x  # opaque to compile-time escape checker (only identity() is t
         # NamedTuple containing pool array — caught at runtime
         @test_throws PoolRuntimeEscapeError @with_pool pool begin
             v = acquire!(pool, Float64, 10)
-            _test_leak((data=v, n=10))  # opaque to compile-time checker; runtime LV2 catches v inside NamedTuple
+            _test_leak((data = v, n = 10))  # opaque to compile-time checker; runtime LV2 catches v inside NamedTuple
         end
 
         # Safe containers pass

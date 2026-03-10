@@ -238,7 +238,7 @@ end
 # ==============================================================================
 
 # Check if BitArray chunks overlap with the pool's BitTypedPool storage
-function _check_bitchunks_overlap(arr::BitArray, pool::AdaptiveArrayPool, original_val=arr)
+function _check_bitchunks_overlap(arr::BitArray, pool::AdaptiveArrayPool, original_val = arr)
     arr_chunks = arr.chunks
     arr_ptr = UInt(pointer(arr_chunks))
     arr_len = length(arr_chunks) * sizeof(UInt64)
