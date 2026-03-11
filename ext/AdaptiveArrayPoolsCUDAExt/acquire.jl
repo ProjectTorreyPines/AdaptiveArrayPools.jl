@@ -41,7 +41,7 @@ using AdaptiveArrayPools: get_view!, get_array!, allocate_vector, safe_prod,
 
 # Guard against CUDA.jl internal API changes (tested with v5.x).
 # setfield!(:dims) requires CuArray to be mutable and have a :dims field.
-@static if !(ismutable(CuArray) && hasfield(CuArray, :dims))
+@static if !(ismutabletype(CuArray) && hasfield(CuArray, :dims))
     error("Unsupported CUDA.jl version: expected mutable CuArray with field :dims. _resize_without_shrink! needs updating.")
 end
 
