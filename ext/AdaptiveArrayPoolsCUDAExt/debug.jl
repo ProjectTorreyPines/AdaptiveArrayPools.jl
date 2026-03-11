@@ -6,18 +6,19 @@
 # Safety levels on CUDA differ from CPU:
 # - Level 0: Zero overhead (all branches dead-code-eliminated)
 # - Level 1: Poisoning (NaN/sentinel fill) + structural invalidation via
-#            _resize_without_shrink!(vec, 0) + N-way cache invalidation
+#            _resize_to_fit!(vec, 0) + arr_wrappers invalidation (setfield!(:dims, zeros))
 # - Level 2: Poisoning + escape detection (_validate_pool_return for CuArrays)
 # - Level 3: Full + borrow call-site registry + debug messages
 #
 # Key difference: CPU uses resize!(v, 0) at Level 1 to invalidate stale SubArrays.
 # On CUDA, resize!(CuVector, 0) would free GPU memory, so we use
-# _resize_without_shrink!(vec, 0) instead — sets dims to (0,) while preserving
+# _resize_to_fit!(vec, 0) instead — sets dims to (0,) while preserving
 # the GPU allocation (maxsize). Poisoning fills sentinel data before the shrink.
+# arr_wrappers are invalidated by setting wrapper dims to zeros (matches CPU pattern).
 
 using AdaptiveArrayPools: _safety_level, _validate_pool_return,
     _set_pending_callsite!, _maybe_record_borrow!,
-    _invalidate_released_slots!,
+    _invalidate_released_slots!, _zero_dims_tuple,
     _throw_pool_escape_error,
     POOL_DEBUG, POOL_SAFETY_LV,
     PoolRuntimeEscapeError
@@ -49,26 +50,29 @@ end
 #
 # Overrides the no-op fallback in base. On CUDA:
 # - Level 0: no-op (base _rewind_typed_pool! gates with S >= 1, so never called)
-# - Level 1+: poison released CuVectors + invalidate N-way view cache
-# - NO resize!(cuv, 0) — would free GPU memory
+# - Level 1+: poison released CuVectors + invalidate arr_wrappers
+# - NO resize!(cuv, 0) — would free GPU memory; use _resize_to_fit! instead
 
 @noinline function AdaptiveArrayPools._invalidate_released_slots!(
         tp::CuTypedPool{T}, old_n_active::Int, S::Int
     ) where {T}
     new_n = tp.n_active
+    # Poison released CuVectors + shrink logical length to 0
     for i in (new_n + 1):old_n_active
-        # Poison released CuVectors with sentinel values
         _cuda_poison_fill!(@inbounds tp.vectors[i])
-        # Shrink logical length to 0 (GPU memory preserved via _resize_without_shrink!).
+        # Shrink logical length to 0 (GPU memory preserved via _resize_to_fit!).
         # Matches CPU behavior where resize!(vec, 0) invalidates SubArray references.
-        _resize_without_shrink!(@inbounds(tp.vectors[i]), 0)
-        # Invalidate N-way cache entries for released slots.
-        # After poisoning, cached views point at poisoned data — clear them so
-        # re-acquire creates fresh views instead of returning stale poisoned ones.
-        base = (i - 1) * CACHE_WAYS
-        for k in 1:CACHE_WAYS
-            @inbounds tp.views[base + k] = nothing
-            @inbounds tp.view_dims[base + k] = nothing
+        _resize_to_fit!(@inbounds(tp.vectors[i]), 0)
+    end
+    # Invalidate arr_wrappers for released slots (matches CPU pattern from src/state.jl)
+    for N_idx in 1:length(tp.arr_wrappers)
+        wrappers_for_N = @inbounds tp.arr_wrappers[N_idx]
+        wrappers_for_N === nothing && continue
+        wrappers = wrappers_for_N::Vector{Any}
+        for i in (new_n + 1):min(old_n_active, length(wrappers))
+            wrapper = @inbounds wrappers[i]
+            wrapper === nothing && continue
+            setfield!(wrapper::CuArray, :dims, _zero_dims_tuple(N_idx))
         end
     end
     return nothing

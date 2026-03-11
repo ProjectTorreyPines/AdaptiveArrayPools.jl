@@ -1,192 +1,315 @@
 # ==============================================================================
-# CUDA-Specific Unified get_view! Implementation (N-Way Cache)
+# CUDA-Specific Acquire Implementation (arr_wrappers + setfield!)
 # ==============================================================================
-# Unlike CPU, GPU views (view(CuVector, 1:n)) return CuVector via GPUArrays derive(),
-# NOT SubArray. Similarly, reshape() returns CuArray, not ReshapedArray.
-# This allows a single unified implementation for all dimensions.
+# Mirrors CPU's Julia 1.11+ approach: cached CuArray{T,N} wrappers reused via
+# setfield!(:dims) for zero-allocation on cache hit.
 #
-# N-way cache layout (flat vector):
-#   views[(slot-1)*CACHE_WAYS + way] for way ∈ 1:CACHE_WAYS
-#
-# Cache lookup uses simple for loop - measured overhead ~16 bytes (acceptable).
+# Key differences from CPU:
+# - CPU Array has :ref (MemoryRef, GC-managed, no refcount)
+# - CuArray has :data (DataRef, manual refcount via Threads.Atomic{Int})
+# - We minimize refcount overhead via wrapper.data.rc !== vec.data.rc identity
+#   check (~2ns). Only update :data when GPU buffer actually changed (rare).
 #
 # ==============================================================================
-# Memory Resize Strategy: _resize_without_shrink!
+# Memory Resize Strategy: _resize_to_fit!
 # ==============================================================================
-# GPU vs CPU difference:
-#   - CPU Vector: resize!(v, smaller) preserves capacity (pointer unchanged, cheap)
-#   - GPU CuVector: resize!(v, smaller) may reallocate when n < capacity÷4
-#     (CUDA.jl's 25% threshold triggers pool_alloc + copy + pool_free)
+# CUDA.jl resize! behavior varies by version:
+#   - v5.9.x: ALWAYS reallocates (no capacity management)
+#   - v5.10.x+: capacity check — reallocates only when n > cap or n < cap÷4
 #
-# Problem: Pool operations frequently shrink backing vectors:
-#   - Safety invalidation: resize!(vec, 0) to invalidate released slots
-#   - Acquire path: resize!(vec, smaller_size) when reusing a slot for smaller array
-#   Both trigger expensive GPU reallocation via CUDA.jl's 25% threshold.
+# _resize_to_fit!(A, n):
+#   - n within capacity (maxsize): setfield!(:dims) only — no GPU operation
+#   - n beyond capacity: delegates to CUDA.jl resize! (GPU alloc)
+#   - n == length(A): no-op
 #
-# Solution: _resize_without_shrink!(A, n)
-#   - Grow (n > length): delegates to CUDA.jl resize! (may allocate more GPU memory)
-#   - Shrink (n < length): setfield!(A, :dims, (n,)) — logical size only, no GPU op
-#   - Equal (n == length): no-op
+# This is strictly better than _resize_without_shrink! (which only optimized
+# shrink). _resize_to_fit! also optimizes grow-within-capacity, critical for
+# re-acquire after safety invalidation (dims=(0,), maxsize preserved).
 #
-# Key property: maxsize is preserved on shrink. When later growing back,
-# CUDA.jl computes cap = maxsize ÷ aligned_sizeof(T) and sees n ≤ cap,
-# so no reallocation occurs. This is ideal for pool's borrow/return pattern.
-#
-# ⚠ Depends on CuArray internal fields (:dims, .maxsize). Tested with CUDA.jl v5.x.
+# ⚠ Depends on CuArray internal fields (:data, :dims, :maxsize, :offset).
+#   Tested with CUDA.jl v5.x.
 # ==============================================================================
 
 using AdaptiveArrayPools: get_view!, get_array!, allocate_vector, safe_prod,
     _record_type_touch!, _fixed_slot_bit, _checkpoint_typed_pool!,
+    _store_arr_wrapper!, _check_pool_growth, _reshape_impl!,
+    _acquire_impl!, _unsafe_acquire_impl!, _maybe_record_borrow!,
     _MODE_BITS_MASK
 
+using CUDA.GPUArrays: unsafe_free!
+
 # Guard against CUDA.jl internal API changes (tested with v5.x).
-# setfield!(:dims) requires CuArray to be mutable and have a :dims field.
-@static if !(ismutabletype(CuArray) && hasfield(CuArray, :dims))
-    error("Unsupported CUDA.jl version: expected mutable CuArray with field :dims. _resize_without_shrink! needs updating.")
+@static if !(
+        ismutabletype(CuArray) && hasfield(CuArray, :dims) &&
+            hasfield(CuArray, :data) && hasfield(CuArray, :maxsize) &&
+            hasfield(CuArray, :offset)
+    )
+    error("Unsupported CUDA.jl version: CuArray must be mutable with :data, :dims, :maxsize, :offset fields.")
 end
 
+# ==============================================================================
+# Aligned sizeof (mirrors CUDA.jl internal)
+# ==============================================================================
+
+"""Compute aligned element size, matching CUDA.jl's internal `aligned_sizeof`."""
+_aligned_sizeof(::Type{T}) where {T} = max(sizeof(T), Base.datatype_alignment(T))
+
+# ==============================================================================
+# _resize_to_fit! — Capacity-Aware Resize (superset of _resize_without_shrink!)
+# ==============================================================================
+
 """
-    _resize_without_shrink!(A::CuVector{T}, n::Integer) -> CuVector{T}
+    _resize_to_fit!(A::CuVector{T}, n::Integer) -> CuVector{T}
 
-Resize a CuVector's logical length without freeing GPU memory on shrink.
+Resize a CuVector's logical length, using `setfield!(:dims)` when within capacity.
 
-- `n > length(A)`: delegates to `resize!(A, n)` (may grow GPU allocation)
+- `n > capacity`: delegates to `resize!(A, n)` (may grow GPU allocation)
+- `n ≤ capacity, n ≠ length(A)`: `setfield!(:dims)` only — no GPU operation
 - `n == length(A)`: no-op
-- `n < length(A)`: only updates `dims` field (GPU memory preserved at `maxsize`)
 
-Avoids CUDA.jl's 25% threshold reallocation on shrink (`n < cap÷4` triggers
-`pool_alloc` + `unsafe_copyto!` + `pool_free`), which is expensive for pool
-operations like safety invalidation (`resize!(v, 0)`) and acquire-path resizing.
+Capacity = `A.maxsize ÷ aligned_sizeof(T)`. Since `setfield!(:dims)` preserves
+`maxsize`, capacity information is naturally retained across shrink/grow cycles.
 """
-@inline function _resize_without_shrink!(A::CuVector{T}, n::Integer) where {T}
-    current = length(A)
-    if n > current
-        resize!(A, n)                       # grow: delegate to CUDA.jl
-    elseif n < current
-        setfield!(A, :dims, (Int(n),))      # shrink: dims only, GPU memory preserved
+@inline function _resize_to_fit!(A::CuVector{T}, n::Integer) where {T}
+    cap = A.maxsize ÷ _aligned_sizeof(T)
+    if n > cap
+        resize!(A, n)                       # Beyond capacity: delegate to CUDA.jl
+    elseif n != length(A)
+        setfield!(A, :dims, (Int(n),))      # Within capacity: dims only
     end
     return A
 end
 
-"""
-    get_view!(tp::CuTypedPool{T}, n::Int) -> CuVector{T}
-
-1D convenience wrapper - delegates to tuple version.
-`(n,)` is stack-allocated (isbits NTuple), so this is zero-allocation when inlined.
-"""
-@inline function AdaptiveArrayPools.get_view!(tp::CuTypedPool{T}, n::Int) where {T}
-    return get_view!(tp, (n,))
-end
+# ==============================================================================
+# _cuda_claim_slot! — Capacity-Based Slot Claim
+# ==============================================================================
 
 """
-    get_view!(tp::CuTypedPool{T}, dims::NTuple{N,Int}) -> CuArray{T,N}
+    _cuda_claim_slot!(tp::CuTypedPool{T}, total_len::Int) -> Int
 
-Get an N-dimensional view from the pool with unified N-way caching.
-Returns cached view on hit (near-zero CPU allocation), creates new on miss.
-
-## N-Way Cache Behavior
-- Each slot has CACHE_WAYS (4) cache entries for different dimension patterns
-- Cache lookup uses simple for loop (~16 bytes overhead)
-- Cache replacement uses round-robin when all ways are occupied
-
-## GPU-Specific Behavior
-- GPU `view()` returns `CuVector` (not SubArray)
-- GPU `reshape()` returns `CuArray{T,N}` (not ReshapedArray)
-- Both allocate ~80 bytes on CPU heap for the wrapper object
-- N-way caching eliminates this allocation on cache hit
-
-## Memory Resize Strategy
-Backing vectors use `_resize_without_shrink!`: grow delegates to CUDA.jl's
-`resize!` (may reallocate), shrink only updates `dims` (GPU memory preserved).
-See module header for details.
+Claim the next slot, ensuring the backing vector's GPU buffer has capacity ≥ `total_len`.
+Uses maxsize-based capacity check instead of length check to avoid triggering
+CUDA.jl's resize! unnecessarily (especially after safety invalidation sets dims=(0,)).
 """
-@inline function AdaptiveArrayPools.get_view!(tp::CuTypedPool{T}, dims::NTuple{N, Int}) where {T, N}
+@inline function _cuda_claim_slot!(tp::CuTypedPool{T}, total_len::Int) where {T}
     tp.n_active += 1
     idx = tp.n_active
-    total_len = safe_prod(dims)
-
-    # 1. Expand pool if needed (new slot)
     if idx > length(tp.vectors)
         push!(tp.vectors, allocate_vector(tp, total_len))
-        @inbounds vec = tp.vectors[idx]
-        new_view = view(vec, 1:total_len)
-        nd_view = N == 1 ? new_view : reshape(new_view, dims)
-
-        # Initialize N-way cache entries for this slot
-        for _ in 1:CACHE_WAYS
-            push!(tp.views, nothing)
-            push!(tp.view_dims, nothing)
-        end
-        push!(tp.next_way, 1)
-
-        # Store in first way
-        base = (idx - 1) * CACHE_WAYS
-        @inbounds tp.views[base + 1] = nd_view
-        @inbounds tp.view_dims[base + 1] = dims
-
-        # Warn at powers of 2 (512, 1024, 2048, ...) - possible missing rewind!()
-        if idx >= 512 && (idx & (idx - 1)) == 0
-            total_bytes = sum(length, tp.vectors) * sizeof(T)
-            @warn "CuTypedPool{$T} growing large ($idx arrays, ~$(Base.format_bytes(total_bytes))). Missing rewind!()?"
-        end
-
-        return nd_view
+        _check_pool_growth(tp, idx)
+    else
+        # _resize_to_fit! handles all cases:
+        # - n > capacity: resize! (GPU alloc)
+        # - n != length: setfield!(:dims) — restores length after safety invalidation
+        # - n == length: no-op (hot path)
+        _resize_to_fit!(@inbounds(tp.vectors[idx]), total_len)
     end
+    return idx
+end
 
-    # 2. N-way cache lookup with for loop
-    base = (idx - 1) * CACHE_WAYS
-    for k in 1:CACHE_WAYS
-        cache_idx = base + k
-        @inbounds cached_dims = tp.view_dims[cache_idx]
-        if cached_dims isa NTuple{N, Int} && cached_dims == dims
-            # Cache hit - return cached view
-            return @inbounds tp.views[cache_idx]::CuArray{T, N}
-        end
+"""
+    _cuda_claim_slot!(tp::CuTypedPool{T}) -> Int
+
+Claim the next slot without provisioning memory (zero-length backing vector).
+Used by `_reshape_impl!` which only needs the slot index for wrapper caching —
+the wrapper points to a different array's memory via `setfield!(:data)`.
+"""
+@inline function _cuda_claim_slot!(tp::CuTypedPool{T}) where {T}
+    tp.n_active += 1
+    idx = tp.n_active
+    if idx > length(tp.vectors)
+        push!(tp.vectors, CuVector{T}(undef, 0))
+        _check_pool_growth(tp, idx)
     end
-
-    # 3. Cache miss: create new view, use round-robin replacement
-    @inbounds vec = tp.vectors[idx]
-    current_len = length(vec)
-    if current_len != total_len
-        # Resize vector to match requested size (grow or shrink).
-        # Uses _resize_without_shrink! to avoid GPU reallocation on shrink.
-        _resize_without_shrink!(vec, total_len)
-        # CRITICAL: on grow, _resize_without_shrink! delegates to resize! which
-        # may reallocate the GPU buffer (pointer change). On shrink, pointer is
-        # stable but length changed. Either way, cached views are stale.
-        # Must invalidate ALL ways to prevent returning stale/dangling views.
-        for k in 1:CACHE_WAYS
-            @inbounds tp.views[base + k] = nothing
-            @inbounds tp.view_dims[base + k] = nothing
-        end
-        @inbounds tp.next_way[idx] = 1  # Reset round-robin
-    end
-
-    new_view = view(vec, 1:total_len)
-    nd_view = N == 1 ? new_view : reshape(new_view, dims)
-
-    # Round-robin replacement (or first way if just flushed)
-    @inbounds way = tp.next_way[idx]
-    cache_idx = base + way
-    @inbounds tp.views[cache_idx] = nd_view
-    @inbounds tp.view_dims[cache_idx] = dims
-    @inbounds tp.next_way[idx] = (way % CACHE_WAYS) + 1
-
-    return nd_view
+    return idx
 end
 
 # ==============================================================================
-# CUDA-Specific get_array! - Delegates to unified get_view!
+# _update_cuda_wrapper_data! — DataRef Refcount Management
 # ==============================================================================
+
+"""
+    _update_cuda_wrapper_data!(cu::CuArray, source::CuArray)
+
+Update wrapper's GPU data reference when the source's buffer has changed.
+Decrements old refcount, increments new. @noinline: rare path (only on grow
+beyond capacity), keep off the hot inlined acquire path.
+"""
+@noinline function _update_cuda_wrapper_data!(cu::CuArray, source::CuArray)
+    unsafe_free!(cu.data)
+    setfield!(cu, :data, copy(source.data))
+    setfield!(cu, :maxsize, source.maxsize)
+    setfield!(cu, :offset, 0)
+    return nothing
+end
+
+# ==============================================================================
+# _acquire_impl! / _unsafe_acquire_impl! — Direct get_array! Dispatch
+# ==============================================================================
+# On CUDA, both acquire! and unsafe_acquire! go through get_array! directly.
+# No view/array distinction — CuArray is always returned.
+# This eliminates the get_view! → get_array! indirection that CPU still uses
+# for the acquire! (view) path.
+
+"""
+    _acquire_impl!(pool::CuAdaptiveArrayPool, T, n) -> CuArray{T,1}
+    _acquire_impl!(pool::CuAdaptiveArrayPool, T, dims...) -> CuArray{T,N}
+
+CUDA override: routes directly to `get_array!` (no view indirection).
+"""
+@inline function AdaptiveArrayPools._acquire_impl!(pool::CuAdaptiveArrayPool, ::Type{T}, n::Int) where {T}
+    tp = get_typed_pool!(pool, T)
+    result = get_array!(tp, (n,))
+    _maybe_record_borrow!(pool, tp)
+    return result
+end
+
+@inline function AdaptiveArrayPools._acquire_impl!(pool::CuAdaptiveArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
+    tp = get_typed_pool!(pool, T)
+    result = get_array!(tp, dims)
+    _maybe_record_borrow!(pool, tp)
+    return result
+end
+
+@inline function AdaptiveArrayPools._acquire_impl!(pool::CuAdaptiveArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
+    return _acquire_impl!(pool, T, dims...)
+end
+
+"""
+    _unsafe_acquire_impl!(pool::CuAdaptiveArrayPool, T, dims...) -> CuArray{T,N}
+
+CUDA override: same as `_acquire_impl!` — both return CuArray via `get_array!`.
+"""
+@inline function AdaptiveArrayPools._unsafe_acquire_impl!(pool::CuAdaptiveArrayPool, ::Type{T}, n::Int) where {T}
+    tp = get_typed_pool!(pool, T)
+    result = get_array!(tp, (n,))
+    _maybe_record_borrow!(pool, tp)
+    return result
+end
+
+@inline function AdaptiveArrayPools._unsafe_acquire_impl!(pool::CuAdaptiveArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
+    tp = get_typed_pool!(pool, T)
+    result = get_array!(tp, dims)
+    _maybe_record_borrow!(pool, tp)
+    return result
+end
+
+@inline function AdaptiveArrayPools._unsafe_acquire_impl!(pool::CuAdaptiveArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
+    return _unsafe_acquire_impl!(pool, T, dims...)
+end
+
+# ==============================================================================
+# get_view! / get_array! — arr_wrappers + setfield! Based Zero-Alloc
+# ==============================================================================
+# get_view! delegates to get_array! for backward compat (e.g., direct get_view! calls).
+# The main acquire path now bypasses get_view! entirely via _acquire_impl! above.
+
+@inline function AdaptiveArrayPools.get_view!(tp::CuTypedPool{T}, n::Int) where {T}
+    return get_array!(tp, (n,))
+end
+
+@inline function AdaptiveArrayPools.get_view!(tp::CuTypedPool{T}, dims::NTuple{N, Int}) where {T, N}
+    return get_array!(tp, dims)
+end
 
 """
     get_array!(tp::CuTypedPool{T}, dims::NTuple{N,Int}) -> CuArray{T,N}
 
-Delegates to `get_view!(tp, dims)` for unified caching.
-Used by `unsafe_acquire!` - same zero-allocation behavior as `acquire!`.
+Get an N-dimensional `CuArray` from the pool with `setfield!`-based wrapper reuse.
+
+## Cache Hit (common case, 0-alloc)
+1. Look up `arr_wrappers[N][slot]`
+2. Check `wrapper.data.rc !== vec.data.rc` — if same GPU buffer, just `setfield!(:dims)`
+3. If different (rare: only after grow beyond capacity), update `:data` via refcount management
+
+## Cache Miss (first call per (slot, N))
+Creates CuArray wrapper sharing backing vector's GPU memory via `copy(vec.data)`,
+stores in `arr_wrappers[N][slot]` via `_store_arr_wrapper!` (reuses base module helper).
 """
 @inline function AdaptiveArrayPools.get_array!(tp::CuTypedPool{T}, dims::NTuple{N, Int}) where {T, N}
-    return get_view!(tp, dims)
+    total_len = safe_prod(dims)
+    slot = _cuda_claim_slot!(tp, total_len)
+    @inbounds vec = tp.vectors[slot]
+
+    # arr_wrappers lookup (direct index, no hash — same as CPU path)
+    wrappers = N <= length(tp.arr_wrappers) ? (@inbounds tp.arr_wrappers[N]) : nothing
+    if wrappers !== nothing && slot <= length(wrappers)
+        wrapper = @inbounds wrappers[slot]
+        if wrapper !== nothing
+            cu = wrapper::CuArray{T, N}
+            # Check if backing vec's GPU buffer changed (rare: only on grow beyond capacity)
+            if cu.data.rc !== vec.data.rc
+                _update_cuda_wrapper_data!(cu, vec)
+            end
+            setfield!(cu, :dims, dims)
+            return cu
+        end
+    end
+
+    # Cache miss: create wrapper sharing vec's GPU memory
+    cu = CuArray{T, N}(copy(vec.data), dims; maxsize = vec.maxsize, offset = 0)
+    _store_arr_wrapper!(tp, N, slot, cu)
+    return cu
+end
+
+# ==============================================================================
+# _reshape_impl! for CuArray — Zero-Alloc Reshape
+# ==============================================================================
+
+"""
+    _reshape_impl!(pool::CuAdaptiveArrayPool, A::CuArray{T,M}, dims::NTuple{N,Int}) -> CuArray{T,N}
+
+Zero-allocation reshape for CuArray using `setfield!`-based wrapper reuse.
+
+- **Same dimensionality (M == N)**: `setfield!(A, :dims, dims)` — no pool interaction
+- **Different dimensionality (M ≠ N)**: Claims a pool slot, reuses cached `CuArray{T,N}`
+  wrapper with `setfield!(:dims)` pointing to `A`'s GPU memory.
+"""
+@inline function AdaptiveArrayPools._reshape_impl!(
+        pool::CuAdaptiveArrayPool, A::CuArray{T, M}, dims::NTuple{N, Int}
+    ) where {T, M, N}
+    for d in dims
+        d < 0 && throw(ArgumentError("invalid CuArray dimensions"))
+    end
+    total_len = safe_prod(dims)
+    length(A) == total_len || throw(
+        DimensionMismatch(
+            "new dimensions $(dims) must be consistent with array length $(length(A))"
+        )
+    )
+
+    # 0-D reshape: rare edge case, delegate to Base (arr_wrappers is 1-indexed by N)
+    N == 0 && return reshape(A, dims)
+
+    # Same dimensionality: just update dims in-place, no pool interaction
+    if M == N
+        setfield!(A, :dims, dims)
+        return A
+    end
+
+    # Different dimensionality: claim slot + reuse cached N-D wrapper
+    tp = AdaptiveArrayPools.get_typed_pool!(pool, T)
+    _record_type_touch!(pool, T)
+    slot = _cuda_claim_slot!(tp)
+
+    # Look up cached wrapper (direct index, no hash)
+    wrappers = N <= length(tp.arr_wrappers) ? (@inbounds tp.arr_wrappers[N]) : nothing
+    if wrappers !== nothing && slot <= length(wrappers)
+        wrapper = @inbounds wrappers[slot]
+        if wrapper !== nothing
+            cu = wrapper::CuArray{T, N}
+            if cu.data.rc !== A.data.rc
+                _update_cuda_wrapper_data!(cu, A)
+            end
+            setfield!(cu, :dims, dims)
+            return cu
+        end
+    end
+
+    # Cache miss (first call per slot+N): create wrapper, cache forever
+    cu = CuArray{T, N}(copy(A.data), dims; maxsize = A.maxsize, offset = A.offset)
+    _store_arr_wrapper!(tp, N, slot, cu)
+    return cu
 end
 
 # ==============================================================================

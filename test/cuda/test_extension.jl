@@ -6,10 +6,8 @@
         tp_fields = fieldnames(CuTypedPool)
         @test :vectors in tp_fields
         @test :n_active in tp_fields
-        # N-way cache fields
-        @test :views in tp_fields
-        @test :view_dims in tp_fields
-        @test :next_way in tp_fields  # Round-robin counter
+        # arr_wrappers (setfield!-based wrapper reuse, replaces N-way cache)
+        @test :arr_wrappers in tp_fields
         # State management
         @test :_checkpoint_n_active in tp_fields
         @test :_checkpoint_depths in tp_fields

@@ -244,6 +244,17 @@ end
 _invalidate_released_slots!(::AbstractTypedPool, ::Int, ::Int) = nothing
 _invalidate_released_slots!(::AbstractTypedPool, ::Int) = nothing  # legacy 2-arg compat
 
+# Zero-dims tuple for wrapper invalidation. Literal tuples for N ≤ 4 avoid
+# ntuple(_ -> 0, N) dynamic-dispatch allocation (runtime N → heterogeneous
+# return type → boxing). Falls back to ntuple for N > 4 (extremely rare).
+@inline function _zero_dims_tuple(N::Int)
+    N == 1 && return (0,)
+    N == 2 && return (0, 0)
+    N == 3 && return (0, 0, 0)
+    N == 4 && return (0, 0, 0, 0)
+    return ntuple(_ -> 0, N)
+end
+
 @noinline function _invalidate_released_slots!(tp::TypedPool{T}, old_n_active::Int, S::Int = POOL_SAFETY_LV[]) where {T}
     new_n = tp.n_active
     # Level 2+: poison vectors with NaN/sentinel before structural invalidation
@@ -262,7 +273,7 @@ _invalidate_released_slots!(::AbstractTypedPool, ::Int) = nothing  # legacy 2-ar
         for i in (new_n + 1):min(old_n_active, length(wrappers))
             wrapper = @inbounds wrappers[i]
             wrapper === nothing && continue
-            setfield!(wrapper::Array, :size, ntuple(_ -> 0, N_idx))
+            setfield!(wrapper::Array, :size, _zero_dims_tuple(N_idx))
         end
     end
     return nothing
@@ -288,7 +299,7 @@ end
             wrapper === nothing && continue
             ba = wrapper::BitArray
             setfield!(ba, :len, 0)
-            setfield!(ba, :dims, ntuple(_ -> 0, N_idx))
+            setfield!(ba, :dims, _zero_dims_tuple(N_idx))
         end
     end
     return nothing

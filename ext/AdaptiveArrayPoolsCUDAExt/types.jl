@@ -3,44 +3,38 @@
 # ==============================================================================
 
 # Note: Unlike CPU, view(CuVector, 1:n) returns CuVector (via GPUArrays derive()),
-# NOT SubArray. However, we still cache view objects to avoid CPU heap allocation
-# (~80 bytes per call) for the CuVector metadata wrapper.
-
-# Note: Uses shared CACHE_WAYS constant from main module for consistency.
+# NOT SubArray. GPU view/reshape creation allocates ~80 bytes on CPU heap for the
+# CuArray wrapper. We cache wrappers via arr_wrappers to achieve zero-allocation
+# on cache hit (same approach as CPU's setfield!-based Array wrapper reuse).
 
 """
     CuTypedPool{T} <: AbstractTypedPool{T, CuVector{T}}
 
-GPU memory pool for element type `T`. Uses unified N-way view caching for all dimensions.
+GPU memory pool for element type `T`. Uses `arr_wrappers`-based CuArray reuse
+for zero-allocation acquire (same design as CPU TypedPool on Julia 1.11+).
 
 ## Fields
 - `vectors`: Backing `CuVector{T}` storage (one per slot)
-- `views`: Flat N-way cache storing CuArray of any dimension
-  - Layout: `views[(slot-1)*CACHE_WAYS + way]` for way ∈ 1:CACHE_WAYS
-- `view_dims`: Cached dims corresponding to views
-- `next_way`: Round-robin counter per slot for cache replacement
+- `arr_wrappers`: `Vector{Union{Nothing, Vector{Any}}}` — indexed by N (dimensionality),
+  each entry is a per-slot cached `CuArray{T,N}` wrapper. Uses `setfield!(wrapper, :dims, dims)`
+  for zero-allocation reuse of unlimited dimension patterns within the same N.
+  When the backing vector's GPU buffer changes (rare: only on grow beyond capacity),
+  the wrapper's `:data` field is updated via DataRef refcount management.
 - State management fields (same as CPU)
 
 ## Design Note
-Unlike CPU where view() returns SubArray and reshape() returns ReshapedArray,
-CUDA returns CuArray for both operations. This allows a unified cache that
-stores CuArray{T,N} for any N, eliminating the need for separate 1D/N-D caches.
-
-GPU view/reshape creation allocates ~80 bytes on CPU heap for the CuArray
-wrapper object. N-way caching with for-loop lookup eliminates this allocation
-when the same dimensions pattern is requested again.
+Unlike CPU where `setfield!(:ref, MemoryRef)` is free (GC-managed),
+CuArray's `:data` field is `DataRef` with manual refcounting. We minimize this cost
+via `wrapper.data.rc !== vec.data.rc` identity check (~2ns): only update `:data`
+when the backing vector's GPU buffer actually changed. The common case (same buffer)
+is a simple `setfield!(:dims)` — truly zero-allocation.
 """
 mutable struct CuTypedPool{T} <: AbstractTypedPool{T, CuVector{T}}
     # --- Storage ---
     vectors::Vector{CuVector{T}}
 
-    # --- Unified N-Way View Cache (flat layout) ---
-    # Length = n_slots * CACHE_WAYS
-    views::Vector{Any}       # CuArray{T,N} for any N
-    view_dims::Vector{Any}   # NTuple{N,Int} or nothing
-
-    # --- Cache Replacement (round-robin per slot) ---
-    next_way::Vector{Int}    # next_way[slot] ∈ 1:CACHE_WAYS
+    # --- N-D Wrapper Cache (setfield!-based reuse, matches CPU TypedPool) ---
+    arr_wrappers::Vector{Union{Nothing, Vector{Any}}}  # index=N (dimensionality), value=per-slot CuArray{T,N}
 
     # --- State Management (1-based sentinel pattern) ---
     n_active::Int
@@ -50,11 +44,9 @@ end
 
 function CuTypedPool{T}() where {T}
     return CuTypedPool{T}(
-        CuVector{T}[],      # vectors
-        Any[],              # views (N-way flat cache)
-        Any[],              # view_dims
-        Int[],              # next_way (round-robin counters)
-        0, [0], [0]         # State (1-based sentinel)
+        CuVector{T}[],                   # vectors
+        Union{Nothing, Vector{Any}}[],   # arr_wrappers (indexed by N)
+        0, [0], [0]                      # State (1-based sentinel)
     )
 end
 
