@@ -144,22 +144,18 @@ end
 """
     set_safety_level!(level::Int) -> AdaptiveArrayPool
 
-Replace the task-local pool with a new `AdaptiveArrayPool{level}`,
-preserving all cached arrays and scope state from the old pool.
+Replace the task-local CPU pool (and CUDA pools if CUDA.jl is loaded)
+with new pools at the given safety level, preserving cached arrays
+and scope state (zero-copy transfer).
 
-Cached TypedPool/BitTypedPool slots, the `others` IdDict, depth tracking,
-and touch masks are transferred by reference (zero copy).
-Transient borrow-tracking state (`_pending_callsite`, `_borrow_log`) is reset.
-
-One-time JIT cost for new `S` specialization.
-Also updates `POOL_SAFETY_LV[]` so that `AdaptiveArrayPool()` creates pools
-at the new level.
+Also updates `POOL_SAFETY_LV[]` so that future `AdaptiveArrayPool()` /
+`CuAdaptiveArrayPool()` constructors use the new level.
 
 ## Example
 ```julia
-set_safety_level!(2)  # Enable full safety (escape detection + poisoning)
+set_safety_level!(2)  # Enable full safety on CPU + all GPU devices
 # ... run suspicious code ...
-set_safety_level!(0)  # Back to zero overhead — cached arrays still available
+set_safety_level!(0)  # Back to zero overhead everywhere
 ```
 
 See also: [`_safety_level`], [`POOL_SAFETY_LV`]
@@ -178,8 +174,13 @@ function set_safety_level!(level::Int)
     POOL_SAFETY_LV[] = level
     new_pool = old_pool === nothing ? _make_pool(level) : _make_pool(level, old_pool::AdaptiveArrayPool)
     task_local_storage(_POOL_KEY, new_pool)
+    # Update CUDA pools if extension is loaded (no-op otherwise)
+    _set_cuda_safety_level_hook!(level)
     return new_pool
 end
+
+# Hook for CUDA extension to override. No-op when CUDA is not loaded.
+_set_cuda_safety_level_hook!(::Int) = nothing
 
 # ==============================================================================
 # CUDA Pool Stubs (overridden by extension when CUDA is loaded)

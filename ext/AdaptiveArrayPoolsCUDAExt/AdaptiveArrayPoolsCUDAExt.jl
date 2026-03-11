@@ -55,7 +55,6 @@ include("convenience.jl")
 # Exports (types only - functions are exported from main module)
 export CuTypedPool, CuAdaptiveArrayPool
 export GPU_FIXED_SLOT_FIELDS
-export set_cuda_safety_level!
 # get_task_local_cuda_pool, get_task_local_cuda_pools are exported from AdaptiveArrayPools
 
 end # module

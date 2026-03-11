@@ -57,23 +57,11 @@ Useful for diagnostics or bulk operations across all devices.
     return pools
 end
 
-"""
-    set_cuda_safety_level!(level::Int) -> Nothing
+# ==============================================================================
+# Safety Level Hook (called from set_safety_level! in base)
+# ==============================================================================
 
-Replace all CUDA pools across all devices with new `CuAdaptiveArrayPool{level}` pools,
-preserving cached GPU arrays and scope state (zero-copy transfer).
-
-Cannot be called inside an active `@with_pool :cuda` scope (any device).
-
-## Example
-```julia
-set_cuda_safety_level!(2)  # Enable escape detection on all GPU devices
-# ... run suspicious code ...
-set_cuda_safety_level!(0)  # Back to zero overhead — cached arrays still available
-```
-"""
-function set_cuda_safety_level!(level::Int)
-    0 <= level <= 3 || throw(ArgumentError("Safety level must be 0-3; got $level"))
+function AdaptiveArrayPools._set_cuda_safety_level_hook!(level::Int)
     pools = get(task_local_storage(), _CU_POOL_KEY, nothing)
     pools === nothing && return nothing
 
@@ -83,7 +71,7 @@ function set_cuda_safety_level!(level::Int)
         depth = old._current_depth
         depth != 1 && throw(
             ArgumentError(
-                "set_cuda_safety_level! cannot be called inside an active @with_pool scope " *
+                "set_safety_level! cannot be called inside an active @with_pool :cuda scope " *
                     "(device=$dev_id, depth=$depth)"
             )
         )
@@ -97,3 +85,4 @@ function set_cuda_safety_level!(level::Int)
 
     return nothing
 end
+

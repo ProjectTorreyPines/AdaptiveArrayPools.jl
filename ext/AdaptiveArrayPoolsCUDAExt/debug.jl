@@ -16,9 +16,9 @@
 using AdaptiveArrayPools: _safety_level, _validate_pool_return,
     _set_pending_callsite!, _maybe_record_borrow!,
     _invalidate_released_slots!,
-    _throw_pool_escape_error, _lookup_borrow_callsite,
+    _throw_pool_escape_error,
     POOL_DEBUG, POOL_SAFETY_LV,
-    PoolRuntimeEscapeError, _shorten_location
+    PoolRuntimeEscapeError
 
 # ==============================================================================
 # Poisoning: Fill released CuVectors with sentinel values (Level 1+)

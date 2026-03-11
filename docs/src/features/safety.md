@@ -95,13 +95,10 @@ Both achieve the same goal — **make stale references fail loudly** — but use
 ```julia
 using AdaptiveArrayPools
 
-# Replace current task-local pool (preserves cached arrays, zero-copy)
+# Enable full safety on CPU + all GPU devices (preserves cached arrays, zero-copy)
 set_safety_level!(2)
 
-# CUDA pools (all devices)
-set_cuda_safety_level!(2)
-
-# Back to zero overhead
+# Back to zero overhead everywhere
 set_safety_level!(0)
 ```
 
