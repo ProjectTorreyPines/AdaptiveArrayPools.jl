@@ -85,4 +85,3 @@ function AdaptiveArrayPools._set_cuda_safety_level_hook!(level::Int)
 
     return nothing
 end
-
