@@ -39,6 +39,9 @@ using AdaptiveArrayPools: get_view!, get_array!, allocate_vector, safe_prod,
     _record_type_touch!, _fixed_slot_bit, _checkpoint_typed_pool!,
     _MODE_BITS_MASK
 
+# Guard against CUDA.jl internal API changes (tested with v5.x)
+@assert hasfield(CuArray, :dims) "CuArray internal field :dims not found — CUDA.jl API changed. _resize_without_shrink! needs updating."
+
 """
     _resize_without_shrink!(A::CuVector{T}, n::Integer) -> CuVector{T}
 
@@ -90,8 +93,9 @@ Returns cached view on hit (near-zero CPU allocation), creates new on miss.
 - N-way caching eliminates this allocation on cache hit
 
 ## Memory Resize Strategy
-Backing vectors are resized to match requested size (grow or shrink).
-See module header for "lazy shrink" optimization notes.
+Backing vectors use `_resize_without_shrink!`: grow delegates to CUDA.jl's
+`resize!` (may reallocate), shrink only updates `dims` (GPU memory preserved).
+See module header for details.
 """
 @inline function AdaptiveArrayPools.get_view!(tp::CuTypedPool{T}, dims::NTuple{N, Int}) where {T, N}
     tp.n_active += 1
@@ -144,8 +148,9 @@ See module header for "lazy shrink" optimization notes.
         # Resize vector to match requested size (grow or shrink).
         # Uses _resize_without_shrink! to avoid GPU reallocation on shrink.
         _resize_without_shrink!(vec, total_len)
-        # CRITICAL: resize! may reallocate the GPU buffer (pointer change).
-        # All cached views for this slot now reference the OLD buffer.
+        # CRITICAL: on grow, _resize_without_shrink! delegates to resize! which
+        # may reallocate the GPU buffer (pointer change). On shrink, pointer is
+        # stable but length changed. Either way, cached views are stale.
         # Must invalidate ALL ways to prevent returning stale/dangling views.
         for k in 1:CACHE_WAYS
             @inbounds tp.views[base + k] = nothing
