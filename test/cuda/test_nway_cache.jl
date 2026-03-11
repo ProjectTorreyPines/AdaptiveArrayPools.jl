@@ -261,9 +261,11 @@ end
 
         # Vary dims within each N across iterations
         function test_mixed_n_varying_gpu()
-            for (d1, d2, d3) in ((100, (10, 10), (5, 5, 4)),
-                                  (200, (5, 20),  (4, 5, 10)),
-                                  (50,  (20, 5),  (2, 5, 10)))
+            for (d1, d2, d3) in (
+                    (100, (10, 10), (5, 5, 4)),
+                    (200, (5, 20), (4, 5, 10)),
+                    (50, (20, 5), (2, 5, 10)),
+                )
                 @with_pool :cuda p begin
                     v = acquire!(p, Float64, d1)
                     fill!(v, 1.0)
@@ -347,9 +349,11 @@ end
         reset!(pool)
 
         function test_mixed_n_varying_cpu()
-            for (d1, d2, d3) in ((100, (10, 10), (5, 5, 4)),
-                                  (200, (5, 20),  (4, 5, 10)),
-                                  (50,  (20, 5),  (2, 5, 10)))
+            for (d1, d2, d3) in (
+                    (100, (10, 10), (5, 5, 4)),
+                    (200, (5, 20), (4, 5, 10)),
+                    (50, (20, 5), (2, 5, 10)),
+                )
                 @with_pool :cuda p begin
                     _ = acquire!(p, Float64, d1)
                 end
