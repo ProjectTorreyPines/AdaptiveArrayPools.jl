@@ -1,9 +1,10 @@
 # ==============================================================================
 # State Management for CUDA Pools
 # ==============================================================================
-# checkpoint!, rewind!, reset!, empty! implementations for CuAdaptiveArrayPool.
+# checkpoint!, rewind!, reset!, empty! implementations for CuAdaptiveArrayPool{S}.
 # Note: _checkpoint_typed_pool! and _rewind_typed_pool! already work with
 # AbstractTypedPool, so they work for CuTypedPool automatically.
+# S parameter is threaded through rewind paths for compile-time safety dispatch.
 
 using AdaptiveArrayPools: checkpoint!, rewind!, reset!,
     _checkpoint_typed_pool!, _rewind_typed_pool!, _has_bit,
@@ -18,7 +19,7 @@ using AdaptiveArrayPools: checkpoint!, rewind!, reset!,
 
 Apply `f` to each fixed slot CuTypedPool. Zero allocation via compile-time unrolling.
 """
-@generated function AdaptiveArrayPools.foreach_fixed_slot(f::F, pool::CuAdaptiveArrayPool) where {F}
+@generated function AdaptiveArrayPools.foreach_fixed_slot(f::F, pool::CuAdaptiveArrayPool{S}) where {F, S}
     exprs = [:(f(getfield(pool, $(QuoteNode(field))))) for field in GPU_FIXED_SLOT_FIELDS]
     return quote
         Base.@_inline_meta
@@ -61,7 +62,7 @@ end
 end
 
 # Type-specific checkpoint (multiple types)
-@generated function AdaptiveArrayPools.checkpoint!(pool::CuAdaptiveArrayPool, types::Type...)
+@generated function AdaptiveArrayPools.checkpoint!(pool::CuAdaptiveArrayPool{S}, types::Type...) where {S}
     seen = Set{Any}()
     unique_indices = Int[]
     for i in eachindex(types)
@@ -85,7 +86,7 @@ end
 # rewind! for CuAdaptiveArrayPool
 # ==============================================================================
 
-function AdaptiveArrayPools.rewind!(pool::CuAdaptiveArrayPool)
+function AdaptiveArrayPools.rewind!(pool::CuAdaptiveArrayPool{S}) where {S}
     cur_depth = pool._current_depth
 
     # Safety guard: at global scope (depth=1), delegate to reset!
@@ -94,14 +95,14 @@ function AdaptiveArrayPools.rewind!(pool::CuAdaptiveArrayPool)
         return nothing
     end
 
-    # Fixed slots
+    # Fixed slots — pass S for compile-time safety dispatch
     AdaptiveArrayPools.foreach_fixed_slot(pool) do tp
-        _rewind_typed_pool!(tp, cur_depth)
+        _rewind_typed_pool!(tp, cur_depth, S)
     end
 
     # Others
     for tp in values(pool.others)
-        _rewind_typed_pool!(tp, cur_depth)
+        _rewind_typed_pool!(tp, cur_depth, S)
     end
 
     pop!(pool._touched_type_masks)
@@ -112,12 +113,12 @@ function AdaptiveArrayPools.rewind!(pool::CuAdaptiveArrayPool)
 end
 
 # Type-specific rewind (single type)
-@inline function AdaptiveArrayPools.rewind!(pool::CuAdaptiveArrayPool, ::Type{T}) where {T}
+@inline function AdaptiveArrayPools.rewind!(pool::CuAdaptiveArrayPool{S}, ::Type{T}) where {S, T}
     if pool._current_depth == 1
         reset!(AdaptiveArrayPools.get_typed_pool!(pool, T))
         return nothing
     end
-    _rewind_typed_pool!(AdaptiveArrayPools.get_typed_pool!(pool, T), pool._current_depth)
+    _rewind_typed_pool!(AdaptiveArrayPools.get_typed_pool!(pool, T), pool._current_depth, S)
     pop!(pool._touched_type_masks)
     pop!(pool._touched_has_others)
     pool._current_depth -= 1
@@ -125,7 +126,7 @@ end
 end
 
 # Type-specific rewind (multiple types)
-@generated function AdaptiveArrayPools.rewind!(pool::CuAdaptiveArrayPool, types::Type...)
+@generated function AdaptiveArrayPools.rewind!(pool::CuAdaptiveArrayPool{S}, types::Type...) where {S}
     seen = Set{Any}()
     unique_indices = Int[]
     for i in eachindex(types)
@@ -134,7 +135,7 @@ end
             push!(unique_indices, i)
         end
     end
-    rewind_exprs = [:(_rewind_typed_pool!(AdaptiveArrayPools.get_typed_pool!(pool, types[$i]), pool._current_depth)) for i in reverse(unique_indices)]
+    rewind_exprs = [:(_rewind_typed_pool!(AdaptiveArrayPools.get_typed_pool!(pool, types[$i]), pool._current_depth, S)) for i in reverse(unique_indices)]
     reset_exprs = [:(reset!(AdaptiveArrayPools.get_typed_pool!(pool, types[$i]))) for i in unique_indices]
     return quote
         if pool._current_depth == 1
@@ -178,21 +179,21 @@ end
     return nothing
 end
 
-@inline function AdaptiveArrayPools._lazy_rewind!(pool::CuAdaptiveArrayPool)
+@inline function AdaptiveArrayPools._lazy_rewind!(pool::CuAdaptiveArrayPool{S}) where {S}
     d = pool._current_depth
     mask = @inbounds(pool._touched_type_masks[d]) & _TYPE_BITS_MASK
-    _has_bit(mask, Float64)    && _rewind_typed_pool!(pool.float64, d)
-    _has_bit(mask, Float32)    && _rewind_typed_pool!(pool.float32, d)
-    _has_bit(mask, Int64)      && _rewind_typed_pool!(pool.int64, d)
-    _has_bit(mask, Int32)      && _rewind_typed_pool!(pool.int32, d)
-    _has_bit(mask, ComplexF64) && _rewind_typed_pool!(pool.complexf64, d)
-    _has_bit(mask, ComplexF32) && _rewind_typed_pool!(pool.complexf32, d)
-    _has_bit(mask, Bool)       && _rewind_typed_pool!(pool.bool, d)
+    _has_bit(mask, Float64)    && _rewind_typed_pool!(pool.float64, d, S)
+    _has_bit(mask, Float32)    && _rewind_typed_pool!(pool.float32, d, S)
+    _has_bit(mask, Int64)      && _rewind_typed_pool!(pool.int64, d, S)
+    _has_bit(mask, Int32)      && _rewind_typed_pool!(pool.int32, d, S)
+    _has_bit(mask, ComplexF64) && _rewind_typed_pool!(pool.complexf64, d, S)
+    _has_bit(mask, ComplexF32) && _rewind_typed_pool!(pool.complexf32, d, S)
+    _has_bit(mask, Bool)       && _rewind_typed_pool!(pool.bool, d, S)
     # Bit 7: Float16 (CUDA reassignment — _fixed_slot_bit(Float16)==0, must use explicit bit check)
-    mask & _cuda_float16_bit() != 0 && _rewind_typed_pool!(pool.float16, d)
+    mask & _cuda_float16_bit() != 0 && _rewind_typed_pool!(pool.float16, d, S)
     if @inbounds(pool._touched_has_others[d])
         for tp in values(pool.others)
-            _rewind_typed_pool!(tp, d)
+            _rewind_typed_pool!(tp, d, S)
         end
     end
     pop!(pool._touched_type_masks)
@@ -228,17 +229,17 @@ end
 # Uses direct field access with bit checks — foreach_fixed_slot is single-argument (no bit yield).
 # Bit 7: Float16 (CUDA-specific; lazy-checkpointed on first touch by _record_type_touch!).
 # has_others: genuine others types (UInt8, Int8, etc.) — eagerly checkpointed at scope entry.
-@inline function AdaptiveArrayPools._typed_lazy_rewind!(pool::CuAdaptiveArrayPool, tracked_mask::UInt16)
+@inline function AdaptiveArrayPools._typed_lazy_rewind!(pool::CuAdaptiveArrayPool{S}, tracked_mask::UInt16) where {S}
     d = pool._current_depth
     touched = @inbounds(pool._touched_type_masks[d]) & _TYPE_BITS_MASK
     combined = tracked_mask | touched
-    _has_bit(combined, Float64)    && _rewind_typed_pool!(pool.float64, d)
-    _has_bit(combined, Float32)    && _rewind_typed_pool!(pool.float32, d)
-    _has_bit(combined, Int64)      && _rewind_typed_pool!(pool.int64, d)
-    _has_bit(combined, Int32)      && _rewind_typed_pool!(pool.int32, d)
-    _has_bit(combined, ComplexF64) && _rewind_typed_pool!(pool.complexf64, d)
-    _has_bit(combined, ComplexF32) && _rewind_typed_pool!(pool.complexf32, d)
-    _has_bit(combined, Bool)       && _rewind_typed_pool!(pool.bool, d)
+    _has_bit(combined, Float64)    && _rewind_typed_pool!(pool.float64, d, S)
+    _has_bit(combined, Float32)    && _rewind_typed_pool!(pool.float32, d, S)
+    _has_bit(combined, Int64)      && _rewind_typed_pool!(pool.int64, d, S)
+    _has_bit(combined, Int32)      && _rewind_typed_pool!(pool.int32, d, S)
+    _has_bit(combined, ComplexF64) && _rewind_typed_pool!(pool.complexf64, d, S)
+    _has_bit(combined, ComplexF32) && _rewind_typed_pool!(pool.complexf32, d, S)
+    _has_bit(combined, Bool)       && _rewind_typed_pool!(pool.bool, d, S)
     # Float16: bit 7 is set by _record_type_touch! on first touch (lazy first-touch).
     # Also rewind when Float16 was a *tracked* type in the macro: _typed_lazy_checkpoint!
     # calls checkpoint!(pool, Float16) which pushes a checkpoint at depth d, but _acquire_impl!
@@ -247,11 +248,11 @@ end
     # tracked_mask carries no bit for Float16 either.
     # Solution: check _checkpoint_depths to detect "Float16 was checkpointed at this depth".
     if combined & _cuda_float16_bit() != 0 || @inbounds(pool.float16._checkpoint_depths[end]) == d
-        _rewind_typed_pool!(pool.float16, d)
+        _rewind_typed_pool!(pool.float16, d, S)
     end
     if @inbounds(pool._touched_has_others[d])
         for tp in values(pool.others)
-            _rewind_typed_pool!(tp, d)
+            _rewind_typed_pool!(tp, d, S)
         end
     end
     pop!(pool._touched_type_masks)
@@ -281,6 +282,11 @@ function AdaptiveArrayPools.reset!(pool::CuAdaptiveArrayPool)
     push!(pool._touched_type_masks, UInt16(0))   # Sentinel: no bits set
     empty!(pool._touched_has_others)
     push!(pool._touched_has_others, false)         # Sentinel: no others
+
+    # Reset borrow tracking state
+    pool._pending_callsite = ""
+    pool._pending_return_site = ""
+    pool._borrow_log = nothing
 
     return pool
 end
@@ -340,6 +346,11 @@ function Base.empty!(pool::CuAdaptiveArrayPool)
     push!(pool._touched_type_masks, UInt16(0))   # Sentinel: no bits set
     empty!(pool._touched_has_others)
     push!(pool._touched_has_others, false)         # Sentinel: no others
+
+    # Reset borrow tracking state
+    pool._pending_callsite = ""
+    pool._pending_return_site = ""
+    pool._borrow_log = nothing
 
     return pool
 end

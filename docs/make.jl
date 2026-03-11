@@ -39,6 +39,34 @@ const README_PATH_MAPPINGS = [
 ]
 
 """
+Inject Google Search Console verification meta tag into generated HTML files.
+This is enabled only when `ENV["GOOGLE_SITE_VERIFICATION"]` is set.
+"""
+function inject_google_site_verification!(build_dir::String)
+    token = strip(get(ENV, "GOOGLE_SITE_VERIFICATION", ""))
+    isempty(token) && return
+
+    safe_token = replace(token, '"' => "&quot;")
+    meta_tag = "<meta name=\"google-site-verification\" content=\"$(safe_token)\" />"
+    injected = 0
+
+    for (root, _, files) in walkdir(build_dir)
+        for file in files
+            endswith(file, ".html") || continue
+            path = joinpath(root, file)
+            html = read(path, String)
+            occursin("google-site-verification", html) && continue
+            occursin("</head>", html) || continue
+
+            write_if_changed(path, replace(html, "</head>" => "$(meta_tag)\n</head>"; count = 1))
+            injected += 1
+        end
+    end
+
+    return @info "Injected google-site-verification meta tag" files = injected build_dir = build_dir
+end
+
+"""
 Rewrite relative paths in README.md for Documenter structure.
 
 Uses mapping table to convert GitHub repo links to internal Documenter links.
@@ -74,9 +102,15 @@ makedocs(
     sitename = "AdaptiveArrayPools.jl",
     authors = "Min-Gu Yoo",
     modules = [AdaptiveArrayPools],
+    # servedocs() sets root to docs/ which conflicts with project-root remotes.
+    # Enable GitHub source links only in CI where makedocs root matches git root.
+    remotes = get(ENV, "CI", nothing) == "true" ?
+        Dict(dirname(@__DIR__) => (Documenter.Remotes.GitHub("ProjectTorreyPines", "AdaptiveArrayPools.jl"), "master")) :
+        nothing,
     format = Documenter.HTML(
         prettyurls = get(ENV, "CI", nothing) == "true",
         canonical = "https://projecttorreypines.github.io/AdaptiveArrayPools.jl",
+        edit_link = :commit,
         assets = String[],
     ),
     pages = [
@@ -92,6 +126,7 @@ makedocs(
             "Multi-threading" => "features/multi-threading.md",
         ],
         "Features" => [
+            "Pool Safety" => "features/safety.md",
             "`@maybe_with_pool`" => "features/maybe-with-pool.md",
             "Bit Arrays" => "features/bit-arrays.md",
             "CUDA Support" => "features/cuda-support.md",
@@ -111,6 +146,8 @@ makedocs(
     checkdocs = :exports,
     warnonly = [:cross_references, :missing_docs],
 )
+
+inject_google_site_verification!(joinpath(@__DIR__, "build"))
 
 deploydocs(
     repo = "github.com/ProjectTorreyPines/AdaptiveArrayPools.jl.git",

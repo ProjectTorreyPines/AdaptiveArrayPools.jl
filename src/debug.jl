@@ -241,7 +241,7 @@ function _validate_pool_return(val::AbstractSet, pool::AdaptiveArrayPool)
 end
 
 _validate_pool_return(val, ::DisabledPool) = nothing
-# No-op fallback for non-CPU pools (e.g. CuAdaptiveArrayPool) that lack borrow tracking fields
+# No-op fallback for pool types without specific validation (overridden by CUDA extension)
 _validate_pool_return(val, ::AbstractArrayPool) = nothing
 
 # ==============================================================================

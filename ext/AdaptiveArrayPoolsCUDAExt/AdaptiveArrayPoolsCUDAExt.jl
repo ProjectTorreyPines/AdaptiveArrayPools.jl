@@ -40,6 +40,9 @@ include("task_local_pool.jl")
 # State management (checkpoint!, rewind!, reset!, empty!)
 include("state.jl")
 
+# Safety: poisoning, escape detection, borrow tracking
+include("debug.jl")
+
 # Display & statistics (pool_stats, show)
 include("utils.jl")
 
