@@ -5,13 +5,15 @@
 #
 # Safety levels on CUDA differ from CPU:
 # - Level 0: Zero overhead (all branches dead-code-eliminated)
-# - Level 1: Poisoning (NaN/sentinel fill) + N-way cache invalidation
-#            (CUDA equivalent of CPU's resize!/setfield! structural invalidation)
+# - Level 1: Poisoning (NaN/sentinel fill) + structural invalidation via
+#            _resize_without_shrink!(vec, 0) + N-way cache invalidation
 # - Level 2: Poisoning + escape detection (_validate_pool_return for CuArrays)
 # - Level 3: Full + borrow call-site registry + debug messages
 #
 # Key difference: CPU uses resize!(v, 0) at Level 1 to invalidate stale SubArrays.
-# On CUDA, resize!(CuVector, 0) frees GPU memory, so we use poisoning instead.
+# On CUDA, resize!(CuVector, 0) would free GPU memory, so we use
+# _resize_without_shrink!(vec, 0) instead — sets dims to (0,) while preserving
+# the GPU allocation (maxsize). Poisoning fills sentinel data before the shrink.
 
 using AdaptiveArrayPools: _safety_level, _validate_pool_return,
     _set_pending_callsite!, _maybe_record_borrow!,
@@ -57,6 +59,9 @@ end
     for i in (new_n + 1):old_n_active
         # Poison released CuVectors with sentinel values
         _cuda_poison_fill!(@inbounds tp.vectors[i])
+        # Shrink logical length to 0 (GPU memory preserved via _resize_without_shrink!).
+        # Matches CPU behavior where resize!(vec, 0) invalidates SubArray references.
+        _resize_without_shrink!(@inbounds(tp.vectors[i]), 0)
         # Invalidate N-way cache entries for released slots.
         # After poisoning, cached views point at poisoned data — clear them so
         # re-acquire creates fresh views instead of returning stale poisoned ones.

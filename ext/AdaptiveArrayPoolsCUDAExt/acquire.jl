@@ -11,25 +11,62 @@
 # Cache lookup uses simple for loop - measured overhead ~16 bytes (acceptable).
 #
 # ==============================================================================
-# Memory Resize Strategy
+# Memory Resize Strategy: _resize_without_shrink!
 # ==============================================================================
-# Current: RESIZE TO FIT - backing vectors grow or shrink to match requested size.
-# Same behavior as CPU version.
+# GPU vs CPU difference:
+#   - CPU Vector: resize!(v, smaller) preserves capacity (pointer unchanged, cheap)
+#   - GPU CuVector: resize!(v, smaller) may reallocate when n < capacity÷4
+#     (CUDA.jl's 25% threshold triggers pool_alloc + copy + pool_free)
 #
-# GPU vs CPU difference (verified experimentally):
-#   - CPU Vector: resize!(v, smaller) preserves capacity (pointer unchanged)
-#   - GPU CuVector: resize!(v, smaller) may reallocate (CUDA.jl uses 25% threshold)
-#     However, CUDA memory pool often returns the same block on regrow.
+# Problem: Pool operations frequently shrink backing vectors:
+#   - Safety invalidation: resize!(vec, 0) to invalidate released slots
+#   - Acquire path: resize!(vec, smaller_size) when reusing a slot for smaller array
+#   Both trigger expensive GPU reallocation via CUDA.jl's 25% threshold.
 #
-# TODO: Potential future optimizations:
-#   - CUDA.jl's resize! already uses 25% threshold internally (no realloc if within capacity)
-#   - Could use even smaller threshold (e.g., 12.5%) to be more aggressive about shrinking
-#   - Could track recent N sizes to make smarter decisions (avoid shrink if sizes fluctuate)
+# Solution: _resize_without_shrink!(A, n)
+#   - Grow (n > length): delegates to CUDA.jl resize! (may allocate more GPU memory)
+#   - Shrink (n < length): setfield!(A, :dims, (n,)) — logical size only, no GPU op
+#   - Equal (n == length): no-op
+#
+# Key property: maxsize is preserved on shrink. When later growing back,
+# CUDA.jl computes cap = maxsize ÷ aligned_sizeof(T) and sees n ≤ cap,
+# so no reallocation occurs. This is ideal for pool's borrow/return pattern.
+#
+# ⚠ Depends on CuArray internal fields (:dims, .maxsize). Tested with CUDA.jl v5.x.
 # ==============================================================================
 
 using AdaptiveArrayPools: get_view!, get_array!, allocate_vector, safe_prod,
     _record_type_touch!, _fixed_slot_bit, _checkpoint_typed_pool!,
     _MODE_BITS_MASK
+
+# Guard against CUDA.jl internal API changes (tested with v5.x).
+# setfield!(:dims) requires CuArray to be mutable and have a :dims field.
+@static if !(ismutable(CuArray) && hasfield(CuArray, :dims))
+    error("Unsupported CUDA.jl version: expected mutable CuArray with field :dims. _resize_without_shrink! needs updating.")
+end
+
+"""
+    _resize_without_shrink!(A::CuVector{T}, n::Integer) -> CuVector{T}
+
+Resize a CuVector's logical length without freeing GPU memory on shrink.
+
+- `n > length(A)`: delegates to `resize!(A, n)` (may grow GPU allocation)
+- `n == length(A)`: no-op
+- `n < length(A)`: only updates `dims` field (GPU memory preserved at `maxsize`)
+
+Avoids CUDA.jl's 25% threshold reallocation on shrink (`n < cap÷4` triggers
+`pool_alloc` + `unsafe_copyto!` + `pool_free`), which is expensive for pool
+operations like safety invalidation (`resize!(v, 0)`) and acquire-path resizing.
+"""
+@inline function _resize_without_shrink!(A::CuVector{T}, n::Integer) where {T}
+    current = length(A)
+    if n > current
+        resize!(A, n)                       # grow: delegate to CUDA.jl
+    elseif n < current
+        setfield!(A, :dims, (Int(n),))      # shrink: dims only, GPU memory preserved
+    end
+    return A
+end
 
 """
     get_view!(tp::CuTypedPool{T}, n::Int) -> CuVector{T}
@@ -59,8 +96,9 @@ Returns cached view on hit (near-zero CPU allocation), creates new on miss.
 - N-way caching eliminates this allocation on cache hit
 
 ## Memory Resize Strategy
-Backing vectors are resized to match requested size (grow or shrink).
-See module header for "lazy shrink" optimization notes.
+Backing vectors use `_resize_without_shrink!`: grow delegates to CUDA.jl's
+`resize!` (may reallocate), shrink only updates `dims` (GPU memory preserved).
+See module header for details.
 """
 @inline function AdaptiveArrayPools.get_view!(tp::CuTypedPool{T}, dims::NTuple{N, Int}) where {T, N}
     tp.n_active += 1
@@ -110,12 +148,12 @@ See module header for "lazy shrink" optimization notes.
     @inbounds vec = tp.vectors[idx]
     current_len = length(vec)
     if current_len != total_len
-        # Resize vector to match requested size (grow or shrink)
-        # Note: CUDA.jl's resize! internally uses 25% threshold - won't reallocate
-        #       unless new size exceeds capacity or is <25% of capacity.
-        resize!(vec, total_len)
-        # CRITICAL: resize! may reallocate the GPU buffer (pointer change).
-        # All cached views for this slot now reference the OLD buffer.
+        # Resize vector to match requested size (grow or shrink).
+        # Uses _resize_without_shrink! to avoid GPU reallocation on shrink.
+        _resize_without_shrink!(vec, total_len)
+        # CRITICAL: on grow, _resize_without_shrink! delegates to resize! which
+        # may reallocate the GPU buffer (pointer change). On shrink, pointer is
+        # stable but length changed. Either way, cached views are stale.
         # Must invalidate ALL ways to prevent returning stale/dangling views.
         for k in 1:CACHE_WAYS
             @inbounds tp.views[base + k] = nothing
