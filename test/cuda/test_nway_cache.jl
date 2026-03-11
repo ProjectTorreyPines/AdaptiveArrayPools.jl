@@ -216,6 +216,233 @@ end
 
 end
 
+@testset "arr_wrappers: Mixed-N Patterns (1D + 2D + 3D)" begin
+
+    # arr_wrappers[N][slot] caches a separate wrapper per dimensionality N.
+    # Same slot, different N → each N gets its own wrapper (first use = cache miss).
+    # After warmup of all (slot, N) combos → zero-alloc for any mix.
+
+    # =========================================================================
+    # GPU Allocation Tests
+    # =========================================================================
+
+    @testset "GPU: 1D + 2D + 3D mixed acquire zero-alloc" begin
+        pool = get_task_local_cuda_pool()
+        reset!(pool)
+
+        # Each @with_pool scope resets slot counter → slot 1 gets 1D/2D/3D wrappers
+        function test_mixed_n_gpu()
+            @with_pool :cuda p begin
+                v = acquire!(p, Float64, 100)      # 1D — arr_wrappers[1][1]
+                fill!(v, 1.0)
+            end
+            @with_pool :cuda p begin
+                A = acquire!(p, Float64, 10, 10)    # 2D — arr_wrappers[2][1]
+                fill!(A, 2.0)
+            end
+            @with_pool :cuda p begin
+                T = acquire!(p, Float64, 5, 5, 4)   # 3D — arr_wrappers[3][1]
+                fill!(T, 3.0)
+            end
+        end
+
+        # Warmup (populates all 3 wrappers per N)
+        test_mixed_n_gpu()
+        test_mixed_n_gpu()
+        GC.gc(); CUDA.reclaim()
+
+        gpu_alloc = CUDA.@allocated test_mixed_n_gpu()
+        @test gpu_alloc == 0
+    end
+
+    @testset "GPU: mixed-N with varying dims zero-alloc" begin
+        pool = get_task_local_cuda_pool()
+        reset!(pool)
+
+        # Vary dims within each N across iterations
+        function test_mixed_n_varying_gpu()
+            for (d1, d2, d3) in ((100, (10, 10), (5, 5, 4)),
+                                  (200, (5, 20),  (4, 5, 10)),
+                                  (50,  (20, 5),  (2, 5, 10)))
+                @with_pool :cuda p begin
+                    v = acquire!(p, Float64, d1)
+                    fill!(v, 1.0)
+                end
+                @with_pool :cuda p begin
+                    A = acquire!(p, Float64, d2...)
+                    fill!(A, 2.0)
+                end
+                @with_pool :cuda p begin
+                    T = acquire!(p, Float64, d3...)
+                    fill!(T, 3.0)
+                end
+            end
+        end
+
+        # Warmup
+        test_mixed_n_varying_gpu()
+        test_mixed_n_varying_gpu()
+        GC.gc(); CUDA.reclaim()
+
+        gpu_alloc = CUDA.@allocated test_mixed_n_varying_gpu()
+        @test gpu_alloc == 0
+    end
+
+    @testset "GPU: multi-slot mixed-N zero-alloc" begin
+        pool = get_task_local_cuda_pool()
+        reset!(pool)
+
+        # Multiple acquires within one scope → different slots, different N
+        function test_multi_slot_mixed_n_gpu()
+            @with_pool :cuda p begin
+                v = acquire!(p, Float64, 100)        # Slot 1, 1D
+                A = acquire!(p, Float64, 10, 10)     # Slot 2, 2D
+                T = acquire!(p, Float64, 5, 5, 4)    # Slot 3, 3D
+                fill!(v, 1.0)
+                fill!(A, 2.0)
+                fill!(T, 3.0)
+            end
+        end
+
+        # Warmup
+        test_multi_slot_mixed_n_gpu()
+        test_multi_slot_mixed_n_gpu()
+        GC.gc(); CUDA.reclaim()
+
+        gpu_alloc = CUDA.@allocated test_multi_slot_mixed_n_gpu()
+        @test gpu_alloc == 0
+    end
+
+    # =========================================================================
+    # CPU Allocation Tests (no fill! — wrapper creation overhead only)
+    # =========================================================================
+
+    @testset "CPU: 1D + 2D + 3D mixed acquire zero-alloc" begin
+        pool = get_task_local_cuda_pool()
+        reset!(pool)
+
+        function test_mixed_n_cpu()
+            @with_pool :cuda p begin
+                _ = acquire!(p, Float64, 100)        # 1D
+            end
+            @with_pool :cuda p begin
+                _ = acquire!(p, Float64, 10, 10)     # 2D
+            end
+            @with_pool :cuda p begin
+                _ = acquire!(p, Float64, 5, 5, 4)    # 3D
+            end
+        end
+
+        # Warmup
+        test_mixed_n_cpu()
+        test_mixed_n_cpu()
+        GC.gc()
+
+        cpu_alloc = @allocated test_mixed_n_cpu()
+        @test cpu_alloc == 0
+    end
+
+    @testset "CPU: mixed-N with varying dims zero-alloc" begin
+        pool = get_task_local_cuda_pool()
+        reset!(pool)
+
+        function test_mixed_n_varying_cpu()
+            for (d1, d2, d3) in ((100, (10, 10), (5, 5, 4)),
+                                  (200, (5, 20),  (4, 5, 10)),
+                                  (50,  (20, 5),  (2, 5, 10)))
+                @with_pool :cuda p begin
+                    _ = acquire!(p, Float64, d1)
+                end
+                @with_pool :cuda p begin
+                    _ = acquire!(p, Float64, d2...)
+                end
+                @with_pool :cuda p begin
+                    _ = acquire!(p, Float64, d3...)
+                end
+            end
+        end
+
+        # Warmup
+        test_mixed_n_varying_cpu()
+        test_mixed_n_varying_cpu()
+        GC.gc()
+
+        cpu_alloc = @allocated test_mixed_n_varying_cpu()
+        @test cpu_alloc == 0
+    end
+
+    @testset "CPU: multi-slot mixed-N zero-alloc" begin
+        pool = get_task_local_cuda_pool()
+        reset!(pool)
+
+        function test_multi_slot_mixed_n_cpu()
+            @with_pool :cuda p begin
+                _ = acquire!(p, Float64, 100)        # Slot 1, 1D
+                _ = acquire!(p, Float64, 10, 10)     # Slot 2, 2D
+                _ = acquire!(p, Float64, 5, 5, 4)    # Slot 3, 3D
+            end
+        end
+
+        # Warmup
+        test_multi_slot_mixed_n_cpu()
+        test_multi_slot_mixed_n_cpu()
+        GC.gc()
+
+        cpu_alloc = @allocated test_multi_slot_mixed_n_cpu()
+        @test cpu_alloc == 0
+    end
+
+    # =========================================================================
+    # unsafe_acquire! Mixed-N Tests
+    # =========================================================================
+
+    @testset "unsafe_acquire! GPU: mixed-N zero-alloc" begin
+        pool = get_task_local_cuda_pool()
+        reset!(pool)
+
+        function test_unsafe_mixed_n_gpu()
+            @with_pool :cuda p begin
+                v = unsafe_acquire!(p, Float64, 100)
+                A = unsafe_acquire!(p, Float64, 10, 10)
+                T = unsafe_acquire!(p, Float64, 5, 5, 4)
+                fill!(v, 1.0)
+                fill!(A, 2.0)
+                fill!(T, 3.0)
+            end
+        end
+
+        # Warmup
+        test_unsafe_mixed_n_gpu()
+        test_unsafe_mixed_n_gpu()
+        GC.gc(); CUDA.reclaim()
+
+        gpu_alloc = CUDA.@allocated test_unsafe_mixed_n_gpu()
+        @test gpu_alloc == 0
+    end
+
+    @testset "unsafe_acquire! CPU: mixed-N zero-alloc" begin
+        pool = get_task_local_cuda_pool()
+        reset!(pool)
+
+        function test_unsafe_mixed_n_cpu()
+            @with_pool :cuda p begin
+                _ = unsafe_acquire!(p, Float64, 100)
+                _ = unsafe_acquire!(p, Float64, 10, 10)
+                _ = unsafe_acquire!(p, Float64, 5, 5, 4)
+            end
+        end
+
+        # Warmup
+        test_unsafe_mixed_n_cpu()
+        test_unsafe_mixed_n_cpu()
+        GC.gc()
+
+        cpu_alloc = @allocated test_unsafe_mixed_n_cpu()
+        @test cpu_alloc == 0
+    end
+
+end
+
 @testset "arr_wrappers: Loop Patterns" begin
 
     @testset "100 iterations: GPU always zero-alloc" begin
