@@ -39,8 +39,11 @@ using AdaptiveArrayPools: get_view!, get_array!, allocate_vector, safe_prod,
     _record_type_touch!, _fixed_slot_bit, _checkpoint_typed_pool!,
     _MODE_BITS_MASK
 
-# Guard against CUDA.jl internal API changes (tested with v5.x)
-@assert hasfield(CuArray, :dims) "CuArray internal field :dims not found — CUDA.jl API changed. _resize_without_shrink! needs updating."
+# Guard against CUDA.jl internal API changes (tested with v5.x).
+# setfield!(:dims) requires CuArray to be mutable and have a :dims field.
+@static if !(ismutable(CuArray) && hasfield(CuArray, :dims))
+    error("Unsupported CUDA.jl version: expected mutable CuArray with field :dims. _resize_without_shrink! needs updating.")
+end
 
 """
     _resize_without_shrink!(A::CuVector{T}, n::Integer) -> CuVector{T}
