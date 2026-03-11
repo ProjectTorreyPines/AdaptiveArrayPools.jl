@@ -300,7 +300,7 @@ end
             dims === nothing && continue
             N = length(dims::Tuple)
             setfield!(ba::BitArray, :len, 0)
-            setfield!(ba::BitArray, :dims, ntuple(_ -> 0, N))
+            setfield!(ba::BitArray, :dims, _zero_dims_tuple(N))
         end
     end
     return nothing

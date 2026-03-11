@@ -552,6 +552,125 @@ end
 
 end
 
+@testset "arr_wrappers: reshape! Zero-Alloc" begin
+
+    # _reshape_impl! for CuArray uses arr_wrappers cache for cross-dim reshape,
+    # and in-place setfield!(:dims) for same-dim reshape (no pool interaction).
+
+    @testset "GPU: cross-dim reshape zero-alloc" begin
+        pool = get_task_local_cuda_pool()
+        reset!(pool)
+
+        function test_reshape_cross_dim_gpu()
+            @with_pool :cuda p begin
+                A = acquire!(p, Float64, 12)
+                CUDA.fill!(A, 1.0)
+                # 1D → 2D (cross-dim: claims slot, uses arr_wrappers[2])
+                B = reshape!(p, A, 3, 4)
+                CUDA.fill!(B, 2.0)
+            end
+        end
+
+        # Warmup
+        test_reshape_cross_dim_gpu()
+        test_reshape_cross_dim_gpu()
+        GC.gc(); CUDA.reclaim()
+
+        gpu_alloc = CUDA.@allocated test_reshape_cross_dim_gpu()
+        @test gpu_alloc == 0
+    end
+
+    @testset "CPU: cross-dim reshape zero-alloc" begin
+        pool = get_task_local_cuda_pool()
+        reset!(pool)
+
+        function test_reshape_cross_dim_cpu()
+            @with_pool :cuda p begin
+                A = acquire!(p, Float64, 12)
+                B = reshape!(p, A, 3, 4)
+            end
+        end
+
+        test_reshape_cross_dim_cpu()
+        test_reshape_cross_dim_cpu()
+        GC.gc()
+
+        cpu_alloc = @allocated test_reshape_cross_dim_cpu()
+        @test cpu_alloc == 0
+    end
+
+    @testset "GPU: same-dim reshape zero-alloc" begin
+        pool = get_task_local_cuda_pool()
+        reset!(pool)
+
+        function test_reshape_same_dim_gpu()
+            @with_pool :cuda p begin
+                A = acquire!(p, Float64, 3, 4)
+                CUDA.fill!(A, 1.0)
+                # 2D → 2D (same-dim: in-place setfield!, no pool interaction)
+                B = reshape!(p, A, 4, 3)
+                CUDA.fill!(B, 2.0)
+            end
+        end
+
+        test_reshape_same_dim_gpu()
+        test_reshape_same_dim_gpu()
+        GC.gc(); CUDA.reclaim()
+
+        gpu_alloc = CUDA.@allocated test_reshape_same_dim_gpu()
+        @test gpu_alloc == 0
+    end
+
+    @testset "GPU: mixed reshape sequence zero-alloc" begin
+        pool = get_task_local_cuda_pool()
+        reset!(pool)
+
+        function test_reshape_mixed_gpu()
+            @with_pool :cuda p begin
+                A = acquire!(p, Float64, 24)
+                CUDA.fill!(A, 1.0)
+                B = reshape!(p, A, 4, 6)       # 1D → 2D
+                C = reshape!(p, A, 2, 3, 4)    # 1D → 3D
+                CUDA.fill!(B, 2.0)
+                CUDA.fill!(C, 3.0)
+            end
+        end
+
+        test_reshape_mixed_gpu()
+        test_reshape_mixed_gpu()
+        GC.gc(); CUDA.reclaim()
+
+        gpu_alloc = CUDA.@allocated test_reshape_mixed_gpu()
+        @test gpu_alloc == 0
+    end
+
+    @testset "Correctness: data sharing through reshape" begin
+        pool = get_task_local_cuda_pool()
+        reset!(pool)
+
+        @with_pool :cuda p begin
+            A = acquire!(p, Float64, 12)
+            CUDA.fill!(A, 1.0)
+            B = reshape!(p, A, 3, 4)
+            @test size(B) == (3, 4)
+            @test B isa CuArray{Float64, 2}
+            # Data identity: B shares GPU memory with A
+            @test length(B) == length(A)
+        end
+    end
+
+    @testset "DimensionMismatch" begin
+        pool = get_task_local_cuda_pool()
+        reset!(pool)
+
+        @with_pool :cuda p begin
+            A = acquire!(p, Float64, 12)
+            @test_throws DimensionMismatch reshape!(p, A, 5, 5)
+        end
+    end
+
+end
+
 @testset "arr_wrappers: Resize Behavior" begin
 
     @testset "Resize: GPU zero-alloc maintained" begin

@@ -193,10 +193,7 @@ end
 end
 
 @inline function AdaptiveArrayPools._unsafe_acquire_impl!(pool::CuAdaptiveArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
-    tp = get_typed_pool!(pool, T)
-    result = get_array!(tp, dims)
-    _maybe_record_borrow!(pool, tp)
-    return result
+    return _unsafe_acquire_impl!(pool, T, dims...)
 end
 
 # ==============================================================================

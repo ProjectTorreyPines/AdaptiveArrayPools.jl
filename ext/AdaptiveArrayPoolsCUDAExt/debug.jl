@@ -18,7 +18,7 @@
 
 using AdaptiveArrayPools: _safety_level, _validate_pool_return,
     _set_pending_callsite!, _maybe_record_borrow!,
-    _invalidate_released_slots!,
+    _invalidate_released_slots!, _zero_dims_tuple,
     _throw_pool_escape_error,
     POOL_DEBUG, POOL_SAFETY_LV,
     PoolRuntimeEscapeError
@@ -72,7 +72,7 @@ end
         for i in (new_n + 1):min(old_n_active, length(wrappers))
             wrapper = @inbounds wrappers[i]
             wrapper === nothing && continue
-            setfield!(wrapper::CuArray, :dims, ntuple(_ -> 0, N_idx))
+            setfield!(wrapper::CuArray, :dims, _zero_dims_tuple(N_idx))
         end
     end
     return nothing
