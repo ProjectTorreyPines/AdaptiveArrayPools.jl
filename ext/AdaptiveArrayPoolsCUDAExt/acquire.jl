@@ -39,9 +39,11 @@ using AdaptiveArrayPools: get_view!, get_array!, allocate_vector, safe_prod,
 using CUDA.GPUArrays: unsafe_free!
 
 # Guard against CUDA.jl internal API changes (tested with v5.x).
-@static if !(ismutabletype(CuArray) && hasfield(CuArray, :dims) &&
-             hasfield(CuArray, :data) && hasfield(CuArray, :maxsize) &&
-             hasfield(CuArray, :offset))
+@static if !(
+        ismutabletype(CuArray) && hasfield(CuArray, :dims) &&
+            hasfield(CuArray, :data) && hasfield(CuArray, :maxsize) &&
+            hasfield(CuArray, :offset)
+    )
     error("Unsupported CUDA.jl version: CuArray must be mutable with :data, :dims, :maxsize, :offset fields.")
 end
 
@@ -245,7 +247,7 @@ stores in `arr_wrappers[N][slot]` via `_store_arr_wrapper!` (reuses base module 
     end
 
     # Cache miss: create wrapper sharing vec's GPU memory
-    cu = CuArray{T, N}(copy(vec.data), dims; maxsize=vec.maxsize, offset=0)
+    cu = CuArray{T, N}(copy(vec.data), dims; maxsize = vec.maxsize, offset = 0)
     _store_arr_wrapper!(tp, N, slot, cu)
     return cu
 end
@@ -305,7 +307,7 @@ Zero-allocation reshape for CuArray using `setfield!`-based wrapper reuse.
     end
 
     # Cache miss (first call per slot+N): create wrapper, cache forever
-    cu = CuArray{T, N}(copy(A.data), dims; maxsize=A.maxsize, offset=A.offset)
+    cu = CuArray{T, N}(copy(A.data), dims; maxsize = A.maxsize, offset = A.offset)
     _store_arr_wrapper!(tp, N, slot, cu)
     return cu
 end
