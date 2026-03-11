@@ -95,11 +95,11 @@ CUDA.jl's resize! unnecessarily (especially after safety invalidation sets dims=
         push!(tp.vectors, allocate_vector(tp, total_len))
         _check_pool_growth(tp, idx)
     else
-        @inbounds vec = tp.vectors[idx]
-        cap = vec.maxsize ÷ _aligned_sizeof(T)
-        if cap < total_len
-            resize!(vec, total_len)   # Need more GPU memory
-        end
+        # _resize_to_fit! handles all cases:
+        # - n > capacity: resize! (GPU alloc)
+        # - n != length: setfield!(:dims) — restores length after safety invalidation
+        # - n == length: no-op (hot path)
+        _resize_to_fit!(@inbounds(tp.vectors[idx]), total_len)
     end
     return idx
 end
