@@ -10,19 +10,6 @@ module AdaptiveArrayPoolsCUDAExt
 
 using AdaptiveArrayPools
 using AdaptiveArrayPools: AbstractTypedPool, AbstractArrayPool
-using Preferences: @load_preference, @set_preferences!
-
-# N-way view cache configuration (CUDA only — CPU ≥1.11 uses slot-first _claim_slot!).
-# GPU view/reshape allocates ~80 bytes on CPU heap, so caching still matters.
-const CACHE_WAYS = let
-    ways = @load_preference("cache_ways", 4)::Int
-    if ways < 1 || ways > 16
-        @warn "CACHE_WAYS=$ways out of range [1,16], using default 4"
-        4
-    else
-        ways
-    end
-end
 using CUDA
 
 # Type definitions
@@ -31,7 +18,7 @@ include("types.jl")
 # Dispatch methods (allocate_vector, wrap_array, get_typed_pool!)
 include("dispatch.jl")
 
-# GPU-specific get_view! implementation
+# GPU-specific acquire (arr_wrappers + setfield!, _resize_to_fit!, _reshape_impl!)
 include("acquire.jl")
 
 # Task-local pool (multi-device aware)

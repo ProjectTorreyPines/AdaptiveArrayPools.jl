@@ -169,53 +169,68 @@
 
 end
 
-@testset "_resize_without_shrink! GPU memory preservation" begin
-    _resize_without_shrink! = ext._resize_without_shrink!
+@testset "_resize_to_fit! GPU memory preservation" begin
+    _resize_to_fit! = ext._resize_to_fit!
 
     @testset "Shrink preserves GPU pointer" begin
         v = CUDA.zeros(Float32, 1000)
         ptr = UInt(pointer(v))
-        _resize_without_shrink!(v, 100)
+        _resize_to_fit!(v, 100)
         @test length(v) == 100
         @test UInt(pointer(v)) == ptr
     end
 
-    @testset "Grow-back within maxsize: no realloc" begin
+    @testset "Grow-back within capacity: no realloc" begin
         v = CUDA.zeros(Float32, 1000)
         ptr = UInt(pointer(v))
         # Shrink first
-        _resize_without_shrink!(v, 100)
+        _resize_to_fit!(v, 100)
         @test length(v) == 100
         @test UInt(pointer(v)) == ptr
         # Grow back to original size — maxsize preserved, so no GPU realloc
-        _resize_without_shrink!(v, 1000)
+        _resize_to_fit!(v, 1000)
         @test length(v) == 1000
         @test UInt(pointer(v)) == ptr
     end
 
-    @testset "Shrink to 0 preserves pointer" begin
+    @testset "Shrink to 0, grow back preserves pointer" begin
         v = CUDA.zeros(Float32, 500)
         ptr = UInt(pointer(v))
-        _resize_without_shrink!(v, 0)
+        _resize_to_fit!(v, 0)
         @test length(v) == 0
         # GPU memory still allocated (not freed)
-        # Grow back from 0
-        _resize_without_shrink!(v, 500)
+        # Grow back from 0 — within capacity, so no GPU realloc
+        _resize_to_fit!(v, 500)
         @test length(v) == 500
         @test UInt(pointer(v)) == ptr
+    end
+
+    @testset "Grow within capacity after invalidation: no realloc" begin
+        # This is the key test: after safety invalidation (dims→0),
+        # re-acquire within original capacity should NOT trigger GPU realloc.
+        # (CUDA.jl v5.9.x resize! would always reallocate; _resize_to_fit! avoids this)
+        v = CUDA.zeros(Float32, 1000)
+        ptr = UInt(pointer(v))
+        # Simulate safety invalidation
+        _resize_to_fit!(v, 0)
+        @test length(v) == 0
+        # Re-acquire at smaller size (still within original capacity)
+        _resize_to_fit!(v, 200)
+        @test length(v) == 200
+        @test UInt(pointer(v)) == ptr  # Same GPU buffer
     end
 
     @testset "No-op when n == length" begin
         v = CUDA.zeros(Float32, 200)
         ptr = UInt(pointer(v))
-        _resize_without_shrink!(v, 200)
+        _resize_to_fit!(v, 200)
         @test length(v) == 200
         @test UInt(pointer(v)) == ptr
     end
 
-    @testset "Grow beyond maxsize delegates to resize!" begin
+    @testset "Grow beyond capacity delegates to resize!" begin
         v = CUDA.zeros(Float32, 100)
-        _resize_without_shrink!(v, 10_000)
+        _resize_to_fit!(v, 10_000)
         @test length(v) == 10_000
         # Pointer may change (new allocation) — just verify length is correct
     end

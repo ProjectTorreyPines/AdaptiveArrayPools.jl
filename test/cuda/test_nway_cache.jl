@@ -1,8 +1,10 @@
-# CUDA N-way Cache Tests
-# Verifies N-way cache behavior for CuArray wrapper reuse
-# Key: 4-way cache means 4 dimension patterns = zero-alloc, 5+ = allocation
+# CUDA arr_wrappers Tests
+# Verifies setfield!-based CuArray wrapper reuse for zero-allocation acquire.
+# Key: arr_wrappers[N][slot] caches one CuArray{T,N} per (dimensionality N, slot).
+# Same N = setfield!(:dims) → zero-alloc for unlimited dimension patterns.
+# Different N = separate wrapper per N.
 
-@testset "N-way Cache Types" begin
+@testset "CuArray Wrapper Types" begin
 
     @testset "acquire! returns CuArray" begin
         @with_pool :cuda pool begin
@@ -28,32 +30,24 @@
         end
     end
 
-    @testset "CACHE_WAYS configuration" begin
-        # CACHE_WAYS is defined in CUDA extension (CPU ≥1.11 no longer uses view caching)
-        CUDAExt = Base.get_extension(AdaptiveArrayPools, :AdaptiveArrayPoolsCUDAExt)
-        @test CUDAExt.CACHE_WAYS isa Int
-        @test 1 <= CUDAExt.CACHE_WAYS <= 16
-    end
-
 end
 
-@testset "N-way Cache Behavior" begin
+@testset "arr_wrappers: Unlimited Same-N Patterns" begin
 
-    # Key principles:
-    # 1. GPU allocation should ALWAYS be 0 (memory reused from pool)
-    # 2. CPU allocation: cache hit (4-way) = 0, cache miss (5-way) = >0
+    # With arr_wrappers, same-N dimension patterns use setfield!(:dims).
+    # Unlike the old 4-way cache, there is NO eviction — unlimited patterns per N.
 
     # =========================================================================
     # GPU Allocation Tests (with fill! to actually use the arrays)
     # =========================================================================
 
-    @testset "GPU: 4-way zero-alloc" begin
+    @testset "GPU: 4 patterns zero-alloc" begin
         pool = get_task_local_cuda_pool()
         reset!(pool)
 
         dims_list = ((10, 10), (5, 20), (20, 5), (4, 25))
 
-        function test_4way_gpu()
+        function test_4pat_gpu()
             for dims in dims_list
                 @with_pool :cuda p begin
                     A = acquire!(p, Float64, dims...)
@@ -63,21 +57,21 @@ end
         end
 
         # Warmup
-        test_4way_gpu()
-        test_4way_gpu()
+        test_4pat_gpu()
+        test_4pat_gpu()
         GC.gc(); CUDA.reclaim()
 
-        gpu_alloc = CUDA.@allocated test_4way_gpu()
+        gpu_alloc = CUDA.@allocated test_4pat_gpu()
         @test gpu_alloc == 0
     end
 
-    @testset "GPU: 5-way zero-alloc (even with cache miss)" begin
+    @testset "GPU: 5+ patterns zero-alloc (no eviction with arr_wrappers)" begin
         pool = get_task_local_cuda_pool()
         reset!(pool)
 
         dims_list = ((10, 10), (5, 20), (20, 5), (4, 25), (2, 50))
 
-        function test_5way_gpu()
+        function test_5pat_gpu()
             for dims in dims_list
                 @with_pool :cuda p begin
                     A = acquire!(p, Float64, dims...)
@@ -87,11 +81,11 @@ end
         end
 
         # Warmup
-        test_5way_gpu()
-        test_5way_gpu()
+        test_5pat_gpu()
+        test_5pat_gpu()
         GC.gc(); CUDA.reclaim()
 
-        gpu_alloc = CUDA.@allocated test_5way_gpu()
+        gpu_alloc = CUDA.@allocated test_5pat_gpu()
         @test gpu_alloc == 0
     end
 
@@ -99,13 +93,13 @@ end
     # CPU Allocation Tests (no fill! to avoid CUDA kernel overhead)
     # =========================================================================
 
-    @testset "CPU: 4-way zero-alloc (cache hit)" begin
+    @testset "CPU: 4 patterns zero-alloc" begin
         pool = get_task_local_cuda_pool()
         reset!(pool)
 
         dims_list = ((10, 10), (5, 20), (20, 5), (4, 25))
 
-        function test_4way_cpu()
+        function test_4pat_cpu()
             for dims in dims_list
                 @with_pool :cuda p begin
                     _ = acquire!(p, Float64, dims...)
@@ -114,21 +108,22 @@ end
         end
 
         # Warmup
-        test_4way_cpu()
-        test_4way_cpu()
+        test_4pat_cpu()
+        test_4pat_cpu()
         GC.gc()
 
-        cpu_alloc = @allocated test_4way_cpu()
-        @test cpu_alloc == 0  # 4 patterns fit in 4-way cache
+        cpu_alloc = @allocated test_4pat_cpu()
+        @test cpu_alloc == 0
     end
 
-    @testset "CPU: 5-way causes allocation (cache miss)" begin
+    @testset "CPU: 5+ patterns zero-alloc (arr_wrappers: same-N uses setfield!)" begin
         pool = get_task_local_cuda_pool()
         reset!(pool)
 
+        # All 2D — same N=2 → single wrapper per slot, setfield!(:dims) only
         dims_list = ((10, 10), (5, 20), (20, 5), (4, 25), (2, 50))
 
-        function test_5way_cpu()
+        function test_5pat_cpu()
             for dims in dims_list
                 @with_pool :cuda p begin
                     _ = acquire!(p, Float64, dims...)
@@ -137,25 +132,25 @@ end
         end
 
         # Warmup
-        test_5way_cpu()
-        test_5way_cpu()
+        test_5pat_cpu()
+        test_5pat_cpu()
         GC.gc()
 
-        cpu_alloc = @allocated test_5way_cpu()
-        @test cpu_alloc > 0  # 5 patterns exceed 4-way cache
+        cpu_alloc = @allocated test_5pat_cpu()
+        @test cpu_alloc == 0  # No eviction — arr_wrappers support unlimited same-N patterns
     end
 
     # =========================================================================
     # unsafe_acquire! Tests
     # =========================================================================
 
-    @testset "unsafe_acquire! GPU: 4-way zero-alloc" begin
+    @testset "unsafe_acquire! GPU: 4 patterns zero-alloc" begin
         pool = get_task_local_cuda_pool()
         reset!(pool)
 
         dims_list = ((8, 8), (4, 16), (16, 4), (2, 32))
 
-        function test_unsafe_4way_gpu()
+        function test_unsafe_4pat_gpu()
             for dims in dims_list
                 @with_pool :cuda p begin
                     A = unsafe_acquire!(p, Float64, dims...)
@@ -165,21 +160,21 @@ end
         end
 
         # Warmup
-        test_unsafe_4way_gpu()
-        test_unsafe_4way_gpu()
+        test_unsafe_4pat_gpu()
+        test_unsafe_4pat_gpu()
         GC.gc(); CUDA.reclaim()
 
-        gpu_alloc = CUDA.@allocated test_unsafe_4way_gpu()
+        gpu_alloc = CUDA.@allocated test_unsafe_4pat_gpu()
         @test gpu_alloc == 0
     end
 
-    @testset "unsafe_acquire! CPU: 4-way zero-alloc" begin
+    @testset "unsafe_acquire! CPU: 4 patterns zero-alloc" begin
         pool = get_task_local_cuda_pool()
         reset!(pool)
 
         dims_list = ((8, 8), (4, 16), (16, 4), (2, 32))
 
-        function test_unsafe_4way_cpu()
+        function test_unsafe_4pat_cpu()
             for dims in dims_list
                 @with_pool :cuda p begin
                     _ = unsafe_acquire!(p, Float64, dims...)
@@ -188,21 +183,21 @@ end
         end
 
         # Warmup
-        test_unsafe_4way_cpu()
-        test_unsafe_4way_cpu()
+        test_unsafe_4pat_cpu()
+        test_unsafe_4pat_cpu()
         GC.gc()
 
-        cpu_alloc = @allocated test_unsafe_4way_cpu()
+        cpu_alloc = @allocated test_unsafe_4pat_cpu()
         @test cpu_alloc == 0
     end
 
-    @testset "unsafe_acquire! CPU: 5-way causes allocation" begin
+    @testset "unsafe_acquire! CPU: 5+ patterns zero-alloc" begin
         pool = get_task_local_cuda_pool()
         reset!(pool)
 
         dims_list = ((8, 8), (4, 16), (16, 4), (2, 32), (32, 2))
 
-        function test_unsafe_5way_cpu()
+        function test_unsafe_5pat_cpu()
             for dims in dims_list
                 @with_pool :cuda p begin
                     _ = unsafe_acquire!(p, Float64, dims...)
@@ -211,17 +206,17 @@ end
         end
 
         # Warmup
-        test_unsafe_5way_cpu()
-        test_unsafe_5way_cpu()
+        test_unsafe_5pat_cpu()
+        test_unsafe_5pat_cpu()
         GC.gc()
 
-        cpu_alloc = @allocated test_unsafe_5way_cpu()
-        @test cpu_alloc > 0
+        cpu_alloc = @allocated test_unsafe_5pat_cpu()
+        @test cpu_alloc == 0  # arr_wrappers: unlimited same-N patterns
     end
 
 end
 
-@testset "N-way Cache: Loop Patterns" begin
+@testset "arr_wrappers: Loop Patterns" begin
 
     @testset "100 iterations: GPU always zero-alloc" begin
         pool = get_task_local_cuda_pool()
@@ -229,7 +224,7 @@ end
 
         dims_list = ((10, 10), (5, 20), (20, 5), (4, 25))
 
-        function test_loop_4way()
+        function test_loop_4pat()
             for _ in 1:100
                 for dims in dims_list
                     @with_pool :cuda p begin
@@ -241,20 +236,20 @@ end
         end
 
         # Warmup
-        test_loop_4way()
+        test_loop_4pat()
         GC.gc(); CUDA.reclaim()
 
-        gpu_alloc = CUDA.@allocated test_loop_4way()
+        gpu_alloc = CUDA.@allocated test_loop_4pat()
         @test gpu_alloc == 0  # GPU memory always reused
     end
 
-    @testset "100 iterations with 5 patterns: GPU still zero-alloc" begin
+    @testset "100 iterations with 5+ patterns: GPU still zero-alloc" begin
         pool = get_task_local_cuda_pool()
         reset!(pool)
 
         dims_list = ((10, 10), (5, 20), (20, 5), (4, 25), (2, 50))
 
-        function test_loop_5way()
+        function test_loop_5pat()
             for _ in 1:100
                 for dims in dims_list
                     @with_pool :cuda p begin
@@ -266,16 +261,16 @@ end
         end
 
         # Warmup
-        test_loop_5way()
+        test_loop_5pat()
         GC.gc(); CUDA.reclaim()
 
-        gpu_alloc = CUDA.@allocated test_loop_5way()
-        @test gpu_alloc == 0  # GPU memory reused even with cache thrashing
+        gpu_alloc = CUDA.@allocated test_loop_5pat()
+        @test gpu_alloc == 0  # GPU memory reused — no cache eviction
     end
 
 end
 
-@testset "N-way Cache: Multiple Slots" begin
+@testset "arr_wrappers: Multiple Slots" begin
 
     @testset "Multiple arrays per iteration: GPU zero-alloc" begin
         pool = get_task_local_cuda_pool()
@@ -306,7 +301,6 @@ end
         reset!(pool)
 
         # Use same dims for both slots, just vary across iterations
-        # This tests GPU memory reuse, not cache behavior
         dims_list = ((10, 10), (5, 20), (20, 5), (4, 25))
 
         function test_multi_slot_varying()
@@ -331,7 +325,7 @@ end
 
 end
 
-@testset "N-way Cache: Resize Behavior" begin
+@testset "arr_wrappers: Resize Behavior" begin
 
     @testset "Resize: GPU zero-alloc maintained" begin
         pool = get_task_local_cuda_pool()

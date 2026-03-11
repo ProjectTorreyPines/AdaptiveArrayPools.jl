@@ -56,7 +56,7 @@ _cuda_test_leak(x) = x
     # ==============================================================================
     # Level 1: Poisoning + structural invalidation (length → 0)
     # ==============================================================================
-    # CUDA Level 1 now: poison fill → _resize_without_shrink!(vec, 0)
+    # CUDA Level 1 now: poison fill → _resize_to_fit!(vec, 0) + arr_wrappers invalidation
     # Backing vector length becomes 0 (GPU memory preserved via maxsize).
     # Poison data persists in GPU memory and is visible on re-acquire (grow-back).
 
@@ -141,17 +141,22 @@ _cuda_test_leak(x) = x
         rewind!(pool)
     end
 
-    @testset "Level 1: N-way cache invalidated on poisoned rewind" begin
+    @testset "Level 1: arr_wrappers invalidated on poisoned rewind" begin
         pool = _make_cuda_pool(1)
         checkpoint!(pool)
         v = acquire!(pool, Float32, 10)
         CUDA.fill!(v, 1.0f0)
         rewind!(pool)
 
-        # Cached views should be cleared (nothing) after poisoning
-        base = 0 * ext.CACHE_WAYS
-        for k in 1:ext.CACHE_WAYS
-            @test pool.float32.views[base + k] === nothing
+        # arr_wrappers for released slots should have zero-dims after invalidation
+        tp = pool.float32
+        for N_idx in 1:length(tp.arr_wrappers)
+            wrappers_for_N = tp.arr_wrappers[N_idx]
+            wrappers_for_N === nothing && continue
+            for wrapper in wrappers_for_N
+                wrapper === nothing && continue
+                @test all(==(0), size(wrapper))
+            end
         end
     end
 
