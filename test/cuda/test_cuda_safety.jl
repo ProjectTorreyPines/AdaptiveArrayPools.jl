@@ -54,8 +54,22 @@ _cuda_test_leak(x) = x
     end
 
     # ==============================================================================
-    # Level 1: Poisoning (CUDA equivalent of CPU's resize! invalidation)
+    # Level 1: Poisoning + structural invalidation (length → 0)
     # ==============================================================================
+    # CUDA Level 1 now: poison fill → _resize_without_shrink!(vec, 0)
+    # Backing vector length becomes 0 (GPU memory preserved via maxsize).
+    # Poison data persists in GPU memory and is visible on re-acquire (grow-back).
+
+    @testset "Level 1: released vectors have length 0 after rewind" begin
+        pool = _make_cuda_pool(1)
+        checkpoint!(pool)
+        v = acquire!(pool, Float32, 100)
+        CUDA.fill!(v, 42.0f0)
+        rewind!(pool)
+
+        # Structural invalidation: length → 0 (matches CPU behavior)
+        @test length(pool.float32.vectors[1]) == 0
+    end
 
     @testset "Level 1: Float32 poisoned with NaN on rewind" begin
         pool = _make_cuda_pool(1)
@@ -64,12 +78,10 @@ _cuda_test_leak(x) = x
         CUDA.fill!(v, 42.0f0)
         rewind!(pool)
 
-        # Backing vector should be poisoned with NaN (NOT freed via resize!)
-        @test length(pool.float32.vectors[1]) >= 10
-        cpu_data = Array(pool.float32.vectors[1])
-        @test all(isnan, cpu_data[1:10])
+        # Backing vector length is 0 after invalidation
+        @test length(pool.float32.vectors[1]) == 0
 
-        # Re-acquire: should see poisoned data
+        # Re-acquire: grow-back reuses same GPU memory → poison data visible
         checkpoint!(pool)
         v2 = acquire!(pool, Float32, 10)
         @test all(isnan, Array(v2))
@@ -83,8 +95,11 @@ _cuda_test_leak(x) = x
         CUDA.fill!(v, Int32(42))
         rewind!(pool)
 
-        cpu_data = Array(pool.int32.vectors[1])
-        @test all(==(typemax(Int32)), cpu_data[1:8])
+        # Verify via re-acquire (backing vector length is 0 after invalidation)
+        checkpoint!(pool)
+        v2 = acquire!(pool, Int32, 8)
+        @test all(==(typemax(Int32)), Array(v2))
+        rewind!(pool)
     end
 
     @testset "Level 1: ComplexF32 poisoned with NaN on rewind" begin
@@ -94,8 +109,10 @@ _cuda_test_leak(x) = x
         CUDA.fill!(v, ComplexF32(1.0f0 + 2.0f0im))
         rewind!(pool)
 
-        cpu_data = Array(pool.complexf32.vectors[1])
-        @test all(z -> isnan(real(z)) && isnan(imag(z)), cpu_data[1:8])
+        checkpoint!(pool)
+        v2 = acquire!(pool, ComplexF32, 8)
+        @test all(z -> isnan(real(z)) && isnan(imag(z)), Array(v2))
+        rewind!(pool)
     end
 
     @testset "Level 1: Bool poisoned with true on rewind" begin
@@ -105,8 +122,10 @@ _cuda_test_leak(x) = x
         CUDA.fill!(v, false)
         rewind!(pool)
 
-        cpu_data = Array(pool.bool.vectors[1])
-        @test all(==(true), cpu_data[1:16])
+        checkpoint!(pool)
+        v2 = acquire!(pool, Bool, 16)
+        @test all(==(true), Array(v2))
+        rewind!(pool)
     end
 
     @testset "Level 1: Float16 poisoned with NaN on rewind" begin
@@ -116,8 +135,10 @@ _cuda_test_leak(x) = x
         CUDA.fill!(v, Float16(42.0))
         rewind!(pool)
 
-        cpu_data = Array(pool.float16.vectors[1])
-        @test all(isnan, cpu_data[1:10])
+        checkpoint!(pool)
+        v2 = acquire!(pool, Float16, 10)
+        @test all(isnan, Array(v2))
+        rewind!(pool)
     end
 
     @testset "Level 1: N-way cache invalidated on poisoned rewind" begin
@@ -330,18 +351,26 @@ _cuda_test_leak(x) = x
         CUDA.fill!(v_inner, 2.0f0)
         rewind!(pool)
 
-        # Inner should be poisoned (slot 2 released)
-        cpu_inner = Array(pool.float32.vectors[2])
-        @test all(isnan, cpu_inner[1:20])
+        # Inner should be invalidated (slot 2: length → 0, poisoned)
+        @test length(pool.float32.vectors[2]) == 0
+        # Verify poison via re-acquire
+        checkpoint!(pool)
+        v_inner2 = acquire!(pool, Float32, 20)
+        @test all(isnan, Array(v_inner2))
+        rewind!(pool)
 
         # Outer should still be valid (slot 1 not released)
         cpu_outer = Array(v_outer)
         @test all(x -> x == 1.0f0, cpu_outer)
 
         rewind!(pool)
-        # Now outer is also poisoned
-        cpu_outer_after = Array(pool.float32.vectors[1])
-        @test all(isnan, cpu_outer_after[1:10])
+        # Now outer is also invalidated (length → 0, poisoned)
+        @test length(pool.float32.vectors[1]) == 0
+        # Verify poison via re-acquire
+        checkpoint!(pool)
+        v_outer2 = acquire!(pool, Float32, 10)
+        @test all(isnan, Array(v_outer2))
+        rewind!(pool)
     end
 
     # ==============================================================================
@@ -410,9 +439,15 @@ _cuda_test_leak(x) = x
         CUDA.fill!(v, UInt8(42))
         rewind!(pool)
 
+        # Backing vector length → 0 after invalidation
         tp = pool.others[UInt8]
-        cpu_data = Array(tp.vectors[1])
-        @test all(==(typemax(UInt8)), cpu_data[1:16])
+        @test length(tp.vectors[1]) == 0
+
+        # Verify poison via re-acquire
+        checkpoint!(pool)
+        v2 = acquire!(pool, UInt8, 16)
+        @test all(==(typemax(UInt8)), Array(v2))
+        rewind!(pool)
     end
 
     # ==============================================================================

@@ -57,6 +57,9 @@ end
     for i in (new_n + 1):old_n_active
         # Poison released CuVectors with sentinel values
         _cuda_poison_fill!(@inbounds tp.vectors[i])
+        # Shrink logical length to 0 (GPU memory preserved via _resize_without_shrink!).
+        # Matches CPU behavior where resize!(vec, 0) invalidates SubArray references.
+        _resize_without_shrink!(@inbounds(tp.vectors[i]), 0)
         # Invalidate N-way cache entries for released slots.
         # After poisoning, cached views point at poisoned data — clear them so
         # re-acquire creates fresh views instead of returning stale poisoned ones.
