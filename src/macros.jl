@@ -522,21 +522,37 @@ end
 # ==============================================================================
 
 """
-    _wrap_with_dispatch(pool_name_esc, pool_getter, inner_body)
+    _pool_type_for_backend(::Val{B}) -> Type
 
-Closureless union splitting: generates `let _raw = getter; if _raw isa T{0} ...`
-chain that narrows `pool_name` to concrete `AdaptiveArrayPool{S}` without closure.
+Returns the concrete pool type for a given backend, used at macro expansion time
+to generate closureless union splitting. Extensions override this for their backends.
+
+CPU returns `AdaptiveArrayPool`, CUDA extension returns `CuAdaptiveArrayPool`.
+"""
+_pool_type_for_backend(::Val{:cpu}) = AdaptiveArrayPool
+_pool_type_for_backend(::Val{B}) where {B} =
+    error("Pool backend :$B is not registered. Load the extension first (e.g., `using CUDA` for :cuda).")
+
+"""
+    _wrap_with_dispatch(pool_name_esc, pool_getter, inner_body; backend=:cpu)
+
+Closureless union splitting: generates `let _raw = getter; if _raw isa PoolType{0} ...`
+chain that narrows `pool_name` to concrete `PoolType{S}` without a closure.
 
 Eliminates Core.Box boxing that occurs when closure-based `_dispatch_pool_scope`
 gets inlined into outer callers crossing try/finally boundaries.
+
+The pool type is resolved at macro expansion time via `_pool_type_for_backend`,
+which extensions override (e.g., CUDA adds `CuAdaptiveArrayPool`).
 """
-function _wrap_with_dispatch(pool_name_esc, pool_getter, inner_body)
-    _AAP = GlobalRef(@__MODULE__, :AdaptiveArrayPool)
+function _wrap_with_dispatch(pool_name_esc, pool_getter, inner_body; backend::Symbol = :cpu)
+    PoolType = _pool_type_for_backend(Val{backend}())
+    _PT = GlobalRef(parentmodule(PoolType), nameof(PoolType))
     raw = gensym(:_raw_pool)
     # Fallback: S=3 (last branch, no condition needed)
-    chain = Expr(:let, Expr(:(=), pool_name_esc, :($raw::$_AAP{3})), inner_body)
+    chain = Expr(:let, Expr(:(=), pool_name_esc, :($raw::$_PT{3})), inner_body)
     for s in 2:-1:0
-        concrete_t = :($_AAP{$s})
+        concrete_t = :($_PT{$s})
         branch_body = Expr(:let, Expr(:(=), pool_name_esc, :($raw::$concrete_t)), inner_body)
         chain = Expr(:if, :($raw isa $concrete_t), branch_body, chain)
     end
@@ -705,7 +721,7 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, forc
                 $rewind_call
             end
         end
-        enabled_branch = _wrap_with_dispatch(esc(pool_name), pool_getter, inner)
+        enabled_branch = _wrap_with_dispatch(esc(pool_name), pool_getter, inner; backend)
         return quote
             if $MAYBE_POOLING[]
                 $enabled_branch
@@ -767,7 +783,7 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, forc
             $rewind_call
         end
     end
-    return _wrap_with_dispatch(esc(pool_name), pool_getter, inner)
+    return _wrap_with_dispatch(esc(pool_name), pool_getter, inner; backend)
 end
 
 """
@@ -840,11 +856,11 @@ function _generate_function_pool_code_with_backend(backend::Symbol, pool_name, f
 
     if force_enable
         new_body = quote
-            $(_wrap_with_dispatch(esc(pool_name), pool_getter, inner))
+            $(_wrap_with_dispatch(esc(pool_name), pool_getter, inner; backend))
         end
     else
         disabled_pool = _disabled_pool_expr(backend)
-        enabled_branch = _wrap_with_dispatch(esc(pool_name), pool_getter, inner)
+        enabled_branch = _wrap_with_dispatch(esc(pool_name), pool_getter, inner; backend)
         new_body = quote
             if $MAYBE_POOLING[]
                 $enabled_branch
