@@ -10,7 +10,7 @@ _test_leak(x) = x
     # ==============================================================================
 
     @testset "Default configuration" begin
-        @test RUNTIME_CHECK isa Bool
+        @test RUNTIME_CHECK isa Int
     end
 
     # ==============================================================================

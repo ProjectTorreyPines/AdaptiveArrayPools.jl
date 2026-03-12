@@ -143,8 +143,8 @@ function CuAdaptiveArrayPool{S}() where {S}
     )
 end
 
-"""Create pool with the default `RUNTIME_CHECK` setting."""
-CuAdaptiveArrayPool() = _make_cuda_pool(AdaptiveArrayPools.RUNTIME_CHECK)
+"""Create pool with the default `RUNTIME_CHECK` level."""
+CuAdaptiveArrayPool() = CuAdaptiveArrayPool{AdaptiveArrayPools.RUNTIME_CHECK}()
 
 # ==============================================================================
 # Runtime Check Dispatch
@@ -157,32 +157,34 @@ Return compile-time constant indicating whether runtime safety checks are enable
 `S >= 1` enables checks; `S == 0` disables (dead-code-eliminated).
 """
 @inline AdaptiveArrayPools._runtime_check(::CuAdaptiveArrayPool{0}) = false
-@inline AdaptiveArrayPools._runtime_check(::CuAdaptiveArrayPool{1}) = true
+@inline AdaptiveArrayPools._runtime_check(::CuAdaptiveArrayPool) = true  # S >= 1
 
 """
-    _make_cuda_pool(runtime_check::Bool) -> CuAdaptiveArrayPool
+    _make_cuda_pool(level) -> CuAdaptiveArrayPool
 
-Function barrier: converts runtime `Bool` to concrete `CuAdaptiveArrayPool{S}`.
-`false` → `CuAdaptiveArrayPool{0}`, `true` → `CuAdaptiveArrayPool{1}`.
+Function barrier: converts runtime check level to concrete `CuAdaptiveArrayPool{S}`.
+Accepts `Bool` (`true`→1, `false`→0) or `Int` (used directly as S).
 """
-@noinline function _make_cuda_pool(runtime_check::Bool)
-    runtime_check && return CuAdaptiveArrayPool{1}()
-    return CuAdaptiveArrayPool{0}()
+_make_cuda_pool(runtime_check::Bool) = _make_cuda_pool(Int(runtime_check))
+@noinline function _make_cuda_pool(S::Int)
+    S == 0 && return CuAdaptiveArrayPool{0}()
+    return CuAdaptiveArrayPool{1}()
 end
 
 """
-    _make_cuda_pool(runtime_check::Bool, old::CuAdaptiveArrayPool) -> CuAdaptiveArrayPool
+    _make_cuda_pool(level, old::CuAdaptiveArrayPool) -> CuAdaptiveArrayPool
 
 Create a new CUDA pool, transferring cached arrays and scope state from `old`.
 Only reference copies — no memory allocation for underlying GPU buffers.
 
 Transferred: all CuTypedPool slots, `others`, depth & touch tracking, device_id.
 Reset: `_pending_callsite/return_site` (transient macro state),
-       `_borrow_log` (created fresh when `runtime_check = true`).
+       `_borrow_log` (created fresh when S >= 1).
 """
-@noinline function _make_cuda_pool(runtime_check::Bool, old::CuAdaptiveArrayPool)
-    runtime_check && return _transfer_cuda_pool(Val(1), old)
-    return _transfer_cuda_pool(Val(0), old)
+_make_cuda_pool(runtime_check::Bool, old::CuAdaptiveArrayPool) = _make_cuda_pool(Int(runtime_check), old)
+@noinline function _make_cuda_pool(level::Int, old::CuAdaptiveArrayPool)
+    level == 0 && return _transfer_cuda_pool(Val(0), old)
+    return _transfer_cuda_pool(Val(1), old)
 end
 
 """Transfer cached arrays and scope state from `old` pool into a new `CuAdaptiveArrayPool{V}`."""

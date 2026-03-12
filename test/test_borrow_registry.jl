@@ -229,7 +229,7 @@ _test_leak(x) = x
 
         @test contains(msg, "acquired at")
         @test contains(msg, "test.jl:42")
-        @test contains(msg, "RUNTIME_CHECK = true")
+        @test contains(msg, "RUNTIME_CHECK >= 1")
         @test !contains(msg, "Tip:")
     end
 
@@ -270,7 +270,7 @@ _test_leak(x) = x
         msg = String(take!(io))
 
         @test !contains(msg, "acquired at")
-        @test contains(msg, "RUNTIME_CHECK = true")
+        @test contains(msg, "RUNTIME_CHECK >= 1")
     end
 
     # ==============================================================================

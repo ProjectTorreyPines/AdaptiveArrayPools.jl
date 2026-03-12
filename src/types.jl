@@ -299,22 +299,32 @@ const _TYPE_BITS_MASK = UInt16(0x00FF)  # bits 0-7: fixed-slot type bits
 # S is binary: 0 (off) or 1 (on), enabling dead-code elimination at compile time.
 #
 #   0 = off — zero overhead (default)
-#   1 = on  — runtime checks (invalidation, escape detection, etc.)
+#   1 = on  — full runtime checks (invalidation, poisoning, escape detection, borrow tracking)
+#
+# Int type allows future compile-time check levels (like -O0/-O1/-O2).
+# Currently only 0 and 1 are defined. LocalPreferences.toml accepts both
+# Bool (true/false) and Int (0/1).
 #
 using Preferences: @load_preference
 
-"""
-    RUNTIME_CHECK::Bool
+_normalize_runtime_check(v::Bool) = Int(v)
+_normalize_runtime_check(v::Integer) = Int(v)
 
-Compile-time constant controlling whether runtime safety checks are enabled by default.
+"""
+    RUNTIME_CHECK::Int
+
+Compile-time constant controlling the runtime safety check level.
+
+- `0` — off (zero overhead, default)
+- `1` — full checks (invalidation, poisoning, escape detection, borrow tracking)
 
 Set via `LocalPreferences.toml`:
 ```toml
 [AdaptiveArrayPools]
-runtime_check = true
+runtime_check = true   # or 1
 ```
 """
-const RUNTIME_CHECK = @load_preference("runtime_check", false)::Bool
+const RUNTIME_CHECK = _normalize_runtime_check(@load_preference("runtime_check", 0))
 
 # ==============================================================================
 # AdaptiveArrayPool
@@ -377,40 +387,42 @@ function AdaptiveArrayPool{S}() where {S}
     )
 end
 
-"""Create pool with the default `RUNTIME_CHECK` setting."""
-AdaptiveArrayPool() = _make_pool(RUNTIME_CHECK)
+"""Create pool with the default `RUNTIME_CHECK` level."""
+AdaptiveArrayPool() = AdaptiveArrayPool{RUNTIME_CHECK}()
 
 """
     _runtime_check(pool) -> Bool
 
-Return whether runtime safety checks are enabled for `pool`.
+Return whether runtime safety checks are enabled for `pool` (i.e., `S >= 1`).
 Compile-time constant for `AdaptiveArrayPool{S}` — dead-code eliminated when `S = 0`.
 """
 @inline _runtime_check(::AdaptiveArrayPool{0}) = false
-@inline _runtime_check(::AdaptiveArrayPool{1}) = true
+@inline _runtime_check(::AdaptiveArrayPool) = true  # S >= 1
 
 """
-    _make_pool(runtime_check::Bool) -> AdaptiveArrayPool
+    _make_pool(level) -> AdaptiveArrayPool
 
-Function barrier: converts runtime `Bool` to concrete `AdaptiveArrayPool{S}`.
-`false` → `AdaptiveArrayPool{0}`, `true` → `AdaptiveArrayPool{1}`.
+Function barrier: converts runtime check level to concrete `AdaptiveArrayPool{S}`.
+Accepts `Bool` (`true`→1, `false`→0) or `Int` (used directly as S).
 """
-@noinline function _make_pool(runtime_check::Bool)
-    runtime_check && return AdaptiveArrayPool{1}()
-    return AdaptiveArrayPool{0}()
+_make_pool(runtime_check::Bool) = _make_pool(Int(runtime_check))
+@noinline function _make_pool(S::Int)
+    S == 0 && return AdaptiveArrayPool{0}()
+    return AdaptiveArrayPool{1}()
 end
 
 """
-    _make_pool(runtime_check::Bool, old::AdaptiveArrayPool) -> AdaptiveArrayPool
+    _make_pool(level, old::AdaptiveArrayPool) -> AdaptiveArrayPool
 
 Create a new pool, transferring cached arrays and scope state from `old`.
 Only reference copies — no memory allocation for the underlying buffers.
 
 Transferred: all TypedPool/BitTypedPool slots, `others`, depth & touch tracking.
 Reset: `_pending_callsite/return_site` (transient macro state),
-       `_borrow_log` (created fresh when `runtime_check = true`).
+       `_borrow_log` (created fresh when S >= 1).
 """
-@noinline function _make_pool(runtime_check::Bool, old::AdaptiveArrayPool)
+_make_pool(runtime_check::Bool, old::AdaptiveArrayPool) = _make_pool(Int(runtime_check), old)
+@noinline function _make_pool(level::Int, old::AdaptiveArrayPool)
     _new(::Val{S}) where {S} = AdaptiveArrayPool{S}(
         old.float64, old.float32, old.int64, old.int32,
         old.complexf64, old.complexf32, old.bool, old.bits,
@@ -422,8 +434,8 @@ Reset: `_pending_callsite/return_site` (transient macro state),
         "",       # _pending_return_site: reset
         S >= 1 ? IdDict{Any, String}() : nothing  # _borrow_log
     )
-    runtime_check && return _new(Val(1))
-    return _new(Val(0))
+    level == 0 && return _new(Val(0))
+    return _new(Val(1))
 end
 
 # ==============================================================================

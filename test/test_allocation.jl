@@ -20,7 +20,7 @@ end
 
 
 @testset "zero allocation on reuse" begin
-    # RUNTIME_CHECK=false (default) → Pool{0}, no invalidation overhead.
+    # RUNTIME_CHECK=0 (default) → Pool{0}, no invalidation overhead.
     # Zero-alloc invariant holds because rewind-time resize!/setfield! is dead-code eliminated.
 
     # First call: JIT + initial cache miss (pool arrays + N-way bitarray cache)

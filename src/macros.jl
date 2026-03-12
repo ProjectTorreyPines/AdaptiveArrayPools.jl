@@ -535,12 +535,11 @@ _pool_type_for_backend(::Val{B}) where {B} = nothing  # unregistered backend —
 """
     _wrap_with_dispatch(pool_name_esc, pool_getter, inner_body; backend=:cpu)
 
-Direct type assertion: generates `let pool = getter::PoolType{RUNTIME_CHECK ? 1 : 0}`.
+Direct type assertion: generates `let pool = getter::PoolType{RUNTIME_CHECK}`.
 
-Since `RUNTIME_CHECK` is a compile-time `const Bool`, the pool type parameter S
-is resolved at compile time. No union splitting or runtime branching needed —
-`_runtime_check(pool)` returns a compile-time constant, enabling dead-code
-elimination of all safety branches when `RUNTIME_CHECK = false`.
+Since `RUNTIME_CHECK` is a compile-time `const Int`, the pool type parameter S
+is resolved at compile time. `_runtime_check(pool)` returns a compile-time Bool,
+enabling dead-code elimination of all safety branches when `RUNTIME_CHECK = 0`.
 
 The pool type is resolved at macro expansion time via `_pool_type_for_backend`,
 which extensions override (e.g., CUDA adds `CuAdaptiveArrayPool`).
@@ -553,8 +552,8 @@ function _wrap_with_dispatch(pool_name_esc, pool_getter, inner_body; backend::Sy
     end
     _PT = GlobalRef(parentmodule(PoolType), nameof(PoolType))
     _RC = GlobalRef(@__MODULE__, :RUNTIME_CHECK)
-    # RUNTIME_CHECK is const Bool → compiler resolves to literal S, zero branching.
-    concrete_t = :($_PT{$_RC ? 1 : 0})
+    # RUNTIME_CHECK is const Int → compiler resolves to literal S, zero branching.
+    concrete_t = :($_PT{$_RC})
     return Expr(:let, Expr(:(=), pool_name_esc, :($pool_getter::$concrete_t)), inner_body)
 end
 

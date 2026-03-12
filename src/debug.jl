@@ -1,5 +1,5 @@
 # ==============================================================================
-# Debugging & Safety (Runtime escape detection, RUNTIME_CHECK = true)
+# Debugging & Safety (Runtime escape detection, RUNTIME_CHECK >= 1)
 # ==============================================================================
 
 function _validate_pool_return(val, pool::AdaptiveArrayPool)
@@ -103,7 +103,7 @@ end
     PoolRuntimeEscapeError <: Exception
 
 Thrown at runtime when `_validate_pool_return` detects a pool-backed array
-escaping from an `@with_pool` scope (requires `RUNTIME_CHECK = true`).
+escaping from an `@with_pool` scope (requires `RUNTIME_CHECK >= 1`).
 
 This is the runtime counterpart of [`PoolEscapeError`](@ref) (compile-time).
 """
@@ -118,7 +118,7 @@ function Base.showerror(io::IO, e::PoolRuntimeEscapeError)
     has_callsite = e.callsite !== nothing
 
     printstyled(io, "PoolEscapeError"; color = :red, bold = true)
-    printstyled(io, " (runtime, RUNTIME_CHECK = true)"; color = :light_black)
+    printstyled(io, " (runtime, RUNTIME_CHECK >= 1)"; color = :light_black)
     println(io)
 
     println(io)

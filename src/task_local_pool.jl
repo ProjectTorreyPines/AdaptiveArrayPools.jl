@@ -83,8 +83,8 @@ Each Task gets its own pool instance via `task_local_storage()`,
 ensuring thread safety without locks.
 
 The pool type is `AdaptiveArrayPool{S}` where `S` is determined by
-the compile-time constant `RUNTIME_CHECK`. Macro-generated code
-type-asserts directly to `AdaptiveArrayPool{RUNTIME_CHECK ? 1 : 0}`.
+the compile-time constant `RUNTIME_CHECK::Int`. Macro-generated code
+type-asserts directly to `AdaptiveArrayPool{RUNTIME_CHECK}`.
 """
 @inline function get_task_local_pool()
     # 1. Fast Path: Try to get existing pool
