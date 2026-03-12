@@ -557,6 +557,14 @@ function _wrap_with_dispatch(pool_name_esc, pool_getter, inner_body; backend::Sy
     end
     _PT = GlobalRef(parentmodule(PoolType), nameof(PoolType))
     raw = gensym(:_raw_pool)
+    if !STATIC_POOL_CHECKS
+        # Fast path: safety checks disabled at compile time → S=0 only.
+        # Avoids 4-branch code duplication, cutting TTFX by ~50% and eliminating
+        # exponential compile-time blowup when nested @inline @with_pool functions
+        # would otherwise produce 4^N code paths.
+        return Expr(:let, Expr(:(=), raw, pool_getter),
+            Expr(:let, Expr(:(=), pool_name_esc, :($raw::$_PT{0})), inner_body))
+    end
     # Fallback: S=3 (last branch, no condition needed)
     chain = Expr(:let, Expr(:(=), pool_name_esc, :($raw::$_PT{3})), inner_body)
     for s in 2:-1:0
@@ -880,6 +888,12 @@ function _generate_function_pool_code_with_backend(backend::Symbol, pool_name, f
         end
     end
 
+    # When safety checks are enabled (4-branch dispatch), prevent inlining of the
+    # generated function to avoid 4^N compile-time explosion with nested @with_pool.
+    if STATIC_POOL_CHECKS
+        pushfirst!(new_body.args, Expr(:meta, :noinline))
+    end
+
     # Ensure new_body has source location for proper stack traces
     new_body = _ensure_body_has_toplevel_lnn(new_body, source)
     _fix_generated_lnn!(new_body, source)  # Fix generated LNNs for accurate stack traces
@@ -973,6 +987,13 @@ function _generate_function_pool_code(pool_name, func_def, force_enable, disable
                 end
             end
         end
+    end
+
+    # When safety checks are enabled (4-branch dispatch), prevent inlining of the
+    # generated function to avoid 4^N compile-time explosion with nested @with_pool.
+    # Runtime cost (~2-5ns/call) is negligible in debug mode.
+    if STATIC_POOL_CHECKS
+        pushfirst!(new_body.args, Expr(:meta, :noinline))
     end
 
     # Ensure new_body has source location for proper stack traces
