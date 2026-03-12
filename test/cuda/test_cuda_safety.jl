@@ -427,8 +427,9 @@ _cuda_test_leak(x) = x
             _validate_pool_return(_cuda_test_leak(v), pool)
             nothing
         catch e
-            rewind!(pool)
             e
+        finally
+            rewind!(pool)
         end
 
         @test err isa PoolRuntimeEscapeError

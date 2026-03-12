@@ -144,15 +144,14 @@ end
 Each `acquire!` call-site is recorded, so escape error messages pinpoint the exact source line and expression that allocated the escaping array:
 
 ```
-PoolEscapeError (runtime) — pool-backed array escaping @with_pool scope
+PoolEscapeError (runtime, RUNTIME_CHECK >= 1)
 
-  Leaked value:  SubArray{Float64, 1}
-  Backing type:  Float64
+    SubArray{Float64, 1, ...}
+      ← backed by Float64 pool memory, will be reclaimed at scope exit
+      ← acquired at src/solver.jl:42
+        v = acquire!(pool, Float64, n)
 
-  acquired at:   src/solver.jl:42
-                 v = acquire!(pool, Float64, n)
-
-  Enable RUNTIME_CHECK >= 1 to detect pool escapes at runtime.
+  Fix: Wrap with collect() to return an owned copy, or compute a scalar result.
 ```
 
 ## Recommended Workflow
