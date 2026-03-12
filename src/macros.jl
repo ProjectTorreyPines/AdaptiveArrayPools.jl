@@ -549,9 +549,11 @@ function _wrap_with_dispatch(pool_name_esc, pool_getter, inner_body; backend::Sy
     if PoolType === nothing
         # Unregistered backend: fall back to closure-based dispatch.
         # Runtime will error in _get_pool_for_backend if extension isn't loaded.
-        return :($(_DISPATCH_POOL_SCOPE_REF)($pool_getter) do $pool_name_esc
-            $inner_body
-        end)
+        return :(
+            $(_DISPATCH_POOL_SCOPE_REF)($pool_getter) do $pool_name_esc
+                $inner_body
+            end
+        )
     end
     _PT = GlobalRef(parentmodule(PoolType), nameof(PoolType))
     raw = gensym(:_raw_pool)
