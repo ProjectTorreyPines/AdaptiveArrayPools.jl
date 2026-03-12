@@ -490,8 +490,8 @@
             end
 
             body_str = string(expr.args[2])
-            # @with_pool has POOL_DEBUG check but NOT MAYBE_POOLING runtime toggle
-            @test occursin("_validate_pool_return", body_str)  # POOL_DEBUG present
+            # @with_pool has _runtime_check gate but NOT MAYBE_POOLING runtime toggle
+            @test occursin("_validate_pool_return", body_str)  # runtime check present
             @test !occursin("DisabledPool", body_str)          # No MAYBE_POOLING branch
             @test occursin("_get_pool_for_backend", body_str)
         end

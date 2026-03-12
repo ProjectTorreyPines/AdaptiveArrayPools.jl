@@ -1,20 +1,6 @@
 # ==============================================================================
-# Debugging & Safety (POOL_DEBUG escape detection)
+# Debugging & Safety (Runtime escape detection, RUNTIME_CHECK = true)
 # ==============================================================================
-
-"""
-    POOL_DEBUG
-
-Legacy flag for escape detection. Superseded by [`POOL_SAFETY_LV`](@ref).
-
-Setting `POOL_DEBUG[] = true` enables escape detection at `@with_pool` scope exit
-(equivalent to `RUNTIME_CHECK = true` behavior). Both flags are checked independently.
-
-For new code, prefer `set_safety_level!(1)` or `RUNTIME_CHECK = true`.
-
-Default: `false`
-"""
-const POOL_DEBUG = Ref(false)
 
 function _validate_pool_return(val, pool::AdaptiveArrayPool)
     # 0. Check BitArray / BitVector (bit-packed storage)
@@ -117,23 +103,22 @@ end
     PoolRuntimeEscapeError <: Exception
 
 Thrown at runtime when `_validate_pool_return` detects a pool-backed array
-escaping from an `@with_pool` scope (requires `RUNTIME_CHECK = true` or `POOL_DEBUG[] = true`).
+escaping from an `@with_pool` scope (requires `RUNTIME_CHECK = true`).
 
 This is the runtime counterpart of [`PoolEscapeError`](@ref) (compile-time).
 """
 struct PoolRuntimeEscapeError <: Exception
     val_summary::String
     pool_eltype::String
-    callsite::Union{Nothing, String}      # acquire location (LV ≥ 3)
-    return_site::Union{Nothing, String}   # return location (LV ≥ 3)
+    callsite::Union{Nothing, String}      # acquire location (S ≥ 1)
+    return_site::Union{Nothing, String}   # return location (S ≥ 1)
 end
 
 function Base.showerror(io::IO, e::PoolRuntimeEscapeError)
     has_callsite = e.callsite !== nothing
-    lv_label = has_callsite ? "POOL_SAFETY_LV ≥ 3" : "POOL_SAFETY_LV ≥ 2"
 
     printstyled(io, "PoolEscapeError"; color = :red, bold = true)
-    printstyled(io, " (runtime, ", lv_label, ")"; color = :light_black)
+    printstyled(io, " (runtime, RUNTIME_CHECK = true)"; color = :light_black)
     println(io)
 
     println(io)
@@ -187,13 +172,7 @@ function Base.showerror(io::IO, e::PoolRuntimeEscapeError)
     printstyled(io, "collect()"; bold = true)
     printstyled(io, " to return an owned copy, or compute a scalar result.\n"; color = :light_black)
 
-    return if !has_callsite
-        println(io)
-        printstyled(io, "  Tip: "; bold = true)
-        printstyled(io, "set "; color = :light_black)
-        printstyled(io, "POOL_SAFETY_LV[] = 3"; bold = true)
-        printstyled(io, " for acquire!() call-site tracking.\n"; color = :light_black)
-    end
+    return nothing
 end
 
 Base.showerror(io::IO, e::PoolRuntimeEscapeError, ::Any; backtrace = true) = showerror(io, e)
@@ -338,7 +317,7 @@ end
     _lookup_borrow_callsite(pool, v) -> Union{Nothing, String}
 
 Look up the callsite string for a pool backing vector. Returns `nothing` if
-no borrow was recorded (LV < 3 or non-macro path without callsite info).
+no borrow was recorded (S=0 or non-macro path without callsite info).
 """
 @noinline function _lookup_borrow_callsite(pool::AdaptiveArrayPool, v)::Union{Nothing, String}
     log = pool._borrow_log

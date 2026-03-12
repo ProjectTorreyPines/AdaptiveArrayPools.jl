@@ -115,7 +115,7 @@ end
 # Type-specific rewind (single type)
 @inline function AdaptiveArrayPools.rewind!(pool::CuAdaptiveArrayPool{S}, ::Type{T}) where {S, T}
     if pool._current_depth == 1
-        reset!(AdaptiveArrayPools.get_typed_pool!(pool, T))
+        reset!(AdaptiveArrayPools.get_typed_pool!(pool, T), S)
         return nothing
     end
     _rewind_typed_pool!(AdaptiveArrayPools.get_typed_pool!(pool, T), pool._current_depth, S)
@@ -136,7 +136,7 @@ end
         end
     end
     rewind_exprs = [:(_rewind_typed_pool!(AdaptiveArrayPools.get_typed_pool!(pool, types[$i]), pool._current_depth, S)) for i in reverse(unique_indices)]
-    reset_exprs = [:(reset!(AdaptiveArrayPools.get_typed_pool!(pool, types[$i]))) for i in unique_indices]
+    reset_exprs = [:(reset!(AdaptiveArrayPools.get_typed_pool!(pool, types[$i]), S)) for i in unique_indices]
     return quote
         if pool._current_depth == 1
             $(reset_exprs...)
@@ -265,15 +265,15 @@ end
 # reset! for CuAdaptiveArrayPool
 # ==============================================================================
 
-function AdaptiveArrayPools.reset!(pool::CuAdaptiveArrayPool)
+function AdaptiveArrayPools.reset!(pool::CuAdaptiveArrayPool{S}) where {S}
     # Fixed slots
     AdaptiveArrayPools.foreach_fixed_slot(pool) do tp
-        reset!(tp)
+        reset!(tp, S)
     end
 
     # Others
     for tp in values(pool.others)
-        reset!(tp)
+        reset!(tp, S)
     end
 
     # Reset depth and bitmask sentinel state
@@ -292,8 +292,8 @@ function AdaptiveArrayPools.reset!(pool::CuAdaptiveArrayPool)
 end
 
 # Type-specific reset
-@inline function AdaptiveArrayPools.reset!(pool::CuAdaptiveArrayPool, ::Type{T}) where {T}
-    reset!(AdaptiveArrayPools.get_typed_pool!(pool, T))
+@inline function AdaptiveArrayPools.reset!(pool::CuAdaptiveArrayPool{S}, ::Type{T}) where {S, T}
+    reset!(AdaptiveArrayPools.get_typed_pool!(pool, T), S)
     return pool
 end
 

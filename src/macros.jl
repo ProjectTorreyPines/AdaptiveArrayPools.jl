@@ -518,14 +518,14 @@ function _fix_generated_lnn!(expr, source::Union{LineNumberNode, Nothing})
 end
 
 # ==============================================================================
-# Internal: Union Splitting Wrapper Helper
+# Internal: Compile-Time Type Assertion Helper
 # ==============================================================================
 
 """
     _pool_type_for_backend(::Val{B}) -> Type
 
 Returns the concrete pool type for a given backend, used at macro expansion time
-to generate closureless union splitting. Extensions override this for their backends.
+to generate direct type assertions. Extensions override this for their backends.
 
 CPU returns `AdaptiveArrayPool`, CUDA extension returns `CuAdaptiveArrayPool`.
 """
@@ -535,11 +535,12 @@ _pool_type_for_backend(::Val{B}) where {B} = nothing  # unregistered backend —
 """
     _wrap_with_dispatch(pool_name_esc, pool_getter, inner_body; backend=:cpu)
 
-Closureless union splitting: generates `let _raw = getter; if _raw isa PoolType{0} ...`
-chain that narrows `pool_name` to concrete `PoolType{S}` without a closure.
+Direct type assertion: generates `let pool = getter::PoolType{RUNTIME_CHECK ? 1 : 0}`.
 
-Eliminates Core.Box boxing that occurs when closure-based `_dispatch_pool_scope`
-gets inlined into outer callers crossing try/finally boundaries.
+Since `RUNTIME_CHECK` is a compile-time `const Bool`, the pool type parameter S
+is resolved at compile time. No union splitting or runtime branching needed —
+`_runtime_check(pool)` returns a compile-time constant, enabling dead-code
+elimination of all safety branches when `RUNTIME_CHECK = false`.
 
 The pool type is resolved at macro expansion time via `_pool_type_for_backend`,
 which extensions override (e.g., CUDA adds `CuAdaptiveArrayPool`).
@@ -547,30 +548,14 @@ which extensions override (e.g., CUDA adds `CuAdaptiveArrayPool`).
 function _wrap_with_dispatch(pool_name_esc, pool_getter, inner_body; backend::Symbol = :cpu)
     PoolType = _pool_type_for_backend(Val{backend}())
     if PoolType === nothing
-        # Unregistered backend: fall back to closure-based dispatch.
-        # Runtime will error in _get_pool_for_backend if extension isn't loaded.
-        return :(
-            $(_DISPATCH_POOL_SCOPE_REF)($pool_getter) do $pool_name_esc
-                $inner_body
-            end
-        )
+        # Unregistered backend: no type assertion, runtime will error in pool getter.
+        return Expr(:let, Expr(:(=), pool_name_esc, pool_getter), inner_body)
     end
     _PT = GlobalRef(parentmodule(PoolType), nameof(PoolType))
-    raw = gensym(:_raw_pool)
-    if !RUNTIME_CHECK
-        # Fast path: runtime checks disabled at compile time → S=0 only.
-        # Avoids 2-branch code duplication, cutting TTFX by ~50% and eliminating
-        # exponential compile-time blowup when nested @inline @with_pool functions
-        # would otherwise produce 2^N code paths.
-        return Expr(:let, Expr(:(=), raw, pool_getter),
-            Expr(:let, Expr(:(=), pool_name_esc, :($raw::$_PT{0})), inner_body))
-    end
-    # Fallback: S=1 (last branch, no condition needed)
-    chain = Expr(:let, Expr(:(=), pool_name_esc, :($raw::$_PT{1})), inner_body)
-    concrete_t0 = :($_PT{0})
-    branch_body0 = Expr(:let, Expr(:(=), pool_name_esc, :($raw::$concrete_t0)), inner_body)
-    chain = Expr(:if, :($raw isa $concrete_t0), branch_body0, chain)
-    return Expr(:let, Expr(:(=), raw, pool_getter), chain)
+    _RC = GlobalRef(@__MODULE__, :RUNTIME_CHECK)
+    # RUNTIME_CHECK is const Bool → compiler resolves to literal S, zero branching.
+    concrete_t = :($_PT{$_RC ? 1 : 0})
+    return Expr(:let, Expr(:(=), pool_name_esc, :($pool_getter::$concrete_t)), inner_body)
 end
 
 # ==============================================================================
@@ -616,7 +601,7 @@ function _generate_pool_code(pool_name, expr, force_enable; source::Union{LineNu
     transformed_expr = use_typed ? _transform_acquire_calls(expr, pool_name) : expr
 
     # Inject borrow callsite recording + return validation.
-    # Always injected — _safety_level(pool) gates at runtime (dead-code-eliminated at S=0).
+    # Always injected — _runtime_check(pool) gates at runtime (dead-code-eliminated when false).
     transformed_expr = _inject_pending_callsite(transformed_expr, pool_name, expr)
     transformed_expr = _transform_return_stmts(transformed_expr, pool_name)
 
@@ -632,12 +617,12 @@ function _generate_pool_code(pool_name, expr, force_enable; source::Union{LineNu
         rewind_call = _generate_lazy_rewind_call(esc(pool_name))
     end
 
-    # Build the inner body (runs inside _dispatch_pool_scope closure where pool is concrete)
+    # Build the inner body (runs inside let-block where pool has concrete type)
     inner = quote
         $checkpoint_call
         try
             local _result = $(esc(transformed_expr))
-            if ($_SAFETY_LEVEL_REF($(esc(pool_name))) >= 1 || $_POOL_DEBUG_REF[])
+            if $_RUNTIME_CHECK_REF($(esc(pool_name)))
                 $_validate_pool_return(_result, $(esc(pool_name)))
             end
             _result
@@ -727,7 +712,7 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, forc
             $checkpoint_call
             try
                 local _result = $(esc(transformed_expr))
-                if ($_SAFETY_LEVEL_REF($(esc(pool_name))) >= 1 || $_POOL_DEBUG_REF[])
+                if $_RUNTIME_CHECK_REF($(esc(pool_name)))
                     $_validate_pool_return(_result, $(esc(pool_name)))
                 end
                 _result
@@ -789,7 +774,7 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, forc
         $checkpoint_call
         try
             local _result = $(esc(transformed_expr))
-            if ($_SAFETY_LEVEL_REF($(esc(pool_name))) >= 1 || $_POOL_DEBUG_REF[])
+            if $_RUNTIME_CHECK_REF($(esc(pool_name)))
                 $_validate_pool_return(_result, $(esc(pool_name)))
             end
             _result
@@ -859,7 +844,7 @@ function _generate_function_pool_code_with_backend(backend::Symbol, pool_name, f
             local _result = begin
                 $(esc(transformed_body))
             end
-            if ($_SAFETY_LEVEL_REF($(esc(pool_name))) >= 1 || $_POOL_DEBUG_REF[])
+            if $_RUNTIME_CHECK_REF($(esc(pool_name)))
                 $_validate_pool_return(_result, $(esc(pool_name)))
             end
             _result
@@ -884,12 +869,6 @@ function _generate_function_pool_code_with_backend(backend::Symbol, pool_name, f
                 end
             end
         end
-    end
-
-    # When runtime checks are enabled (2-branch dispatch), prevent inlining of the
-    # generated function to avoid 2^N compile-time explosion with nested @with_pool.
-    if RUNTIME_CHECK
-        pushfirst!(new_body.args, Expr(:meta, :noinline))
     end
 
     # Ensure new_body has source location for proper stack traces
@@ -950,7 +929,7 @@ function _generate_function_pool_code(pool_name, func_def, force_enable, disable
                 local _result = begin
                     $(esc(transformed_body))
                 end
-                if ($_SAFETY_LEVEL_REF($(esc(pool_name))) >= 1 || $_POOL_DEBUG_REF[])
+                if $_RUNTIME_CHECK_REF($(esc(pool_name)))
                     $_validate_pool_return(_result, $(esc(pool_name)))
                 end
                 _result
@@ -967,7 +946,7 @@ function _generate_function_pool_code(pool_name, func_def, force_enable, disable
                 local _result = begin
                     $(esc(transformed_body))
                 end
-                if ($_SAFETY_LEVEL_REF($(esc(pool_name))) >= 1 || $_POOL_DEBUG_REF[])
+                if $_RUNTIME_CHECK_REF($(esc(pool_name)))
                     $_validate_pool_return(_result, $(esc(pool_name)))
                 end
                 _result
@@ -985,13 +964,6 @@ function _generate_function_pool_code(pool_name, func_def, force_enable, disable
                 end
             end
         end
-    end
-
-    # When runtime checks are enabled (2-branch dispatch), prevent inlining of the
-    # generated function to avoid 2^N compile-time explosion with nested @with_pool.
-    # Runtime cost (~2-5ns/call) is negligible in check mode.
-    if RUNTIME_CHECK
-        pushfirst!(new_body.args, Expr(:meta, :noinline))
     end
 
     # Ensure new_body has source location for proper stack traces
@@ -1454,7 +1426,7 @@ function _transform_acquire_calls(expr, pool_name)
 end
 
 # ==============================================================================
-# Internal: Borrow Callsite Injection (S >= 1)
+# Internal: Borrow Callsite Injection (S = 1)
 # ==============================================================================
 #
 # Second-pass AST transformation that inserts `pool._pending_callsite = "file:line"`
@@ -1463,11 +1435,9 @@ end
 #
 # Works with both typed path (_*_impl! GlobalRefs) and dynamic path (original
 # acquire!/zeros!/etc. calls). Always injected — gated at runtime by
-# `_safety_level(pool) >= 1 || POOL_DEBUG[]` (dead-code-eliminated at S=0).
+# `_runtime_check(pool)` (dead-code-eliminated when S=0).
 
-const _POOL_SAFETY_LV_REF = GlobalRef(@__MODULE__, :POOL_SAFETY_LV)
-const _DISPATCH_POOL_SCOPE_REF = GlobalRef(@__MODULE__, :_dispatch_pool_scope)
-const _SAFETY_LEVEL_REF = GlobalRef(@__MODULE__, :_safety_level)
+const _RUNTIME_CHECK_REF = GlobalRef(@__MODULE__, :_runtime_check)
 
 """Set of all transformed `_*_impl!` function names (GlobalRef targets)."""
 const _IMPL_FUNC_NAMES = Set{Symbol}(
@@ -1525,7 +1495,7 @@ end
     _inject_pending_callsite(expr, pool_name, original_expr=expr) -> Expr
 
 Walk block-level statements, track `LineNumberNode`s, and insert
-`_safety_level(pool) >= 1 && (pool._pending_callsite = "file:line\\nexpr")`
+`_runtime_check(pool) && (pool._pending_callsite = "file:line\\nexpr")`
 before each statement containing a pool acquire call.
 
 When `original_expr` differs from `expr` (i.e., after `_transform_acquire_calls`),
@@ -1556,11 +1526,7 @@ function _inject_pending_callsite(expr, pool_name, original_expr = expr)
                         "$(current_lnn.file):$(current_lnn.line)\n$(expr_text)"
                     inject = Expr(
                         :&&,
-                        Expr(
-                            :||,
-                            Expr(:call, :>=, Expr(:call, _SAFETY_LEVEL_REF, pool_name), 1),
-                            Expr(:ref, _POOL_DEBUG_REF)
-                        ),
+                        Expr(:call, _RUNTIME_CHECK_REF, pool_name),
                         Expr(
                             :(=),
                             Expr(:., pool_name, QuoteNode(:_pending_callsite)),
@@ -1585,7 +1551,7 @@ function _inject_pending_callsite(expr, pool_name, original_expr = expr)
 end
 
 # ==============================================================================
-# Internal: Return Statement Validation (S >= 1)
+# Internal: Return Statement Validation (S = 1)
 # ==============================================================================
 #
 # Transforms `return expr` → `begin local _ret = expr; validate(_ret); return _ret end`
@@ -1596,14 +1562,13 @@ end
 # Stops recursion at :function and :-> boundaries (nested function return statements
 # belong to the inner function, not the @with_pool scope).
 
-const _POOL_DEBUG_REF = GlobalRef(@__MODULE__, :POOL_DEBUG)
 const _VALIDATE_POOL_RETURN_REF = GlobalRef(@__MODULE__, :_validate_pool_return)
 
 """
     _transform_return_stmts(expr, pool_name) -> Expr
 
 Walk AST and wrap explicit `return value` statements with escape validation.
-Generates: `local _ret = value; if (LV≥2 || DEBUG) validate(_ret, pool); end; return _ret`
+Generates: `local _ret = value; if _runtime_check(pool) validate(_ret, pool); end; return _ret`
 
 Does NOT recurse into nested `:function` or `:->` expressions (inner functions
 have their own `return` semantics).
@@ -1626,7 +1591,7 @@ function _transform_return_stmts(expr, pool_name, current_lnn = nothing)
         value_expr = _transform_return_stmts(value_expr, pool_name, current_lnn)
         retvar = gensym(:_pool_ret)
 
-        # Build return-site string for LV ≥ 3 display (e.g. "file:line\nreturn v")
+        # Build return-site string for S=1 display (e.g. "file:line\nreturn v")
         return_site_str = if current_lnn !== nothing
             "$(current_lnn.file):$(current_lnn.line)\n$(string(expr))"
         else
@@ -1639,11 +1604,7 @@ function _transform_return_stmts(expr, pool_name, current_lnn = nothing)
                 :block,
                 Expr(
                     :&&,
-                    Expr(
-                        :||,
-                        Expr(:call, :>=, Expr(:call, _SAFETY_LEVEL_REF, pool_name), 1),
-                        Expr(:ref, _POOL_DEBUG_REF)
-                    ),
+                    Expr(:call, _RUNTIME_CHECK_REF, pool_name),
                     Expr(
                         :(=),
                         Expr(:., pool_name, QuoteNode(:_pending_return_site)),
@@ -1661,11 +1622,7 @@ function _transform_return_stmts(expr, pool_name, current_lnn = nothing)
             Expr(:local, Expr(:(=), retvar, value_expr)),
             Expr(
                 :if,
-                Expr(
-                    :||,
-                    Expr(:call, :>=, Expr(:call, _SAFETY_LEVEL_REF, pool_name), 1),
-                    Expr(:ref, _POOL_DEBUG_REF)
-                ),
+                Expr(:call, _RUNTIME_CHECK_REF, pool_name),
                 validate_expr
             ),
             Expr(:return, retvar)

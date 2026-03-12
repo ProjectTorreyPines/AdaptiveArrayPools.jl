@@ -387,10 +387,9 @@ const _ZERO_ALLOC_THRESHOLD = @static VERSION >= v"1.12-" ? 0 : 16
     # Pattern 7: @inline @with_pool function form (regression test)
     #
     # When @inline is applied to a @with_pool function, the compiler inlines
-    # everything into the caller — including the _dispatch_pool_scope closure.
+    # everything into the caller — including the let-block pool binding.
     # This can defeat LLVM's escape analysis, causing SubArray metadata to be
-    # heap-allocated instead of stack-allocated. The @noinline closure fix in
-    # _wrap_with_dispatch preserves the function barrier.
+    # heap-allocated instead of stack-allocated.
     # ==============================================================================
 
     # Non-inlined baseline: acquire! + similar! + in-place ops

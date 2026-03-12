@@ -12,7 +12,7 @@
 # - _unsafe_acquire_impl! for Bit - Raw BitArray acquisition with caching
 # - DisabledPool fallbacks for Bit type
 # - empty!(::BitTypedPool) - State management (clearing pool storage)
-# - _check_bitchunks_overlap - Safety validation for POOL_DEBUG mode
+# - _check_bitchunks_overlap - Safety validation for S=1 runtime check mode
 # - Display helpers: _default_type_name, _vector_bytes, _count_label, _show_type_name
 #
 # Design Decision: Unified BitArray Return Type
@@ -195,7 +195,7 @@ function Base.empty!(tp::BitTypedPool)
 end
 
 # ==============================================================================
-# Safety Validation (POOL_DEBUG mode)
+# Safety Validation (S=1 runtime check mode)
 # ==============================================================================
 
 # Check if BitArray chunks overlap with the pool's BitTypedPool storage

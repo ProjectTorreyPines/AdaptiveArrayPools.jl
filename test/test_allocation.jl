@@ -20,10 +20,8 @@ end
 
 
 @testset "zero allocation on reuse" begin
-    # Disable safety invalidation: rewind-time resize!/setfield! forces cache misses
-    # (new SubArray views on legacy, new BitArray wrappers), breaking zero-alloc invariant.
-    old_safety = POOL_SAFETY_LV[]
-    set_safety_level!(0)
+    # RUNTIME_CHECK=false (default) → Pool{0}, no invalidation overhead.
+    # Zero-alloc invariant holds because rewind-time resize!/setfield! is dead-code eliminated.
 
     # First call: JIT + initial cache miss (pool arrays + N-way bitarray cache)
     alloc1 = @allocated foo()
@@ -40,6 +38,4 @@ end
     alloc3 = @allocated foo()
     @test alloc2 == 0
     @test alloc3 == 0
-
-    set_safety_level!(old_safety)
 end

@@ -82,8 +82,9 @@ Retrieves (or creates) the `AdaptiveArrayPool` for the current Task.
 Each Task gets its own pool instance via `task_local_storage()`,
 ensuring thread safety without locks.
 
-Returns the pool as-is (type `Any` from task_local_storage).
-Use `_dispatch_pool_scope` in macro-generated code to narrow to concrete `AdaptiveArrayPool{S}`.
+The pool type is `AdaptiveArrayPool{S}` where `S` is determined by
+the compile-time constant `RUNTIME_CHECK`. Macro-generated code
+type-asserts directly to `AdaptiveArrayPool{RUNTIME_CHECK ? 1 : 0}`.
 """
 @inline function get_task_local_pool()
     # 1. Fast Path: Try to get existing pool
@@ -99,84 +100,6 @@ Use `_dispatch_pool_scope` in macro-generated code to narrow to concrete `Adapti
 
     return pool::AdaptiveArrayPool
 end
-
-# ==============================================================================
-# Union Splitting Dispatcher + Safety Level Control
-# ==============================================================================
-#
-# AdaptiveArrayPool{S} is parametric on both modern (≥1.11) and legacy (≤1.10).
-# Union splitting narrows to concrete type for dead-code elimination of safety branches.
-
-"""
-    _dispatch_pool_scope(f, pool_any)
-
-Union splitting barrier: converts abstract pool → concrete `AdaptiveArrayPool{S}`.
-
-Inside `f`, the pool argument has concrete type, enabling:
-- `_safety_level(pool)` → compile-time constant S
-- Dead-code elimination of safety branches at S=0
-- Zero-allocation try/finally (no Core.Box)
-
-Called from macro-generated code as:
-```julia
-_dispatch_pool_scope(get_task_local_pool()) do pool
-    checkpoint!(pool)
-    try ... finally rewind!(pool) end
-end
-```
-"""
-@inline function _dispatch_pool_scope(f, pool_any)
-    if pool_any isa AdaptiveArrayPool{0}
-        return f(pool_any::AdaptiveArrayPool{0})
-    elseif pool_any isa AdaptiveArrayPool{1}
-        return f(pool_any::AdaptiveArrayPool{1})
-    else
-        # Non-CPU pools (e.g. CuAdaptiveArrayPool): pass through as-is.
-        # No union splitting needed — type is already concrete from the getter.
-        return f(pool_any)
-    end
-end
-
-"""
-    set_safety_level!(level::Int) -> AdaptiveArrayPool
-
-Replace the task-local CPU pool (and CUDA pools if CUDA.jl is loaded)
-with new pools at the given safety level, preserving cached arrays
-and scope state (zero-copy transfer).
-
-Also updates `POOL_SAFETY_LV[]` so that future `AdaptiveArrayPool()` /
-`CuAdaptiveArrayPool()` constructors use the new level.
-
-## Example
-```julia
-set_safety_level!(1)  # Enable runtime checks on CPU + all GPU devices
-# ... run suspicious code ...
-set_safety_level!(0)  # Back to zero overhead everywhere
-```
-
-See also: [`_safety_level`], [`RUNTIME_CHECK`], [`POOL_SAFETY_LV`]
-"""
-function set_safety_level!(level::Int)
-    0 <= level <= 1 || throw(ArgumentError("Safety level must be 0 or 1; got $level"))
-    old_pool = get(task_local_storage(), _POOL_KEY, nothing)
-    if old_pool isa AdaptiveArrayPool
-        depth = getfield(old_pool, :_current_depth)
-        depth != 1 && throw(
-            ArgumentError(
-                "set_safety_level! cannot be called inside an active @with_pool scope (depth=$depth)"
-            )
-        )
-    end
-    POOL_SAFETY_LV[] = level
-    new_pool = old_pool === nothing ? _make_pool(level) : _make_pool(level, old_pool::AdaptiveArrayPool)
-    task_local_storage(_POOL_KEY, new_pool)
-    # Update CUDA pools if extension is loaded (no-op otherwise)
-    _set_cuda_safety_level_hook!(level)
-    return new_pool
-end
-
-# Hook for CUDA extension to override. No-op when CUDA is not loaded.
-_set_cuda_safety_level_hook!(::Int) = nothing
 
 # ==============================================================================
 # CUDA Pool Stubs (overridden by extension when CUDA is loaded)

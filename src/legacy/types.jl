@@ -66,52 +66,25 @@ end
 # ==============================================================================
 #
 # Safety is controlled per-pool via the type parameter S in AdaptiveArrayPool{S}.
-# S encodes the safety level (0 or 1), enabling dead-code elimination at compile time.
+# S is binary: 0 (off) or 1 (on), enabling dead-code elimination at compile time.
 #
-#   S = 0 (off)  — zero overhead (default)
-#   S = 1 (check) — invalidation + escape detection + borrow registry
+#   0 = off — zero overhead (default)
+#   1 = on  — runtime checks (invalidation, escape detection, etc.)
 #
-# RUNTIME_CHECK controls whether safety checks are enabled.
-# Set via LocalPreferences.toml: runtime_check = true/false
+using Preferences: @load_preference
 
 """
     RUNTIME_CHECK::Bool
 
-Compile-time constant controlling runtime safety checks.
-
-When `false` (default): zero overhead, no checks.
-When `true`: invalidation on rewind, escape detection, borrow registry.
+Compile-time constant controlling whether runtime safety checks are enabled by default.
 
 Set via `LocalPreferences.toml`:
 ```toml
 [AdaptiveArrayPools]
 runtime_check = true
 ```
-
-Legacy fallback: reads `safety_level` or `pool_checks` preferences.
 """
-const RUNTIME_CHECK = let
-    # New preference key
-    rc = @load_preference("runtime_check", nothing)
-    if rc !== nothing
-        rc::Bool
-    else
-        # Legacy: safety_level > 0 → true
-        sl = @load_preference("safety_level", nothing)
-        if sl !== nothing
-            sl::Int > 0
-        else
-            # Legacy: pool_checks
-            pc = @load_preference("pool_checks", nothing)
-            pc !== nothing ? pc::Bool : false
-        end
-    end
-end
-
-# Backward-compatible aliases (deprecated)
-const DEFAULT_SAFETY_LV = RUNTIME_CHECK ? 1 : 0
-const STATIC_POOL_CHECKS = RUNTIME_CHECK
-const POOL_SAFETY_LV = Ref{Int}(DEFAULT_SAFETY_LV)
+const RUNTIME_CHECK = @load_preference("runtime_check", false)::Bool
 
 # ==============================================================================
 # Abstract Type Hierarchy (for extensibility)
@@ -410,11 +383,11 @@ const _TYPE_BITS_MASK = UInt16(0x00FF)  # bits 0-7: fixed-slot type bits
 Multi-type memory pool with fixed slots for common types and IdDict fallback for others.
 Zero allocation after warmup. NOT thread-safe - use one pool per Task.
 
-The type parameter `S::Int` encodes runtime check mode: `0` = off, `1` = full checks.
-Inside `@inline` call chains, `S` is a compile-time constant — safety checks like
-`S >= 1` are eliminated by dead-code elimination when `S = 0`, achieving true zero overhead.
+The type parameter `S::Int` encodes the runtime check mode (0 = off, 1 = on).
+Inside `@inline` call chains, `S` is a compile-time constant — safety checks are
+eliminated by dead-code elimination when `S = 0`, achieving true zero overhead.
 
-See also: [`_safety_level`], [`_make_pool`], [`set_safety_level!`]
+See also: [`_runtime_check`], [`_make_pool`], [`RUNTIME_CHECK`]
 """
 mutable struct AdaptiveArrayPool{S} <: AbstractArrayPool
     # Fixed Slots: common types with zero lookup overhead
@@ -435,7 +408,7 @@ mutable struct AdaptiveArrayPool{S} <: AbstractArrayPool
     _touched_type_masks::Vector{UInt16}  # Per-depth: which fixed slots were touched + mode flags
     _touched_has_others::Vector{Bool}    # Per-depth: any non-fixed-slot type touched?
 
-    # Borrow registry (RUNTIME_CHECK / S >= 1 only)
+    # Borrow registry (S = 1 only)
     _pending_callsite::String                        # "" = no pending; set by macro before acquire
     _pending_return_site::String                     # "" = no pending; set by macro before validate
     _borrow_log::Union{Nothing, IdDict{Any, String}} # vector_obj => callsite string
@@ -457,43 +430,44 @@ function AdaptiveArrayPool{S}() where {S}
         [false],        # _touched_has_others: sentinel (no others)
         "",             # _pending_callsite: no pending
         "",             # _pending_return_site: no pending
-        nothing         # _borrow_log: lazily created at S >= 1
+        nothing         # _borrow_log: lazily created at S=1
     )
 end
 
-"""Create pool at the current `POOL_SAFETY_LV[]` level."""
-AdaptiveArrayPool() = _make_pool(POOL_SAFETY_LV[])
+"""Create pool with the default `RUNTIME_CHECK` setting."""
+AdaptiveArrayPool() = _make_pool(RUNTIME_CHECK)
 
 """
-    _safety_level(pool) -> Int
+    _runtime_check(pool) -> Bool
 
-Return the safety level of a pool. Compile-time constant for `AdaptiveArrayPool{S}`.
+Return whether runtime safety checks are enabled for `pool`.
+Compile-time constant for `AdaptiveArrayPool{S}` — dead-code eliminated when `S = 0`.
 """
-@inline _safety_level(::AdaptiveArrayPool{S}) where {S} = S
-@inline _safety_level(::AbstractArrayPool) = POOL_SAFETY_LV[]  # fallback
+@inline _runtime_check(::AdaptiveArrayPool{0}) = false
+@inline _runtime_check(::AdaptiveArrayPool{1}) = true
 
 """
-    _make_pool(s::Int) -> AdaptiveArrayPool{S}
+    _make_pool(runtime_check::Bool) -> AdaptiveArrayPool
 
-Function barrier: converts runtime `Int` to concrete `AdaptiveArrayPool{S}`.
-Binary: `s <= 0` → `{0}` (off), otherwise → `{1}` (checks enabled).
+Function barrier: converts runtime `Bool` to concrete `AdaptiveArrayPool{S}`.
+`false` → `AdaptiveArrayPool{0}`, `true` → `AdaptiveArrayPool{1}`.
 """
-@noinline function _make_pool(s::Int)
-    s <= 0 && return AdaptiveArrayPool{0}()
-    return AdaptiveArrayPool{1}()
+@noinline function _make_pool(runtime_check::Bool)
+    runtime_check && return AdaptiveArrayPool{1}()
+    return AdaptiveArrayPool{0}()
 end
 
 """
-    _make_pool(s::Int, old::AdaptiveArrayPool) -> AdaptiveArrayPool{s}
+    _make_pool(runtime_check::Bool, old::AdaptiveArrayPool) -> AdaptiveArrayPool
 
-Create a new pool at check level `s`, transferring cached arrays and scope state
-from `old`.  Only reference copies — no memory allocation for the underlying buffers.
+Create a new pool, transferring cached arrays and scope state from `old`.
+Only reference copies — no memory allocation for the underlying buffers.
 
 Transferred: all TypedPool/BitTypedPool slots, `others`, depth & touch tracking.
 Reset: `_pending_callsite/return_site` (transient macro state),
-       `_borrow_log` (created fresh when `s >= 1`).
+       `_borrow_log` (created fresh when `runtime_check = true`).
 """
-@noinline function _make_pool(s::Int, old::AdaptiveArrayPool)
+@noinline function _make_pool(runtime_check::Bool, old::AdaptiveArrayPool)
     _new(::Val{S}) where {S} = AdaptiveArrayPool{S}(
         old.float64, old.float32, old.int64, old.int32,
         old.complexf64, old.complexf32, old.bool, old.bits,
@@ -505,8 +479,8 @@ Reset: `_pending_callsite/return_site` (transient macro state),
         "",       # _pending_return_site: reset
         S >= 1 ? IdDict{Any, String}() : nothing  # _borrow_log
     )
-    s <= 0 && return _new(Val(0))
-    return _new(Val(1))
+    runtime_check && return _new(Val(1))
+    return _new(Val(0))
 end
 
 # ==============================================================================
@@ -571,9 +545,9 @@ end
 """
     _set_pending_callsite!(pool, msg::String)
 
-Record a pending callsite string for borrow tracking (runtime check enabled).
+Record a pending callsite string for borrow tracking (S=1).
 Only sets the callsite if no prior callsite is pending (macro-injected ones take priority).
-Compiles to no-op when `S = 0`.
+Compiles to no-op when `S=0`.
 """
 @inline function _set_pending_callsite!(pool::AdaptiveArrayPool{S}, msg::String) where {S}
     S >= 1 && isempty(pool._pending_callsite) && (pool._pending_callsite = msg)
@@ -584,9 +558,9 @@ end
 """
     _maybe_record_borrow!(pool, tp::AbstractTypedPool)
 
-Flush the pending callsite into the borrow log (runtime check enabled).
+Flush the pending callsite into the borrow log (S=1).
 Delegates to `_record_borrow_from_pending!` (defined in `debug.jl`).
-Compiles to no-op when `S = 0`.
+Compiles to no-op when `S=0`.
 """
 @inline function _maybe_record_borrow!(pool::AdaptiveArrayPool{S}, tp::AbstractTypedPool) where {S}
     S >= 1 && _record_borrow_from_pending!(pool, tp)
