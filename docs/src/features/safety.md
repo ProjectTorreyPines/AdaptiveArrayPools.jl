@@ -1,6 +1,6 @@
 # Pool Safety
 
-AdaptiveArrayPools catches pool-escape bugs at **two levels**: compile-time (macro analysis) and runtime (configurable safety levels).
+AdaptiveArrayPools catches pool-escape bugs at **two levels**: compile-time (macro analysis) and runtime (configurable via `RUNTIME_CHECK`).
 
 ## Compile-Time Detection
 
@@ -65,67 +65,104 @@ end
 end
 ```
 
-## Runtime Safety Levels
+## Runtime Safety (`RUNTIME_CHECK`)
 
 For bugs the compiler can't catch (e.g., values hidden behind opaque function calls), runtime safety provides configurable protection via the type parameter `S` in `AdaptiveArrayPool{S}`.
 
-### Level Overview
+### Binary System
 
-| Level | Name | CPU | CUDA | Overhead |
-|-------|------|-----|------|----------|
-| **0** | off | No-op (all branches dead-code-eliminated) | Same | Zero |
-| **1** | guard | `resize!(v,0)` + `setfield!` invalidation | NaN/sentinel poisoning + cache clear | ~5ns/slot |
-| **2** | full | Level 1 + data poisoning + escape detection at scope exit | Level 1 + device-pointer overlap check | Moderate |
-| **3** | debug | Level 2 + acquire call-site tracking | Same | Moderate+ |
+| `RUNTIME_CHECK` | State | What Happens | Overhead |
+|:-:|-------|--------------|----------|
+| **0** | off | All safety branches dead-code-eliminated | **Zero** |
+| **1** | on | Poisoning + structural invalidation + escape detection + borrow tracking | ~5ns/slot |
 
-### Why CPU and CUDA Differ at Level 1
+`RUNTIME_CHECK` is a **compile-time constant** — not a runtime toggle. At `RUNTIME_CHECK = 0`, the JIT eliminates all safety branches completely. No `Ref` reads, no conditional branches, no overhead whatsoever.
 
-Both achieve the same goal — **make stale references fail loudly** — but use different mechanisms:
+### Enabling Runtime Safety
+
+Set the `runtime_check` preference in `LocalPreferences.toml` and **restart Julia**:
+
+```toml
+# LocalPreferences.toml
+[AdaptiveArrayPools]
+runtime_check = 1     # enable all safety checks
+# runtime_check = true  # also accepted (normalized to 1 internally)
+```
+
+Or programmatically:
+
+```julia
+using Preferences
+Preferences.set_preferences!(AdaptiveArrayPools, "runtime_check" => 1)
+# Restart Julia for changes to take effect
+```
+
+!!! warning "Restart Required"
+    `RUNTIME_CHECK` is baked into the pool type at compile time (`AdaptiveArrayPool{S}`). Changing the preference **requires restarting Julia** — it cannot be toggled at runtime.
+
+### What `RUNTIME_CHECK = 1` Enables
+
+When safety is on, `@with_pool` scope exit triggers the following protections:
+
+#### 1. Data Poisoning
+
+Released arrays are filled with detectable sentinel values **before** structural invalidation:
+
+| Element Type | Poison Value | Detection |
+|-------------|-------------|-----------|
+| `Float64`, `Float32`, `Float16` | `NaN` | `isnan(x)` returns `true` |
+| `Int64`, `Int32`, etc. | `typemax(T)` | Obviously wrong value |
+| `ComplexF64`, `ComplexF32` | `NaN + NaN*im` | `isnan(real(x))` |
+| `Bool` | `true` | All-true is suspicious |
+| Other types | `zero(T)` | Generic fallback |
+
+#### 2. Structural Invalidation
+
+After poisoning, stale references are made to fail loudly:
 
 | | CPU | CUDA |
 |---|-----|------|
-| **Strategy** | Structural invalidation | Data poisoning |
-| **Mechanism** | `resize!(v, 0)` shrinks backing vector to length 0; `setfield!(:size, (0,))` zeroes the array dimensions | `CUDA.fill!(v, NaN)` / `typemax` / `true` fills backing CuVector with sentinel values |
-| **Stale access result** | `BoundsError` (array has length 0) | Reads `NaN` or `typemax` (obviously wrong data) |
-| **Why not the other way?** | CPU `resize!` is cheap (~0 cost) | CUDA `resize!` calls `CUDA.Mem.free()` — destroys the pooled VRAM allocation |
-| **Cache invalidation** | View length/dims zeroed | N-way view cache entries cleared to `nothing` |
+| **Mechanism** | `resize!(v, 0)` shrinks backing vector; `setfield!(:size, (0,))` zeroes array dimensions | `_resize_to_fit!(v, 0)` shrinks logical length (GPU memory preserved) |
+| **Stale access** | `BoundsError` (array has length 0) | `BoundsError` (logical length 0); poisoned data visible on re-acquire |
+| **arr_wrapper** | Dimensions set to `(0,)` / `(0,0)` | Same |
+| **Why different?** | CPU `resize!` is cheap (~0 cost) | CUDA `resize!` would call `CUDA.Mem.free()` — destroys pooled VRAM |
 
-### Setting the Level
-
-```julia
-using AdaptiveArrayPools
-
-# Enable full safety on CPU + all GPU devices (preserves cached arrays, zero-copy)
-set_safety_level!(2)
-
-# Back to zero overhead everywhere
-set_safety_level!(0)
-```
-
-The pool type parameter `S` is a compile-time constant. At `S=0`, the JIT eliminates all safety branches via dead-code elimination — true zero overhead with no `Ref` reads or conditional branches.
-
-### Data Poisoning (Level 2+, CPU)
-
-At Level 1, CPU relies on **structural invalidation** (`resize!` + `setfield!`) which makes stale views throw `BoundsError`. At Level 2+, CPU additionally **poisons** the backing vector data with sentinel values (`NaN`, `typemax`, all-`true` for `BitVector`) *before* structural invalidation. This catches stale access through `unsafe_acquire!` wrappers on Julia 1.10 where `setfield!` on Array is unavailable.
-
-CUDA already poisons at Level 1 (its primary invalidation strategy), so no additional poisoning step is needed at Level 2.
-
-### Escape Detection (Level 2+)
+#### 3. Escape Detection
 
 At every `@with_pool` scope exit, the return value is inspected for overlap with pool-backed memory. Recursively checks `Tuple`, `NamedTuple`, `Dict`, `Pair`, `Set`, and `AbstractArray` elements.
 
-Level 3 additionally records each `acquire!` call-site, so the error message pinpoints the exact source line and expression that allocated the escaping array.
+```julia
+# Throws PoolRuntimeEscapeError at scope exit
+@with_pool pool begin
+    v = acquire!(pool, Float64, 100)
+    opaque_function(v)  # returns v through opaque call
+end
+```
 
-### Legacy: `POOL_DEBUG`
+#### 4. Borrow Tracking
 
-`POOL_DEBUG[] = true` triggers Level 2 escape detection regardless of `S`. For new code, prefer `set_safety_level!(2)`.
+Each `acquire!` call-site is recorded, so escape error messages pinpoint the exact source line and expression that allocated the escaping array:
+
+```
+PoolEscapeError (runtime) — pool-backed array escaping @with_pool scope
+
+  Leaked value:  SubArray{Float64, 1}
+  Backing type:  Float64
+
+  acquired at:   src/solver.jl:42
+                 v = acquire!(pool, Float64, n)
+
+  Enable RUNTIME_CHECK >= 1 to detect pool escapes at runtime.
+```
 
 ## Recommended Workflow
 
-```julia
-# Development / Testing: catch bugs early
-set_safety_level!(2)   # or 3 for call-site info in error messages
+```toml
+# Development / Testing (LocalPreferences.toml):
+[AdaptiveArrayPools]
+runtime_check = 1     # catch bugs early — restart Julia after changing
 
-# Production: zero overhead
-set_safety_level!(0)   # all safety branches eliminated by the compiler
+# Production:
+[AdaptiveArrayPools]
+runtime_check = 0     # zero overhead — all safety branches eliminated
 ```

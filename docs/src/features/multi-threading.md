@@ -270,7 +270,7 @@ If you encounter unexpected behavior:
 
 1. **Check pool placement**: Is `@with_pool` inside or outside `@threads`?
 2. **Check pool sharing**: Is the same pool variable accessed from multiple Tasks?
-3. **Enable POOL_DEBUG**: `POOL_DEBUG[] = true` catches some (not all) misuse patterns
+3. **Enable RUNTIME_CHECK**: Set `runtime_check = 1` in `LocalPreferences.toml` (restart required) to catch escape bugs
 
 ---
 
@@ -281,4 +281,4 @@ If you encounter unexpected behavior:
 - `@threads` creates one Task per thread → pools are reused within the block
 - **Always place `@with_pool` inside `@threads`**, not outside
 - Thread-local pools are **not an alternative** due to stack discipline requirements
-- Correct usage is the user's responsibility (no runtime checks for performance)
+- Correct usage is the user's responsibility (enable `RUNTIME_CHECK` during development to catch bugs)
