@@ -557,21 +557,19 @@ function _wrap_with_dispatch(pool_name_esc, pool_getter, inner_body; backend::Sy
     end
     _PT = GlobalRef(parentmodule(PoolType), nameof(PoolType))
     raw = gensym(:_raw_pool)
-    if !STATIC_POOL_CHECKS
-        # Fast path: safety checks disabled at compile time → S=0 only.
-        # Avoids 4-branch code duplication, cutting TTFX by ~50% and eliminating
+    if !RUNTIME_CHECK
+        # Fast path: runtime checks disabled at compile time → S=0 only.
+        # Avoids 2-branch code duplication, cutting TTFX by ~50% and eliminating
         # exponential compile-time blowup when nested @inline @with_pool functions
-        # would otherwise produce 4^N code paths.
+        # would otherwise produce 2^N code paths.
         return Expr(:let, Expr(:(=), raw, pool_getter),
             Expr(:let, Expr(:(=), pool_name_esc, :($raw::$_PT{0})), inner_body))
     end
-    # Fallback: S=3 (last branch, no condition needed)
-    chain = Expr(:let, Expr(:(=), pool_name_esc, :($raw::$_PT{3})), inner_body)
-    for s in 2:-1:0
-        concrete_t = :($_PT{$s})
-        branch_body = Expr(:let, Expr(:(=), pool_name_esc, :($raw::$concrete_t)), inner_body)
-        chain = Expr(:if, :($raw isa $concrete_t), branch_body, chain)
-    end
+    # Fallback: S=1 (last branch, no condition needed)
+    chain = Expr(:let, Expr(:(=), pool_name_esc, :($raw::$_PT{1})), inner_body)
+    concrete_t0 = :($_PT{0})
+    branch_body0 = Expr(:let, Expr(:(=), pool_name_esc, :($raw::$concrete_t0)), inner_body)
+    chain = Expr(:if, :($raw isa $concrete_t0), branch_body0, chain)
     return Expr(:let, Expr(:(=), raw, pool_getter), chain)
 end
 
@@ -639,7 +637,7 @@ function _generate_pool_code(pool_name, expr, force_enable; source::Union{LineNu
         $checkpoint_call
         try
             local _result = $(esc(transformed_expr))
-            if ($_SAFETY_LEVEL_REF($(esc(pool_name))) >= 2 || $_POOL_DEBUG_REF[])
+            if ($_SAFETY_LEVEL_REF($(esc(pool_name))) >= 1 || $_POOL_DEBUG_REF[])
                 $_validate_pool_return(_result, $(esc(pool_name)))
             end
             _result
@@ -729,7 +727,7 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, forc
             $checkpoint_call
             try
                 local _result = $(esc(transformed_expr))
-                if ($_SAFETY_LEVEL_REF($(esc(pool_name))) >= 2 || $_POOL_DEBUG_REF[])
+                if ($_SAFETY_LEVEL_REF($(esc(pool_name))) >= 1 || $_POOL_DEBUG_REF[])
                     $_validate_pool_return(_result, $(esc(pool_name)))
                 end
                 _result
@@ -791,7 +789,7 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, forc
         $checkpoint_call
         try
             local _result = $(esc(transformed_expr))
-            if ($_SAFETY_LEVEL_REF($(esc(pool_name))) >= 2 || $_POOL_DEBUG_REF[])
+            if ($_SAFETY_LEVEL_REF($(esc(pool_name))) >= 1 || $_POOL_DEBUG_REF[])
                 $_validate_pool_return(_result, $(esc(pool_name)))
             end
             _result
@@ -861,7 +859,7 @@ function _generate_function_pool_code_with_backend(backend::Symbol, pool_name, f
             local _result = begin
                 $(esc(transformed_body))
             end
-            if ($_SAFETY_LEVEL_REF($(esc(pool_name))) >= 2 || $_POOL_DEBUG_REF[])
+            if ($_SAFETY_LEVEL_REF($(esc(pool_name))) >= 1 || $_POOL_DEBUG_REF[])
                 $_validate_pool_return(_result, $(esc(pool_name)))
             end
             _result
@@ -888,9 +886,9 @@ function _generate_function_pool_code_with_backend(backend::Symbol, pool_name, f
         end
     end
 
-    # When safety checks are enabled (4-branch dispatch), prevent inlining of the
-    # generated function to avoid 4^N compile-time explosion with nested @with_pool.
-    if STATIC_POOL_CHECKS
+    # When runtime checks are enabled (2-branch dispatch), prevent inlining of the
+    # generated function to avoid 2^N compile-time explosion with nested @with_pool.
+    if RUNTIME_CHECK
         pushfirst!(new_body.args, Expr(:meta, :noinline))
     end
 
@@ -952,7 +950,7 @@ function _generate_function_pool_code(pool_name, func_def, force_enable, disable
                 local _result = begin
                     $(esc(transformed_body))
                 end
-                if ($_SAFETY_LEVEL_REF($(esc(pool_name))) >= 2 || $_POOL_DEBUG_REF[])
+                if ($_SAFETY_LEVEL_REF($(esc(pool_name))) >= 1 || $_POOL_DEBUG_REF[])
                     $_validate_pool_return(_result, $(esc(pool_name)))
                 end
                 _result
@@ -969,7 +967,7 @@ function _generate_function_pool_code(pool_name, func_def, force_enable, disable
                 local _result = begin
                     $(esc(transformed_body))
                 end
-                if ($_SAFETY_LEVEL_REF($(esc(pool_name))) >= 2 || $_POOL_DEBUG_REF[])
+                if ($_SAFETY_LEVEL_REF($(esc(pool_name))) >= 1 || $_POOL_DEBUG_REF[])
                     $_validate_pool_return(_result, $(esc(pool_name)))
                 end
                 _result
@@ -989,10 +987,10 @@ function _generate_function_pool_code(pool_name, func_def, force_enable, disable
         end
     end
 
-    # When safety checks are enabled (4-branch dispatch), prevent inlining of the
-    # generated function to avoid 4^N compile-time explosion with nested @with_pool.
-    # Runtime cost (~2-5ns/call) is negligible in debug mode.
-    if STATIC_POOL_CHECKS
+    # When runtime checks are enabled (2-branch dispatch), prevent inlining of the
+    # generated function to avoid 2^N compile-time explosion with nested @with_pool.
+    # Runtime cost (~2-5ns/call) is negligible in check mode.
+    if RUNTIME_CHECK
         pushfirst!(new_body.args, Expr(:meta, :noinline))
     end
 
@@ -1456,7 +1454,7 @@ function _transform_acquire_calls(expr, pool_name)
 end
 
 # ==============================================================================
-# Internal: Borrow Callsite Injection (POOL_SAFETY_LV >= 3)
+# Internal: Borrow Callsite Injection (S >= 1)
 # ==============================================================================
 #
 # Second-pass AST transformation that inserts `pool._pending_callsite = "file:line"`
@@ -1465,7 +1463,7 @@ end
 #
 # Works with both typed path (_*_impl! GlobalRefs) and dynamic path (original
 # acquire!/zeros!/etc. calls). Always injected — gated at runtime by
-# `_safety_level(pool) >= 3 || POOL_DEBUG[]` (dead-code-eliminated at S<3).
+# `_safety_level(pool) >= 1 || POOL_DEBUG[]` (dead-code-eliminated at S=0).
 
 const _POOL_SAFETY_LV_REF = GlobalRef(@__MODULE__, :POOL_SAFETY_LV)
 const _DISPATCH_POOL_SCOPE_REF = GlobalRef(@__MODULE__, :_dispatch_pool_scope)
@@ -1527,7 +1525,7 @@ end
     _inject_pending_callsite(expr, pool_name, original_expr=expr) -> Expr
 
 Walk block-level statements, track `LineNumberNode`s, and insert
-`POOL_SAFETY_LV[] >= 3 && (pool._pending_callsite = "file:line\\nexpr")`
+`_safety_level(pool) >= 1 && (pool._pending_callsite = "file:line\\nexpr")`
 before each statement containing a pool acquire call.
 
 When `original_expr` differs from `expr` (i.e., after `_transform_acquire_calls`),
@@ -1560,7 +1558,7 @@ function _inject_pending_callsite(expr, pool_name, original_expr = expr)
                         :&&,
                         Expr(
                             :||,
-                            Expr(:call, :>=, Expr(:call, _SAFETY_LEVEL_REF, pool_name), 3),
+                            Expr(:call, :>=, Expr(:call, _SAFETY_LEVEL_REF, pool_name), 1),
                             Expr(:ref, _POOL_DEBUG_REF)
                         ),
                         Expr(
@@ -1587,7 +1585,7 @@ function _inject_pending_callsite(expr, pool_name, original_expr = expr)
 end
 
 # ==============================================================================
-# Internal: Return Statement Validation (POOL_SAFETY_LV >= 2)
+# Internal: Return Statement Validation (S >= 1)
 # ==============================================================================
 #
 # Transforms `return expr` → `begin local _ret = expr; validate(_ret); return _ret end`
@@ -1643,7 +1641,7 @@ function _transform_return_stmts(expr, pool_name, current_lnn = nothing)
                     :&&,
                     Expr(
                         :||,
-                        Expr(:call, :>=, Expr(:call, _SAFETY_LEVEL_REF, pool_name), 3),
+                        Expr(:call, :>=, Expr(:call, _SAFETY_LEVEL_REF, pool_name), 1),
                         Expr(:ref, _POOL_DEBUG_REF)
                     ),
                     Expr(
@@ -1665,7 +1663,7 @@ function _transform_return_stmts(expr, pool_name, current_lnn = nothing)
                 :if,
                 Expr(
                     :||,
-                    Expr(:call, :>=, Expr(:call, _SAFETY_LEVEL_REF, pool_name), 2),
+                    Expr(:call, :>=, Expr(:call, _SAFETY_LEVEL_REF, pool_name), 1),
                     Expr(:ref, _POOL_DEBUG_REF)
                 ),
                 validate_expr

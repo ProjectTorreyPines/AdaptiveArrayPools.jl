@@ -130,10 +130,6 @@ end
         return f(pool_any::AdaptiveArrayPool{0})
     elseif pool_any isa AdaptiveArrayPool{1}
         return f(pool_any::AdaptiveArrayPool{1})
-    elseif pool_any isa AdaptiveArrayPool{2}
-        return f(pool_any::AdaptiveArrayPool{2})
-    elseif pool_any isa AdaptiveArrayPool{3}
-        return f(pool_any::AdaptiveArrayPool{3})
     else
         # Non-CPU pools (e.g. CuAdaptiveArrayPool): pass through as-is.
         # No union splitting needed — type is already concrete from the getter.
@@ -153,15 +149,15 @@ Also updates `POOL_SAFETY_LV[]` so that future `AdaptiveArrayPool()` /
 
 ## Example
 ```julia
-set_safety_level!(2)  # Enable full safety on CPU + all GPU devices
+set_safety_level!(1)  # Enable runtime checks on CPU + all GPU devices
 # ... run suspicious code ...
 set_safety_level!(0)  # Back to zero overhead everywhere
 ```
 
-See also: [`_safety_level`], [`POOL_SAFETY_LV`]
+See also: [`_safety_level`], [`RUNTIME_CHECK`], [`POOL_SAFETY_LV`]
 """
 function set_safety_level!(level::Int)
-    0 <= level <= 3 || throw(ArgumentError("Safety level must be 0-3; got $level"))
+    0 <= level <= 1 || throw(ArgumentError("Safety level must be 0 or 1; got $level"))
     old_pool = get(task_local_storage(), _POOL_KEY, nothing)
     if old_pool isa AdaptiveArrayPool
         depth = getfield(old_pool, :_current_depth)

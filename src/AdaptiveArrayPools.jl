@@ -10,7 +10,7 @@ export unsafe_zeros!, unsafe_ones!, unsafe_similar!  # Unsafe convenience functi
 export Bit  # Sentinel type for BitArray (use with acquire!, trues!, falses!)
 export @with_pool, @maybe_with_pool
 export STATIC_POOLING, MAYBE_POOLING, POOL_DEBUG, POOL_SAFETY_LV, STATIC_POOL_CHECKS
-export DEFAULT_SAFETY_LV, set_safety_level!
+export DEFAULT_SAFETY_LV, RUNTIME_CHECK, set_safety_level!
 export PoolEscapeError, EscapePoint
 export USE_POOLING, MAYBE_POOLING_ENABLED  # Deprecated aliases (backward compat)
 export checkpoint!, rewind!, reset!

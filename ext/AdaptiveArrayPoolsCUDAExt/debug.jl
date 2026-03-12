@@ -86,15 +86,15 @@ end
 # The macro injects pool._pending_callsite = "file:line\nexpr" before acquire calls.
 # These functions flush that pending info into the borrow log.
 
-"""Record pending callsite for borrow tracking (compiles to no-op when S < 3)."""
+"""Record pending callsite for borrow tracking (compiles to no-op when S = 0)."""
 @inline function AdaptiveArrayPools._set_pending_callsite!(pool::CuAdaptiveArrayPool{S}, msg::String) where {S}
-    S >= 3 && isempty(pool._pending_callsite) && (pool._pending_callsite = msg)
+    S >= 1 && isempty(pool._pending_callsite) && (pool._pending_callsite = msg)
     return nothing
 end
 
-"""Flush pending callsite into borrow log (compiles to no-op when S < 3)."""
+"""Flush pending callsite into borrow log (compiles to no-op when S = 0)."""
 @inline function AdaptiveArrayPools._maybe_record_borrow!(pool::CuAdaptiveArrayPool{S}, tp::AbstractTypedPool) where {S}
-    S >= 3 && _cuda_record_borrow_from_pending!(pool, tp)
+    S >= 1 && _cuda_record_borrow_from_pending!(pool, tp)
     return nothing
 end
 
@@ -125,7 +125,7 @@ end
 # detection works correctly. pointer(::CuArray) returns CuPtr{T}.
 
 function AdaptiveArrayPools._validate_pool_return(val, pool::CuAdaptiveArrayPool{S}) where {S}
-    (S >= 2 || POOL_DEBUG[]) || return nothing
+    (S >= 1 || POOL_DEBUG[]) || return nothing
     _validate_cuda_return(val, pool)
     return nothing
 end

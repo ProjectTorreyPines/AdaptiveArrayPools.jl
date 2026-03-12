@@ -8,9 +8,9 @@
 Legacy flag for escape detection. Superseded by [`POOL_SAFETY_LV`](@ref).
 
 Setting `POOL_DEBUG[] = true` enables escape detection at `@with_pool` scope exit
-(equivalent to `POOL_SAFETY_LV[] >= 2` behavior). Both flags are checked independently.
+(equivalent to `RUNTIME_CHECK = true` behavior). Both flags are checked independently.
 
-For new code, prefer `POOL_SAFETY_LV[] = 2`.
+For new code, prefer `set_safety_level!(1)` or `RUNTIME_CHECK = true`.
 
 Default: `false`
 """
@@ -117,7 +117,7 @@ end
     PoolRuntimeEscapeError <: Exception
 
 Thrown at runtime when `_validate_pool_return` detects a pool-backed array
-escaping from an `@with_pool` scope (requires `POOL_SAFETY_LV[] >= 2`).
+escaping from an `@with_pool` scope (requires `RUNTIME_CHECK = true` or `POOL_DEBUG[] = true`).
 
 This is the runtime counterpart of [`PoolEscapeError`](@ref) (compile-time).
 """
@@ -245,7 +245,7 @@ _validate_pool_return(val, ::DisabledPool) = nothing
 _validate_pool_return(val, ::AbstractArrayPool) = nothing
 
 # ==============================================================================
-# Poisoning: Fill released vectors with sentinel values (POOL_SAFETY_LV >= 2)
+# Poisoning: Fill released vectors with sentinel values (S >= 1)
 # ==============================================================================
 #
 # Poisons backing vectors with detectable values (NaN, typemax) before
@@ -266,7 +266,7 @@ _poison_fill!(v::BitVector) = fill!(v, true)
     _poison_released_vectors!(tp::AbstractTypedPool, old_n_active)
 
 Fill released backing vectors (indices `n_active+1:old_n_active`) with sentinel
-values. Called from `_invalidate_released_slots!` when `POOL_SAFETY_LV[] >= 2`,
+values. Called from `_invalidate_released_slots!` when `S >= 1`,
 before `resize!` zeroes the lengths.
 """
 @noinline function _poison_released_vectors!(tp::AbstractTypedPool, old_n_active::Int)
@@ -307,7 +307,7 @@ function _shorten_location(location::String)
 end
 
 # ==============================================================================
-# Borrow Registry: Call-site tracking for acquire! (POOL_SAFETY_LV >= 3)
+# Borrow Registry: Call-site tracking for acquire! (S >= 1)
 # ==============================================================================
 #
 # Records where each acquire! call originated (file:line) so escape errors
@@ -319,7 +319,7 @@ end
     _record_borrow_from_pending!(pool, tp)
 
 Record the pending callsite for the most recently claimed slot in `tp`.
-Called from `_acquire_impl!` / `_unsafe_acquire_impl!` when `POOL_SAFETY_LV[] >= 3`.
+Called from `_acquire_impl!` / `_unsafe_acquire_impl!` when `S >= 1`.
 """
 @noinline function _record_borrow_from_pending!(pool::AdaptiveArrayPool, tp::AbstractTypedPool)
     callsite = pool._pending_callsite

@@ -257,11 +257,11 @@ end
 
 @noinline function _invalidate_released_slots!(tp::TypedPool{T}, old_n_active::Int, S::Int = POOL_SAFETY_LV[]) where {T}
     new_n = tp.n_active
-    # Level 2+: poison vectors with NaN/sentinel before structural invalidation
-    if S >= 2
+    # Poison vectors with NaN/sentinel before structural invalidation
+    if S >= 1
         _poison_released_vectors!(tp, old_n_active)
     end
-    # Level 1+: resize backing vectors to length 0 (invalidates SubArrays from acquire!)
+    # Resize backing vectors to length 0 (invalidates SubArrays from acquire!)
     for i in (new_n + 1):old_n_active
         @inbounds resize!(tp.vectors[i], 0)
     end
@@ -281,8 +281,8 @@ end
 
 @noinline function _invalidate_released_slots!(tp::BitTypedPool, old_n_active::Int, S::Int = POOL_SAFETY_LV[])
     new_n = tp.n_active
-    # Level 2+: poison BitVectors (all bits set to true)
-    if S >= 2
+    # Level 1+: poison BitVectors (all bits set to true)
+    if S >= 1
         _poison_released_vectors!(tp, old_n_active)
     end
     # Level 1+: resize backing BitVectors to length 0 (invalidates chunks)
