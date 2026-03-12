@@ -9,6 +9,14 @@
 # 1. Create explicit pool (shared across iterations)
 # 2. Inner loop: @with_pool + multiple acquire!/unsafe_acquire! + in-place ops → scalar
 # 3. Verify: loop has 0 bytes allocation after warmup
+#
+# Version-dependent allocation threshold:
+#   Julia ≥ 1.12: strict 0 bytes (let-scope fully optimized away)
+#   Julia < 1.12: up to 16 bytes per @with_pool scope (let-scope overhead)
+#   This is a fixed per-scope cost, not per-acquire. Inside function barriers
+#   and hot loops, the compiler eliminates it entirely.
+
+const _ZERO_ALLOC_THRESHOLD = @static VERSION >= v"1.12-" ? 0 : 16
 
 @testset "Zero-allocation Patterns" begin
 
@@ -376,6 +384,116 @@
     end
 
     # ==============================================================================
+    # Pattern 7: @inline @with_pool function form (regression test)
+    #
+    # When @inline is applied to a @with_pool function, the compiler inlines
+    # everything into the caller — including the _dispatch_pool_scope closure.
+    # This can defeat LLVM's escape analysis, causing SubArray metadata to be
+    # heap-allocated instead of stack-allocated. The @noinline closure fix in
+    # _wrap_with_dispatch preserves the function barrier.
+    # ==============================================================================
+
+    # Non-inlined baseline: acquire! + similar! + in-place ops
+    @with_pool pool function _test_pooled_no_inline(n)
+        A = acquire!(pool, Float64, n, n)
+        B = similar!(pool, A)
+        C = similar!(pool, A)
+        fill!(A, 2.0); fill!(B, 3.0)
+        @. C = A * B
+        return sum(C)
+    end
+
+    # @inline variant — must also be zero-alloc
+    @inline @with_pool pool function _test_pooled_with_inline(n)
+        A = acquire!(pool, Float64, n, n)
+        B = similar!(pool, A)
+        C = similar!(pool, A)
+        fill!(A, 2.0); fill!(B, 3.0)
+        @. C = A * B
+        return sum(C)
+    end
+
+    @testset "@inline @with_pool function: zero-allocation" begin
+        # Warmup both variants
+        for _ in 1:5
+            _test_pooled_no_inline(8)
+            _test_pooled_with_inline(8)
+        end
+
+        # Measure non-inlined (baseline)
+        alloc_no_inline = @allocated _test_pooled_no_inline(8)
+        println("  @with_pool function (no @inline): $alloc_no_inline bytes")
+        @test alloc_no_inline <= _ZERO_ALLOC_THRESHOLD
+
+        # Measure @inline variant — this is the regression test
+        alloc_inline = @allocated _test_pooled_with_inline(8)
+        println("  @inline @with_pool function:      $alloc_inline bytes")
+        @test alloc_inline <= _ZERO_ALLOC_THRESHOLD
+
+        # Sanity: both compute the same result
+        @test _test_pooled_no_inline(8) == _test_pooled_with_inline(8)
+        @test _test_pooled_no_inline(8) == 8 * 8 * 6.0  # 2.0 * 3.0 = 6.0
+    end
+
+    # ==============================================================================
+    # Pattern 8: @inline @with_pool in a hot loop (real use-case)
+    # ==============================================================================
+
+    @inline @with_pool pool function _test_pooled_inline_step(n, scale)
+        tmp = acquire!(pool, Float64, n)
+        fill!(tmp, scale)
+        return sum(tmp)
+    end
+
+    @with_pool pool function _test_pooled_noinline_step(n, scale)
+        tmp = acquire!(pool, Float64, n)
+        fill!(tmp, scale)
+        return sum(tmp)
+    end
+
+    # Wrap hot loops in function barriers — Julia < 1.12 accumulates let-scope
+    # overhead at testset scope, but eliminates it entirely inside functions.
+    function _run_inline_loop()
+        total = 0.0
+        for i in 1:100
+            total += _test_pooled_inline_step(64, Float64(i))
+        end
+        total
+    end
+
+    function _run_noinline_loop()
+        total = 0.0
+        for i in 1:100
+            total += _test_pooled_noinline_step(64, Float64(i))
+        end
+        total
+    end
+
+    @testset "@inline @with_pool in hot loop: zero-allocation" begin
+        # Warmup
+        for i in 1:5
+            _test_pooled_inline_step(64, Float64(i))
+            _test_pooled_noinline_step(64, Float64(i))
+        end
+        _run_inline_loop(); _run_inline_loop()
+        _run_noinline_loop(); _run_noinline_loop()
+
+        # Measure loop with @inline function (function barrier eliminates per-iter cost;
+        # residual ≤16B on Julia <1.12 from testset-scope closure overhead)
+        alloc_inline = @allocated _run_inline_loop()
+        println("  @inline @with_pool loop (100 iters): $alloc_inline bytes")
+        @test alloc_inline <= _ZERO_ALLOC_THRESHOLD
+
+        # Measure loop with non-inline function (baseline)
+        alloc_noinline = @allocated _run_noinline_loop()
+        println("  @with_pool loop baseline (100 iters): $alloc_noinline bytes")
+        @test alloc_noinline <= _ZERO_ALLOC_THRESHOLD
+
+        # Sanity: both compute the same result
+        @test _run_inline_loop() ≈ _run_noinline_loop()
+    end
+
+    # ==============================================================================
     # Summary test: All patterns combined
     # ==============================================================================
 
@@ -406,7 +524,7 @@
         println()
 
         for (name, alloc) in results
-            @test alloc == 0
+            @test alloc == 0  # loop patterns inside function barriers → 0 on all versions
         end
     end
 

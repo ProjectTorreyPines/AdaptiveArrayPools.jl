@@ -3,7 +3,7 @@
 # ==============================================================================
 # Enables @with_pool :cuda syntax for GPU memory pooling.
 
-using AdaptiveArrayPools: _get_pool_for_backend, _dispatch_pool_scope
+using AdaptiveArrayPools: _get_pool_for_backend, _pool_type_for_backend
 
 # ==============================================================================
 # Backend Registration (Val dispatch - zero overhead)
@@ -16,21 +16,12 @@ Uses Val dispatch for compile-time resolution and full inlining.
 @inline AdaptiveArrayPools._get_pool_for_backend(::Val{:cuda}) = get_task_local_cuda_pool()
 
 # ==============================================================================
-# Union Splitting for CuAdaptiveArrayPool{S}
+# Pool Type Registration for Closureless Union Splitting
 # ==============================================================================
 #
-# The base _dispatch_pool_scope has an `else` fallback for non-CPU pools that
-# passes pool_any without type narrowing. This override provides union splitting
-# for CUDA pools, enabling compile-time S → dead-code elimination of safety branches.
+# `_pool_type_for_backend` is called at macro expansion time to determine the
+# concrete pool type for closureless `let`/`if isa` chain generation.
+# This enables `@with_pool :cuda` to generate `if _raw isa CuAdaptiveArrayPool{0} ...`
+# instead of closure-based `_dispatch_pool_scope`.
 
-@inline function AdaptiveArrayPools._dispatch_pool_scope(f, pool_any::CuAdaptiveArrayPool)
-    if pool_any isa CuAdaptiveArrayPool{0}
-        return f(pool_any::CuAdaptiveArrayPool{0})
-    elseif pool_any isa CuAdaptiveArrayPool{1}
-        return f(pool_any::CuAdaptiveArrayPool{1})
-    elseif pool_any isa CuAdaptiveArrayPool{2}
-        return f(pool_any::CuAdaptiveArrayPool{2})
-    else
-        return f(pool_any::CuAdaptiveArrayPool{3})
-    end
-end
+AdaptiveArrayPools._pool_type_for_backend(::Val{:cuda}) = CuAdaptiveArrayPool

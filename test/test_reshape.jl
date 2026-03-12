@@ -389,12 +389,18 @@
                 return sum(tmp) + sum(buf)
             end
 
+            # Function barrier: eliminates let-scope overhead on Julia < 1.12
+            function _measure_reshape_func_alloc(data)
+                @allocated _test_reshape_func_alloc(data)
+            end
+
             # Warmup (compile + cache)
             for _ in 1:4
                 _test_reshape_func_alloc(ext)
             end
+            _measure_reshape_func_alloc(ext); _measure_reshape_func_alloc(ext)
 
-            alloc = @allocated _test_reshape_func_alloc(ext)
+            alloc = _measure_reshape_func_alloc(ext)
             println("  @with_pool function (acquire+reshape+zeros!): $alloc bytes")
             @test alloc == 0
         end
