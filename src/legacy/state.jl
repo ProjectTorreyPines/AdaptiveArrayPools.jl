@@ -269,7 +269,7 @@ _invalidate_released_slots!(::AbstractTypedPool, ::Int) = nothing  # legacy 2-ar
     if S >= 1
         _poison_released_vectors!(tp, old_n_active)
     end
-    # Level 1+: resize backing vectors to length 0 (invalidates SubArrays from acquire!)
+    # S=1: resize backing vectors to length 0 (invalidates SubArrays from acquire!)
     # Note: Array wrapper invalidation (setfield! :size) requires Julia 1.11+.
     # On legacy (1.10), only SubArray invalidation via resize! is available.
     for i in (new_n + 1):old_n_active
@@ -289,7 +289,7 @@ end
     if S >= 1
         _poison_released_vectors!(tp, old_n_active)
     end
-    # Level 1+: resize backing BitVectors to length 0
+    # S=1: resize backing BitVectors to length 0
     for i in (new_n + 1):old_n_active
         @inbounds resize!(tp.vectors[i], 0)
     end

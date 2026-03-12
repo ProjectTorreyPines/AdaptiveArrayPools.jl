@@ -308,7 +308,7 @@ const _TYPE_BITS_MASK = UInt16(0x00FF)  # bits 0-7: fixed-slot type bits
 using Preferences: @load_preference
 
 _normalize_runtime_check(v::Bool) = Int(v)
-_normalize_runtime_check(v::Integer) = Int(v)
+_normalize_runtime_check(v::Integer) = clamp(Int(v), 0, 1)
 
 """
     RUNTIME_CHECK::Int

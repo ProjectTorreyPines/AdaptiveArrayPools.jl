@@ -261,7 +261,7 @@ end
     if S >= 1
         _poison_released_vectors!(tp, old_n_active)
     end
-    # Level 1+: resize backing vectors to length 0 (invalidates SubArrays from acquire!)
+    # S=1: resize backing vectors to length 0 (invalidates SubArrays from acquire!)
     for i in (new_n + 1):old_n_active
         @inbounds resize!(tp.vectors[i], 0)
     end
@@ -285,7 +285,7 @@ end
     if S >= 1
         _poison_released_vectors!(tp, old_n_active)
     end
-    # Level 1+: resize backing BitVectors to length 0 (invalidates chunks)
+    # S=1: resize backing BitVectors to length 0 (invalidates chunks)
     for i in (new_n + 1):old_n_active
         @inbounds resize!(tp.vectors[i], 0)
     end
