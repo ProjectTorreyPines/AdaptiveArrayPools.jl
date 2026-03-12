@@ -530,8 +530,7 @@ to generate closureless union splitting. Extensions override this for their back
 CPU returns `AdaptiveArrayPool`, CUDA extension returns `CuAdaptiveArrayPool`.
 """
 _pool_type_for_backend(::Val{:cpu}) = AdaptiveArrayPool
-_pool_type_for_backend(::Val{B}) where {B} =
-    error("Pool backend :$B is not registered. Load the extension first (e.g., `using CUDA` for :cuda).")
+_pool_type_for_backend(::Val{B}) where {B} = nothing  # unregistered backend — runtime fallback
 
 """
     _wrap_with_dispatch(pool_name_esc, pool_getter, inner_body; backend=:cpu)
@@ -547,6 +546,13 @@ which extensions override (e.g., CUDA adds `CuAdaptiveArrayPool`).
 """
 function _wrap_with_dispatch(pool_name_esc, pool_getter, inner_body; backend::Symbol = :cpu)
     PoolType = _pool_type_for_backend(Val{backend}())
+    if PoolType === nothing
+        # Unregistered backend: fall back to closure-based dispatch.
+        # Runtime will error in _get_pool_for_backend if extension isn't loaded.
+        return :($(_DISPATCH_POOL_SCOPE_REF)($pool_getter) do $pool_name_esc
+            $inner_body
+        end)
+    end
     _PT = GlobalRef(parentmodule(PoolType), nameof(PoolType))
     raw = gensym(:_raw_pool)
     # Fallback: S=3 (last branch, no condition needed)
