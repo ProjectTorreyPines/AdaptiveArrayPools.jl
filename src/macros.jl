@@ -524,17 +524,23 @@ end
 """
     _wrap_with_dispatch(pool_name_esc, pool_getter, inner_body)
 
-Wrap `inner_body` in a `_dispatch_pool_scope` closure call.
-Generates: `_dispatch_pool_scope(pool_name -> inner_body, pool_getter)`
+Closureless union splitting: generates `let _raw = getter; if _raw isa T{0} ...`
+chain that narrows `pool_name` to concrete `AdaptiveArrayPool{S}` without closure.
 
-Inside the closure, `pool_name` has concrete type `AdaptiveArrayPool{S}`.
+Eliminates Core.Box boxing that occurs when closure-based `_dispatch_pool_scope`
+gets inlined into outer callers crossing try/finally boundaries.
 """
 function _wrap_with_dispatch(pool_name_esc, pool_getter, inner_body)
-    return Expr(
-        :call, _DISPATCH_POOL_SCOPE_REF,
-        Expr(:(->), pool_name_esc, inner_body),
-        pool_getter
-    )
+    _AAP = GlobalRef(@__MODULE__, :AdaptiveArrayPool)
+    raw = gensym(:_raw_pool)
+    # Fallback: S=3 (last branch, no condition needed)
+    chain = Expr(:let, Expr(:(=), pool_name_esc, :($raw::$_AAP{3})), inner_body)
+    for s in 2:-1:0
+        concrete_t = :($_AAP{$s})
+        branch_body = Expr(:let, Expr(:(=), pool_name_esc, :($raw::$concrete_t)), inner_body)
+        chain = Expr(:if, :($raw isa $concrete_t), branch_body, chain)
+    end
+    return Expr(:let, Expr(:(=), raw, pool_getter), chain)
 end
 
 # ==============================================================================
