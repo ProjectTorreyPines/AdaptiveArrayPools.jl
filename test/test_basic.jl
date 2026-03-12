@@ -54,7 +54,7 @@
     end
 
     @testset "Slot reuse with resize via _claim_slot!" begin
-        # Use S=0 pool: safety level is baked into type, so we need an explicit
+        # Use S=0 pool: runtime check level is baked into type, so we need an explicit
         # AdaptiveArrayPool{0} to test capacity preservation without invalidation.
         pool = AdaptiveArrayPool{0}()
 

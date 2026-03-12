@@ -4,9 +4,12 @@ AdaptiveArrayPools can be configured via `LocalPreferences.toml`:
 
 ```toml
 [AdaptiveArrayPools]
-use_pooling = false  # ⭐ Primary: Disable pooling entirely
-cache_ways = 8       # Advanced: N-way cache size (default: 4)
+use_pooling = false      # ⭐ Primary: Disable pooling entirely
+runtime_check = 1        # Safety: Enable runtime safety checks
+cache_ways = 8           # Advanced: N-way cache size (default: 4)
 ```
+
+All compile-time preferences require **restarting Julia** to take effect.
 
 ## Compile-time: STATIC_POOLING (⭐ Primary)
 
@@ -50,6 +53,31 @@ Use `pooling_enabled(pool)` to check if pooling is active.
 
 All pooling code is **completely eliminated at compile time** (zero overhead).
 
+## Compile-time: RUNTIME_CHECK
+
+Enable runtime safety checks to catch pool-escape bugs. See [Safety](safety.md) for full details.
+
+```toml
+# LocalPreferences.toml
+[AdaptiveArrayPools]
+runtime_check = 1      # enable (0 = off, 1 = on)
+# runtime_check = true  # also accepted
+```
+
+Or programmatically:
+
+```julia
+using Preferences
+Preferences.set_preferences!(AdaptiveArrayPools, "runtime_check" => 1)
+# Restart Julia for changes to take effect
+```
+
+Accepts both `Bool` and `Int` values — internally normalized to `Int`:
+- `false` / `0` → off (zero overhead, all safety branches eliminated)
+- `true` / `1` → on (poisoning + invalidation + escape detection + borrow tracking)
+
+The safety level is baked into the pool type parameter: `AdaptiveArrayPool{0}` or `AdaptiveArrayPool{1}`. This enables dead-code elimination — at `RUNTIME_CHECK = 0`, all safety branches are completely removed by the compiler.
+
 ## Runtime: MAYBE_POOLING
 
 Only affects `@maybe_with_pool`. Toggle without restart.
@@ -58,17 +86,6 @@ Only affects `@maybe_with_pool`. Toggle without restart.
 MAYBE_POOLING[] = false  # Disable
 MAYBE_POOLING[] = true   # Enable (default)
 ```
-
-## Runtime: POOL_DEBUG
-
-Enable safety validation to catch direct returns of pool-backed arrays.
-
-```julia
-POOL_DEBUG[] = true   # Enable safety checks (development)
-POOL_DEBUG[] = false  # Disable (default, production)
-```
-
-When enabled, returning a pool-backed array from a `@with_pool` block will throw an error.
 
 ## Compile-time: CACHE_WAYS (Julia 1.10 / CUDA only)
 
@@ -99,6 +116,6 @@ set_cache_ways!(8)
 | Setting | Scope | Restart? | Priority | Affects |
 |---------|-------|----------|----------|---------|
 | `use_pooling` | Compile-time | Yes | ⭐ Primary | All macros, `acquire!` behavior |
+| `runtime_check` | Compile-time | Yes | Safety | Poisoning, invalidation, escape detection |
 | `cache_ways` | Compile-time | Yes | Advanced | `unsafe_acquire!` N-D caching (Julia 1.10 / CUDA only) |
 | `MAYBE_POOLING` | Runtime | No | Optional | `@maybe_with_pool` only |
-| `POOL_DEBUG` | Runtime | No | Debug | Safety validation |

@@ -296,69 +296,35 @@ const _TYPE_BITS_MASK = UInt16(0x00FF)  # bits 0-7: fixed-slot type bits
 # ==============================================================================
 #
 # Safety is controlled per-pool via the type parameter S in AdaptiveArrayPool{S}.
-# S encodes the safety level (0-3), enabling dead-code elimination at compile time.
+# S is binary: 0 (off) or 1 (on), enabling dead-code elimination at compile time.
 #
-#   0 = off   — zero overhead (default)
-#   1 = guard — structural invalidation on rewind (resize + setfield!)
-#   2 = full  — guard + escape detection + poisoning
-#   3 = debug — full + borrow registry (call-site tracking)
+#   0 = off — zero overhead (default)
+#   1 = on  — full runtime checks (invalidation, poisoning, escape detection, borrow tracking)
 #
-# DEFAULT_SAFETY_LV sets the initial S for new pools.
-# POOL_SAFETY_LV is the runtime Ref read by AdaptiveArrayPool() constructor.
-# Use set_safety_level!() to replace the task-local pool at runtime.
-
+# Int type allows future compile-time check levels (like -O0/-O1/-O2).
+# Currently only 0 and 1 are defined. LocalPreferences.toml accepts both
+# Bool (true/false) and Int (0/1).
+#
 using Preferences: @load_preference
 
-"""
-    DEFAULT_SAFETY_LV::Int
+_normalize_runtime_check(v::Bool) = Int(v)
+_normalize_runtime_check(v::Integer) = clamp(Int(v), 0, 1)
 
-Compile-time default safety level for new pool instances.
+"""
+    RUNTIME_CHECK::Int
+
+Compile-time constant controlling the runtime safety check level.
+
+- `0` — off (zero overhead, default)
+- `1` — full checks (invalidation, poisoning, escape detection, borrow tracking)
 
 Set via `LocalPreferences.toml`:
 ```toml
 [AdaptiveArrayPools]
-safety_level = 1
+runtime_check = true   # or 1
 ```
-
-Levels: `0` (off, default), `1` (guard), `2` (full), `3` (debug).
-
-Legacy fallback: reads `pool_checks` preference if `safety_level` is not set
-(`true` → 1, `false` → 0).
 """
-const DEFAULT_SAFETY_LV = let
-    sl = @load_preference("safety_level", nothing)
-    if sl !== nothing
-        sl::Int
-    else
-        # Legacy: pool_checks=true → safety_level=1
-        pc = @load_preference("pool_checks", nothing)
-        pc !== nothing ? (pc::Bool ? 1 : 0) : 0
-    end
-end
-
-"""
-    STATIC_POOL_CHECKS::Bool
-
-Compile-time constant derived from `DEFAULT_SAFETY_LV > 0`.
-Retained for backward compatibility. New code should use `_safety_level(pool) >= N`.
-"""
-const STATIC_POOL_CHECKS = DEFAULT_SAFETY_LV > 0
-
-"""
-    POOL_SAFETY_LV
-
-Runtime safety level. Read by `AdaptiveArrayPool()` constructor to determine
-the `S` parameter of newly created pools.
-
-- `0`: Off — zero overhead
-- `1`: Guard — structural invalidation on rewind (resize + setfield!)
-- `2`: Full — guard + escape detection on scope exit + poisoning
-- `3`: Debug — full + borrow registry (acquire call-site tracking)
-
-Initial value: `DEFAULT_SAFETY_LV` (default `0`).
-Use `set_safety_level!()` to change the task-local pool at runtime.
-"""
-const POOL_SAFETY_LV = Ref{Int}(DEFAULT_SAFETY_LV)
+const RUNTIME_CHECK = _normalize_runtime_check(@load_preference("runtime_check", 0))
 
 # ==============================================================================
 # AdaptiveArrayPool
@@ -370,11 +336,11 @@ const POOL_SAFETY_LV = Ref{Int}(DEFAULT_SAFETY_LV)
 Multi-type memory pool with fixed slots for common types and IdDict fallback for others.
 Zero allocation after warmup. NOT thread-safe - use one pool per Task.
 
-The type parameter `S::Int` encodes the safety level (0-3). Inside `@inline` call chains,
-`S` is a compile-time constant — safety checks like `S >= 1` are eliminated by dead-code
-elimination when `S = 0`, achieving true zero overhead.
+The type parameter `S::Int` encodes the runtime check mode (0 = off, 1 = on).
+Inside `@inline` call chains, `S` is a compile-time constant — safety checks are
+eliminated by dead-code elimination when `S = 0`, achieving true zero overhead.
 
-See also: [`_safety_level`], [`_make_pool`], [`set_safety_level!`]
+See also: [`_runtime_check`], [`_make_pool`], [`RUNTIME_CHECK`]
 """
 mutable struct AdaptiveArrayPool{S} <: AbstractArrayPool
     # Fixed Slots: common types with zero lookup overhead
@@ -395,7 +361,7 @@ mutable struct AdaptiveArrayPool{S} <: AbstractArrayPool
     _touched_type_masks::Vector{UInt16}  # Per-depth: which fixed slots were touched + mode flags
     _touched_has_others::Vector{Bool}    # Per-depth: any non-fixed-slot type touched?
 
-    # Borrow registry (POOL_SAFETY_LV >= 3 only)
+    # Borrow registry (S = 1 only)
     _pending_callsite::String                        # "" = no pending; set by macro before acquire
     _pending_return_site::String                     # "" = no pending; set by macro before validate
     _borrow_log::Union{Nothing, IdDict{Any, String}} # vector_obj => callsite string
@@ -417,45 +383,46 @@ function AdaptiveArrayPool{S}() where {S}
         [false],        # _touched_has_others: sentinel (no others)
         "",             # _pending_callsite: no pending
         "",             # _pending_return_site: no pending
-        nothing         # _borrow_log: lazily created at LV >= 3
+        nothing         # _borrow_log: lazily created at S=1
     )
 end
 
-"""Create pool at the current `POOL_SAFETY_LV[]` level."""
-AdaptiveArrayPool() = _make_pool(POOL_SAFETY_LV[])
+"""Create pool with the default `RUNTIME_CHECK` level."""
+AdaptiveArrayPool() = AdaptiveArrayPool{RUNTIME_CHECK}()
 
 """
-    _safety_level(pool) -> Int
+    _runtime_check(pool) -> Bool
 
-Return the safety level of a pool. Compile-time constant for `AdaptiveArrayPool{S}`.
+Return whether runtime safety checks are enabled for `pool` (i.e., `S >= 1`).
+Compile-time constant for `AdaptiveArrayPool{S}` — dead-code eliminated when `S = 0`.
 """
-@inline _safety_level(::AdaptiveArrayPool{S}) where {S} = S
-@inline _safety_level(::AbstractArrayPool) = POOL_SAFETY_LV[]  # fallback
+@inline _runtime_check(::AdaptiveArrayPool{0}) = false
+@inline _runtime_check(::AdaptiveArrayPool) = true  # S >= 1
 
 """
-    _make_pool(s::Int) -> AdaptiveArrayPool{s}
+    _make_pool(level) -> AdaptiveArrayPool
 
-Function barrier: converts runtime `Int` to concrete `AdaptiveArrayPool{S}`.
-Levels outside 0-3 are clamped (≤0 → 0, ≥3 → 3).
+Function barrier: converts runtime check level to concrete `AdaptiveArrayPool{S}`.
+Accepts `Bool` (`true`→1, `false`→0) or `Int` (used directly as S).
 """
-@noinline function _make_pool(s::Int)
-    s <= 0 && return AdaptiveArrayPool{0}()
-    s == 1 && return AdaptiveArrayPool{1}()
-    s == 2 && return AdaptiveArrayPool{2}()
-    return AdaptiveArrayPool{3}()
+_make_pool(runtime_check::Bool) = _make_pool(Int(runtime_check))
+@noinline function _make_pool(S::Int)
+    S == 0 && return AdaptiveArrayPool{0}()
+    return AdaptiveArrayPool{1}()
 end
 
 """
-    _make_pool(s::Int, old::AdaptiveArrayPool) -> AdaptiveArrayPool{s}
+    _make_pool(level, old::AdaptiveArrayPool) -> AdaptiveArrayPool
 
-Create a new pool at safety level `s`, transferring cached arrays and scope state
-from `old`.  Only reference copies — no memory allocation for the underlying buffers.
+Create a new pool, transferring cached arrays and scope state from `old`.
+Only reference copies — no memory allocation for the underlying buffers.
 
 Transferred: all TypedPool/BitTypedPool slots, `others`, depth & touch tracking.
 Reset: `_pending_callsite/return_site` (transient macro state),
-       `_borrow_log` (created fresh when `s >= 3`).
+       `_borrow_log` (created fresh when S >= 1).
 """
-@noinline function _make_pool(s::Int, old::AdaptiveArrayPool)
+_make_pool(runtime_check::Bool, old::AdaptiveArrayPool) = _make_pool(Int(runtime_check), old)
+@noinline function _make_pool(level::Int, old::AdaptiveArrayPool)
     _new(::Val{S}) where {S} = AdaptiveArrayPool{S}(
         old.float64, old.float32, old.int64, old.int32,
         old.complexf64, old.complexf32, old.bool, old.bits,
@@ -465,12 +432,10 @@ Reset: `_pending_callsite/return_site` (transient macro state),
         old._touched_has_others,
         "",       # _pending_callsite: reset
         "",       # _pending_return_site: reset
-        S >= 3 ? IdDict{Any, String}() : nothing  # _borrow_log
+        S >= 1 ? IdDict{Any, String}() : nothing  # _borrow_log
     )
-    s <= 0 && return _new(Val(0))
-    s == 1 && return _new(Val(1))
-    s == 2 && return _new(Val(2))
-    return _new(Val(3))
+    level == 0 && return _new(Val(0))
+    return _new(Val(1))
 end
 
 # ==============================================================================
@@ -535,12 +500,12 @@ end
 """
     _set_pending_callsite!(pool, msg::String)
 
-Record a pending callsite string for borrow tracking (safety level ≥ 3).
+Record a pending callsite string for borrow tracking (S=1).
 Only sets the callsite if no prior callsite is pending (macro-injected ones take priority).
-Compiles to no-op when `S < 3`.
+Compiles to no-op when `S=0`.
 """
 @inline function _set_pending_callsite!(pool::AdaptiveArrayPool{S}, msg::String) where {S}
-    S >= 3 && isempty(pool._pending_callsite) && (pool._pending_callsite = msg)
+    S >= 1 && isempty(pool._pending_callsite) && (pool._pending_callsite = msg)
     return nothing
 end
 @inline _set_pending_callsite!(::AbstractArrayPool, ::String) = nothing
@@ -548,12 +513,12 @@ end
 """
     _maybe_record_borrow!(pool, tp::AbstractTypedPool)
 
-Flush the pending callsite into the borrow log (safety level ≥ 3).
+Flush the pending callsite into the borrow log (S=1).
 Delegates to `_record_borrow_from_pending!` (defined in `debug.jl`).
-Compiles to no-op when `S < 3`.
+Compiles to no-op when `S=0`.
 """
 @inline function _maybe_record_borrow!(pool::AdaptiveArrayPool{S}, tp::AbstractTypedPool) where {S}
-    S >= 3 && _record_borrow_from_pending!(pool, tp)
+    S >= 1 && _record_borrow_from_pending!(pool, tp)
     return nothing
 end
 @inline _maybe_record_borrow!(::AbstractArrayPool, ::AbstractTypedPool) = nothing

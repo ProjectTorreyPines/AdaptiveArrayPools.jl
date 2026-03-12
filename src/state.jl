@@ -231,7 +231,7 @@ Decrements _current_depth once after all types are rewound.
 end
 
 # ==============================================================================
-# Safety: Structural Invalidation on Rewind (POOL_SAFETY_LV >= 1)
+# Safety: Structural Invalidation on Rewind (S >= 1)
 # ==============================================================================
 #
 # When released, backing vectors are resize!'d to 0 and cached Array/BitArray
@@ -255,13 +255,13 @@ _invalidate_released_slots!(::AbstractTypedPool, ::Int) = nothing  # legacy 2-ar
     return ntuple(_ -> 0, N)
 end
 
-@noinline function _invalidate_released_slots!(tp::TypedPool{T}, old_n_active::Int, S::Int = POOL_SAFETY_LV[]) where {T}
+@noinline function _invalidate_released_slots!(tp::TypedPool{T}, old_n_active::Int, S::Int) where {T}
     new_n = tp.n_active
-    # Level 2+: poison vectors with NaN/sentinel before structural invalidation
-    if S >= 2
+    # S=1: poison vectors with NaN/sentinel before structural invalidation
+    if S >= 1
         _poison_released_vectors!(tp, old_n_active)
     end
-    # Level 1+: resize backing vectors to length 0 (invalidates SubArrays from acquire!)
+    # S=1: resize backing vectors to length 0 (invalidates SubArrays from acquire!)
     for i in (new_n + 1):old_n_active
         @inbounds resize!(tp.vectors[i], 0)
     end
@@ -279,13 +279,13 @@ end
     return nothing
 end
 
-@noinline function _invalidate_released_slots!(tp::BitTypedPool, old_n_active::Int, S::Int = POOL_SAFETY_LV[])
+@noinline function _invalidate_released_slots!(tp::BitTypedPool, old_n_active::Int, S::Int)
     new_n = tp.n_active
-    # Level 2+: poison BitVectors (all bits set to true)
-    if S >= 2
+    # S=1: poison BitVectors (all bits set to true)
+    if S >= 1
         _poison_released_vectors!(tp, old_n_active)
     end
-    # Level 1+: resize backing BitVectors to length 0 (invalidates chunks)
+    # S=1: resize backing BitVectors to length 0 (invalidates chunks)
     for i in (new_n + 1):old_n_active
         @inbounds resize!(tp.vectors[i], 0)
     end
@@ -312,10 +312,9 @@ end
 # Internal helper for rewind with orphan cleanup (works for any AbstractTypedPool)
 # Uses 1-based sentinel pattern: no isempty checks needed (sentinel [0] guarantees non-empty)
 #
-# S parameter: safety level. When called from AdaptiveArrayPool{S} callers, S is a
-# compile-time constant → `S >= 1` dead-code-eliminates the invalidation branch at S=0.
-# Default S = POOL_SAFETY_LV[] preserves backward compat for CUDA ext and legacy callers.
-@inline function _rewind_typed_pool!(tp::AbstractTypedPool, current_depth::Int, S::Int = POOL_SAFETY_LV[])
+# S parameter: runtime check level (0=off, 1=on). When called from AdaptiveArrayPool{S}
+# callers, S is a compile-time constant → `S >= 1` dead-code-eliminates at S=0.
+@inline function _rewind_typed_pool!(tp::AbstractTypedPool, current_depth::Int, S::Int)
 
     # 1. Orphaned Checkpoints Cleanup
     # If there are checkpoints from deeper scopes (depth > current), pop them first.
@@ -542,7 +541,7 @@ end
 Reset state without clearing allocated storage.
 Sets `n_active = 0` and restores checkpoint stacks to sentinel state.
 """
-function reset!(tp::AbstractTypedPool, S::Int = POOL_SAFETY_LV[])
+function reset!(tp::AbstractTypedPool, S::Int)
     _old_n_active = tp.n_active
     tp.n_active = 0
     # Restore sentinel values (1-based sentinel pattern)

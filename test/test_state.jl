@@ -437,7 +437,7 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
             @test length(tp._checkpoint_n_active) > 1
 
             # Reset TypedPool directly
-            result = reset!(tp)
+            result = reset!(tp, 0)
             @test result === tp
             @test tp.n_active == 0
             @test tp._checkpoint_n_active == [0]
@@ -674,7 +674,7 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
         @test tp.n_active == 1
         v2 = acquire!(pool, Float64, 200)
         @test tp.n_active == 2
-        _rewind_typed_pool!(tp, 1)
+        _rewind_typed_pool!(tp, 1, 0)
         @test tp.n_active == 0
 
         # Nested checkpoint/rewind on TypedPool
@@ -690,13 +690,13 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
         v3 = acquire!(pool, Float64, 30)
         @test tp.n_active == 3
 
-        _rewind_typed_pool!(tp, 3)
+        _rewind_typed_pool!(tp, 3, 0)
         @test tp.n_active == 2
 
-        _rewind_typed_pool!(tp, 2)
+        _rewind_typed_pool!(tp, 2, 0)
         @test tp.n_active == 1
 
-        _rewind_typed_pool!(tp, 1)
+        _rewind_typed_pool!(tp, 1, 0)
         @test tp.n_active == 0
 
         # Verify type-specific checkpoint delegates to TypedPool

@@ -242,7 +242,7 @@ end
         pool = get_task_local_cuda_pool()
         reset!(pool)
 
-        # Wrap in function for proper JIT warmup (_dispatch_pool_scope closure
+        # Wrap in function for proper JIT warmup (pool binding let-block
         # needs function boundary to avoid @allocated counting JIT artifacts)
         function _test_cuda_nd_alloc!()
             @with_pool :cuda p begin

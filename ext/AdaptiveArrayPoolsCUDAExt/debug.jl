@@ -3,12 +3,9 @@
 # ==============================================================================
 # CUDA-specific safety implementations for CuAdaptiveArrayPool{S}.
 #
-# Safety levels on CUDA differ from CPU:
-# - Level 0: Zero overhead (all branches dead-code-eliminated)
-# - Level 1: Poisoning (NaN/sentinel fill) + structural invalidation via
-#            _resize_to_fit!(vec, 0) + arr_wrappers invalidation (setfield!(:dims, zeros))
-# - Level 2: Poisoning + escape detection (_validate_pool_return for CuArrays)
-# - Level 3: Full + borrow call-site registry + debug messages
+# Binary safety system (S=0 off, S=1 all checks):
+# - S=0: Zero overhead (all branches dead-code-eliminated)
+# - S=1: Poisoning + structural invalidation + escape detection + borrow tracking
 #
 # Key difference: CPU uses resize!(v, 0) at Level 1 to invalidate stale SubArrays.
 # On CUDA, resize!(CuVector, 0) would free GPU memory, so we use
@@ -16,15 +13,14 @@
 # the GPU allocation (maxsize). Poisoning fills sentinel data before the shrink.
 # arr_wrappers are invalidated by setting wrapper dims to zeros (matches CPU pattern).
 
-using AdaptiveArrayPools: _safety_level, _validate_pool_return,
+using AdaptiveArrayPools: _runtime_check, _validate_pool_return,
     _set_pending_callsite!, _maybe_record_borrow!,
     _invalidate_released_slots!, _zero_dims_tuple,
     _throw_pool_escape_error,
-    POOL_DEBUG, POOL_SAFETY_LV,
     PoolRuntimeEscapeError
 
 # ==============================================================================
-# Poisoning: Fill released CuVectors with sentinel values (Level 1+)
+# Poisoning: Fill released CuVectors with sentinel values (S=1)
 # ==============================================================================
 
 _cuda_poison_value(::Type{T}) where {T <: AbstractFloat} = T(NaN)
@@ -45,12 +41,12 @@ Fill a CuVector with a detectable sentinel value (NaN for floats, typemax for in
 end
 
 # ==============================================================================
-# _invalidate_released_slots! for CuTypedPool (Level 1+)
+# _invalidate_released_slots! for CuTypedPool (S=1)
 # ==============================================================================
 #
 # Overrides the no-op fallback in base. On CUDA:
-# - Level 0: no-op (base _rewind_typed_pool! gates with S >= 1, so never called)
-# - Level 1+: poison released CuVectors + invalidate arr_wrappers
+# - S=0: no-op (base _rewind_typed_pool! gates with S >= 1, so never called)
+# - S=1: poison released CuVectors + invalidate arr_wrappers
 # - NO resize!(cuv, 0) — would free GPU memory; use _resize_to_fit! instead
 
 @noinline function AdaptiveArrayPools._invalidate_released_slots!(
@@ -79,22 +75,22 @@ end
 end
 
 # ==============================================================================
-# Borrow Tracking: Call-site recording (Level 3)
+# Borrow Tracking: Call-site recording (S=1)
 # ==============================================================================
 #
 # Overrides the no-op AbstractArrayPool fallbacks.
 # The macro injects pool._pending_callsite = "file:line\nexpr" before acquire calls.
 # These functions flush that pending info into the borrow log.
 
-"""Record pending callsite for borrow tracking (compiles to no-op when S < 3)."""
+"""Record pending callsite for borrow tracking (compiles to no-op when S=0)."""
 @inline function AdaptiveArrayPools._set_pending_callsite!(pool::CuAdaptiveArrayPool{S}, msg::String) where {S}
-    S >= 3 && isempty(pool._pending_callsite) && (pool._pending_callsite = msg)
+    S >= 1 && isempty(pool._pending_callsite) && (pool._pending_callsite = msg)
     return nothing
 end
 
-"""Flush pending callsite into borrow log (compiles to no-op when S < 3)."""
+"""Flush pending callsite into borrow log (compiles to no-op when S=0)."""
 @inline function AdaptiveArrayPools._maybe_record_borrow!(pool::CuAdaptiveArrayPool{S}, tp::AbstractTypedPool) where {S}
-    S >= 3 && _cuda_record_borrow_from_pending!(pool, tp)
+    S >= 1 && _cuda_record_borrow_from_pending!(pool, tp)
     return nothing
 end
 
@@ -118,14 +114,14 @@ end
 end
 
 # ==============================================================================
-# Escape Detection: _validate_pool_return for CuArrays (Level 2+)
+# Escape Detection: _validate_pool_return for CuArrays (S=1)
 # ==============================================================================
 #
 # CuArray views share the same device buffer, so device pointer overlap
 # detection works correctly. pointer(::CuArray) returns CuPtr{T}.
 
 function AdaptiveArrayPools._validate_pool_return(val, pool::CuAdaptiveArrayPool{S}) where {S}
-    (S >= 2 || POOL_DEBUG[]) || return nothing
+    S >= 1 || return nothing
     _validate_cuda_return(val, pool)
     return nothing
 end

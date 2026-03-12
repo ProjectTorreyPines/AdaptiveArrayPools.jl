@@ -1,31 +1,26 @@
-import AdaptiveArrayPools: PoolRuntimeEscapeError, PoolEscapeError, _safety_level, POOL_DEBUG
+import AdaptiveArrayPools: PoolRuntimeEscapeError, PoolEscapeError, _runtime_check,
+    _validate_pool_return, _lazy_checkpoint!, _lazy_rewind!
 
 const _make_cuda_pool = ext._make_cuda_pool
 
 # Opaque identity — defeats compile-time escape analysis
 _cuda_test_leak(x) = x
 
-@testset "CUDA Safety Dispatch (CuAdaptiveArrayPool{S})" begin
+@testset "CUDA Safety (CuAdaptiveArrayPool{S}, Binary S=0/1)" begin
 
     # ==============================================================================
     # Type parameterization basics
     # ==============================================================================
 
-    @testset "CuAdaptiveArrayPool{S} construction and _safety_level" begin
+    @testset "CuAdaptiveArrayPool{S} construction and _runtime_check" begin
         p0 = _make_cuda_pool(0)
         p1 = _make_cuda_pool(1)
-        p2 = _make_cuda_pool(2)
-        p3 = _make_cuda_pool(3)
 
         @test p0 isa CuAdaptiveArrayPool{0}
         @test p1 isa CuAdaptiveArrayPool{1}
-        @test p2 isa CuAdaptiveArrayPool{2}
-        @test p3 isa CuAdaptiveArrayPool{3}
 
-        @test _safety_level(p0) == 0
-        @test _safety_level(p1) == 1
-        @test _safety_level(p2) == 2
-        @test _safety_level(p3) == 3
+        @test _runtime_check(p0) == false
+        @test _runtime_check(p1) == true
 
         # Borrow fields exist at all levels (required by macro-injected field access)
         @test hasfield(typeof(p0), :_pending_callsite)
@@ -34,10 +29,10 @@ _cuda_test_leak(x) = x
     end
 
     # ==============================================================================
-    # Level 0: No poisoning, no validation
+    # S=0: No poisoning, no validation
     # ==============================================================================
 
-    @testset "Level 0: no poisoning on rewind" begin
+    @testset "S=0: no poisoning on rewind" begin
         pool = _make_cuda_pool(0)
         checkpoint!(pool)
         v = acquire!(pool, Float32, 10)
@@ -53,14 +48,38 @@ _cuda_test_leak(x) = x
         rewind!(pool)
     end
 
+    @testset "S=0: no poisoning (verify data survives rewind)" begin
+        pool = _make_cuda_pool(0)
+        checkpoint!(pool)
+        v = acquire!(pool, Float32, 10)
+        CUDA.fill!(v, 42.0f0)
+        rewind!(pool)
+
+        # Data should NOT be poisoned at S=0
+        cpu_data = Array(pool.float32.vectors[1])
+        @test all(x -> x == 42.0f0, cpu_data[1:10])
+    end
+
+    @testset "S=0: no escape detection" begin
+        pool = _make_cuda_pool(0)
+        checkpoint!(pool)
+        try
+            v = acquire!(pool, Float32, 10)
+            # Should NOT throw — escape detection requires S=1
+            _validate_pool_return(_cuda_test_leak(v), pool)
+        finally
+            rewind!(pool)
+        end
+    end
+
     # ==============================================================================
-    # Level 1: Poisoning + structural invalidation (length → 0)
+    # S=1: Poisoning + structural invalidation + escape detection + borrow tracking
     # ==============================================================================
-    # CUDA Level 1 now: poison fill → _resize_to_fit!(vec, 0) + arr_wrappers invalidation
+    # CUDA S=1: poison fill → _resize_to_fit!(vec, 0) + arr_wrappers invalidation
     # Backing vector length becomes 0 (GPU memory preserved via maxsize).
     # Poison data persists in GPU memory and is visible on re-acquire (grow-back).
 
-    @testset "Level 1: released vectors have length 0 after rewind" begin
+    @testset "S=1: released vectors have length 0 after rewind" begin
         pool = _make_cuda_pool(1)
         checkpoint!(pool)
         v = acquire!(pool, Float32, 100)
@@ -71,7 +90,7 @@ _cuda_test_leak(x) = x
         @test length(pool.float32.vectors[1]) == 0
     end
 
-    @testset "Level 1: Float32 poisoned with NaN on rewind" begin
+    @testset "S=1: Float32 poisoned with NaN on rewind" begin
         pool = _make_cuda_pool(1)
         checkpoint!(pool)
         v = acquire!(pool, Float32, 10)
@@ -88,7 +107,7 @@ _cuda_test_leak(x) = x
         rewind!(pool)
     end
 
-    @testset "Level 1: Int32 poisoned with typemax on rewind" begin
+    @testset "S=1: Int32 poisoned with typemax on rewind" begin
         pool = _make_cuda_pool(1)
         checkpoint!(pool)
         v = acquire!(pool, Int32, 8)
@@ -102,7 +121,7 @@ _cuda_test_leak(x) = x
         rewind!(pool)
     end
 
-    @testset "Level 1: ComplexF32 poisoned with NaN on rewind" begin
+    @testset "S=1: ComplexF32 poisoned with NaN on rewind" begin
         pool = _make_cuda_pool(1)
         checkpoint!(pool)
         v = acquire!(pool, ComplexF32, 8)
@@ -115,7 +134,7 @@ _cuda_test_leak(x) = x
         rewind!(pool)
     end
 
-    @testset "Level 1: Bool poisoned with true on rewind" begin
+    @testset "S=1: Bool poisoned with true on rewind" begin
         pool = _make_cuda_pool(1)
         checkpoint!(pool)
         v = acquire!(pool, Bool, 16)
@@ -128,7 +147,7 @@ _cuda_test_leak(x) = x
         rewind!(pool)
     end
 
-    @testset "Level 1: Float16 poisoned with NaN on rewind" begin
+    @testset "S=1: Float16 poisoned with NaN on rewind" begin
         pool = _make_cuda_pool(1)
         checkpoint!(pool)
         v = acquire!(pool, Float16, 10)
@@ -141,7 +160,7 @@ _cuda_test_leak(x) = x
         rewind!(pool)
     end
 
-    @testset "Level 1: arr_wrappers invalidated on poisoned rewind" begin
+    @testset "S=1: arr_wrappers invalidated on rewind" begin
         pool = _make_cuda_pool(1)
         checkpoint!(pool)
         v = acquire!(pool, Float32, 10)
@@ -160,102 +179,59 @@ _cuda_test_leak(x) = x
         end
     end
 
-    @testset "Level 1: no escape detection" begin
-        # Level 1 should NOT throw on escape (that's Level 2+)
+    # ==============================================================================
+    # S=1: Escape detection
+    # ==============================================================================
+
+    @testset "S=1: escape detection catches CuArray leak" begin
         pool = _make_cuda_pool(1)
-        result = begin
-            checkpoint!(pool)
-            v = acquire!(pool, Float32, 10)
-            rewind!(pool)
-            v  # "escaping" — should not throw at Level 1
-        end
-        @test result isa CuArray
-    end
-
-    # ==============================================================================
-    # Level 0: Verify no poisoning
-    # ==============================================================================
-
-    @testset "Level 0: no poisoning (verify data survives rewind)" begin
-        pool = _make_cuda_pool(0)
-        checkpoint!(pool)
-        v = acquire!(pool, Float32, 10)
-        CUDA.fill!(v, 42.0f0)
-        rewind!(pool)
-
-        # Data should NOT be poisoned at Level 0
-        cpu_data = Array(pool.float32.vectors[1])
-        @test all(x -> x == 42.0f0, cpu_data[1:10])
-    end
-
-    # ==============================================================================
-    # Level 2: Escape detection
-    # ==============================================================================
-
-    @testset "Level 2: escape detection catches CuArray leak" begin
-        pool = _make_cuda_pool(2)
         @test_throws PoolRuntimeEscapeError begin
             checkpoint!(pool)
             try
                 v = acquire!(pool, Float32, 10)
-                # Simulate what _validate_pool_return does
-                AdaptiveArrayPools._validate_pool_return(_cuda_test_leak(v), pool)
+                _validate_pool_return(_cuda_test_leak(v), pool)
             finally
                 rewind!(pool)
             end
         end
     end
 
-    @testset "Level 2: safe scalar return does not throw" begin
-        pool = _make_cuda_pool(2)
+    @testset "S=1: safe scalar return does not throw" begin
+        pool = _make_cuda_pool(1)
         checkpoint!(pool)
         try
             v = acquire!(pool, Float32, 10)
             CUDA.fill!(v, 3.0f0)
             result = sum(Array(v))  # scalar — safe
-            AdaptiveArrayPools._validate_pool_return(result, pool)
+            _validate_pool_return(result, pool)
             @test result == 30.0f0
         finally
             rewind!(pool)
         end
     end
 
-    @testset "Level 2: escape detection with Tuple containing CuArray" begin
-        pool = _make_cuda_pool(2)
+    @testset "S=1: escape detection with Tuple containing CuArray" begin
+        pool = _make_cuda_pool(1)
         @test_throws PoolRuntimeEscapeError begin
             checkpoint!(pool)
             try
                 v = acquire!(pool, Float32, 10)
                 val = (42, _cuda_test_leak(v))
-                AdaptiveArrayPools._validate_pool_return(val, pool)
+                _validate_pool_return(val, pool)
             finally
                 rewind!(pool)
             end
         end
     end
 
-    @testset "Level 2: escape detection with Dict containing CuArray" begin
-        pool = _make_cuda_pool(2)
+    @testset "S=1: escape detection with Dict containing CuArray" begin
+        pool = _make_cuda_pool(1)
         @test_throws PoolRuntimeEscapeError begin
             checkpoint!(pool)
             try
                 v = acquire!(pool, Float32, 10)
                 val = Dict(:data => _cuda_test_leak(v))
-                AdaptiveArrayPools._validate_pool_return(val, pool)
-            finally
-                rewind!(pool)
-            end
-        end
-    end
-
-    @testset "Level 0 and 1: no escape detection" begin
-        for lv in (0, 1)
-            pool = _make_cuda_pool(lv)
-            checkpoint!(pool)
-            try
-                v = acquire!(pool, Float32, 10)
-                # Should NOT throw — escape detection requires Level 2+
-                AdaptiveArrayPools._validate_pool_return(_cuda_test_leak(v), pool)
+                _validate_pool_return(val, pool)
             finally
                 rewind!(pool)
             end
@@ -263,29 +239,29 @@ _cuda_test_leak(x) = x
     end
 
     # ==============================================================================
-    # Level 3: Borrow tracking
+    # S=1: Borrow tracking
     # ==============================================================================
 
-    @testset "Level 3: borrow fields functional" begin
-        pool = _make_cuda_pool(3)
+    @testset "S=1: borrow fields functional" begin
+        pool = _make_cuda_pool(1)
         @test pool._pending_callsite == ""
         @test pool._pending_return_site == ""
         @test pool._borrow_log === nothing  # lazily created
     end
 
-    @testset "Level 3: _set_pending_callsite! works" begin
-        pool = _make_cuda_pool(3)
+    @testset "S=1: _set_pending_callsite! works" begin
+        pool = _make_cuda_pool(1)
         AdaptiveArrayPools._set_pending_callsite!(pool, "test.jl:42\nacquire!(pool, Float32, 10)")
         @test pool._pending_callsite == "test.jl:42\nacquire!(pool, Float32, 10)"
 
-        # At Level 0, should be no-op
+        # At S=0, should be no-op
         pool0 = _make_cuda_pool(0)
         AdaptiveArrayPools._set_pending_callsite!(pool0, "should not be set")
         @test pool0._pending_callsite == ""
     end
 
-    @testset "Level 3: _maybe_record_borrow! records callsite" begin
-        pool = _make_cuda_pool(3)
+    @testset "S=1: _maybe_record_borrow! records callsite" begin
+        pool = _make_cuda_pool(1)
         checkpoint!(pool)
         tp = get_typed_pool!(pool, Float32)
 
@@ -300,43 +276,21 @@ _cuda_test_leak(x) = x
         rewind!(pool)
     end
 
-    # ==============================================================================
-    # set_safety_level! — all-device replacement
-    # ==============================================================================
-
-    @testset "set_safety_level! replaces pool with state preservation" begin
-        # Get current pool (creates one at default safety level)
-        pool = get_task_local_cuda_pool()
-        reset!(pool)
-
-        # Populate with some data
+    @testset "S=0: does not create borrow log on CUDA" begin
+        pool = _make_cuda_pool(0)
         checkpoint!(pool)
-        v = acquire!(pool, Float32, 100)
-        CUDA.fill!(v, 1.0f0)
+        _ = acquire!(pool, Float32, 10)
+        @test pool._borrow_log === nothing
         rewind!(pool)
-
-        # Change safety level
-        set_safety_level!(2)
-        new_pool = get_task_local_cuda_pool()
-
-        @test new_pool isa CuAdaptiveArrayPool{2}
-        @test _safety_level(new_pool) == 2
-        # Cached vectors should be preserved (same object reference)
-        @test new_pool.float32.vectors[1] === pool.float32.vectors[1]
-
-        # Restore
-        set_safety_level!(0)
-        @test get_task_local_cuda_pool() isa CuAdaptiveArrayPool{0}
     end
 
-    @testset "set_safety_level! rejects inside active scope" begin
-        pool = get_task_local_cuda_pool()
+    @testset "S=1: creates borrow log on CUDA acquire" begin
+        pool = _make_cuda_pool(1)
         checkpoint!(pool)
-        try
-            @test_throws ArgumentError set_safety_level!(2)
-        finally
-            rewind!(pool)
-        end
+        _ = acquire!(pool, Float32, 10)
+        @test pool._borrow_log !== nothing
+        @test pool._borrow_log isa IdDict
+        rewind!(pool)
     end
 
     # ==============================================================================
@@ -383,7 +337,7 @@ _cuda_test_leak(x) = x
     # ==============================================================================
 
     @testset "reset! clears borrow tracking state" begin
-        pool = _make_cuda_pool(3)
+        pool = _make_cuda_pool(1)
         pool._pending_callsite = "test"
         pool._pending_return_site = "test"
         pool._borrow_log = IdDict{Any, String}()
@@ -393,44 +347,6 @@ _cuda_test_leak(x) = x
         @test pool._pending_callsite == ""
         @test pool._pending_return_site == ""
         @test pool._borrow_log === nothing
-    end
-
-    # ==============================================================================
-    # Display includes {S} and safety label
-    # ==============================================================================
-
-    @testset "show includes {S} and safety label" begin
-        pool = _make_cuda_pool(2)
-        s = sprint(show, pool)
-        @test occursin("{2}", s)
-        @test occursin("safety=full", s)
-
-        pool0 = _make_cuda_pool(0)
-        s0 = sprint(show, pool0)
-        @test occursin("{0}", s0)
-        @test occursin("safety=off", s0)
-    end
-
-    # ==============================================================================
-    # POOL_DEBUG backward compat with CUDA
-    # ==============================================================================
-
-    @testset "POOL_DEBUG backward compat triggers CUDA escape detection" begin
-        old_debug = POOL_DEBUG[]
-
-        POOL_DEBUG[] = true
-        pool = _make_cuda_pool(0)  # Safety off, but POOL_DEBUG overrides
-        @test_throws PoolRuntimeEscapeError begin
-            checkpoint!(pool)
-            try
-                v = acquire!(pool, Float32, 10)
-                AdaptiveArrayPools._validate_pool_return(_cuda_test_leak(v), pool)
-            finally
-                rewind!(pool)
-            end
-        end
-
-        POOL_DEBUG[] = old_debug
     end
 
     # ==============================================================================
@@ -456,33 +372,19 @@ _cuda_test_leak(x) = x
     end
 
     # ==============================================================================
-    # @with_pool :cuda integration with safety
+    # Display includes {S} and check label
     # ==============================================================================
 
-    @testset "@with_pool :cuda with escape detection" begin
-        old_debug = POOL_DEBUG[]
-        POOL_DEBUG[] = true  # Use POOL_DEBUG to trigger on any safety level
+    @testset "show includes {S} and check label" begin
+        pool1 = _make_cuda_pool(1)
+        s1 = sprint(show, pool1)
+        @test occursin("{1}", s1)
+        @test occursin("check=on", s1)
 
-        @test_throws PoolRuntimeEscapeError @with_pool :cuda pool begin
-            v = acquire!(pool, Float32, 10)
-            _cuda_test_leak(v)
-        end
-
-        POOL_DEBUG[] = old_debug
-    end
-
-    @testset "@with_pool :cuda safe return" begin
-        old_debug = POOL_DEBUG[]
-        POOL_DEBUG[] = true
-
-        result = @with_pool :cuda pool begin
-            v = acquire!(pool, Float32, 10)
-            CUDA.fill!(v, 3.0f0)
-            sum(Array(v))  # scalar return — safe
-        end
-        @test result == 30.0f0
-
-        POOL_DEBUG[] = old_debug
+        pool0 = _make_cuda_pool(0)
+        s0 = sprint(show, pool0)
+        @test occursin("{0}", s0)
+        @test occursin("check=off", s0)
     end
 
     # ==============================================================================
@@ -513,108 +415,61 @@ _cuda_test_leak(x) = x
     end
 
     # ==============================================================================
-    # @with_pool :cuda at native Level 2 (no POOL_DEBUG hack)
+    # S=1 escape detection via direct checkpoint/validate/rewind
+    # (replaces old set_safety_level! + @with_pool tests)
     # ==============================================================================
 
-    @testset "@with_pool :cuda Level 2 escape detection (native S=2)" begin
-        set_safety_level!(2)
-
-        @test_throws PoolRuntimeEscapeError @with_pool :cuda pool begin
-            v = acquire!(pool, Float32, 10)
-            _cuda_test_leak(v)
-        end
-
-        set_safety_level!(0)
-    end
-
-    @testset "@with_pool :cuda Level 2 safe return (native S=2)" begin
-        set_safety_level!(2)
-
-        result = @with_pool :cuda pool begin
-            v = acquire!(pool, Float32, 10)
-            CUDA.fill!(v, 5.0f0)
-            sum(Array(v))
-        end
-        @test result == 50.0f0
-
-        set_safety_level!(0)
-    end
-
-    @testset "@with_pool :cuda Level 1 no escape detection (native S=1)" begin
-        set_safety_level!(1)
-
-        # Level 1 should NOT trigger escape detection
-        result = @with_pool :cuda pool begin
-            v = acquire!(pool, Float32, 10)
-            _cuda_test_leak(v)
-        end
-        @test result isa CuArray
-
-        set_safety_level!(0)
-    end
-
-    # ==============================================================================
-    # Level 3 borrow tracking via macro path
-    # ==============================================================================
-
-    @testset "@with_pool :cuda Level 3 escape error includes callsite" begin
-        set_safety_level!(3)
-
+    @testset "Pool{1} escape detection via direct validate" begin
+        pool = _make_cuda_pool(1)
+        checkpoint!(pool)
         err = try
-            @with_pool :cuda pool begin
-                v = acquire!(pool, Float32, 10)
-                _cuda_test_leak(v)
-            end
+            v = acquire!(pool, Float32, 10)
+            _validate_pool_return(_cuda_test_leak(v), pool)
             nothing
         catch e
             e
-        end
-
-        @test err isa PoolRuntimeEscapeError
-        @test err.callsite !== nothing
-        @test contains(err.callsite, ":")  # "file:line" format
-
-        set_safety_level!(0)
-    end
-
-    @testset "@with_pool :cuda Level 3 callsite includes expression text" begin
-        set_safety_level!(3)
-
-        err = try
-            @with_pool :cuda pool begin
-                v = zeros!(pool, Float32, 10)
-                _cuda_test_leak(v)
-            end
-            nothing
-        catch e
-            e
-        end
-
-        @test err isa PoolRuntimeEscapeError
-        @test err.callsite !== nothing
-        @test contains(err.callsite, "\n")
-        @test contains(err.callsite, "zeros!(pool, Float32, 10)")
-
-        set_safety_level!(0)
-    end
-
-    @testset "LV<3 does not create borrow log on CUDA" begin
-        for lv in (0, 1, 2)
-            pool = _make_cuda_pool(lv)
-            checkpoint!(pool)
-            _ = acquire!(pool, Float32, 10)
-            @test pool._borrow_log === nothing
+        finally
             rewind!(pool)
         end
+
+        @test err isa PoolRuntimeEscapeError
     end
 
-    @testset "LV=3 creates borrow log on CUDA acquire" begin
-        pool = _make_cuda_pool(3)
+    @testset "Pool{1} safe scalar via direct validate" begin
+        pool = _make_cuda_pool(1)
         checkpoint!(pool)
-        _ = acquire!(pool, Float32, 10)
-        @test pool._borrow_log !== nothing
-        @test pool._borrow_log isa IdDict
+        v = acquire!(pool, Float32, 10)
+        CUDA.fill!(v, 5.0f0)
+        result = sum(Array(v))
+        _validate_pool_return(result, pool)
         rewind!(pool)
+        @test result == 50.0f0
+    end
+
+    # ==============================================================================
+    # S=1 borrow tracking: callsite in escape error
+    # ==============================================================================
+
+    @testset "Pool{1} escape error includes callsite when set" begin
+        pool = _make_cuda_pool(1)
+        checkpoint!(pool)
+
+        # Manually set callsite (normally macro-injected)
+        pool._pending_callsite = "test_cuda.jl:42\nacquire!(pool, Float32, 10)"
+        v = acquire!(pool, Float32, 10)
+
+        err = try
+            _validate_pool_return(_cuda_test_leak(v), pool)
+            nothing
+        catch e
+            e
+        end
+        rewind!(pool)
+
+        @test err isa PoolRuntimeEscapeError
+        @test err.callsite !== nothing
+        @test contains(err.callsite, "test_cuda.jl:42")
+        @test contains(err.callsite, "acquire!(pool, Float32, 10)")
     end
 
     # ==============================================================================
@@ -622,7 +477,6 @@ _cuda_test_leak(x) = x
     # ==============================================================================
 
     @testset "showerror: CuArray escape error message format" begin
-        # LV≥2 without callsite → "Tip: set LV=3"
         err = PoolRuntimeEscapeError("CuArray{Float32, 1}", "Float32", nothing, nothing)
         io = IOBuffer()
         showerror(io, err)
@@ -631,12 +485,10 @@ _cuda_test_leak(x) = x
         @test contains(msg, "PoolEscapeError")
         @test contains(msg, "CuArray{Float32, 1}")
         @test contains(msg, "Float32")
-        @test contains(msg, "POOL_SAFETY_LV ≥ 2")
-        @test contains(msg, "Tip:")
-        @test contains(msg, "POOL_SAFETY_LV[] = 3")
+        @test contains(msg, "RUNTIME_CHECK")
     end
 
-    @testset "showerror: CuArray with callsite (LV≥3)" begin
+    @testset "showerror: CuArray with callsite" begin
         err = PoolRuntimeEscapeError(
             "CuArray{Float32, 1}", "Float32",
             "test_cuda.jl:42\nacquire!(pool, Float32, 10)", nothing
@@ -648,52 +500,36 @@ _cuda_test_leak(x) = x
         @test contains(msg, "acquired at")
         @test contains(msg, "test_cuda.jl:42")
         @test contains(msg, "acquire!(pool, Float32, 10)")
-        @test contains(msg, "POOL_SAFETY_LV ≥ 3")
-        @test !contains(msg, "Tip:")  # No tip when callsite is present
     end
 
     # ==============================================================================
     # Function form: @with_pool :cuda pool function ...
+    # (Compile-time only — no runtime escape detection test via @with_pool,
+    #  because RUNTIME_CHECK is a compile-time const and @with_pool type-asserts
+    #  to Pool{RUNTIME_CHECK}. Use direct _make_pool(1) + validate for runtime tests.)
     # ==============================================================================
 
-    @testset "Function form: escape detection with explicit return" begin
-        set_safety_level!(2)
-
-        @with_pool :cuda pool function _cuda_test_return_escape()
+    @testset "Function form: compile-time escape detection" begin
+        @test_throws PoolEscapeError @macroexpand @with_pool :cuda pool function _cuda_test_escape_fn()
             v = acquire!(pool, Float32, 10)
-            return _cuda_test_leak(v)
+            return v  # direct escape
         end
-
-        @test_throws PoolRuntimeEscapeError _cuda_test_return_escape()
-
-        set_safety_level!(0)
     end
 
-    @testset "Function form: safe scalar return passes" begin
-        set_safety_level!(2)
-
-        @with_pool :cuda pool function _cuda_test_safe_return()
+    @testset "Function form: safe scalar return compiles" begin
+        ex = @macroexpand @with_pool :cuda pool function _cuda_test_safe_fn()
             v = acquire!(pool, Float32, 5)
-            CUDA.fill!(v, 4.0f0)
             return sum(Array(v))
         end
-
-        @test _cuda_test_safe_return() == 20.0f0
-
-        set_safety_level!(0)
+        @test ex isa Expr
     end
 
-    @testset "Function form: bare return (nothing) passes" begin
-        set_safety_level!(2)
-
-        @with_pool :cuda pool function _cuda_test_bare_return()
+    @testset "Function form: bare return compiles" begin
+        ex = @macroexpand @with_pool :cuda pool function _cuda_test_bare_fn()
             _ = acquire!(pool, Float32, 10)
             return
         end
-
-        @test _cuda_test_bare_return() === nothing
-
-        set_safety_level!(0)
+        @test ex isa Expr
     end
 
-end  # CUDA Safety Dispatch
+end  # CUDA Safety

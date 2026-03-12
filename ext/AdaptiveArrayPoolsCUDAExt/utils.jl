@@ -58,13 +58,13 @@ end
 Print statistics for a CUDA adaptive array pool.
 """
 function AdaptiveArrayPools.pool_stats(pool::CuAdaptiveArrayPool{S}; io::IO = stdout) where {S}
-    # Header with device info and safety level
+    # Header with device info and runtime check level
     printstyled(io, "CuAdaptiveArrayPool", bold = true, color = :green)
     printstyled(io, "{$S}", color = :yellow)
     printstyled(io, " (device ", color = :dark_gray)
     printstyled(io, pool.device_id, color = :blue)
-    printstyled(io, ", safety=", color = :dark_gray)
-    printstyled(io, _cuda_safety_label(S), color = :yellow)
+    printstyled(io, ", check=", color = :dark_gray)
+    printstyled(io, _cuda_check_label(S), color = :yellow)
     printstyled(io, ")\n", color = :dark_gray)
 
     has_content = false
@@ -134,7 +134,7 @@ function Base.show(io::IO, pool::CuAdaptiveArrayPool{S}) where {S}
         total_active[] += tp.n_active
     end
 
-    return print(io, "CuAdaptiveArrayPool{$S}(safety=$(_cuda_safety_label(S)), device=$(pool.device_id), types=$(n_types[]), slots=$(total_vectors[]), active=$(total_active[]))")
+    return print(io, "CuAdaptiveArrayPool{$S}(check=$(_cuda_check_label(S)), device=$(pool.device_id), types=$(n_types[]), slots=$(total_vectors[]), active=$(total_active[]))")
 end
 
 # Multi-line show

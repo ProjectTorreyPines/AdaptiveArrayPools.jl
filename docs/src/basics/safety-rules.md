@@ -105,19 +105,19 @@ end
 end
 ```
 
-## Debugging with POOL_DEBUG
+## Debugging with RUNTIME_CHECK
 
-Enable runtime safety checks during development:
+Enable runtime safety checks during development by setting the `runtime_check` preference:
 
-```julia
-using AdaptiveArrayPools
-AdaptiveArrayPools.POOL_DEBUG[] = true
-
-@with_pool pool function test()
-    v = acquire!(pool, Float64, 100)
-    return v  # Will warn about returning pool-backed array
-end
+```toml
+# LocalPreferences.toml
+[AdaptiveArrayPools]
+runtime_check = 1   # 0 = off (default), 1 = on
 ```
+
+**Restart Julia** after changing this setting. When enabled, returning a pool-backed array from a `@with_pool` block throws a `PoolRuntimeEscapeError` with the exact source location.
+
+See [Safety](../features/safety.md) for full details on what `RUNTIME_CHECK = 1` enables (poisoning, structural invalidation, escape detection, borrow tracking).
 
 ## acquire! vs unsafe_acquire!
 

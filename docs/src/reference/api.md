@@ -51,7 +51,7 @@ Default element type is `Float64` (CPU) or `Float32` (CUDA).
 |--------|-------------|
 | `STATIC_POOLING` | Compile-time constant to disable all pooling. (alias: `USE_POOLING`) |
 | `MAYBE_POOLING` | Runtime `Ref{Bool}` for `@maybe_with_pool`. (alias: `MAYBE_POOLING_ENABLED`) |
-| `POOL_DEBUG` | Runtime `Ref{Bool}` to enable safety validation. |
+| `RUNTIME_CHECK` | Compile-time `Int` constant (0=off, 1=on). Set via `runtime_check` preference. Restart required. |
 | `set_cache_ways!(n)` | Set N-way cache size (Julia 1.10 / CUDA only; no effect on Julia 1.11+ CPU). |
 
 ---

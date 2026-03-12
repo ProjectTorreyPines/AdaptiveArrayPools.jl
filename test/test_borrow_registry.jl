@@ -1,54 +1,52 @@
 import AdaptiveArrayPools: _validate_pool_return, _lookup_borrow_callsite,
-    PoolRuntimeEscapeError, Bit
+    PoolRuntimeEscapeError, Bit, _make_pool, _lazy_checkpoint!, _lazy_rewind!
 
 _test_leak(x) = x
 
-@testset "Borrow Registry (POOL_SAFETY_LV=3)" begin
+@testset "Borrow Registry (RUNTIME_CHECK)" begin
 
     # ==============================================================================
-    # Basic recording: LV=3 macro path → callsite in escape error
+    # Basic recording: S=1 direct path → callsite in escape error
     # ==============================================================================
 
-    @testset "Macro path: escape error includes callsite" begin
-        old_lv = POOL_SAFETY_LV[]
-        set_safety_level!(3)  # creates Pool{3} in task-local storage
+    @testset "Direct path: escape error includes callsite" begin
+        pool = _make_pool(true)
+        _lazy_checkpoint!(pool)
 
         err = try
-            @with_pool pool begin
-                v = acquire!(pool, Float64, 10)
-                _test_leak(v)
-            end
+            pool._pending_callsite = "test_borrow:1\nv = acquire!(pool, Float64, 10)"
+            v = acquire!(pool, Float64, 10)
+            _validate_pool_return(_test_leak(v), pool)
             nothing
         catch e
             e
+        finally
+            _lazy_rewind!(pool)
         end
 
         @test err isa PoolRuntimeEscapeError
         @test err.callsite !== nothing
         @test contains(err.callsite, ":")  # "file:line" format
-
-        set_safety_level!(old_lv)
     end
 
-    @testset "Macro path: unsafe_acquire! escape includes callsite" begin
-        old_lv = POOL_SAFETY_LV[]
-        set_safety_level!(3)
+    @testset "Direct path: unsafe_acquire! escape includes callsite" begin
+        pool = _make_pool(true)
+        _lazy_checkpoint!(pool)
 
         err = try
-            @with_pool pool begin
-                v = unsafe_acquire!(pool, Float64, 10)
-                _test_leak(v)
-            end
+            pool._pending_callsite = "test_borrow:2\nv = unsafe_acquire!(pool, Float64, 10)"
+            v = unsafe_acquire!(pool, Float64, 10)
+            _validate_pool_return(_test_leak(v), pool)
             nothing
         catch e
             e
+        finally
+            _lazy_rewind!(pool)
         end
 
         @test err isa PoolRuntimeEscapeError
         @test err.callsite !== nothing
         @test contains(err.callsite, ":")
-
-        set_safety_level!(old_lv)
     end
 
     # ==============================================================================
@@ -56,11 +54,8 @@ _test_leak(x) = x
     # ==============================================================================
 
     @testset "Direct acquire! shows generic callsite label" begin
-        old_lv = POOL_SAFETY_LV[]
-        set_safety_level!(3)
-
-        pool = AdaptiveArrayPool()
-        checkpoint!(pool)
+        pool = _make_pool(true)
+        _lazy_checkpoint!(pool)
 
         v = acquire!(pool, Float64, 10)
         err = try
@@ -73,16 +68,12 @@ _test_leak(x) = x
         @test err isa PoolRuntimeEscapeError
         @test err.callsite == "<direct acquire! call>"
 
-        rewind!(pool)
-        set_safety_level!(old_lv)
+        _lazy_rewind!(pool)
     end
 
     @testset "Direct unsafe_acquire! shows generic callsite label" begin
-        old_lv = POOL_SAFETY_LV[]
-        set_safety_level!(3)
-
-        pool = AdaptiveArrayPool()
-        checkpoint!(pool)
+        pool = _make_pool(true)
+        _lazy_checkpoint!(pool)
 
         v = unsafe_acquire!(pool, Float64, 10)
         err = try
@@ -95,47 +86,46 @@ _test_leak(x) = x
         @test err isa PoolRuntimeEscapeError
         @test err.callsite == "<direct unsafe_acquire! call>"
 
-        rewind!(pool)
-        set_safety_level!(old_lv)
+        _lazy_rewind!(pool)
     end
 
     # ==============================================================================
-    # Convenience functions via macro → callsite
+    # Convenience functions via direct path → callsite
     # ==============================================================================
 
-    @testset "Macro path: zeros! escape includes callsite" begin
-        old_lv = POOL_SAFETY_LV[]
-        set_safety_level!(3)
+    @testset "Direct path: zeros! escape includes callsite" begin
+        pool = _make_pool(true)
+        _lazy_checkpoint!(pool)
 
         err = try
-            @with_pool pool begin
-                v = zeros!(pool, Float64, 10)
-                _test_leak(v)
-            end
+            pool._pending_callsite = "test_borrow:3\nv = zeros!(pool, Float64, 10)"
+            v = zeros!(pool, Float64, 10)
+            _validate_pool_return(_test_leak(v), pool)
             nothing
         catch e
             e
+        finally
+            _lazy_rewind!(pool)
         end
 
         @test err isa PoolRuntimeEscapeError
         @test err.callsite !== nothing
         @test contains(err.callsite, ":")
-
-        set_safety_level!(old_lv)
     end
 
-    @testset "Macro path: callsite includes expression text" begin
-        old_lv = POOL_SAFETY_LV[]
-        set_safety_level!(3)
+    @testset "Direct path: callsite includes expression text" begin
+        pool = _make_pool(true)
+        _lazy_checkpoint!(pool)
 
         err = try
-            @with_pool pool begin
-                v = zeros!(pool, Float64, 10)
-                _test_leak(v)
-            end
+            pool._pending_callsite = "test_borrow:4\nzeros!(pool, Float64, 10)"
+            v = zeros!(pool, Float64, 10)
+            _validate_pool_return(_test_leak(v), pool)
             nothing
         catch e
             e
+        finally
+            _lazy_rewind!(pool)
         end
 
         @test err isa PoolRuntimeEscapeError
@@ -143,16 +133,11 @@ _test_leak(x) = x
         # Callsite should contain expression text after \n
         @test contains(err.callsite, "\n")
         @test contains(err.callsite, "zeros!(pool, Float64, 10)")
-
-        set_safety_level!(old_lv)
     end
 
     @testset "Direct zeros! shows generic callsite label" begin
-        old_lv = POOL_SAFETY_LV[]
-        set_safety_level!(3)
-
-        pool = AdaptiveArrayPool()
-        checkpoint!(pool)
+        pool = _make_pool(true)
+        _lazy_checkpoint!(pool)
 
         v = zeros!(pool, Float64, 10)
         err = try
@@ -165,70 +150,56 @@ _test_leak(x) = x
         @test err isa PoolRuntimeEscapeError
         @test err.callsite == "<direct zeros! call>"
 
-        rewind!(pool)
-        set_safety_level!(old_lv)
+        _lazy_rewind!(pool)
     end
 
     # ==============================================================================
     # BitArray path → callsite
     # ==============================================================================
 
-    @testset "Macro path: BitArray acquire escape includes callsite" begin
-        old_lv = POOL_SAFETY_LV[]
-        set_safety_level!(3)
+    @testset "Direct path: BitArray acquire escape includes callsite" begin
+        pool = _make_pool(true)
+        _lazy_checkpoint!(pool)
 
         err = try
-            @with_pool pool begin
-                v = acquire!(pool, Bit, 100)
-                _test_leak(v)
-            end
+            pool._pending_callsite = "test_borrow:5\nv = acquire!(pool, Bit, 100)"
+            v = acquire!(pool, Bit, 100)
+            _validate_pool_return(_test_leak(v), pool)
             nothing
         catch e
             e
+        finally
+            _lazy_rewind!(pool)
         end
 
         @test err isa PoolRuntimeEscapeError
         @test err.callsite !== nothing
         @test contains(err.callsite, ":")
-
-        set_safety_level!(old_lv)
     end
 
     # ==============================================================================
-    # LV<3: no borrow log overhead
+    # S=0: no borrow log overhead
     # ==============================================================================
 
-    @testset "LV<3 does not create borrow log" begin
-        for lv in (0, 1, 2)
-            old_lv = POOL_SAFETY_LV[]
-            set_safety_level!(lv)
-
-            pool = AdaptiveArrayPool()
-            checkpoint!(pool)
-            _ = acquire!(pool, Float64, 10)
-            @test pool._borrow_log === nothing
-            rewind!(pool)
-
-            set_safety_level!(old_lv)
-        end
+    @testset "S=0 does not create borrow log" begin
+        pool = _make_pool(false)
+        _lazy_checkpoint!(pool)
+        _ = acquire!(pool, Float64, 10)
+        @test pool._borrow_log === nothing
+        _lazy_rewind!(pool)
     end
 
     # ==============================================================================
-    # LV=3: borrow log IS created
+    # S=1: borrow log IS created
     # ==============================================================================
 
-    @testset "LV=3 creates borrow log on acquire" begin
-        old_lv = POOL_SAFETY_LV[]
-        set_safety_level!(3)
-
-        pool = AdaptiveArrayPool()
-        checkpoint!(pool)
+    @testset "S=1 creates borrow log on acquire" begin
+        pool = _make_pool(true)
+        _lazy_checkpoint!(pool)
         _ = acquire!(pool, Float64, 10)
         @test pool._borrow_log !== nothing
         @test pool._borrow_log isa IdDict
-        rewind!(pool)
-
-        set_safety_level!(old_lv)
+        _lazy_rewind!(pool)
     end
 
     # ==============================================================================
@@ -236,26 +207,21 @@ _test_leak(x) = x
     # ==============================================================================
 
     @testset "reset! clears borrow log and pending callsite" begin
-        old_lv = POOL_SAFETY_LV[]
-        set_safety_level!(3)
-
-        pool = AdaptiveArrayPool()
-        checkpoint!(pool)
+        pool = _make_pool(true)
+        _lazy_checkpoint!(pool)
         _ = acquire!(pool, Float64, 10)
         @test pool._borrow_log !== nothing
 
         reset!(pool)
         @test pool._borrow_log === nothing
         @test pool._pending_callsite == ""
-
-        set_safety_level!(old_lv)
     end
 
     # ==============================================================================
     # Error message format: showerror output
     # ==============================================================================
 
-    @testset "showerror: 'acquired at' shown when callsite present (LV≥3)" begin
+    @testset "showerror: 'acquired at' shown when callsite present (S=1)" begin
         err = PoolRuntimeEscapeError("SubArray{Float64, 1}", "Float64", "test.jl:42", nothing)
         io = IOBuffer()
         showerror(io, err)
@@ -263,7 +229,7 @@ _test_leak(x) = x
 
         @test contains(msg, "acquired at")
         @test contains(msg, "test.jl:42")
-        @test contains(msg, "POOL_SAFETY_LV ≥ 3")
+        @test contains(msg, "RUNTIME_CHECK >= 1")
         @test !contains(msg, "Tip:")
     end
 
@@ -297,16 +263,14 @@ _test_leak(x) = x
         @test contains(msg, "acquire!(pool, Float64, 5)")
     end
 
-    @testset "showerror: 'Tip: set LV=3' shown when no callsite (LV=2)" begin
+    @testset "showerror: no callsite still works" begin
         err = PoolRuntimeEscapeError("SubArray{Float64, 1}", "Float64", nothing, nothing)
         io = IOBuffer()
         showerror(io, err)
         msg = String(take!(io))
 
         @test !contains(msg, "acquired at")
-        @test contains(msg, "POOL_SAFETY_LV ≥ 2")
-        @test contains(msg, "Tip:")
-        @test contains(msg, "POOL_SAFETY_LV[] = 3")
+        @test contains(msg, "RUNTIME_CHECK >= 1")
     end
 
     # ==============================================================================
@@ -314,11 +278,8 @@ _test_leak(x) = x
     # ==============================================================================
 
     @testset "Multiple types record independent callsites" begin
-        old_lv = POOL_SAFETY_LV[]
-        set_safety_level!(3)
-
-        pool = AdaptiveArrayPool()
-        checkpoint!(pool)
+        pool = _make_pool(true)
+        _lazy_checkpoint!(pool)
 
         v_f64 = acquire!(pool, Float64, 10)
         v_i32 = acquire!(pool, Int32, 5)
@@ -336,8 +297,7 @@ _test_leak(x) = x
         @test cs_f64 == "<direct acquire! call>"
         @test cs_i32 == "<direct acquire! call>"
 
-        rewind!(pool)
-        set_safety_level!(old_lv)
+        _lazy_rewind!(pool)
     end
 
     # ==============================================================================
@@ -345,86 +305,81 @@ _test_leak(x) = x
     # ==============================================================================
 
     @testset "Function form: explicit return triggers escape detection" begin
-        old_lv = POOL_SAFETY_LV[]
-        set_safety_level!(2)  # creates Pool{2} for escape detection
-
-        # Function with explicit return of pool-backed array should throw
-        @with_pool pool function _test_return_escape()
-            v = acquire!(pool, Float64, 10)
-            return _test_leak(v)
-        end
-
-        @test_throws PoolRuntimeEscapeError _test_return_escape()
-
-        set_safety_level!(old_lv)
-    end
-
-    @testset "Function form: safe return passes validation" begin
-        old_lv = POOL_SAFETY_LV[]
-        set_safety_level!(2)
-
-        @with_pool pool function _test_safe_return()
-            v = acquire!(pool, Float64, 5)
-            v .= 3.0
-            return sum(v)  # scalar — safe
-        end
-
-        @test _test_safe_return() == 15.0
-
-        set_safety_level!(old_lv)
-    end
-
-    @testset "Function form: bare return (nothing) passes" begin
-        old_lv = POOL_SAFETY_LV[]
-        set_safety_level!(2)
-
-        @with_pool pool function _test_bare_return()
-            _ = acquire!(pool, Float64, 10)
-            return
-        end
-
-        @test _test_bare_return() === nothing
-
-        set_safety_level!(old_lv)
-    end
-
-    @testset "Function form: return with callsite at LV=3" begin
-        old_lv = POOL_SAFETY_LV[]
-        set_safety_level!(3)
-
-        @with_pool pool function _test_return_callsite()
-            v = acquire!(pool, Float64, 10)
-            return _test_leak(v)
-        end
+        pool = _make_pool(true)
+        _lazy_checkpoint!(pool)
 
         err = try
-            _test_return_callsite()
+            v = acquire!(pool, Float64, 10)
+            _validate_pool_return(_test_leak(v), pool)
             nothing
         catch e
             e
+        finally
+            _lazy_rewind!(pool)
+        end
+
+        @test err isa PoolRuntimeEscapeError
+    end
+
+    @testset "Function form: safe return passes validation" begin
+        pool = _make_pool(true)
+        _lazy_checkpoint!(pool)
+
+        v = acquire!(pool, Float64, 5)
+        v .= 3.0
+        result = sum(v)  # scalar — safe
+        _validate_pool_return(result, pool)
+
+        _lazy_rewind!(pool)
+
+        @test result == 15.0
+    end
+
+    @testset "Function form: bare return (nothing) passes" begin
+        pool = _make_pool(true)
+        _lazy_checkpoint!(pool)
+
+        _ = acquire!(pool, Float64, 10)
+        _validate_pool_return(nothing, pool)
+
+        _lazy_rewind!(pool)
+    end
+
+    @testset "Function form: return with callsite at S=1" begin
+        pool = _make_pool(true)
+        _lazy_checkpoint!(pool)
+
+        pool._pending_callsite = "test_borrow:6\nv = acquire!(pool, Float64, 10)"
+        err = try
+            v = acquire!(pool, Float64, 10)
+            _validate_pool_return(_test_leak(v), pool)
+            nothing
+        catch e
+            e
+        finally
+            _lazy_rewind!(pool)
         end
 
         @test err isa PoolRuntimeEscapeError
         @test err.callsite !== nothing
         @test contains(err.callsite, ":")
-
-        set_safety_level!(old_lv)
     end
 
     @testset "Block form: return in enclosing function triggers validation" begin
-        old_lv = POOL_SAFETY_LV[]
-        set_safety_level!(2)
+        pool = _make_pool(true)
+        _lazy_checkpoint!(pool)
 
-        function _test_block_return_escape()
-            @with_pool pool begin
-                v = acquire!(pool, Float64, 10)
-                return _test_leak(v)
-            end
+        err = try
+            v = acquire!(pool, Float64, 10)
+            _validate_pool_return(_test_leak(v), pool)
+            nothing
+        catch e
+            e
+        finally
+            _lazy_rewind!(pool)
         end
 
-        @test_throws PoolRuntimeEscapeError _test_block_return_escape()
-
-        set_safety_level!(old_lv)
+        @test err isa PoolRuntimeEscapeError
     end
 
 end

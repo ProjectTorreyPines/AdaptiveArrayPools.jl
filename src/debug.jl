@@ -1,20 +1,6 @@
 # ==============================================================================
-# Debugging & Safety (POOL_DEBUG escape detection)
+# Debugging & Safety (Runtime escape detection, RUNTIME_CHECK >= 1)
 # ==============================================================================
-
-"""
-    POOL_DEBUG
-
-Legacy flag for escape detection. Superseded by [`POOL_SAFETY_LV`](@ref).
-
-Setting `POOL_DEBUG[] = true` enables escape detection at `@with_pool` scope exit
-(equivalent to `POOL_SAFETY_LV[] >= 2` behavior). Both flags are checked independently.
-
-For new code, prefer `POOL_SAFETY_LV[] = 2`.
-
-Default: `false`
-"""
-const POOL_DEBUG = Ref(false)
 
 function _validate_pool_return(val, pool::AdaptiveArrayPool)
     # 0. Check BitArray / BitVector (bit-packed storage)
@@ -117,23 +103,22 @@ end
     PoolRuntimeEscapeError <: Exception
 
 Thrown at runtime when `_validate_pool_return` detects a pool-backed array
-escaping from an `@with_pool` scope (requires `POOL_SAFETY_LV[] >= 2`).
+escaping from an `@with_pool` scope (requires `RUNTIME_CHECK >= 1`).
 
 This is the runtime counterpart of [`PoolEscapeError`](@ref) (compile-time).
 """
 struct PoolRuntimeEscapeError <: Exception
     val_summary::String
     pool_eltype::String
-    callsite::Union{Nothing, String}      # acquire location (LV ≥ 3)
-    return_site::Union{Nothing, String}   # return location (LV ≥ 3)
+    callsite::Union{Nothing, String}      # acquire location (S ≥ 1)
+    return_site::Union{Nothing, String}   # return location (S ≥ 1)
 end
 
 function Base.showerror(io::IO, e::PoolRuntimeEscapeError)
     has_callsite = e.callsite !== nothing
-    lv_label = has_callsite ? "POOL_SAFETY_LV ≥ 3" : "POOL_SAFETY_LV ≥ 2"
 
     printstyled(io, "PoolEscapeError"; color = :red, bold = true)
-    printstyled(io, " (runtime, ", lv_label, ")"; color = :light_black)
+    printstyled(io, " (runtime, RUNTIME_CHECK >= 1)"; color = :light_black)
     println(io)
 
     println(io)
@@ -187,13 +172,7 @@ function Base.showerror(io::IO, e::PoolRuntimeEscapeError)
     printstyled(io, "collect()"; bold = true)
     printstyled(io, " to return an owned copy, or compute a scalar result.\n"; color = :light_black)
 
-    return if !has_callsite
-        println(io)
-        printstyled(io, "  Tip: "; bold = true)
-        printstyled(io, "set "; color = :light_black)
-        printstyled(io, "POOL_SAFETY_LV[] = 3"; bold = true)
-        printstyled(io, " for acquire!() call-site tracking.\n"; color = :light_black)
-    end
+    return nothing
 end
 
 Base.showerror(io::IO, e::PoolRuntimeEscapeError, ::Any; backtrace = true) = showerror(io, e)
@@ -245,7 +224,7 @@ _validate_pool_return(val, ::DisabledPool) = nothing
 _validate_pool_return(val, ::AbstractArrayPool) = nothing
 
 # ==============================================================================
-# Poisoning: Fill released vectors with sentinel values (POOL_SAFETY_LV >= 2)
+# Poisoning: Fill released vectors with sentinel values (S >= 1)
 # ==============================================================================
 #
 # Poisons backing vectors with detectable values (NaN, typemax) before
@@ -266,7 +245,7 @@ _poison_fill!(v::BitVector) = fill!(v, true)
     _poison_released_vectors!(tp::AbstractTypedPool, old_n_active)
 
 Fill released backing vectors (indices `n_active+1:old_n_active`) with sentinel
-values. Called from `_invalidate_released_slots!` when `POOL_SAFETY_LV[] >= 2`,
+values. Called from `_invalidate_released_slots!` when `S >= 1`,
 before `resize!` zeroes the lengths.
 """
 @noinline function _poison_released_vectors!(tp::AbstractTypedPool, old_n_active::Int)
@@ -307,7 +286,7 @@ function _shorten_location(location::String)
 end
 
 # ==============================================================================
-# Borrow Registry: Call-site tracking for acquire! (POOL_SAFETY_LV >= 3)
+# Borrow Registry: Call-site tracking for acquire! (S >= 1)
 # ==============================================================================
 #
 # Records where each acquire! call originated (file:line) so escape errors
@@ -319,7 +298,7 @@ end
     _record_borrow_from_pending!(pool, tp)
 
 Record the pending callsite for the most recently claimed slot in `tp`.
-Called from `_acquire_impl!` / `_unsafe_acquire_impl!` when `POOL_SAFETY_LV[] >= 3`.
+Called from `_acquire_impl!` / `_unsafe_acquire_impl!` when `S >= 1`.
 """
 @noinline function _record_borrow_from_pending!(pool::AdaptiveArrayPool, tp::AbstractTypedPool)
     callsite = pool._pending_callsite
@@ -338,7 +317,7 @@ end
     _lookup_borrow_callsite(pool, v) -> Union{Nothing, String}
 
 Look up the callsite string for a pool backing vector. Returns `nothing` if
-no borrow was recorded (LV < 3 or non-macro path without callsite info).
+no borrow was recorded (S=0 or non-macro path without callsite info).
 """
 @noinline function _lookup_borrow_callsite(pool::AdaptiveArrayPool, v)::Union{Nothing, String}
     log = pool._borrow_log

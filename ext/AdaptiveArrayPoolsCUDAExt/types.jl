@@ -77,14 +77,11 @@ const GPU_FIXED_SLOT_FIELDS = (
 """
     CuAdaptiveArrayPool{S} <: AbstractArrayPool
 
-Multi-type GPU memory pool, parameterized by safety level `S` (0–3).
+Multi-type GPU memory pool, parameterized by runtime check level `S` (binary: 0 or 1).
 
-## Safety Levels (CUDA-specific)
+## Runtime Check Levels
 - `S=0`: Zero overhead — all safety branches eliminated by dead-code elimination
-- `S=1`: Guard — poisoning (NaN/sentinel fill on released vectors) + cache invalidation
-         (CUDA equivalent of CPU's resize! structural invalidation)
-- `S=2`: Full — poisoning + escape detection (`_validate_pool_return`)
-- `S=3`: Debug — full + borrow call-site registry + debug messages
+- `S=1`: Full checks — poisoning + structural invalidation + escape detection + borrow tracking
 
 ## Device Safety
 Each pool is bound to a specific GPU device. Using a pool on the wrong device
@@ -142,52 +139,52 @@ function CuAdaptiveArrayPool{S}() where {S}
         CUDA.deviceid(dev),
         "",             # _pending_callsite
         "",             # _pending_return_site
-        nothing         # _borrow_log: lazily created at S >= 3
+        nothing         # _borrow_log: lazily created when S >= 1
     )
 end
 
-"""Create pool at the current `POOL_SAFETY_LV[]` level."""
-CuAdaptiveArrayPool() = _make_cuda_pool(AdaptiveArrayPools.POOL_SAFETY_LV[])
+"""Create pool with the default `RUNTIME_CHECK` level."""
+CuAdaptiveArrayPool() = CuAdaptiveArrayPool{AdaptiveArrayPools.RUNTIME_CHECK}()
 
 # ==============================================================================
-# Safety Level Dispatch
+# Runtime Check Dispatch
 # ==============================================================================
 
 """
-    _safety_level(pool::CuAdaptiveArrayPool{S}) -> Int
+    _runtime_check(pool::CuAdaptiveArrayPool) -> Bool
 
-Return compile-time constant safety level for CUDA pools.
+Return compile-time constant indicating whether runtime safety checks are enabled.
+`S >= 1` enables checks; `S == 0` disables (dead-code-eliminated).
 """
-@inline AdaptiveArrayPools._safety_level(::CuAdaptiveArrayPool{S}) where {S} = S
+@inline AdaptiveArrayPools._runtime_check(::CuAdaptiveArrayPool{0}) = false
+@inline AdaptiveArrayPools._runtime_check(::CuAdaptiveArrayPool) = true  # S >= 1
 
 """
-    _make_cuda_pool(s::Int) -> CuAdaptiveArrayPool{s}
+    _make_cuda_pool(level) -> CuAdaptiveArrayPool
 
-Function barrier: converts runtime `Int` to concrete `CuAdaptiveArrayPool{S}`.
-Levels outside 0-3 are clamped (≤0 → 0, ≥3 → 3).
+Function barrier: converts runtime check level to concrete `CuAdaptiveArrayPool{S}`.
+Accepts `Bool` (`true`→1, `false`→0) or `Int` (used directly as S).
 """
-@noinline function _make_cuda_pool(s::Int)
-    s <= 0 && return CuAdaptiveArrayPool{0}()
-    s == 1 && return CuAdaptiveArrayPool{1}()
-    s == 2 && return CuAdaptiveArrayPool{2}()
-    return CuAdaptiveArrayPool{3}()
+_make_cuda_pool(runtime_check::Bool) = _make_cuda_pool(Int(runtime_check))
+@noinline function _make_cuda_pool(S::Int)
+    S == 0 && return CuAdaptiveArrayPool{0}()
+    return CuAdaptiveArrayPool{1}()
 end
 
 """
-    _make_cuda_pool(s::Int, old::CuAdaptiveArrayPool) -> CuAdaptiveArrayPool{s}
+    _make_cuda_pool(level, old::CuAdaptiveArrayPool) -> CuAdaptiveArrayPool
 
-Create a new pool at safety level `s`, transferring cached arrays and scope state
-from `old`. Only reference copies — no memory allocation for underlying GPU buffers.
+Create a new CUDA pool, transferring cached arrays and scope state from `old`.
+Only reference copies — no memory allocation for underlying GPU buffers.
 
 Transferred: all CuTypedPool slots, `others`, depth & touch tracking, device_id.
 Reset: `_pending_callsite/return_site` (transient macro state),
-       `_borrow_log` (created fresh when `s >= 3`).
+       `_borrow_log` (created fresh when S >= 1).
 """
-@noinline function _make_cuda_pool(s::Int, old::CuAdaptiveArrayPool)
-    s <= 0 && return _transfer_cuda_pool(Val(0), old)
-    s == 1 && return _transfer_cuda_pool(Val(1), old)
-    s == 2 && return _transfer_cuda_pool(Val(2), old)
-    return _transfer_cuda_pool(Val(3), old)
+_make_cuda_pool(runtime_check::Bool, old::CuAdaptiveArrayPool) = _make_cuda_pool(Int(runtime_check), old)
+@noinline function _make_cuda_pool(level::Int, old::CuAdaptiveArrayPool)
+    level == 0 && return _transfer_cuda_pool(Val(0), old)
+    return _transfer_cuda_pool(Val(1), old)
 end
 
 """Transfer cached arrays and scope state from `old` pool into a new `CuAdaptiveArrayPool{V}`."""
@@ -203,14 +200,12 @@ function _transfer_cuda_pool(::Val{V}, old::CuAdaptiveArrayPool) where {V}
         old.device_id,
         "",       # _pending_callsite: reset
         "",       # _pending_return_site: reset
-        V >= 3 ? IdDict{Any, String}() : nothing  # _borrow_log
+        V >= 1 ? IdDict{Any, String}() : nothing  # _borrow_log
     )
 end
 
-"""Human-readable safety level label."""
-function _cuda_safety_label(s::Int)
+"""Human-readable runtime check label."""
+function _cuda_check_label(s::Int)
     s <= 0 && return "off"
-    s == 1 && return "guard"
-    s == 2 && return "full"
-    return "debug"
+    return "on"
 end

@@ -1,57 +1,9 @@
 import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap, _eltype_may_contain_arrays,
-    PoolRuntimeEscapeError, _poison_value, _shorten_location
+    PoolRuntimeEscapeError, _poison_value, _shorten_location,
+    _make_pool, _lazy_checkpoint!, _lazy_rewind!
 _test_leak(x) = x  # opaque to compile-time escape checker (only identity() is transparent)
 
-@testset "POOL_DEBUG and Safety Validation" begin
-
-    # ==============================================================================
-    # POOL_DEBUG flag toggle
-    # ==============================================================================
-
-    @testset "POOL_DEBUG flag" begin
-        old_debug = POOL_DEBUG[]
-
-        # Default is false
-        POOL_DEBUG[] = false
-
-        # When debug is off, no validation happens even if SubArray escapes
-        result = @with_pool pool begin
-            v = acquire!(pool, Float64, 10)
-            _test_leak(v)  # opaque to compile-time checker; runtime LV<2 won't catch
-        end
-        @test result isa SubArray  # No error when debug is off
-
-        POOL_DEBUG[] = old_debug
-    end
-
-    @testset "POOL_DEBUG with safety violation" begin
-        old_debug = POOL_DEBUG[]
-        POOL_DEBUG[] = true
-
-        # Should throw error when returning SubArray with debug on
-        @test_throws PoolRuntimeEscapeError @with_pool pool begin
-            v = acquire!(pool, Float64, 10)
-            _test_leak(v)  # opaque to compile-time checker; caught by runtime LV2
-        end
-
-        # Safe returns should work fine
-        result = @with_pool pool begin
-            v = acquire!(pool, Float64, 10)
-            v .= 1.0
-            sum(v)  # Safe: returning scalar
-        end
-        @test result == 10.0
-
-        # Returning a copy is also safe
-        result = @with_pool pool begin
-            v = acquire!(pool, Float64, 5)
-            v .= 2.0
-            collect(v)  # Safe: returning a copy
-        end
-        @test result == [2.0, 2.0, 2.0, 2.0, 2.0]
-
-        POOL_DEBUG[] = old_debug
-    end
+@testset "Safety Validation" begin
 
     # ==============================================================================
     # _validate_pool_return — direct tests
@@ -199,39 +151,58 @@ _test_leak(x) = x  # opaque to compile-time escape checker (only identity() is t
         rewind!(pool)
     end
 
-    @testset "POOL_DEBUG with N-D arrays" begin
-        old_debug = POOL_DEBUG[]
-        POOL_DEBUG[] = true
-
+    @testset "Pool{1} escape detection with N-D arrays" begin
         # N-D ReshapedArray should throw error when returned
-        @test_throws PoolRuntimeEscapeError @with_pool pool begin
+        pool = _make_pool(true)
+        _lazy_checkpoint!(pool)
+        err = try
             mat = acquire!(pool, Float64, 10, 10)
-            _test_leak(mat)  # opaque to compile-time checker; caught by runtime LV2
+            _validate_pool_return(_test_leak(mat), pool)
+            nothing
+        catch e
+            e
+        finally
+            _lazy_rewind!(pool)
         end
+        @test err isa PoolRuntimeEscapeError
 
         # Raw Array from unsafe_acquire! should throw error when returned
-        @test_throws PoolRuntimeEscapeError @with_pool pool begin
+        pool = _make_pool(true)
+        _lazy_checkpoint!(pool)
+        err = try
             mat = unsafe_acquire!(pool, Float64, 10, 10)
-            _test_leak(mat)  # opaque to compile-time checker; caught by runtime LV2
+            _validate_pool_return(_test_leak(mat), pool)
+            nothing
+        catch e
+            e
+        finally
+            _lazy_rewind!(pool)
         end
+        @test err isa PoolRuntimeEscapeError
 
         # Safe returns should work fine
-        result = @with_pool pool begin
+        pool = _make_pool(true)
+        _lazy_checkpoint!(pool)
+        result = try
             mat = acquire!(pool, Float64, 10, 10)
             mat .= 1.0
             sum(mat)  # Safe: returning scalar
+        finally
+            _lazy_rewind!(pool)
         end
         @test result == 100.0
 
         # Returning a copy is also safe
-        result = @with_pool pool begin
+        pool = _make_pool(true)
+        _lazy_checkpoint!(pool)
+        result = try
             mat = acquire!(pool, Float64, 3, 3)
             mat .= 2.0
             collect(mat)  # Safe: returning a copy
+        finally
+            _lazy_rewind!(pool)
         end
         @test result == fill(2.0, 3, 3)
-
-        POOL_DEBUG[] = old_debug
     end
 
     # ==============================================================================
@@ -321,44 +292,59 @@ _test_leak(x) = x  # opaque to compile-time escape checker (only identity() is t
         rewind!(pool)
     end
 
-    @testset "POOL_DEBUG with BitArray" begin
-        old_debug = POOL_DEBUG[]
-        POOL_DEBUG[] = true
-
-        # BitVector from pool should throw error when returned with debug on
-        @test_throws PoolRuntimeEscapeError @with_pool pool begin
+    @testset "Pool{1} escape detection with BitArray" begin
+        # BitVector from pool should throw error when returned
+        pool = _make_pool(true)
+        _lazy_checkpoint!(pool)
+        err = try
             bv = acquire!(pool, Bit, 100)
-            _test_leak(bv)  # opaque to compile-time checker; caught by runtime LV2
+            _validate_pool_return(_test_leak(bv), pool)
+            nothing
+        catch e
+            e
+        finally
+            _lazy_rewind!(pool)
         end
+        @test err isa PoolRuntimeEscapeError
 
         # BitMatrix from pool should throw error when returned
-        @test_throws PoolRuntimeEscapeError @with_pool pool begin
+        pool = _make_pool(true)
+        _lazy_checkpoint!(pool)
+        err = try
             ba = acquire!(pool, Bit, 10, 10)
-            _test_leak(ba)  # opaque to compile-time checker; caught by runtime LV2
+            _validate_pool_return(_test_leak(ba), pool)
+            nothing
+        catch e
+            e
+        finally
+            _lazy_rewind!(pool)
         end
+        @test err isa PoolRuntimeEscapeError
 
         # Safe returns should work fine
-        result = @with_pool pool begin
+        pool = _make_pool(true)
+        _lazy_checkpoint!(pool)
+        result = try
             bv = acquire!(pool, Bit, 100)
             bv .= true
             count(bv)  # Safe: returning scalar
+        finally
+            _lazy_rewind!(pool)
         end
         @test result == 100
 
         # Returning a copy is also safe
-        result = @with_pool pool begin
+        pool = _make_pool(true)
+        _lazy_checkpoint!(pool)
+        result = try
             bv = acquire!(pool, Bit, 5)
             bv .= true
             copy(bv)  # Safe: returning a copy
+        finally
+            _lazy_rewind!(pool)
         end
         @test result == trues(5)
-
-        POOL_DEBUG[] = old_debug
     end
-
-    # ==============================================================================
-    # POOL_DEBUG with function definition forms
-    # ==============================================================================
 
     # ==============================================================================
     # _validate_pool_return — recursive container inspection (Tuple, NamedTuple, Pair)
@@ -566,192 +552,98 @@ _test_leak(x) = x  # opaque to compile-time escape checker (only identity() is t
         rewind!(pool)
     end
 
-    @testset "_validate_pool_return containers via @with_pool macro (LV2)" begin
-        old_safety = POOL_SAFETY_LV[]
-        set_safety_level!(2)  # creates Pool{2} — safety level baked into type
-
-        # Tuple containing pool array — caught at runtime
-        @test_throws PoolRuntimeEscapeError @with_pool pool begin
+    @testset "_validate_pool_return containers via Pool{1} (direct validation)" begin
+        # Tuple containing pool array — caught
+        pool = _make_pool(true)
+        _lazy_checkpoint!(pool)
+        err = try
             v = acquire!(pool, Float64, 10)
-            _test_leak((sum(v), v))  # opaque to compile-time checker; runtime LV2 catches v inside tuple
+            _validate_pool_return(_test_leak((sum(v), v)), pool)
+            nothing
+        catch e
+            e
+        finally
+            _lazy_rewind!(pool)
         end
+        @test err isa PoolRuntimeEscapeError
 
-        # NamedTuple containing pool array — caught at runtime
-        @test_throws PoolRuntimeEscapeError @with_pool pool begin
+        # NamedTuple containing pool array — caught
+        pool = _make_pool(true)
+        _lazy_checkpoint!(pool)
+        err = try
             v = acquire!(pool, Float64, 10)
-            _test_leak((data = v, n = 10))  # opaque to compile-time checker; runtime LV2 catches v inside NamedTuple
+            _validate_pool_return(_test_leak((data = v, n = 10)), pool)
+            nothing
+        catch e
+            e
+        finally
+            _lazy_rewind!(pool)
         end
+        @test err isa PoolRuntimeEscapeError
 
         # Safe containers pass
-        result = @with_pool pool begin
+        pool = _make_pool(true)
+        _lazy_checkpoint!(pool)
+        result = try
             v = acquire!(pool, Float64, 10)
             v .= 3.0
             (sum(v), length(v))
+        finally
+            _lazy_rewind!(pool)
         end
         @test result == (30.0, 10)
-
-        set_safety_level!(old_safety)
     end
 
     # ==============================================================================
-    # Runtime LV2 escape detection through opaque function calls
+    # Pool{1} escape detection through opaque function calls (direct validation)
     # ==============================================================================
 
-    @testset "Runtime LV2 catches escapes through opaque function calls" begin
-        old_safety = POOL_SAFETY_LV[]
-        set_safety_level!(2)  # creates Pool{2} — safety level baked into type
-
+    @testset "Pool{1} catches escapes through direct validation" begin
         # Opaque function call bypasses compile-time PoolEscapeError,
-        # but runtime _validate_pool_return at LV2 still catches the escape.
-        @test_throws PoolRuntimeEscapeError @with_pool pool begin
+        # but direct _validate_pool_return on Pool{1} still catches the escape.
+        pool = _make_pool(true)
+        _lazy_checkpoint!(pool)
+        err = try
             v = acquire!(pool, Float64, 10)
-            _test_leak(v)  # opaque to compile-time checker; runtime LV2 catches
+            _validate_pool_return(_test_leak(v), pool)
+            nothing
+        catch e
+            e
+        finally
+            _lazy_rewind!(pool)
         end
+        @test err isa PoolRuntimeEscapeError
 
-        # Multiple vars: opaque call still caught at runtime
-        @test_throws PoolRuntimeEscapeError @with_pool pool begin
+        # Multiple vars: validation still catches escape
+        pool = _make_pool(true)
+        _lazy_checkpoint!(pool)
+        err = try
             v = acquire!(pool, Float64, 10)
             w = acquire!(pool, Float64, 5)
-            _test_leak(v)
+            _validate_pool_return(_test_leak(v), pool)
+            nothing
+        catch e
+            e
+        finally
+            _lazy_rewind!(pool)
         end
+        @test err isa PoolRuntimeEscapeError
 
         # Safe return works fine
-        result = @with_pool pool begin
+        pool = _make_pool(true)
+        _lazy_checkpoint!(pool)
+        result = try
             v = acquire!(pool, Float64, 10)
             v .= 1.0
             sum(v)  # scalar — safe
+        finally
+            _lazy_rewind!(pool)
         end
         @test result == 10.0
-
-        set_safety_level!(old_safety)
-    end
-
-    @testset "LV1 does not perform runtime escape check" begin
-        old_safety = POOL_SAFETY_LV[]
-        set_safety_level!(1)  # creates Pool{1} — only structural invalidation
-
-        # At LV1, opaque call bypasses compile-time and runtime doesn't check escapes
-        # (only structural invalidation), so the SubArray escapes silently.
-        result = @with_pool pool begin
-            v = acquire!(pool, Float64, 10)
-            _test_leak(v)
-        end
-        @test result isa SubArray  # Escapes — no runtime check at LV1
-
-        set_safety_level!(old_safety)
     end
 
     # ==============================================================================
-    # POOL_DEBUG with function definition forms
-    # ==============================================================================
-
-    @testset "POOL_DEBUG with @with_pool function definition" begin
-        old_debug = POOL_DEBUG[]
-        POOL_DEBUG[] = true
-
-        # Unsafe: function returns pool-backed SubArray
-        @with_pool pool function _test_debug_func_unsafe(n)
-            v = acquire!(pool, Float64, n)
-            v .= 1.0
-            _test_leak(v)  # opaque to compile-time checker; caught by runtime LV2
-        end
-        @test_throws PoolRuntimeEscapeError _test_debug_func_unsafe(10)
-
-        # Safe: function returns scalar
-        @with_pool pool function _test_debug_func_safe(n)
-            v = acquire!(pool, Float64, n)
-            v .= 1.0
-            sum(v)
-        end
-        @test _test_debug_func_safe(10) == 10.0
-
-        # Safe: function returns a copy
-        @with_pool pool function _test_debug_func_copy(n)
-            v = acquire!(pool, Float64, n)
-            v .= 2.0
-            collect(v)
-        end
-        @test _test_debug_func_copy(5) == fill(2.0, 5)
-
-        # Unsafe: N-D ReshapedArray from function
-        @with_pool pool function _test_debug_func_nd(m, n)
-            mat = acquire!(pool, Float64, m, n)
-            mat .= 1.0
-            _test_leak(mat)  # opaque to compile-time checker; caught by runtime LV2
-        end
-        @test_throws PoolRuntimeEscapeError _test_debug_func_nd(3, 4)
-
-        # Unsafe: BitVector from function
-        @with_pool pool function _test_debug_func_bit(n)
-            bv = acquire!(pool, Bit, n)
-            bv .= true
-            _test_leak(bv)  # opaque to compile-time checker; caught by runtime LV2
-        end
-        @test_throws PoolRuntimeEscapeError _test_debug_func_bit(100)
-
-        POOL_DEBUG[] = old_debug
-    end
-
-    @testset "POOL_DEBUG with @maybe_with_pool function definition" begin
-        old_debug = POOL_DEBUG[]
-        old_maybe = MAYBE_POOLING[]
-        POOL_DEBUG[] = true
-        MAYBE_POOLING[] = true
-
-        # Unsafe: function returns pool-backed array
-        @maybe_with_pool pool function _test_maybe_debug_unsafe(n)
-            v = acquire!(pool, Float64, n)
-            v .= 1.0
-            _test_leak(v)  # opaque to compile-time checker; caught by runtime LV2
-        end
-        @test_throws PoolRuntimeEscapeError _test_maybe_debug_unsafe(10)
-
-        # Safe: function returns scalar
-        @maybe_with_pool pool function _test_maybe_debug_safe(n)
-            v = acquire!(pool, Float64, n)
-            v .= 1.0
-            sum(v)
-        end
-        @test _test_maybe_debug_safe(10) == 10.0
-
-        # When pooling disabled, no validation needed (DisabledPool returns fresh arrays)
-        MAYBE_POOLING[] = false
-        @maybe_with_pool pool function _test_maybe_debug_disabled(n)
-            v = zeros!(pool, n)
-            _test_leak(v)  # opaque to compile-time checker; disabled pool returns fresh arrays
-        end
-        result = _test_maybe_debug_disabled(5)
-        @test result == zeros(5)
-
-        POOL_DEBUG[] = old_debug
-        MAYBE_POOLING[] = old_maybe
-    end
-
-    @testset "POOL_DEBUG with @with_pool :cpu function definition" begin
-        old_debug = POOL_DEBUG[]
-        POOL_DEBUG[] = true
-
-        # Unsafe: backend function returns pool-backed array
-        @with_pool :cpu pool function _test_backend_debug_unsafe(n)
-            v = acquire!(pool, Float64, n)
-            v .= 1.0
-            _test_leak(v)  # opaque to compile-time checker; caught by runtime LV2
-        end
-        @test_throws PoolRuntimeEscapeError _test_backend_debug_unsafe(10)
-
-        # Safe: returns scalar
-        @with_pool :cpu pool function _test_backend_debug_safe(n)
-            v = acquire!(pool, Float64, n)
-            v .= 1.0
-            sum(v)
-        end
-        @test _test_backend_debug_safe(10) == 10.0
-
-        POOL_DEBUG[] = old_debug
-    end
-
-    # ==============================================================================
-    # Coverage: PoolRuntimeEscapeError showerror with return_site (LV3)
+    # Coverage: PoolRuntimeEscapeError showerror with return_site
     # ==============================================================================
 
     @testset "PoolRuntimeEscapeError showerror with return_site" begin
@@ -799,15 +691,12 @@ _test_leak(x) = x  # opaque to compile-time escape checker (only identity() is t
         # Rational is not AbstractFloat, Integer, or Complex → hits generic fallback
         @test _poison_value(Rational{Int}) == zero(Rational{Int})
 
-        # Exercise through actual pool rewind at LV≥2 with a non-fixed-slot type
-        old_lv = POOL_SAFETY_LV[]
-        set_safety_level!(2)
-        pool = AdaptiveArrayPool()
-        checkpoint!(pool)
+        # Exercise through actual pool rewind at S=1 with a non-fixed-slot type
+        pool = _make_pool(true)
+        _lazy_checkpoint!(pool)
         v = acquire!(pool, Rational{Int}, 5)
         v .= 1 // 3
-        rewind!(pool)  # triggers _poison_fill! → _poison_value(Rational{Int}) → zero(Rational)
-        set_safety_level!(old_lv)
+        _lazy_rewind!(pool)  # triggers _poison_fill! → _poison_value(Rational{Int}) → zero(Rational)
     end
 
     # ==============================================================================
@@ -822,4 +711,4 @@ _test_leak(x) = x  # opaque to compile-time escape checker (only identity() is t
         @test occursin("42", loc)
     end
 
-end # POOL_DEBUG and Safety Validation
+end # Safety Validation

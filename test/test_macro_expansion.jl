@@ -78,8 +78,8 @@
             @test occursin("Int64", expr_str)
         end
 
-        # Test POOL_DEBUG validation in block mode
-        @testset "POOL_DEBUG validation in expansion" begin
+        # Test _runtime_check validation in block mode
+        @testset "Runtime check validation in expansion" begin
             expr = @macroexpand @with_pool pool begin
                 v = acquire!(pool, Float64, 10)
                 sum(v)
@@ -87,7 +87,7 @@
 
             expr_str = string(expr)
 
-            # POOL_DEBUG is inlined as RefValue, but _validate_pool_return should be present
+            # _runtime_check gates _validate_pool_return (dead-code eliminated when S=0)
             @test occursin("_validate_pool_return", expr_str)
         end
 
