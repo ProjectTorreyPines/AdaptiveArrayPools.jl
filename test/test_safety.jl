@@ -14,7 +14,9 @@ _test_leak(x) = x
     end
 
     # ==============================================================================
-    # S=1: acquire! Array invalidation (same mechanism as acquire!)
+    # S=1: acquire! Array invalidation via setfield! (Julia 1.11+ only)
+    # On Julia 1.10, Array is a C struct — setfield!(:size) is not available,
+    # so only backing vector resize! works (invalidates SubArrays, not Arrays).
     # ==============================================================================
 
     @testset "acquire! Array invalidated on rewind" begin
@@ -24,11 +26,11 @@ _test_leak(x) = x
         v .= 42.0  # write to confirm it's valid before rewind
         rewind!(pool)
 
-        # Array size set to (0,) via invalidation
-        @test size(v) == (0,)
-
-        # Accessing stale Array should throw BoundsError
-        @test_throws BoundsError v[1]
+        # Array wrapper invalidation requires setfield! (Julia 1.11+ only)
+        @static if VERSION >= v"1.11-"
+            @test size(v) == (0,)
+            @test_throws BoundsError v[1]
+        end
     end
 
     @testset "acquire! N-D Array invalidated on rewind" begin
@@ -38,38 +40,7 @@ _test_leak(x) = x
         mat .= 1.0
         rewind!(pool)
 
-        # Array size set to (0, 0) via invalidation
-        @test size(mat) == (0, 0)
-        @test_throws BoundsError mat[1, 1]
-    end
-
-    # ==============================================================================
-    # S=1: acquire! Array wrapper invalidation via setfield! (Julia 1.11+ only)
-    # On Julia 1.10, Array is a C struct — setfield!(:size) is not available.
-    # ==============================================================================
-
-    @static if VERSION >= v"1.11-"
-        @testset "acquire! Array (setfield! path) invalidated on rewind" begin
-            pool = _make_pool(true)
-            checkpoint!(pool)
-            arr = acquire!(pool, Float64, 10)
-            arr .= 99.0
-            @test size(arr) == (10,)
-            rewind!(pool)
-
-            # Wrapper size set to (0,) via setfield!
-            @test size(arr) == (0,)
-            @test_throws BoundsError arr[1]
-        end
-
-        @testset "acquire! N-D Array (setfield! path) invalidated on rewind" begin
-            pool = _make_pool(true)
-            checkpoint!(pool)
-            mat = acquire!(pool, Float64, 4, 3)
-            mat .= 1.0
-            @test size(mat) == (4, 3)
-            rewind!(pool)
-
+        @static if VERSION >= v"1.11-"
             @test size(mat) == (0, 0)
             @test_throws BoundsError mat[1, 1]
         end
@@ -184,8 +155,10 @@ _test_leak(x) = x
         v_inner .= 2.0
         rewind!(pool)
 
-        # Inner is invalidated (slot 2 released)
-        @test size(v_inner) == (0,)
+        # Inner is invalidated (Array wrapper, 1.11+ only)
+        @static if VERSION >= v"1.11-"
+            @test size(v_inner) == (0,)
+        end
 
         # Outer is still valid (slot 1 not released)
         @test length(v_outer) >= 10
@@ -193,8 +166,10 @@ _test_leak(x) = x
 
         rewind!(pool)
 
-        # Now outer is also invalidated
-        @test size(v_outer) == (0,)
+        # Now outer is also invalidated (Array wrapper, 1.11+ only)
+        @static if VERSION >= v"1.11-"
+            @test size(v_outer) == (0,)
+        end
     end
 
     # ==============================================================================
@@ -228,10 +203,13 @@ _test_leak(x) = x
         @test length(v) >= 50
         rewind!(pool)
 
-        # Fallback type also invalidated
+        # Fallback type: backing vector invalidated on all versions
         tp = pool.others[UInt8]
         @test length(tp.vectors[1]) == 0
-        @test size(v) == (0,)
+        # Array wrapper invalidation (1.11+ only)
+        @static if VERSION >= v"1.11-"
+            @test size(v) == (0,)
+        end
     end
 
     # ==============================================================================
@@ -249,8 +227,12 @@ _test_leak(x) = x
         vb .= true
         rewind!(pool)
 
-        @test size(vf) == (0,)
-        @test size(vi) == (0,)
+        # Array wrapper invalidation (1.11+ only)
+        @static if VERSION >= v"1.11-"
+            @test size(vf) == (0,)
+            @test size(vi) == (0,)
+        end
+        # BitArray always invalidated (BitArray is Julia struct on all versions)
         @test length(vb) == 0
     end
 
@@ -267,9 +249,11 @@ _test_leak(x) = x
         rewind!(pool)
 
         @test result == 50.0
-        # After rewind, the pool's arrays should be invalidated
-        @test size(v) == (0,)
-        @test_throws BoundsError v[1]
+        # Array wrapper invalidation (1.11+ only)
+        @static if VERSION >= v"1.11-"
+            @test size(v) == (0,)
+            @test_throws BoundsError v[1]
+        end
     end
 
     # ==============================================================================

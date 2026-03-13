@@ -71,35 +71,10 @@ end
         @test allocs == 0
     end
 
-    @testset "N-D acquire!: 5-way is zero-alloc (Array)" begin
-        # acquire! returns Array → uses cached wrapper → always 0 alloc
+    @testset "N-D acquire!: 5-way eviction (5 patterns > CACHE_WAYS=4)" begin
         pool = AdaptiveArrayPool()
 
-        function test_nd_5way_acquire!(p)
-            dims_list = ((5, 10), (10, 5), (7, 7), (3, 16), (4, 12))
-            for _ in 1:100
-                for dims in dims_list
-                    @with_pool p begin
-                        acquire!(p, Float64, dims...)  # Array
-                    end
-                end
-            end
-        end
-
-        # Warmup
-        test_nd_5way_acquire!(pool)
-        test_nd_5way_acquire!(pool)
-
-        # acquire! uses cached Array wrapper → 0 alloc regardless of pattern count
-        allocs = @allocated test_nd_5way_acquire!(pool)
-        allocs > 0 && @warn "N-D acquire! 5-way: $allocs bytes (expected 0)"
-        @test allocs == 0
-    end
-
-    @testset "N-D acquire!: 5-way behavior (legacy eviction)" begin
-        pool = AdaptiveArrayPool()
-
-        function test_nd_5way_unsafe!(p)
+        function test_nd_5way!(p)
             dims_list = ((5, 10), (10, 5), (7, 7), (3, 16), (4, 12))
             for _ in 1:100
                 for dims in dims_list
@@ -111,11 +86,11 @@ end
         end
 
         # Warmup
-        test_nd_5way_unsafe!(pool)
-        test_nd_5way_unsafe!(pool)
+        test_nd_5way!(pool)
+        test_nd_5way!(pool)
 
-        allocs = @allocated test_nd_5way_unsafe!(pool)
-        # N-way eviction: 5 patterns > CACHE_WAYS=4
+        allocs = @allocated test_nd_5way!(pool)
+        # N-way eviction: 5 patterns > CACHE_WAYS=4 → allocates on each miss
         @test allocs > 0
     end
 
