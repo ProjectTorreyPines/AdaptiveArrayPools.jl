@@ -404,6 +404,141 @@ import AdaptiveArrayPools: checkpoint!, rewind!
             end
             @test expr isa Expr  # no error thrown
         end
+
+        # Multiple internal @goto to different labels
+        @testset "Multiple internal @goto targets" begin
+            result = @with_pool pool begin
+                v = acquire!(pool, Float64, 5)
+                v .= 1.0
+                x = sum(v)
+                if x > 10.0
+                    @goto big
+                elseif x > 0.0
+                    @goto small
+                end
+                @label big
+                x *= 100
+                @label small
+                x
+            end
+            @test result == 5.0  # falls through to @label small
+            @test get_task_local_pool()._current_depth == 1
+        end
+
+        # @goto in function form (not just block)
+        @testset "External @goto error in function form" begin
+            @test_throws ErrorException @macroexpand @with_pool pool function goto_func()
+                v = acquire!(pool, Float64, 10)
+                @goto escape
+            end
+        end
+
+        # @goto inside inner lambda is ignored (separate scope)
+        @testset "@goto inside inner function is ignored" begin
+            expr = @macroexpand @with_pool pool begin
+                v = acquire!(pool, Float64, 10)
+                f = () -> @goto somewhere  # inner function — not our scope
+                sum(v)
+            end
+            @test expr isa Expr  # no error — inner lambda @goto is skipped
+        end
+
+        # Mix of internal and external @goto: external wins → error
+        @testset "Mixed internal+external @goto errors on external" begin
+            @test_throws ErrorException @macroexpand @with_pool pool begin
+                v = acquire!(pool, Float64, 10)
+                @goto internal_label
+                @label internal_label
+                @goto external_label  # this one has no matching @label
+            end
+        end
+    end
+
+    # ==============================================================================
+    # Exception edge cases (deferred recovery)
+    # ==============================================================================
+
+    @testset "Exception edge cases" begin
+        # Multi-level nested throw: 2 inner scopes leak, outer catches
+        @testset "Multi-level nested leak recovery" begin
+            reset!(get_task_local_pool())
+            @with_pool pool function multi_level_leak()
+                v = acquire!(pool, Float64, 10)
+                v .= 1.0
+                result = try
+                    @with_pool pool begin
+                        acquire!(pool, UInt8, 5)
+                        @with_pool pool begin
+                            acquire!(pool, Int32, 3)
+                            error("deep boom")  # 2 inner scopes leak
+                        end
+                    end
+                catch
+                    99
+                end
+                sum(v) + result
+            end
+
+            @test multi_level_leak() == 109.0  # 10.0 + 99
+            @test get_task_local_pool()._current_depth == 1
+        end
+
+        # Multi-type cross-scope throw: inner uses different types than outer
+        @testset "Cross-type throw recovery" begin
+            reset!(get_task_local_pool())
+            @with_pool pool function cross_type_throw()
+                v = acquire!(pool, Float64, 10)
+                v .= 2.0
+                result = try
+                    @with_pool pool begin
+                        w = acquire!(pool, Int64, 5)  # different type from outer
+                        w .= 1
+                        error("type mismatch boom")
+                    end
+                catch
+                    0
+                end
+                sum(v) + result
+            end
+
+            @test cross_type_throw() == 20.0  # sum(v)=20 + 0
+            pool = get_task_local_pool()
+            @test pool._current_depth == 1
+            @test pool.float64.n_active == 0
+        end
+
+        # Uncaught exception → pool state is corrupted (documented limitation)
+        @testset "Uncaught exception corrupts pool (documented)" begin
+            reset!(get_task_local_pool())
+            try
+                @with_pool pool begin
+                    acquire!(pool, Float64, 10)
+                    error("uncaught!")
+                end
+            catch
+            end
+            # Without try-finally, rewind! was never called
+            pool = get_task_local_pool()
+            @test pool._current_depth > 1  # corrupted — this is expected behavior
+
+            # reset! recovers
+            reset!(pool)
+            @test pool._current_depth == 1
+        end
+
+        # @safe_with_pool handles uncaught exception correctly
+        @testset "@safe_with_pool handles uncaught exception" begin
+            reset!(get_task_local_pool())
+            try
+                @safe_with_pool pool begin
+                    acquire!(pool, Float64, 10)
+                    error("caught by safe!")
+                end
+            catch
+            end
+            # try-finally guarantees cleanup
+            @test get_task_local_pool()._current_depth == 1
+        end
     end
 
 end # Macro System
