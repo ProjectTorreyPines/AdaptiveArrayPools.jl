@@ -231,12 +231,12 @@ _validate_pool_return(val, ::AbstractArrayPool) = nothing
 # @noinline to keep it out of the inlined hot path — only called on error.
 
 @noinline function _warn_leaked_scope(pool::AbstractArrayPool, entry_depth::Int)
-    @error(
+    return @error(
         "Leaked @with_pool scope detected! " *
-        "Pool depth is $(pool._current_depth), expected $(entry_depth + 1). " *
-        "A macro inside @with_pool may have generated an unseen `return`/`break`, " *
-        "or an inner scope threw without try-finally protection. " *
-        "Consider using @safe_with_pool for exception safety.",
+            "Pool depth is $(pool._current_depth), expected $(entry_depth + 1). " *
+            "A macro inside @with_pool may have generated an unseen `return`/`break`, " *
+            "or an inner scope threw without try-finally protection. " *
+            "Consider using @safe_with_pool for exception safety.",
         current_depth = pool._current_depth,
         expected_depth = entry_depth + 1,
     )
