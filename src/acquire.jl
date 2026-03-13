@@ -16,12 +16,11 @@
 Compute the product of dimensions with overflow checking.
 
 Throws `OverflowError` if the product exceeds `typemax(Int)`, preventing
-memory corruption from integer overflow in `unsafe_wrap` operations.
+memory corruption from integer overflow in array creation operations.
 
 ## Rationale
 Without overflow checking, large dimensions like `(10^10, 10^10)` would wrap
-around to a small value, causing `unsafe_wrap` to create an array view that
-indexes beyond allocated memory.
+around to a small value, causing array creation to index beyond allocated memory.
 
 ## Performance
 Adds ~0.3-1.2 ns overhead (<1%) compared to unchecked `prod()`, which is

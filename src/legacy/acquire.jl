@@ -346,21 +346,25 @@ See also: [`acquire!`](@ref) for the default array-returning API.
 """
 @inline function acquire_view!(pool::AbstractArrayPool, ::Type{T}, n::Int) where {T}
     _record_type_touch!(pool, T)
+    _set_pending_callsite!(pool, "<direct acquire_view! call>")
     return _acquire_view_impl!(pool, T, n)
 end
 
 @inline function acquire_view!(pool::AbstractArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
     _record_type_touch!(pool, T)
+    _set_pending_callsite!(pool, "<direct acquire_view! call>")
     return _acquire_view_impl!(pool, T, dims...)
 end
 
 @inline function acquire_view!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
     _record_type_touch!(pool, T)
+    _set_pending_callsite!(pool, "<direct acquire_view! call>")
     return _acquire_view_impl!(pool, T, dims...)
 end
 
 @inline function acquire_view!(pool::AbstractArrayPool, x::AbstractArray)
     _record_type_touch!(pool, eltype(x))
+    _set_pending_callsite!(pool, "<direct acquire_view! call>")
     return _acquire_view_impl!(pool, eltype(x), size(x))
 end
 
