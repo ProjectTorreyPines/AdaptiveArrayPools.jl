@@ -365,4 +365,45 @@ import AdaptiveArrayPools: checkpoint!, rewind!
         @test pool._current_depth == 1
     end
 
+    # ==============================================================================
+    # @goto safety checks
+    # ==============================================================================
+
+    @testset "@goto safety in @with_pool" begin
+        # Internal @goto/@label: allowed (both are inside the pool body)
+        @testset "Internal @goto is allowed" begin
+            result = @with_pool pool begin
+                x = acquire!(pool, Float64, 10)
+                x .= 1.0
+                s = sum(x)
+                if s < 100
+                    @goto done
+                end
+                s *= 2
+                @label done
+                s
+            end
+            @test result == 10.0
+            pool = get_task_local_pool()
+            @test pool._current_depth == 1
+        end
+
+        # External @goto: hard error at macro expansion time
+        @testset "External @goto is a hard error" begin
+            @test_throws ErrorException @macroexpand @with_pool pool begin
+                v = acquire!(pool, Float64, 10)
+                @goto outside
+            end
+        end
+
+        # @safe_with_pool allows any @goto (try-finally protects)
+        @testset "@safe_with_pool allows @goto" begin
+            expr = @macroexpand @safe_with_pool pool begin
+                v = acquire!(pool, Float64, 10)
+                @goto outside
+            end
+            @test expr isa Expr  # no error thrown
+        end
+    end
+
 end # Macro System

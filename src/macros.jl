@@ -709,9 +709,9 @@ Does NOT handle the outer dispatch wrapper or MAYBE_POOLING branching — caller
 handle those after receiving the inner body.
 """
 function _generate_block_inner(pool_name, expr, safe::Bool, source)
-    # @goto detection (direct-rewind path only)
-    if !safe && source !== nothing
-        _check_goto_usage(expr, source)
+    # @goto safety check (direct-rewind path only)
+    if !safe
+        _check_unsafe_goto(expr)
     end
 
     all_types = _extract_acquire_types(expr, pool_name)
@@ -779,9 +779,9 @@ Like `_generate_block_inner` but does NOT apply `_transform_break_continue` —
 `break`/`continue` cannot exit a function scope.
 """
 function _generate_function_inner(pool_name, expr, safe::Bool, source)
-    # @goto detection (direct-rewind path only)
-    if !safe && source !== nothing
-        _check_goto_usage(expr, source)
+    # @goto safety check (direct-rewind path only)
+    if !safe
+        _check_unsafe_goto(expr)
     end
 
     all_types = _extract_acquire_types(expr, pool_name)
@@ -1799,30 +1799,63 @@ function _transform_break_continue(expr, rewind_call, entry_depth_guard)
 end
 
 # ==============================================================================
-# Internal: @goto Detection (Direct-Rewind Path)
+# Internal: @goto Safety Check (Direct-Rewind Path)
 # ==============================================================================
 
 """
-    _check_goto_usage(expr, source)
+    _collect_local_gotos_and_labels(expr) -> (gotos::Set{Symbol}, labels::Set{Symbol})
 
-Warn at compile time if `@goto` is found inside a pool scope body.
-`@goto` bypasses the rewind insertion, so pool state may be corrupted.
-Suggests using `@safe_with_pool` instead.
+Walk the body AST and collect all `@goto` target symbols and `@label` names.
+Skips `:function`/`:->` bodies (inner functions have their own scope).
 
-Skips `:function`/`:->` bodies (goto in inner function is irrelevant).
+At macro expansion time, `@goto`/`@label` are `:macrocall` nodes, not `:symbolicgoto`.
 """
-function _check_goto_usage(expr, source)
-    expr isa Expr || return
-    if expr.head == :symbolicgoto
-        label = length(expr.args) >= 1 ? string(expr.args[1]) : "?"
-        @warn "@with_pool: @goto $label detected inside pool scope. " *
-              "rewind! will NOT be inserted before @goto. " *
-              "Use @safe_with_pool for exception-safe behavior." _file=string(source.file) _line=source.line
-        return
+function _collect_local_gotos_and_labels(expr)
+    gotos = Set{Symbol}()
+    labels = Set{Symbol}()
+
+    function walk(node)
+        node isa Expr || return
+
+        if node.head === :macrocall && length(node.args) >= 3
+            name = node.args[1]
+            target = node.args[3]
+            if name === Symbol("@goto") && target isa Symbol
+                push!(gotos, target)
+            elseif name === Symbol("@label") && target isa Symbol
+                push!(labels, target)
+            end
+        end
+
+        # Skip nested function bodies (separate scope)
+        node.head in (:function, :->) && return
+
+        for arg in node.args
+            walk(arg)
+        end
     end
-    expr.head in (:function, :->) && return
-    for arg in expr.args
-        _check_goto_usage(arg, source)
+
+    walk(expr)
+    return gotos, labels
+end
+
+"""
+    _check_unsafe_goto(expr)
+
+Hard error if the body contains any `@goto` that targets a label NOT defined
+within the same body. Such jumps would bypass `rewind!` insertion.
+
+Internal jumps (`@goto label` where `@label label` exists in the body) are safe
+and allowed — they don't exit the pool scope.
+"""
+function _check_unsafe_goto(expr)
+    gotos, labels = _collect_local_gotos_and_labels(expr)
+    unsafe = setdiff(gotos, labels)
+    if !isempty(unsafe)
+        targets = join(unsafe, ", ")
+        error("@with_pool: @goto to external label(s) ($targets) detected. " *
+              "This would bypass rewind! and corrupt pool state. " *
+              "Use @safe_with_pool for exception-safe behavior with @goto.")
     end
 end
 
