@@ -8,8 +8,7 @@
 # Key components:
 # - Base.zero/one(::Type{Bit}) - Fill value dispatch for Bit sentinel type
 # - get_bitarray! - N-D BitArray with shared chunks and N-way caching
-# - _acquire_impl! for Bit - Delegates to _unsafe_acquire_impl! for performance
-# - _unsafe_acquire_impl! for Bit - Raw BitArray acquisition with caching
+# - _acquire_impl! for Bit - BitArray acquisition with caching
 # - DisabledPool fallbacks for Bit type
 # - empty!(::BitTypedPool) - State management (clearing pool storage)
 # - _check_bitchunks_overlap - Safety validation for S=1 runtime check mode
@@ -17,26 +16,13 @@
 #
 # Design Decision: Unified BitArray Return Type
 # =============================================
-# Unlike regular types where acquire! returns SubArray and unsafe_acquire!
-# returns Array, for Bit type BOTH return BitArray{N}. This design choice is
-# intentional for several reasons:
-#
-# 1. **SIMD Performance**: BitArray operations like `count()`, `sum()`, and
-#    bitwise operations are ~(10x ~ 100x) faster than their SubArray equivalents
-#    because they use SIMD-optimized chunked algorithms.
-#
-# 2. **API Simplicity**: Users always get BitArray regardless of which API
-#    they call. No need to remember "use unsafe_acquire! for performance".
-#
-# 3. **N-D Caching**: BitArray{N} can be reused by modifying dims/len fields
-#    when ndims matches, achieving 0 allocation on repeated calls. This is
-#    unique to BitArray - regular Array cannot modify dims in place.
-#
-# 4. **Backwards Compatibility**: Code using trues!/falses! just works with
-#    optimal performance - these convenience functions return BitVector.
+# Both acquire! and acquire_view! return BitArray{N} for Bit type.
+# This ensures users always get SIMD-optimized performance
+# (~10-100x faster count/sum/bitwise).
 #
 # Implementation:
-# - _acquire_impl!(pool, Bit, ...) delegates to _unsafe_acquire_impl!
+# - _acquire_impl!(pool, Bit, ...) directly calls get_bitarray!
+# - _acquire_view_impl! delegates to _acquire_impl! (no view distinction)
 # - get_bitarray! creates BitArray shells sharing pool's chunks
 # - N-way cache stores BitArray{N} entries, reused via dims modification
 # ==============================================================================
@@ -157,41 +143,38 @@ end
 @inline get_bitarray!(tp::BitTypedPool, n::Int) = get_bitarray!(tp, (n,))
 
 # ==============================================================================
-# Acquire Implementation (Bit type → delegates to unsafe_acquire for performance)
+# Acquire Implementation (Bit type → always returns BitArray{N})
 # ==============================================================================
+#
+# Bit type always returns BitArray{N} regardless of acquire! vs acquire_view!.
+# BitArray's SIMD-optimized operations (count, sum, etc.) are ~(10x ~ 100x)
+# faster than SubArray equivalents, so there's no reason to return views.
 
-# Bit type: delegates to _unsafe_acquire_impl! for SIMD performance
 @inline function _acquire_impl!(pool::AbstractArrayPool, ::Type{Bit}, n::Int)
-    return _unsafe_acquire_impl!(pool, Bit, n)
+    tp = get_typed_pool!(pool, Bit)::BitTypedPool
+    result = get_bitarray!(tp, n)
+    _maybe_record_borrow!(pool, tp)
+    return result
 end
 
 @inline function _acquire_impl!(pool::AbstractArrayPool, ::Type{Bit}, dims::Vararg{Int, N}) where {N}
-    return _unsafe_acquire_impl!(pool, Bit, dims...)
+    tp = get_typed_pool!(pool, Bit)::BitTypedPool
+    result = get_bitarray!(tp, dims)
+    _maybe_record_borrow!(pool, tp)
+    return result
 end
 
 @inline function _acquire_impl!(pool::AbstractArrayPool, ::Type{Bit}, dims::NTuple{N, Int}) where {N}
-    return _unsafe_acquire_impl!(pool, Bit, dims...)
-end
-
-# ==============================================================================
-# Unsafe Acquire Implementation (Bit type)
-# ==============================================================================
-
-# Bit type: returns BitArray{N} with shared chunks (SIMD optimized, N-D cached)
-@inline function _unsafe_acquire_impl!(pool::AbstractArrayPool, ::Type{Bit}, n::Int)
     tp = get_typed_pool!(pool, Bit)::BitTypedPool
-    return get_bitarray!(tp, n)
+    result = get_bitarray!(tp, dims)
+    _maybe_record_borrow!(pool, tp)
+    return result
 end
 
-@inline function _unsafe_acquire_impl!(pool::AbstractArrayPool, ::Type{Bit}, dims::Vararg{Int, N}) where {N}
-    tp = get_typed_pool!(pool, Bit)::BitTypedPool
-    return get_bitarray!(tp, dims)
-end
-
-@inline function _unsafe_acquire_impl!(pool::AbstractArrayPool, ::Type{Bit}, dims::NTuple{N, Int}) where {N}
-    tp = get_typed_pool!(pool, Bit)::BitTypedPool
-    return get_bitarray!(tp, dims)
-end
+# acquire_view! for Bit also returns BitArray (no view distinction for bit-packed types)
+@inline _acquire_view_impl!(pool::AbstractArrayPool, ::Type{Bit}, n::Int) = _acquire_impl!(pool, Bit, n)
+@inline _acquire_view_impl!(pool::AbstractArrayPool, ::Type{Bit}, dims::Vararg{Int, N}) where {N} = _acquire_impl!(pool, Bit, dims...)
+@inline _acquire_view_impl!(pool::AbstractArrayPool, ::Type{Bit}, dims::NTuple{N, Int}) where {N} = _acquire_impl!(pool, Bit, dims...)
 
 # ==============================================================================
 # DisabledPool Fallbacks (Bit type)
@@ -202,10 +185,10 @@ end
 @inline acquire!(::DisabledPool{:cpu}, ::Type{Bit}, dims::Vararg{Int, N}) where {N} = BitArray{N}(undef, dims)
 @inline acquire!(::DisabledPool{:cpu}, ::Type{Bit}, dims::NTuple{N, Int}) where {N} = BitArray{N}(undef, dims)
 
-# --- unsafe_acquire! for DisabledPool{:cpu} with Bit type (returns BitArray) ---
-@inline unsafe_acquire!(::DisabledPool{:cpu}, ::Type{Bit}, n::Int) = BitVector(undef, n)
-@inline unsafe_acquire!(::DisabledPool{:cpu}, ::Type{Bit}, dims::Vararg{Int, N}) where {N} = BitArray{N}(undef, dims)
-@inline unsafe_acquire!(::DisabledPool{:cpu}, ::Type{Bit}, dims::NTuple{N, Int}) where {N} = BitArray{N}(undef, dims)
+# --- acquire_view! for DisabledPool{:cpu} with Bit type (returns BitArray) ---
+@inline acquire_view!(::DisabledPool{:cpu}, ::Type{Bit}, n::Int) = BitVector(undef, n)
+@inline acquire_view!(::DisabledPool{:cpu}, ::Type{Bit}, dims::Vararg{Int, N}) where {N} = BitArray{N}(undef, dims)
+@inline acquire_view!(::DisabledPool{:cpu}, ::Type{Bit}, dims::NTuple{N, Int}) where {N} = BitArray{N}(undef, dims)
 
 # ==============================================================================
 # State Management — empty! (Legacy: N-way cache fields)

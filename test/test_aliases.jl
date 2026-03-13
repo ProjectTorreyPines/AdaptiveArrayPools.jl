@@ -3,9 +3,9 @@ using AdaptiveArrayPools
 
 @testset "API Aliases" begin
 
-    @testset "acquire_view! is alias for acquire!" begin
-        # Verify they are the same function
-        @test acquire_view! === acquire!
+    @testset "acquire_view! is a separate function (returns view)" begin
+        # acquire_view! is NOT an alias for acquire! anymore (acquire! now returns Array)
+        @test acquire_view! !== acquire!
 
         pool = AdaptiveArrayPool()
         checkpoint!(pool)
@@ -41,14 +41,14 @@ using AdaptiveArrayPools
         @test m_nothing isa Matrix{Float64}
     end
 
-    @testset "acquire_array! is alias for unsafe_acquire!" begin
+    @testset "acquire_array! is alias for acquire!" begin
         # Verify they are the same function
-        @test acquire_array! === unsafe_acquire!
+        @test acquire_array! === acquire!
 
         pool = AdaptiveArrayPool()
         checkpoint!(pool)
 
-        # 1D - returns Vector
+        # 1D - returns Vector (acquire! now returns Array)
         v = acquire_array!(pool, Float64, 100)
         @test v isa Vector{Float64}
         @test length(v) == 100
@@ -104,7 +104,7 @@ using AdaptiveArrayPools
 
     @testset "Similar-style _impl! via macro (runtime coverage)" begin
         # These tests exercise the _acquire_impl!(pool, x::AbstractArray) and
-        # _unsafe_acquire_impl!(pool, x::AbstractArray) methods which are only
+        # _acquire_view_impl!(pool, x::AbstractArray) methods which are only
         # called through macro transformation (not public API).
 
         ref_mat = rand(5, 6)
@@ -119,11 +119,11 @@ using AdaptiveArrayPools
                 mat = acquire!(pool, ref_mat)
                 @test size(mat) == size(ref_mat)
                 @test eltype(mat) == eltype(ref_mat)
-                @test mat isa Base.ReshapedArray{Float64, 2}
+                @test mat isa Matrix{Float64}
 
                 vec = acquire!(pool, ref_vec)
                 @test size(vec) == size(ref_vec)
-                @test vec isa SubArray{Float64, 1}
+                @test vec isa Vector{Float64}
 
                 int_mat = acquire!(pool, ref_int)
                 @test eltype(int_mat) == Int32
@@ -134,33 +134,33 @@ using AdaptiveArrayPools
             @test result isa Float64
         end
 
-        @testset "unsafe_acquire!(pool, x) via @with_pool" begin
+        @testset "acquire_view!(pool, x) via @with_pool" begin
             pool = AdaptiveArrayPool()
 
             result = @with_pool pool begin
-                # Similar-style unsafe_acquire - macro transforms to _unsafe_acquire_impl!(pool, ref_mat)
-                mat = unsafe_acquire!(pool, ref_mat)
+                # Similar-style acquire_view - macro transforms to _acquire_view_impl!(pool, ref_mat)
+                mat = acquire_view!(pool, ref_mat)
                 @test size(mat) == size(ref_mat)
-                @test mat isa Matrix{Float64}
+                @test mat isa Base.ReshapedArray{Float64, 2}
 
-                vec = unsafe_acquire!(pool, ref_vec)
+                vec = acquire_view!(pool, ref_vec)
                 @test size(vec) == size(ref_vec)
-                @test vec isa Vector{Float64}
+                @test vec isa SubArray{Float64, 1}
 
                 sum(mat) + sum(vec)
             end
             @test result isa Float64
         end
 
-        @testset "acquire_view!/acquire_array! aliases via @with_pool" begin
+        @testset "acquire_view!/acquire_array! via @with_pool" begin
             pool = AdaptiveArrayPool()
 
             @with_pool pool begin
-                # acquire_view! is alias for acquire!
+                # acquire_view! returns view
                 v1 = acquire_view!(pool, ref_mat)
                 @test size(v1) == size(ref_mat)
 
-                # acquire_array! is alias for unsafe_acquire!
+                # acquire_array! is alias for acquire! (returns Array)
                 v2 = acquire_array!(pool, ref_vec)
                 @test size(v2) == size(ref_vec)
             end

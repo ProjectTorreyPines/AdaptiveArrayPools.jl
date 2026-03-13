@@ -12,20 +12,8 @@
             arr = acquire!(pool, Float64, 10, 10)
             @test arr isa CuArray{Float64, 2}
 
-            # acquire! 1D returns CuArray view
+            # acquire! 1D returns CuArray
             vec = acquire!(pool, Float64, 100)
-            @test vec isa CuArray{Float64, 1}
-        end
-    end
-
-    @testset "unsafe_acquire! returns CuArray" begin
-        @with_pool :cuda pool begin
-            # unsafe_acquire! N-D returns CuArray
-            arr = unsafe_acquire!(pool, Float64, 10, 10)
-            @test arr isa CuArray{Float64, 2}
-
-            # unsafe_acquire! 1D returns CuArray
-            vec = unsafe_acquire!(pool, Float64, 100)
             @test vec isa CuArray{Float64, 1}
         end
     end
@@ -141,10 +129,10 @@ end
     end
 
     # =========================================================================
-    # unsafe_acquire! Tests
+    # acquire! Array path (additional patterns)
     # =========================================================================
 
-    @testset "unsafe_acquire! GPU: 4 patterns zero-alloc" begin
+    @testset "acquire! Array: GPU 4 patterns zero-alloc" begin
         pool = get_task_local_cuda_pool()
         reset!(pool)
 
@@ -153,7 +141,7 @@ end
         function test_unsafe_4pat_gpu()
             for dims in dims_list
                 @with_pool :cuda p begin
-                    A = unsafe_acquire!(p, Float64, dims...)
+                    A = acquire!(p, Float64, dims...)
                     fill!(A, 1.0)
                 end
             end
@@ -168,7 +156,7 @@ end
         @test gpu_alloc == 0
     end
 
-    @testset "unsafe_acquire! CPU: 4 patterns zero-alloc" begin
+    @testset "acquire! Array: CPU 4 patterns zero-alloc" begin
         pool = get_task_local_cuda_pool()
         reset!(pool)
 
@@ -177,7 +165,7 @@ end
         function test_unsafe_4pat_cpu()
             for dims in dims_list
                 @with_pool :cuda p begin
-                    _ = unsafe_acquire!(p, Float64, dims...)
+                    _ = acquire!(p, Float64, dims...)
                 end
             end
         end
@@ -191,7 +179,7 @@ end
         @test cpu_alloc == 0
     end
 
-    @testset "unsafe_acquire! CPU: 5+ patterns zero-alloc" begin
+    @testset "acquire! Array: CPU 5+ patterns zero-alloc" begin
         pool = get_task_local_cuda_pool()
         reset!(pool)
 
@@ -200,7 +188,7 @@ end
         function test_unsafe_5pat_cpu()
             for dims in dims_list
                 @with_pool :cuda p begin
-                    _ = unsafe_acquire!(p, Float64, dims...)
+                    _ = acquire!(p, Float64, dims...)
                 end
             end
         end
@@ -397,18 +385,18 @@ end
     end
 
     # =========================================================================
-    # unsafe_acquire! Mixed-N Tests
+    # acquire! Array path: Mixed-N Tests
     # =========================================================================
 
-    @testset "unsafe_acquire! GPU: mixed-N zero-alloc" begin
+    @testset "acquire! Array: GPU mixed-N zero-alloc" begin
         pool = get_task_local_cuda_pool()
         reset!(pool)
 
         function test_unsafe_mixed_n_gpu()
             @with_pool :cuda p begin
-                v = unsafe_acquire!(p, Float64, 100)
-                A = unsafe_acquire!(p, Float64, 10, 10)
-                T = unsafe_acquire!(p, Float64, 5, 5, 4)
+                v = acquire!(p, Float64, 100)
+                A = acquire!(p, Float64, 10, 10)
+                T = acquire!(p, Float64, 5, 5, 4)
                 fill!(v, 1.0)
                 fill!(A, 2.0)
                 fill!(T, 3.0)
@@ -424,15 +412,15 @@ end
         @test gpu_alloc == 0
     end
 
-    @testset "unsafe_acquire! CPU: mixed-N zero-alloc" begin
+    @testset "acquire! Array: CPU mixed-N zero-alloc" begin
         pool = get_task_local_cuda_pool()
         reset!(pool)
 
         function test_unsafe_mixed_n_cpu()
             @with_pool :cuda p begin
-                _ = unsafe_acquire!(p, Float64, 100)
-                _ = unsafe_acquire!(p, Float64, 10, 10)
-                _ = unsafe_acquire!(p, Float64, 5, 5, 4)
+                _ = acquire!(p, Float64, 100)
+                _ = acquire!(p, Float64, 10, 10)
+                _ = acquire!(p, Float64, 5, 5, 4)
             end
         end
 

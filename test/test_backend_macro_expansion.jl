@@ -73,9 +73,9 @@
             @test occursin("Float32", expr_str)
         end
 
-        @testset "unsafe_acquire! type extraction" begin
+        @testset "acquire_view! type extraction" begin
             expr = @macroexpand @with_pool :cuda pool begin
-                v = unsafe_acquire!(pool, Int64, 100)
+                v = acquire_view!(pool, Int64, 100)
             end
 
             expr_str = string(expr)
@@ -192,7 +192,7 @@
             expr = @macroexpand @with_pool :cuda pool function multi_type(n)
                 A = acquire!(pool, Float64, n)
                 B = acquire!(pool, Int32, n)
-                C = unsafe_acquire!(pool, Float32, n)
+                C = acquire_view!(pool, Float32, n)
                 return sum(A) + sum(B) + sum(C)
             end
 
@@ -252,22 +252,13 @@
             @test occursin("_acquire_impl!", expr_str)
         end
 
-        @testset "unsafe_acquire! transforms" begin
-            expr = @macroexpand @with_pool :cuda pool begin
-                v = unsafe_acquire!(pool, Float64, 10, 10)
-            end
-
-            expr_str = string(expr)
-            @test occursin("_unsafe_acquire_impl!", expr_str)
-        end
-
         @testset "acquire_view! transforms" begin
             expr = @macroexpand @with_pool :cuda pool begin
                 v = acquire_view!(pool, Float64, 10)
             end
 
             expr_str = string(expr)
-            @test occursin("_acquire_impl!", expr_str)
+            @test occursin("_acquire_view_impl!", expr_str)
         end
 
         @testset "acquire_array! transforms" begin
@@ -276,7 +267,7 @@
             end
 
             expr_str = string(expr)
-            @test occursin("_unsafe_acquire_impl!", expr_str)
+            @test occursin("_acquire_impl!", expr_str)
         end
     end
 

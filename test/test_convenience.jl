@@ -321,13 +321,13 @@
             @test result == 40.0f0
         end
 
-        @testset "unsafe_zeros! with size(x)" begin
+        @testset "zeros! with size(x) returns Array" begin
             x1d = rand(10)
             x2d = rand(5, 8)
 
-            # 1D with explicit type
+            # 1D with explicit type - zeros! now returns Array
             result = @with_pool pool begin
-                v = unsafe_zeros!(pool, Float64, size(x1d))
+                v = zeros!(pool, Float64, size(x1d))
                 @test v isa Array{Float64, 1}
                 @test length(v) == 10
                 @test all(v .== 0.0)
@@ -337,7 +337,7 @@
 
             # 1D without type
             result = @with_pool pool begin
-                v = unsafe_zeros!(pool, size(x1d))
+                v = zeros!(pool, size(x1d))
                 @test v isa Array{Float64, 1}
                 @test eltype(v) == Float64
                 sum(v)
@@ -346,7 +346,7 @@
 
             # 2D with explicit type
             result = @with_pool pool begin
-                m = unsafe_zeros!(pool, Float32, size(x2d))
+                m = zeros!(pool, Float32, size(x2d))
                 @test m isa Array{Float32, 2}
                 @test size(m) == (5, 8)
                 sum(m)
@@ -354,13 +354,13 @@
             @test result == 0.0f0
         end
 
-        @testset "unsafe_ones! with size(x)" begin
+        @testset "ones! with size(x) returns Array" begin
             x1d = rand(10)
             x2d = rand(5, 8)
 
-            # 1D with explicit type
+            # 1D with explicit type - ones! now returns Array
             result = @with_pool pool begin
-                v = unsafe_ones!(pool, Float64, size(x1d))
+                v = ones!(pool, Float64, size(x1d))
                 @test v isa Array{Float64, 1}
                 @test length(v) == 10
                 @test all(v .== 1.0)
@@ -370,7 +370,7 @@
 
             # 1D without type
             result = @with_pool pool begin
-                v = unsafe_ones!(pool, size(x1d))
+                v = ones!(pool, size(x1d))
                 @test v isa Array{Float64, 1}
                 @test eltype(v) == Float64
                 sum(v)
@@ -379,7 +379,7 @@
 
             # 2D with explicit type
             result = @with_pool pool begin
-                m = unsafe_ones!(pool, Float32, size(x2d))
+                m = ones!(pool, Float32, size(x2d))
                 @test m isa Array{Float32, 2}
                 @test size(m) == (5, 8)
                 sum(m)
@@ -419,11 +419,11 @@
         @test pool.float64.n_active == 0
     end
 
-    @testset "unsafe_zeros!" begin
+    @testset "zeros! returns Array (not view)" begin
         pool = AdaptiveArrayPool()
 
-        @testset "returns raw array (not view)" begin
-            v = unsafe_zeros!(pool, Float64, 10)
+        @testset "returns raw array" begin
+            v = zeros!(pool, Float64, 10)
             @test v isa Array{Float64, 1}
             @test !(v isa SubArray)
             @test length(v) == 10
@@ -431,7 +431,7 @@
         end
 
         @testset "default type (Float64)" begin
-            v = unsafe_zeros!(pool, 10)
+            v = zeros!(pool, 10)
             @test v isa Array{Float64, 1}
             @test !(v isa SubArray)
             @test eltype(v) == Float64
@@ -439,7 +439,7 @@
         end
 
         @testset "multi-dimensional" begin
-            m = unsafe_zeros!(pool, Float64, 3, 4)
+            m = zeros!(pool, Float64, 3, 4)
             @test m isa Array{Float64, 2}
             @test !(m isa SubArray)
             @test size(m) == (3, 4)
@@ -448,27 +448,27 @@
 
         @testset "tuple form" begin
             dims = (5, 6)
-            m = unsafe_zeros!(pool, dims)
+            m = zeros!(pool, dims)
             @test size(m) == dims
             @test !(m isa SubArray)
 
-            m32 = unsafe_zeros!(pool, Float32, dims)
+            m32 = zeros!(pool, Float32, dims)
             @test size(m32) == dims
             @test eltype(m32) == Float32
         end
 
         @testset "DisabledPool fallback" begin
-            v = unsafe_zeros!(DISABLED_CPU, Float64, 10)
+            v = zeros!(DISABLED_CPU, Float64, 10)
             @test v isa Array{Float64}
             @test all(v .== 0.0)
         end
     end
 
-    @testset "unsafe_ones!" begin
+    @testset "ones! returns Array (not view)" begin
         pool = AdaptiveArrayPool()
 
-        @testset "returns raw array (not view)" begin
-            v = unsafe_ones!(pool, Float64, 10)
+        @testset "returns raw array" begin
+            v = ones!(pool, Float64, 10)
             @test v isa Array{Float64, 1}
             @test !(v isa SubArray)
             @test length(v) == 10
@@ -476,7 +476,7 @@
         end
 
         @testset "default type (Float64)" begin
-            v = unsafe_ones!(pool, 10)
+            v = ones!(pool, 10)
             @test v isa Array{Float64, 1}
             @test !(v isa SubArray)
             @test eltype(v) == Float64
@@ -484,7 +484,7 @@
         end
 
         @testset "multi-dimensional" begin
-            m = unsafe_ones!(pool, Float64, 3, 4)
+            m = ones!(pool, Float64, 3, 4)
             @test m isa Array{Float64, 2}
             @test !(m isa SubArray)
             @test size(m) == (3, 4)
@@ -493,69 +493,69 @@
 
         @testset "tuple form" begin
             dims = (5, 6)
-            m = unsafe_ones!(pool, dims)
+            m = ones!(pool, dims)
             @test size(m) == dims
             @test !(m isa SubArray)
 
-            m32 = unsafe_ones!(pool, Float32, dims)
+            m32 = ones!(pool, Float32, dims)
             @test size(m32) == dims
             @test eltype(m32) == Float32
             @test all(m32 .== 1.0f0)
         end
 
         @testset "DisabledPool fallback" begin
-            v = unsafe_ones!(DISABLED_CPU, Float64, 10)
+            v = ones!(DISABLED_CPU, Float64, 10)
             @test v isa Array{Float64}
             @test all(v .== 1.0)
         end
     end
 
-    @testset "unsafe_similar!" begin
+    @testset "similar! returns Array (not view)" begin
         pool = AdaptiveArrayPool()
         template = rand(Float64, 10, 10)
 
-        @testset "returns raw array (not view)" begin
-            v = unsafe_similar!(pool, template)
+        @testset "returns raw array" begin
+            v = similar!(pool, template)
             @test v isa Array{Float64, 2}
             @test !(v isa SubArray)
             @test size(v) == size(template)
         end
 
         @testset "different type" begin
-            v = unsafe_similar!(pool, template, Float32)
+            v = similar!(pool, template, Float32)
             @test v isa Array{Float32, 2}
             @test !(v isa SubArray)
             @test size(v) == size(template)
         end
 
         @testset "different size" begin
-            v = unsafe_similar!(pool, template, 5, 5)
+            v = similar!(pool, template, 5, 5)
             @test v isa Array{Float64, 2}
             @test !(v isa SubArray)
             @test size(v) == (5, 5)
         end
 
         @testset "different type and size" begin
-            v = unsafe_similar!(pool, template, Int32, 3, 4)
+            v = similar!(pool, template, Int32, 3, 4)
             @test v isa Array{Int32, 2}
             @test !(v isa SubArray)
             @test size(v) == (3, 4)
         end
 
         @testset "DisabledPool fallback" begin
-            v = unsafe_similar!(DISABLED_CPU, template)
+            v = similar!(DISABLED_CPU, template)
             @test v isa Array{Float64}
             @test size(v) == size(template)
 
-            v2 = unsafe_similar!(DISABLED_CPU, template, Int64)
+            v2 = similar!(DISABLED_CPU, template, Int64)
             @test v2 isa Array{Int64}
         end
     end
 
-    @testset "Integration unsafe functions with @with_pool" begin
-        @testset "unsafe_zeros! in macro" begin
+    @testset "Integration: zeros!/ones!/similar! return Array in @with_pool" begin
+        @testset "zeros! in macro" begin
             result = @with_pool pool begin
-                v = unsafe_zeros!(pool, Float64, 100)
+                v = zeros!(pool, Float64, 100)
                 @test v isa Array{Float64, 1}
                 @test !(v isa SubArray)
                 v .+= 1.0
@@ -564,9 +564,9 @@
             @test result == 100.0
         end
 
-        @testset "unsafe_ones! in macro" begin
+        @testset "ones! in macro" begin
             result = @with_pool pool begin
-                v = unsafe_ones!(pool, Float64, 50)
+                v = ones!(pool, Float64, 50)
                 @test v isa Array{Float64, 1}
                 @test !(v isa SubArray)
                 sum(v)
@@ -574,10 +574,10 @@
             @test result == 50.0
         end
 
-        @testset "unsafe_similar! in macro" begin
+        @testset "similar! in macro" begin
             template = rand(10)
             result = @with_pool pool begin
-                v = unsafe_similar!(pool, template)
+                v = similar!(pool, template)
                 @test v isa Array{Float64, 1}
                 @test !(v isa SubArray)
                 v .= 2.0

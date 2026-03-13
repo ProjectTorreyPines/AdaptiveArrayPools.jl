@@ -102,9 +102,8 @@ Internal structure managing pooled vectors for a specific element type `T`.
 - `_checkpoint_depths`: Depth of each checkpoint entry (sentinel: `[0]`)
 
 ## Design Notes
-- 1D views (`SubArray`) are created fresh on every `acquire!` call — SubArray is stack-allocated
-  via SROA in modern Julia, making caching unnecessary (and slower due to memory indirection).
-- `unsafe_acquire!` uses `setfield!` wrapper reuse — unlimited dim patterns, 0-alloc after warmup.
+- `acquire!` returns `Array{T,N}` via `setfield!` wrapper reuse — unlimited dim patterns, 0-alloc after warmup.
+- `acquire_view!` returns 1D `SubArray` (created fresh, stack-allocated via SROA) or N-D `ReshapedArray`.
 - Slot management is unified via `_claim_slot!` — the shared primitive for all acquisition paths.
 """
 mutable struct TypedPool{T} <: AbstractTypedPool{T, Vector{T}}
@@ -160,11 +159,10 @@ end
 
 ## Return Types (Unified for Performance)
 Unlike other types, `Bit` always returns native `BitVector`/`BitArray`:
-- **1D**: `BitVector` (both `acquire!` and `unsafe_acquire!`)
+- **1D**: `BitVector` (both `acquire!` and `acquire_view!`)
 - **N-D**: `BitArray{N}` (reshaped, preserves SIMD optimization)
 
-This design ensures users always get SIMD-optimized performance without
-needing to remember which API to use.
+This design ensures users always get SIMD-optimized performance.
 
 ## Performance
 `BitVector` operations like `count()`, `sum()`, and bitwise operations are
@@ -201,12 +199,11 @@ Unlike `TypedPool{Bool}` which stores `Vector{Bool}` (1 byte per element),
 this pool stores `BitVector` (1 bit per element, ~8x memory efficiency).
 
 ## Unified API (Always Returns BitVector)
-Unlike other types, both `acquire!` and `unsafe_acquire!` return `BitVector`
-for the `Bit` type. This design ensures users always get SIMD-optimized
-performance without needing to choose between APIs.
+Both `acquire!` and `acquire_view!` return `BitVector` for the `Bit` type.
+This design ensures users always get SIMD-optimized performance.
 
 - `acquire!(pool, Bit, n)` → `BitVector` (SIMD optimized)
-- `unsafe_acquire!(pool, Bit, n)` → `BitVector` (same behavior)
+- `acquire_view!(pool, Bit, n)` → `BitVector` (same behavior)
 - `trues!(pool, n)` → `BitVector` filled with `true`
 - `falses!(pool, n)` → `BitVector` filled with `false`
 

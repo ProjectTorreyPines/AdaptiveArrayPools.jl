@@ -21,10 +21,10 @@ default_eltype(::AbstractArrayPool) = Float64
 # ==============================================================================
 
 """
-    zeros!(pool, dims...) -> view
-    zeros!(pool, T, dims...) -> view
-    zeros!(pool, dims::Tuple) -> view
-    zeros!(pool, T, dims::Tuple) -> view
+    zeros!(pool, dims...) -> Array
+    zeros!(pool, T, dims...) -> Array
+    zeros!(pool, dims::Tuple) -> Array
+    zeros!(pool, T, dims::Tuple) -> Array
 
 Acquire a zero-initialized array from the pool.
 
@@ -35,8 +35,8 @@ See [`default_eltype`](@ref).
 ## Example
 ```julia
 @with_pool pool begin
-    v = zeros!(pool, 100)              # Uses default_eltype(pool)
-    m = zeros!(pool, Float32, 10, 10)  # Matrix{Float32} view, all zeros
+    v = zeros!(pool, 100)              # Vector{Float64}, all zeros
+    m = zeros!(pool, Float32, 10, 10)  # Matrix{Float32}, all zeros
 end
 ```
 
@@ -98,10 +98,10 @@ end
 # ==============================================================================
 
 """
-    ones!(pool, dims...) -> view
-    ones!(pool, T, dims...) -> view
-    ones!(pool, dims::Tuple) -> view
-    ones!(pool, T, dims::Tuple) -> view
+    ones!(pool, dims...) -> Array
+    ones!(pool, T, dims...) -> Array
+    ones!(pool, dims::Tuple) -> Array
+    ones!(pool, T, dims::Tuple) -> Array
 
 Acquire a one-initialized array from the pool.
 
@@ -112,8 +112,8 @@ See [`default_eltype`](@ref).
 ## Example
 ```julia
 @with_pool pool begin
-    v = ones!(pool, 100)              # Uses default_eltype(pool)
-    m = ones!(pool, Float32, 10, 10)  # Matrix{Float32} view, all ones
+    v = ones!(pool, 100)              # Vector{Float64}, all ones
+    m = ones!(pool, Float32, 10, 10)  # Matrix{Float32}, all ones
 end
 ```
 
@@ -259,10 +259,10 @@ end
 # ==============================================================================
 
 """
-    similar!(pool, array) -> view
-    similar!(pool, array, T) -> view
-    similar!(pool, array, dims...) -> view
-    similar!(pool, array, T, dims...) -> view
+    similar!(pool, array) -> Array
+    similar!(pool, array, T) -> Array
+    similar!(pool, array, dims...) -> Array
+    similar!(pool, array, T, dims...) -> Array
 
 Acquire an uninitialized array from the pool, using a template array for defaults.
 
@@ -386,217 +386,6 @@ end
 @inline _reshape_impl!(pool::AbstractArrayPool, A::AbstractArray, dims::Vararg{Int, N}) where {N} =
     _reshape_impl!(pool, A, dims)
 
-# ==============================================================================
-# unsafe_zeros! - Acquire zero-initialized raw arrays from pool
-# ==============================================================================
-
-"""
-    unsafe_zeros!(pool, dims...) -> Array
-    unsafe_zeros!(pool, T, dims...) -> Array
-    unsafe_zeros!(pool, dims::Tuple) -> Array
-    unsafe_zeros!(pool, T, dims::Tuple) -> Array
-
-Acquire a zero-initialized raw array (not a view) from the pool.
-
-Equivalent to `unsafe_acquire!(pool, T, dims...)` followed by `fill!(arr, zero(T))`.
-Default element type depends on pool backend (CPU: `Float64`, CUDA: `Float32`).
-See [`default_eltype`](@ref).
-
-## Example
-```julia
-@with_pool pool begin
-    v = unsafe_zeros!(pool, 100)              # Uses default_eltype(pool)
-    m = unsafe_zeros!(pool, Float32, 10, 10)  # Array{Float32}, all zeros
-end
-```
-
-See also: [`unsafe_ones!`](@ref), [`zeros!`](@ref), [`unsafe_acquire!`](@ref)
-"""
-@inline function unsafe_zeros!(pool::AbstractArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
-    _record_type_touch!(pool, T)
-    _set_pending_callsite!(pool, "<direct unsafe_zeros! call>")
-    return _unsafe_zeros_impl!(pool, T, dims...)
-end
-
-@inline function unsafe_zeros!(pool::AbstractArrayPool, dims::Vararg{Int, N}) where {N}
-    _record_type_touch!(pool, default_eltype(pool))
-    _set_pending_callsite!(pool, "<direct unsafe_zeros! call>")
-    return _unsafe_zeros_impl!(pool, default_eltype(pool), dims...)
-end
-
-@inline function unsafe_zeros!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
-    _record_type_touch!(pool, T)
-    _set_pending_callsite!(pool, "<direct unsafe_zeros! call>")
-    return _unsafe_zeros_impl!(pool, T, dims...)
-end
-
-@inline function unsafe_zeros!(pool::AbstractArrayPool, dims::NTuple{N, Int}) where {N}
-    _record_type_touch!(pool, default_eltype(pool))
-    _set_pending_callsite!(pool, "<direct unsafe_zeros! call>")
-    return _unsafe_zeros_impl!(pool, default_eltype(pool), dims...)
-end
-
-# Internal implementation (for macro transformation)
-@inline function _unsafe_zeros_impl!(pool::AbstractArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
-    arr = _unsafe_acquire_impl!(pool, T, dims...)
-    fill!(arr, zero(T))
-    return arr
-end
-
-# Default type overload for macro transformation (uses default_eltype for backend flexibility)
-@inline function _unsafe_zeros_impl!(pool::AbstractArrayPool, dims::Vararg{Int, N}) where {N}
-    return _unsafe_zeros_impl!(pool, default_eltype(pool), dims...)
-end
-
-# NTuple overloads for macro transformation (handles unsafe_zeros!(pool, T, size(x)) form)
-@inline function _unsafe_zeros_impl!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
-    return _unsafe_zeros_impl!(pool, T, dims...)
-end
-
-@inline function _unsafe_zeros_impl!(pool::AbstractArrayPool, dims::NTuple{N, Int}) where {N}
-    return _unsafe_zeros_impl!(pool, default_eltype(pool), dims...)
-end
-
-# ==============================================================================
-# unsafe_ones! - Acquire one-initialized raw arrays from pool
-# ==============================================================================
-
-"""
-    unsafe_ones!(pool, dims...) -> Array
-    unsafe_ones!(pool, T, dims...) -> Array
-    unsafe_ones!(pool, dims::Tuple) -> Array
-    unsafe_ones!(pool, T, dims::Tuple) -> Array
-
-Acquire a one-initialized raw array (not a view) from the pool.
-
-Equivalent to `unsafe_acquire!(pool, T, dims...)` followed by `fill!(arr, one(T))`.
-Default element type depends on pool backend (CPU: `Float64`, CUDA: `Float32`).
-See [`default_eltype`](@ref).
-
-## Example
-```julia
-@with_pool pool begin
-    v = unsafe_ones!(pool, 100)              # Uses default_eltype(pool)
-    m = unsafe_ones!(pool, Float32, 10, 10)  # Array{Float32}, all ones
-end
-```
-
-See also: [`unsafe_zeros!`](@ref), [`ones!`](@ref), [`unsafe_acquire!`](@ref)
-"""
-@inline function unsafe_ones!(pool::AbstractArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
-    _record_type_touch!(pool, T)
-    _set_pending_callsite!(pool, "<direct unsafe_ones! call>")
-    return _unsafe_ones_impl!(pool, T, dims...)
-end
-
-@inline function unsafe_ones!(pool::AbstractArrayPool, dims::Vararg{Int, N}) where {N}
-    _record_type_touch!(pool, default_eltype(pool))
-    _set_pending_callsite!(pool, "<direct unsafe_ones! call>")
-    return _unsafe_ones_impl!(pool, default_eltype(pool), dims...)
-end
-
-@inline function unsafe_ones!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
-    _record_type_touch!(pool, T)
-    _set_pending_callsite!(pool, "<direct unsafe_ones! call>")
-    return _unsafe_ones_impl!(pool, T, dims...)
-end
-
-@inline function unsafe_ones!(pool::AbstractArrayPool, dims::NTuple{N, Int}) where {N}
-    _record_type_touch!(pool, default_eltype(pool))
-    _set_pending_callsite!(pool, "<direct unsafe_ones! call>")
-    return _unsafe_ones_impl!(pool, default_eltype(pool), dims...)
-end
-
-# Internal implementation (for macro transformation)
-@inline function _unsafe_ones_impl!(pool::AbstractArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
-    arr = _unsafe_acquire_impl!(pool, T, dims...)
-    fill!(arr, one(T))
-    return arr
-end
-
-# Default type overload for macro transformation (uses default_eltype for backend flexibility)
-@inline function _unsafe_ones_impl!(pool::AbstractArrayPool, dims::Vararg{Int, N}) where {N}
-    return _unsafe_ones_impl!(pool, default_eltype(pool), dims...)
-end
-
-# NTuple overloads for macro transformation (handles unsafe_ones!(pool, T, size(x)) form)
-@inline function _unsafe_ones_impl!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
-    return _unsafe_ones_impl!(pool, T, dims...)
-end
-
-@inline function _unsafe_ones_impl!(pool::AbstractArrayPool, dims::NTuple{N, Int}) where {N}
-    return _unsafe_ones_impl!(pool, default_eltype(pool), dims...)
-end
-
-# ==============================================================================
-# unsafe_similar! - Acquire raw arrays with same type/size as template
-# ==============================================================================
-
-"""
-    unsafe_similar!(pool, array) -> Array
-    unsafe_similar!(pool, array, T) -> Array
-    unsafe_similar!(pool, array, dims...) -> Array
-    unsafe_similar!(pool, array, T, dims...) -> Array
-
-Acquire an uninitialized raw array (not a view) from the pool, using a template array for defaults.
-
-- `unsafe_similar!(pool, A)`: same element type and size as `A`
-- `unsafe_similar!(pool, A, T)`: element type `T`, same size as `A`
-- `unsafe_similar!(pool, A, dims...)`: same element type as `A`, specified dimensions
-- `unsafe_similar!(pool, A, T, dims...)`: element type `T`, specified dimensions
-
-## Example
-```julia
-A = rand(10, 10)
-@with_pool pool begin
-    B = unsafe_similar!(pool, A)              # Same type and size, raw array
-    C = unsafe_similar!(pool, A, Float32)     # Float32, same size
-    D = unsafe_similar!(pool, A, 5, 5)        # Same type, different size
-end
-```
-
-See also: [`similar!`](@ref), [`unsafe_acquire!`](@ref)
-"""
-@inline function unsafe_similar!(pool::AbstractArrayPool, x::AbstractArray)
-    _record_type_touch!(pool, eltype(x))
-    _set_pending_callsite!(pool, "<direct unsafe_similar! call>")
-    return _unsafe_similar_impl!(pool, x)
-end
-
-@inline function unsafe_similar!(pool::AbstractArrayPool, x::AbstractArray, ::Type{T}) where {T}
-    _record_type_touch!(pool, T)
-    _set_pending_callsite!(pool, "<direct unsafe_similar! call>")
-    return _unsafe_similar_impl!(pool, x, T)
-end
-
-@inline function unsafe_similar!(pool::AbstractArrayPool, x::AbstractArray, dims::Vararg{Int, N}) where {N}
-    _record_type_touch!(pool, eltype(x))
-    _set_pending_callsite!(pool, "<direct unsafe_similar! call>")
-    return _unsafe_similar_impl!(pool, x, dims...)
-end
-
-@inline function unsafe_similar!(pool::AbstractArrayPool, x::AbstractArray, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
-    _record_type_touch!(pool, T)
-    _set_pending_callsite!(pool, "<direct unsafe_similar! call>")
-    return _unsafe_similar_impl!(pool, x, T, dims...)
-end
-
-# Internal implementation (for macro transformation)
-@inline function _unsafe_similar_impl!(pool::AbstractArrayPool, x::AbstractArray)
-    return _unsafe_acquire_impl!(pool, eltype(x), size(x))
-end
-
-@inline function _unsafe_similar_impl!(pool::AbstractArrayPool, x::AbstractArray, ::Type{T}) where {T}
-    return _unsafe_acquire_impl!(pool, T, size(x))
-end
-
-@inline function _unsafe_similar_impl!(pool::AbstractArrayPool, x::AbstractArray, dims::Vararg{Int, N}) where {N}
-    return _unsafe_acquire_impl!(pool, eltype(x), dims...)
-end
-
-@inline function _unsafe_similar_impl!(pool::AbstractArrayPool, x::AbstractArray, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
-    return _unsafe_acquire_impl!(pool, T, dims...)
-end
 
 # ==============================================================================
 # BackendNotLoadedError - Error for unknown backends
@@ -679,21 +468,3 @@ end
 # --- reshape! for DisabledPool{:cpu} ---
 @inline reshape!(::DisabledPool{:cpu}, A::AbstractArray, dims::Vararg{Int, N}) where {N} = reshape(A, dims...)
 @inline reshape!(::DisabledPool{:cpu}, A::AbstractArray, dims::NTuple{N, Int}) where {N} = reshape(A, dims)
-
-# --- unsafe_zeros! for DisabledPool{:cpu} ---
-@inline unsafe_zeros!(::DisabledPool{:cpu}, ::Type{T}, dims::Vararg{Int, N}) where {T, N} = zeros(T, dims...)
-@inline unsafe_zeros!(p::DisabledPool{:cpu}, dims::Vararg{Int, N}) where {N} = zeros(default_eltype(p), dims...)
-@inline unsafe_zeros!(::DisabledPool{:cpu}, ::Type{T}, dims::NTuple{N, Int}) where {T, N} = zeros(T, dims...)
-@inline unsafe_zeros!(p::DisabledPool{:cpu}, dims::NTuple{N, Int}) where {N} = zeros(default_eltype(p), dims...)
-
-# --- unsafe_ones! for DisabledPool{:cpu} ---
-@inline unsafe_ones!(::DisabledPool{:cpu}, ::Type{T}, dims::Vararg{Int, N}) where {T, N} = ones(T, dims...)
-@inline unsafe_ones!(p::DisabledPool{:cpu}, dims::Vararg{Int, N}) where {N} = ones(default_eltype(p), dims...)
-@inline unsafe_ones!(::DisabledPool{:cpu}, ::Type{T}, dims::NTuple{N, Int}) where {T, N} = ones(T, dims...)
-@inline unsafe_ones!(p::DisabledPool{:cpu}, dims::NTuple{N, Int}) where {N} = ones(default_eltype(p), dims...)
-
-# --- unsafe_similar! for DisabledPool{:cpu} ---
-@inline unsafe_similar!(::DisabledPool{:cpu}, x::AbstractArray) = similar(x)
-@inline unsafe_similar!(::DisabledPool{:cpu}, x::AbstractArray, ::Type{T}) where {T} = similar(x, T)
-@inline unsafe_similar!(::DisabledPool{:cpu}, x::AbstractArray, dims::Vararg{Int, N}) where {N} = similar(x, dims...)
-@inline unsafe_similar!(::DisabledPool{:cpu}, x::AbstractArray, ::Type{T}, dims::Vararg{Int, N}) where {T, N} = similar(x, T, dims...)

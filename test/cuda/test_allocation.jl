@@ -112,19 +112,19 @@
         @test ptr1[] != 0
     end
 
-    @testset "unsafe_acquire! memory reuse" begin
+    @testset "acquire! N-D memory reuse" begin
         pool = get_task_local_cuda_pool()
         reset!(pool)
 
         # Warmup
         @with_pool :cuda p begin
-            A = unsafe_acquire!(p, Float64, 10, 10)
+            A = acquire!(p, Float64, 10, 10)
             A .= 1.0
         end
 
         alloc = CUDA.@allocated begin
             @with_pool :cuda p begin
-                A = unsafe_acquire!(p, Float64, 10, 10)
+                A = acquire!(p, Float64, 10, 10)
                 A .= 2.0
             end
         end
@@ -259,22 +259,22 @@ end
         @test cpu_alloc < 100  # Allow some overhead
     end
 
-    @testset "unsafe_acquire! cache hit returns cached wrapper" begin
+    @testset "acquire! N-D cache hit returns cached wrapper" begin
         pool = get_task_local_cuda_pool()
         reset!(pool)
 
-        function _test_cuda_unsafe_alloc!()
+        function _test_cuda_nd_cached_alloc!()
             @with_pool :cuda p begin
-                unsafe_acquire!(p, Float64, 10, 10)
+                acquire!(p, Float64, 10, 10)
             end
         end
 
         # Warmup (JIT + cache)
-        _test_cuda_unsafe_alloc!()
-        _test_cuda_unsafe_alloc!()
+        _test_cuda_nd_cached_alloc!()
+        _test_cuda_nd_cached_alloc!()
 
         # Cache hit should have minimal CPU allocation
-        cpu_alloc = @allocated _test_cuda_unsafe_alloc!()
+        cpu_alloc = @allocated _test_cuda_nd_cached_alloc!()
         @test cpu_alloc < 100  # Allow some overhead
     end
 

@@ -13,7 +13,7 @@ _test_leak(x) = x  # opaque to compile-time escape checker (only identity() is t
         pool = AdaptiveArrayPool()
         checkpoint!(pool)
 
-        # Non-SubArray values pass validation
+        # Non-Array values pass validation
         _validate_pool_return(42, pool)
         _validate_pool_return([1, 2, 3], pool)
         _validate_pool_return("hello", pool)
@@ -24,7 +24,7 @@ _test_leak(x) = x  # opaque to compile-time escape checker (only identity() is t
         external_view = view(external_vec, 1:2)
         _validate_pool_return(external_view, pool)
 
-        # SubArray from pool fails validation (fixed slot)
+        # Array from pool fails validation (fixed slot)
         pool_view = acquire!(pool, Float64, 10)
         @test_throws PoolRuntimeEscapeError _validate_pool_return(pool_view, pool)
 
@@ -69,50 +69,50 @@ _test_leak(x) = x  # opaque to compile-time escape checker (only identity() is t
         pool = AdaptiveArrayPool()
         checkpoint!(pool)
 
-        # N-D ReshapedArray from pool should fail validation (pointer overlap check)
+        # N-D Array from pool should fail validation (pointer overlap check)
         mat = acquire!(pool, Float64, 10, 10)
-        @test mat isa Base.ReshapedArray{Float64, 2}
-        @test_throws PoolRuntimeEscapeError _validate_pool_return(mat, pool)
-
-        # 3D ReshapedArray should also fail
-        tensor = acquire!(pool, Float64, 5, 5, 5)
-        @test tensor isa Base.ReshapedArray{Float64, 3}
-        @test_throws PoolRuntimeEscapeError _validate_pool_return(tensor, pool)
-
-        rewind!(pool)
-    end
-
-    @testset "_validate_pool_return with unsafe_acquire!" begin
-        pool = AdaptiveArrayPool()
-        checkpoint!(pool)
-
-        # Raw Vector from unsafe_acquire! should fail validation
-        v = unsafe_acquire!(pool, Float64, 100)
-        @test v isa Vector{Float64}
-        @test_throws PoolRuntimeEscapeError _validate_pool_return(v, pool)
-
-        # Raw Matrix from unsafe_acquire! should fail validation
-        mat = unsafe_acquire!(pool, Float64, 10, 10)
         @test mat isa Matrix{Float64}
         @test_throws PoolRuntimeEscapeError _validate_pool_return(mat, pool)
 
-        # Raw 3D Array from unsafe_acquire! should fail validation
-        tensor = unsafe_acquire!(pool, Float64, 5, 5, 5)
+        # 3D Array should also fail
+        tensor = acquire!(pool, Float64, 5, 5, 5)
         @test tensor isa Array{Float64, 3}
         @test_throws PoolRuntimeEscapeError _validate_pool_return(tensor, pool)
 
         rewind!(pool)
     end
 
-    @testset "_validate_pool_return with view(unsafe_acquire!)" begin
-        # Bug fix test: view() wrapped around unsafe_acquire! result
-        # The parent Vector/Array is created by unsafe_wrap, not the pool's internal vector
+    @testset "_validate_pool_return with acquire! (all dimensionalities)" begin
+        pool = AdaptiveArrayPool()
+        checkpoint!(pool)
+
+        # Vector from acquire! should fail validation
+        v = acquire!(pool, Float64, 100)
+        @test v isa Vector{Float64}
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(v, pool)
+
+        # Matrix from acquire! should fail validation
+        mat = acquire!(pool, Float64, 10, 10)
+        @test mat isa Matrix{Float64}
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(mat, pool)
+
+        # 3D Array from acquire! should fail validation
+        tensor = acquire!(pool, Float64, 5, 5, 5)
+        @test tensor isa Array{Float64, 3}
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(tensor, pool)
+
+        rewind!(pool)
+    end
+
+    @testset "_validate_pool_return with view(acquire!)" begin
+        # Bug fix test: view() wrapped around acquire! result
+        # The parent Array is from the pool's internal storage
         # This requires pointer overlap check, not identity check
         pool = AdaptiveArrayPool()
         checkpoint!(pool)
 
-        # 1D: view(unsafe_acquire!(...), :) should fail validation
-        v = unsafe_acquire!(pool, Float64, 100)
+        # 1D: view(acquire!(...), :) should fail validation
+        v = acquire!(pool, Float64, 100)
         v_view = view(v, :)
         @test v_view isa SubArray
         @test parent(v_view) === v  # Parent is unsafe_wrap'd Vector, not pool's internal vector
@@ -122,11 +122,48 @@ _test_leak(x) = x  # opaque to compile-time escape checker (only identity() is t
         v_partial = view(v, 1:50)
         @test_throws PoolRuntimeEscapeError _validate_pool_return(v_partial, pool)
 
-        # 2D: view(unsafe_acquire!(...), :, :) should fail validation
-        mat = unsafe_acquire!(pool, Float64, 10, 10)
+        # 2D: view(acquire!(...), :, :) should fail validation
+        mat = acquire!(pool, Float64, 10, 10)
         mat_view = view(mat, :, :)
         @test mat_view isa SubArray
         @test_throws PoolRuntimeEscapeError _validate_pool_return(mat_view, pool)
+
+        rewind!(pool)
+    end
+
+    @testset "_validate_pool_return with acquire_view! N-D (ReshapedArray{SubArray})" begin
+        pool = AdaptiveArrayPool()
+        checkpoint!(pool)
+
+        # acquire_view! N-D returns ReshapedArray{T,N,SubArray} — escape detection
+        mat = acquire_view!(pool, Float64, 3, 4)
+        @test mat isa Base.ReshapedArray
+        @test parent(mat) isa SubArray
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(mat, pool)
+
+        # 3D acquire_view!
+        tensor = acquire_view!(pool, Float64, 2, 3, 4)
+        @test tensor isa Base.ReshapedArray
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(tensor, pool)
+
+        # External ReshapedArray should pass
+        ext_sub = view(rand(12), :)
+        ext_reshaped = reshape(ext_sub, 3, 4)
+        @test ext_reshaped isa Base.ReshapedArray
+        _validate_pool_return(ext_reshaped, pool)  # Should not throw
+
+        rewind!(pool)
+    end
+
+    @testset "_validate_pool_return with reshape!(pool, ...) (Array)" begin
+        pool = AdaptiveArrayPool()
+        checkpoint!(pool)
+
+        # reshape! returns Array — caught by raw Array branch (#3)
+        v = acquire!(pool, Float64, 12)
+        mat = reshape!(pool, v, 3, 4)
+        @test mat isa Array{Float64, 2}
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(mat, pool)
 
         rewind!(pool)
     end
@@ -152,7 +189,7 @@ _test_leak(x) = x  # opaque to compile-time escape checker (only identity() is t
     end
 
     @testset "Pool{1} escape detection with N-D arrays" begin
-        # N-D ReshapedArray should throw error when returned
+        # N-D Array should throw error when returned
         pool = _make_pool(true)
         _lazy_checkpoint!(pool)
         err = try
@@ -166,11 +203,11 @@ _test_leak(x) = x  # opaque to compile-time escape checker (only identity() is t
         end
         @test err isa PoolRuntimeEscapeError
 
-        # Raw Array from unsafe_acquire! should throw error when returned
+        # Another acquire! Array should also throw error when returned
         pool = _make_pool(true)
         _lazy_checkpoint!(pool)
         err = try
-            mat = unsafe_acquire!(pool, Float64, 10, 10)
+            mat = acquire!(pool, Float64, 10, 10)
             _validate_pool_return(_test_leak(mat), pool)
             nothing
         catch e
@@ -426,7 +463,7 @@ _test_leak(x) = x  # opaque to compile-time escape checker (only identity() is t
         # Multiple pool arrays in different container positions
         @test_throws PoolRuntimeEscapeError _validate_pool_return((v, bv), pool)
 
-        # N-D ReshapedArray inside NamedTuple
+        # N-D Array inside NamedTuple
         mat = acquire!(pool, Float64, 5, 5)
         @test_throws PoolRuntimeEscapeError _validate_pool_return((matrix = mat, size = (5, 5)), pool)
 
@@ -512,7 +549,7 @@ _test_leak(x) = x  # opaque to compile-time escape checker (only identity() is t
 
         v = acquire!(pool, Float64, 10)
 
-        # Vector{SubArray} — pool array as element → caught
+        # Vector{Any} — pool array as element → caught
         external_container = Any[v]
         @test_throws PoolRuntimeEscapeError _validate_pool_return(external_container, pool)
 
@@ -533,19 +570,19 @@ _test_leak(x) = x  # opaque to compile-time escape checker (only identity() is t
         rewind!(pool)
     end
 
-    @testset "_validate_pool_return Vector-of-arrays with unsafe_acquire!" begin
+    @testset "_validate_pool_return Vector-of-arrays with acquire!" begin
         pool = AdaptiveArrayPool()
         checkpoint!(pool)
 
-        # unsafe_acquire! Array inside Vector → caught
-        raw = unsafe_acquire!(pool, Float64, 100)
+        # acquire! Array inside Vector → caught
+        raw = acquire!(pool, Float64, 100)
         @test_throws PoolRuntimeEscapeError _validate_pool_return(Any[raw], pool)
 
         # BitVector inside Vector → caught
         bv = acquire!(pool, Bit, 50)
         @test_throws PoolRuntimeEscapeError _validate_pool_return(Any[bv], pool)
 
-        # ReshapedArray inside Vector → caught
+        # N-D Array inside Vector → caught
         mat = acquire!(pool, Float64, 5, 5)
         @test_throws PoolRuntimeEscapeError _validate_pool_return(Any[mat], pool)
 
@@ -649,7 +686,7 @@ _test_leak(x) = x  # opaque to compile-time escape checker (only identity() is t
     @testset "PoolRuntimeEscapeError showerror with return_site" begin
         # Construct error with both callsite and return_site to cover lines 169-180
         err = PoolRuntimeEscapeError(
-            "SubArray{Float64,1}",
+            "Vector{Float64}",
             "Float64",
             "test.jl:10\nacquire!(pool, Float64, 10)",
             "test.jl:15\nreturn v"
@@ -661,7 +698,7 @@ _test_leak(x) = x  # opaque to compile-time escape checker (only identity() is t
 
         # Return site without expression text (no \n)
         err2 = PoolRuntimeEscapeError(
-            "SubArray{Float64,1}",
+            "Vector{Float64}",
             "Float64",
             "test.jl:10",
             "test.jl:15"

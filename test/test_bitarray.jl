@@ -277,18 +277,18 @@
         @test ba_tuple isa BitArray{2}
         @test size(ba_tuple) == (5, 5)
 
-        # --- unsafe_acquire! with Bit (covers bitarray.jl:206-208) ---
-        ubv = unsafe_acquire!(DISABLED_CPU, Bit, 100)
+        # --- acquire! with Bit (additional coverage) ---
+        ubv = acquire!(DISABLED_CPU, Bit, 100)
         @test ubv isa BitVector
         @test length(ubv) == 100
 
         # N-D
-        uba = unsafe_acquire!(DISABLED_CPU, Bit, 10, 10)
+        uba = acquire!(DISABLED_CPU, Bit, 10, 10)
         @test uba isa BitArray{2}
         @test size(uba) == (10, 10)
 
         # Tuple form
-        uba_tuple = unsafe_acquire!(DISABLED_CPU, Bit, (5, 5))
+        uba_tuple = acquire!(DISABLED_CPU, Bit, (5, 5))
         @test uba_tuple isa BitArray{2}
         @test size(uba_tuple) == (5, 5)
 
@@ -355,10 +355,8 @@
         bv = acquire!(pool, Bit, 1000)
         vb = acquire!(pool, Bool, 1000)
 
-        vb_parent = parent(vb)
-
         # BitVector stores 64 bits per chunk (UInt64)
-        @test sizeof(bv.chunks) < sizeof(vb_parent)
+        @test sizeof(bv.chunks) < sizeof(vb)
         # Approximate: BitVector ~125 bytes (1000/8), Vector{Bool} ~1000 bytes
         @test sizeof(bv.chunks) <= div(1000, 8) + 8  # allow some overhead
     end
@@ -444,9 +442,9 @@
     @testset "Mixed Bool types" begin
         pool = AdaptiveArrayPool()
 
-        # Vector{Bool} via acquire! with Bool - returns SubArray (view)
+        # Vector{Bool} via acquire! with Bool - returns Vector{Bool}
         vb = acquire!(pool, Bool, 100)
-        @test vb isa SubArray{Bool, 1, Vector{Bool}}
+        @test vb isa Vector{Bool}
         @test pool.bool.n_active == 1
 
         # BitVector via acquire! with Bit - returns BitVector (for SIMD)
@@ -484,27 +482,27 @@
         @test outer_result == (100, 0)
     end
 
-    @testset "unsafe_acquire! returns BitVector with shared chunks" begin
+    @testset "acquire! returns BitVector with shared chunks" begin
         pool = AdaptiveArrayPool()
 
-        # unsafe_acquire! with Bit returns a real BitVector (not SubArray)
-        bv = unsafe_acquire!(pool, Bit, 100)
+        # acquire! with Bit returns a real BitVector (not SubArray)
+        bv = acquire!(pool, Bit, 100)
         @test bv isa BitVector
         @test length(bv) == 100
 
         # N-D returns BitArray (reshape of BitVector becomes BitArray in Julia)
-        ba = unsafe_acquire!(pool, Bit, 10, 10)
+        ba = acquire!(pool, Bit, 10, 10)
         @test ba isa BitMatrix  # reshape(BitVector, dims) → BitArray
         @test size(ba) == (10, 10)
 
         # Tuple form
-        ba_tuple = unsafe_acquire!(pool, Bit, (10, 10))
+        ba_tuple = acquire!(pool, Bit, (10, 10))
         @test ba_tuple isa BitMatrix
         @test size(ba_tuple) == (10, 10)
 
         # Verify chunks sharing (key feature!)
         @with_pool pool2 begin
-            bv2 = unsafe_acquire!(pool2, Bit, 100)
+            bv2 = acquire!(pool2, Bit, 100)
             pool_bv = pool2.bits.vectors[1]
             @test bv2.chunks === pool_bv.chunks  # Same chunks object!
 
@@ -516,30 +514,28 @@
         end
     end
 
-    @testset "Unified BitVector API - both acquire! and unsafe_acquire! return BitVector" begin
-        # Both acquire! and unsafe_acquire! return BitVector for Bit type
+    @testset "Unified BitVector API - acquire! returns BitVector" begin
+        # acquire! returns BitVector for Bit type
         # This is a deliberate design choice for SIMD performance
         pool = AdaptiveArrayPool()
 
         @with_pool pool begin
             n = 10000
 
-            # unsafe_acquire! returns BitVector
-            bv_unsafe = unsafe_acquire!(pool, Bit, n)
-            @test bv_unsafe isa BitVector
-            @test bv_unsafe.chunks === pool.bits.vectors[1].chunks
-            fill!(bv_unsafe, true)
-            @test count(bv_unsafe) == n
-            @test bv_unsafe isa BitVector
+            # acquire! returns BitVector with shared chunks
+            bv1 = acquire!(pool, Bit, n)
+            @test bv1 isa BitVector
+            @test bv1.chunks === pool.bits.vectors[1].chunks
+            fill!(bv1, true)
+            @test count(bv1) == n
 
-            # acquire! ALSO returns BitVector (not SubArray)
-            bv_acquire = acquire!(pool, Bit, n)
-            fill!(bv_acquire, true)
-            @test count(bv_acquire) == n
-            @test bv_acquire isa BitVector  # Same type as unsafe_acquire!
+            # Second acquire! also returns BitVector (not SubArray)
+            bv2 = acquire!(pool, Bit, n)
+            fill!(bv2, true)
+            @test count(bv2) == n
+            @test bv2 isa BitVector
 
             # Both benefit from SIMD-optimized count()
-            # (No performance difference since both return BitVector)
         end
     end
 
@@ -558,10 +554,10 @@
         @test eltype(v_bool) == Bool
         @test eltype(v_bit) == Bool
 
-        # Note: acquire! returns SubArray for most types, but BitVector for Bit
-        @test v_f64 isa SubArray
-        @test v_i32 isa SubArray
-        @test v_bool isa SubArray
+        # acquire! returns Array for all types, BitVector for Bit
+        @test v_f64 isa Vector{Float64}
+        @test v_i32 isa Vector{Int32}
+        @test v_bool isa Vector{Bool}
         @test v_bit isa BitVector  # Special case for SIMD performance
 
         # zeros!/ones! work consistently

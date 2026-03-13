@@ -13,11 +13,12 @@
 
 | Function | Description |
 |----------|-------------|
-| `acquire!(pool, T, dims...)` | Returns a view for most `T`: `SubArray{T,1}` for 1D, `ReshapedArray{T,N}` for N-D. For `T === Bit`, returns native `BitVector`/`BitArray{N}`. Cache hit 0 bytes. |
+| `acquire!(pool, T, dims...)` | Returns `Array{T,N}`: `Vector{T}` for 1D, `Array{T,N}` for N-D. For `T === Bit`, returns native `BitVector`/`BitArray{N}`. Cache hit 0 bytes. |
 | `acquire!(pool, T, dims::Tuple)` | Tuple overload for `acquire!` (e.g., `acquire!(pool, T, size(x))`). |
 | `acquire!(pool, x::AbstractArray)` | Similar-style: acquires array matching `eltype(x)` and `size(x)`. |
-| `unsafe_acquire!(pool, T, dims...)` | Returns native `Array`/`CuArray` (CPU: `Vector{T}` for 1D, `Array{T,N}` for N-D). For `T === Bit`, returns native `BitVector`/`BitArray{N}` (equivalent to `acquire!`). Only use for FFI/type constraints. |
-| `unsafe_acquire!(pool, x::AbstractArray)` | Similar-style: acquires raw array matching `eltype(x)` and `size(x)`. |
+| `acquire_view!(pool, T, dims...)` | Returns a view: `SubArray{T,1}` for 1D, `ReshapedArray{T,N}` for N-D. For `T === Bit`, returns `BitVector`/`BitArray{N}` (same as `acquire!`). Cache hit 0 bytes. |
+| `acquire_view!(pool, x::AbstractArray)` | Similar-style: acquires view matching `eltype(x)` and `size(x)`. |
+| `acquire_array!(pool, T, dims...)` | Alias for `acquire!`. Explicit name for symmetric naming with `acquire_view!`. |
 | `checkpoint!(pool)` | Saves the current pool state (stack pointer). |
 | `rewind!(pool)` | Restores the pool to the last checkpoint, freeing all arrays acquired since then. |
 | `pool_stats(pool)` | Prints detailed statistics about pool usage. |
@@ -30,11 +31,11 @@ Default element type is `Float64` (CPU) or `Float32` (CUDA).
 
 | Function | Description |
 |----------|-------------|
-| `zeros!(pool, [T,] dims...)` | Zero-initialized view. Equivalent to `acquire!` + `fill!(0)`. |
-| `ones!(pool, [T,] dims...)` | One-initialized view. Equivalent to `acquire!` + `fill!(1)`. |
+| `zeros!(pool, [T,] dims...)` | Zero-initialized array. Equivalent to `acquire!` + `fill!(0)`. |
+| `ones!(pool, [T,] dims...)` | One-initialized array. Equivalent to `acquire!` + `fill!(1)`. |
 | `trues!(pool, dims...)` | Bit-packed `BitVector` / `BitArray{N}` filled with `true`. |
 | `falses!(pool, dims...)` | Bit-packed `BitVector` / `BitArray{N}` filled with `false`. |
-| `similar!(pool, A)` | View matching `eltype(A)` and `size(A)`. |
+| `similar!(pool, A)` | Array matching `eltype(A)` and `size(A)`. |
 | `reshape!(pool, A, dims...)` | Reshape `A` to `dims`, sharing memory. Zero-alloc on Julia 1.11+. |
 
 ### Types

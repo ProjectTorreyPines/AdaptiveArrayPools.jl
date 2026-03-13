@@ -33,7 +33,7 @@
 using AdaptiveArrayPools: get_view!, get_array!, allocate_vector, safe_prod,
     _record_type_touch!, _fixed_slot_bit, _checkpoint_typed_pool!,
     _store_arr_wrapper!, _check_pool_growth, _reshape_impl!,
-    _acquire_impl!, _unsafe_acquire_impl!, _maybe_record_borrow!,
+    _acquire_impl!, _acquire_view_impl!, _maybe_record_borrow!,
     _MODE_BITS_MASK
 
 using CUDA.GPUArrays: unsafe_free!
@@ -144,12 +144,10 @@ beyond capacity), keep off the hot inlined acquire path.
 end
 
 # ==============================================================================
-# _acquire_impl! / _unsafe_acquire_impl! — Direct get_array! Dispatch
+# _acquire_impl! / _acquire_view_impl! — Direct get_array! Dispatch
 # ==============================================================================
-# On CUDA, both acquire! and unsafe_acquire! go through get_array! directly.
+# On CUDA, both acquire! and acquire_view! go through get_array! directly.
 # No view/array distinction — CuArray is always returned.
-# This eliminates the get_view! → get_array! indirection that CPU still uses
-# for the acquire! (view) path.
 
 """
     _acquire_impl!(pool::CuAdaptiveArrayPool, T, n) -> CuArray{T,1}
@@ -176,26 +174,20 @@ end
 end
 
 """
-    _unsafe_acquire_impl!(pool::CuAdaptiveArrayPool, T, dims...) -> CuArray{T,N}
+    _acquire_view_impl!(pool::CuAdaptiveArrayPool, T, dims...) -> CuArray{T,N}
 
-CUDA override: same as `_acquire_impl!` — both return CuArray via `get_array!`.
+CUDA override: same as `_acquire_impl!` — CUDA has no view/array distinction.
 """
-@inline function AdaptiveArrayPools._unsafe_acquire_impl!(pool::CuAdaptiveArrayPool, ::Type{T}, n::Int) where {T}
-    tp = get_typed_pool!(pool, T)
-    result = get_array!(tp, (n,))
-    _maybe_record_borrow!(pool, tp)
-    return result
+@inline function AdaptiveArrayPools._acquire_view_impl!(pool::CuAdaptiveArrayPool, ::Type{T}, n::Int) where {T}
+    return _acquire_impl!(pool, T, n)
 end
 
-@inline function AdaptiveArrayPools._unsafe_acquire_impl!(pool::CuAdaptiveArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
-    tp = get_typed_pool!(pool, T)
-    result = get_array!(tp, dims)
-    _maybe_record_borrow!(pool, tp)
-    return result
+@inline function AdaptiveArrayPools._acquire_view_impl!(pool::CuAdaptiveArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
+    return _acquire_impl!(pool, T, dims...)
 end
 
-@inline function AdaptiveArrayPools._unsafe_acquire_impl!(pool::CuAdaptiveArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
-    return _unsafe_acquire_impl!(pool, T, dims...)
+@inline function AdaptiveArrayPools._acquire_view_impl!(pool::CuAdaptiveArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
+    return _acquire_impl!(pool, T, dims...)
 end
 
 # ==============================================================================

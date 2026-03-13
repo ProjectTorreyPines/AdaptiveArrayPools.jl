@@ -135,6 +135,9 @@ makedocs(
         "Reference" => [
             "Full API" => "reference/api.md",
         ],
+        "Migration Guide" => [
+            "v0.2 → v0.3" => "migration/v0.2-to-v0.3.md",
+        ],
         "Architecture" => [
             "How It Works" => "architecture/how-it-works.md",
             "Type Dispatch & Cache" => "architecture/type-dispatch.md",

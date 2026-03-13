@@ -20,7 +20,7 @@ ERROR: LoadError: PoolEscapeError (compile-time)
 
   The following variable escapes the @with_pool scope:
 
-    v  ← pool-acquired view
+    v  ← pool-acquired array
 
   Declarations:
     [1]  v = acquire!(pool, Float64, 100)  [myfile.jl:2]
@@ -146,7 +146,7 @@ Each `acquire!` call-site is recorded, so escape error messages pinpoint the exa
 ```
 PoolEscapeError (runtime, RUNTIME_CHECK >= 1)
 
-    SubArray{Float64, 1, ...}
+    Array{Float64, 1}
       ← backed by Float64 pool memory, will be reclaimed at scope exit
       ← acquired at src/solver.jl:42
         v = acquire!(pool, Float64, n)

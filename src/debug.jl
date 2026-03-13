@@ -14,8 +14,8 @@ function _validate_pool_return(val, pool::AdaptiveArrayPool)
         p = parent(val)
         # Use pointer overlap check for ALL Array parents (Vector <: Array)
         # This catches both:
-        # - acquire!() 1D returns: SubArray backed by pool's internal Vector
-        # - view(unsafe_acquire!()): SubArray backed by unsafe_wrap'd Array
+        # - acquire_view!() 1D returns: SubArray backed by pool's internal Vector
+        # - view(acquire!()): SubArray backed by acquire!'s Array wrapper
         if p isa Array
             _check_pointer_overlap(p, pool, val)
         elseif p isa BitArray
@@ -24,22 +24,27 @@ function _validate_pool_return(val, pool::AdaptiveArrayPool)
         return
     end
 
-    # 2. Check ReshapedArray (from acquire! N-D, wraps SubArray of pool Vector)
+    # 2. Check ReshapedArray
+    #    - acquire_view!() N-D: ReshapedArray wrapping SubArray of pool Vector
+    #    - p isa Array / BitArray branches: defensive (reshape(::Array) returns Array via jl_reshape_array)
     if val isa Base.ReshapedArray
         p = parent(val)
-        # ReshapedArray wraps SubArray{T,1,Vector{T},...}
-        if p isa SubArray
+        if p isa Array
+            _check_pointer_overlap(p, pool, val)
+        elseif p isa SubArray
             pp = parent(p)
             if pp isa Array
                 _check_pointer_overlap(pp, pool, val)
             elseif pp isa BitArray
                 _check_bitchunks_overlap(pp, pool, val)
             end
+        elseif p isa BitArray
+            _check_bitchunks_overlap(p, pool, val)
         end
         return
     end
 
-    # 3. Check raw Array (from unsafe_acquire!) + element recursion
+    # 3. Check raw Array (from acquire!) + element recursion
     return if val isa Array
         # Pool vectors always have concrete eltypes — skip overlap check for abstract
         if isconcretetype(eltype(val))
@@ -249,8 +254,8 @@ end
 # Poisons backing vectors with detectable values (NaN, typemax) before
 # structural invalidation. This ensures stale references read obviously wrong
 # data instead of silently valid old values — especially useful for
-# unsafe_acquire! Array wrappers on Julia 1.10 where setfield!(:size) is
-# unavailable and structural invalidation can't catch stale access.
+# Array wrappers on Julia 1.10 where setfield!(:size) is unavailable
+# and structural invalidation can't catch stale access.
 
 _poison_value(::Type{T}) where {T <: AbstractFloat} = T(NaN)
 _poison_value(::Type{T}) where {T <: Integer} = typemax(T)
@@ -317,7 +322,7 @@ end
     _record_borrow_from_pending!(pool, tp)
 
 Record the pending callsite for the most recently claimed slot in `tp`.
-Called from `_acquire_impl!` / `_unsafe_acquire_impl!` when `S >= 1`.
+Called from `_acquire_impl!` / `_acquire_view_impl!` when `S >= 1`.
 """
 @noinline function _record_borrow_from_pending!(pool::AdaptiveArrayPool, tp::AbstractTypedPool)
     callsite = pool._pending_callsite

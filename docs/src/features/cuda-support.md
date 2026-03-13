@@ -9,8 +9,8 @@ using AdaptiveArrayPools, CUDA
 
 # Use :cuda backend for GPU arrays
 @with_pool :cuda pool function gpu_computation(n)
-    A = acquire!(pool, Float64, n, n)  # CuArray view
-    B = acquire!(pool, Float64, n, n)  # CuArray view
+    A = acquire!(pool, Float64, n, n)  # CuArray
+    B = acquire!(pool, Float64, n, n)  # CuArray
 
     fill!(A, 1.0)
     fill!(B, 2.0)
@@ -31,8 +31,8 @@ The CUDA backend uses the same API as CPU, with `:cuda` backend specifier:
 | Macro/Function | Description |
 |----------------|-------------|
 | `@with_pool :cuda pool expr` | GPU pool with automatic checkpoint/rewind |
-| `acquire!(pool, T, dims...)` | Returns `CuArray` view (always 0 bytes GPU alloc) |
-| `unsafe_acquire!(pool, T, dims...)` | Returns raw `CuArray` (for FFI/type constraints) |
+| `acquire!(pool, T, dims...)` | Returns `CuArray` (always 0 bytes GPU alloc) |
+| `acquire_view!(pool, T, dims...)` | Returns `CuArray` (same as `acquire!` on CUDA) |
 | `get_task_local_cuda_pool()` | Returns the task-local CUDA pool |
 | `pool_stats(:cuda)` | Print CUDA pool statistics |
 
@@ -40,21 +40,21 @@ The CUDA backend uses the same API as CPU, with `:cuda` backend specifier:
 
 | Function | 1D Return | N-D Return |
 |----------|-----------|------------|
-| `acquire!` | `CuArray{T,1}` (view) | `CuArray{T,N}` (view) |
-| `unsafe_acquire!` | `CuArray{T,1}` | `CuArray{T,N}` |
+| `acquire!` | `CuArray{T,1}` | `CuArray{T,N}` |
+| `acquire_view!` | `CuArray{T,1}` | `CuArray{T,N}` |
 
 ## Allocation Behavior
 
 **GPU Memory**: Always 0 bytes allocation after warmup. The underlying `CuVector` is resized as needed and reused.
 
-**CPU-side Wrapper Memory** (for `unsafe_acquire!` N-D on CUDA):
+**CPU-side Wrapper Memory** (for `acquire!` N-D on CUDA):
 - The CUDA backend uses an N-way set-associative cache for `CuArray` wrapper reuse
 - Cache hit (≤`CACHE_WAYS` dimension patterns per slot): 0 bytes
 - Cache miss (>`CACHE_WAYS` patterns): ~100 bytes for wrapper metadata
 - See [Configuration](configuration.md) for `CACHE_WAYS` tuning
 
 !!! note "CPU vs CUDA caching"
-    On CPU (Julia 1.11+), `unsafe_acquire!` uses `setfield!`-based wrapper reuse with **zero allocation for any number of dimension patterns**. The CUDA backend does not yet support this optimization and still uses the N-way cache.
+    On CPU (Julia 1.11+), `acquire!` uses `setfield!`-based wrapper reuse with **zero allocation for any number of dimension patterns**. The CUDA backend does not yet support this optimization and still uses the N-way cache.
 
 ```julia
 # Example: 4 patterns fit in default 4-way cache → zero CPU-side allocation

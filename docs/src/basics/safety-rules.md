@@ -93,11 +93,11 @@ end
 end
 ```
 
-### Don't resize or push! to unsafe_acquire! arrays
+### Don't resize or push! to acquire! arrays
 
 ```julia
 @with_pool pool begin
-    v = unsafe_acquire!(pool, Float64, 100)
+    v = acquire!(pool, Float64, 100)
     # ❌ These break pool memory management:
     # resize!(v, 200)
     # push!(v, 1.0)
@@ -119,14 +119,14 @@ runtime_check = 1   # 0 = off (default), 1 = on
 
 See [Safety](../features/safety.md) for full details on what `RUNTIME_CHECK = 1` enables (poisoning, structural invalidation, escape detection, borrow tracking).
 
-## acquire! vs unsafe_acquire!
+## acquire! vs acquire_view!
 
 | Function | Returns | Best For |
 |----------|---------|----------|
-| `acquire!` | View types (`SubArray`, `ReshapedArray`) for most `T`; native `BitVector`/`BitArray{N}` for `T === Bit` | General use, BLAS/LAPACK; fast bit masks |
-| `unsafe_acquire!` | Native `Array`/`CuArray` (for `T === Bit`, equivalent to `acquire!`) | FFI, type constraints |
+| `acquire!` | Native `Array{T,N}` for most `T`; native `BitVector`/`BitArray{N}` for `T === Bit` | General use, BLAS/LAPACK, FFI |
+| `acquire_view!` | View types (`SubArray`, `ReshapedArray`) for most `T`; native `BitVector`/`BitArray{N}` for `T === Bit` | When views are preferred (e.g., avoiding wrapper reuse overhead) |
 
-Both follow the same scope rules. Use `acquire!` by default—views work with all standard Julia linear algebra operations.
+Both follow the same scope rules. Use `acquire!` by default—it returns native `Array` types that work with all Julia operations including FFI/ccall.
 
 ## Thread Safety
 

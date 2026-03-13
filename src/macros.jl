@@ -1087,13 +1087,12 @@ Only extracts types from calls where the first argument matches `target_pool`.
 This prevents AST pollution when multiple pools are used in the same block.
 
 Supported functions:
-- `acquire!` and its alias `acquire_view!`
-- `unsafe_acquire!` and its alias `acquire_array!`
+- `acquire!` and its alias `acquire_array!`
+- `acquire_view!`
 - `zeros!`, `ones!`, `similar!`
-- `unsafe_zeros!`, `unsafe_ones!`, `unsafe_similar!`
 
 Handles various forms:
-- `[unsafe_]acquire!(pool, Type, dims...)`: extracts Type directly
+- `acquire!(pool, Type, dims...)`: extracts Type directly
 - `acquire!(pool, x)`: generates `eltype(x)` expression
 - `zeros!(pool, dims...)` / `ones!(pool, dims...)`: Float64 (default)
 - `zeros!(pool, Type, dims...)` / `ones!(pool, Type, dims...)`: extracts Type
@@ -1110,7 +1109,7 @@ function _extract_acquire_types(expr, target_pool, types = Set{Any}())
             # Only process if pool argument matches our target pool
             if pool_arg == target_pool
                 # All acquire function names (including aliases)
-                acquire_names = (:acquire!, :unsafe_acquire!, :acquire_view!, :acquire_array!)
+                acquire_names = (:acquire!, :acquire_view!, :acquire_array!)
 
                 # Get function name (handle qualified names)
                 fn_name = fn
@@ -1123,7 +1122,7 @@ function _extract_acquire_types(expr, target_pool, types = Set{Any}())
 
                 nargs = length(expr.args)
 
-                # acquire!/unsafe_acquire!/acquire_view!/acquire_array!
+                # acquire!/acquire_view!/acquire_array!
                 if fn in acquire_names || fn_name in acquire_names
                     if nargs >= 4
                         # acquire!(pool, Type, dims...) - traditional form
@@ -1135,8 +1134,8 @@ function _extract_acquire_types(expr, target_pool, types = Set{Any}())
                     # trues!/falses! (always uses Bit type)
                 elseif fn in (:trues!, :falses!) || fn_name in (:trues!, :falses!)
                     push!(types, :Bit)
-                    # zeros!/ones!/unsafe_zeros!/unsafe_ones!
-                elseif fn in (:zeros!, :ones!, :unsafe_zeros!, :unsafe_ones!) || fn_name in (:zeros!, :ones!, :unsafe_zeros!, :unsafe_ones!)
+                    # zeros!/ones!
+                elseif fn in (:zeros!, :ones!) || fn_name in (:zeros!, :ones!)
                     if nargs >= 3
                         third_arg = expr.args[3]
                         # Check if third arg looks like a type (Symbol starting with uppercase or curly)
@@ -1148,8 +1147,8 @@ function _extract_acquire_types(expr, target_pool, types = Set{Any}())
                             push!(types, Expr(:call, :default_eltype, target_pool))
                         end
                     end
-                    # similar!/unsafe_similar!
-                elseif fn in (:similar!, :unsafe_similar!) || fn_name in (:similar!, :unsafe_similar!)
+                    # similar!
+                elseif fn in (:similar!,) || fn_name in (:similar!,)
                     if nargs == 3
                         # similar!(pool, x) - same type as x
                         push!(types, Expr(:call, :eltype, expr.args[3]))
@@ -1420,7 +1419,7 @@ end
 """
     _transform_acquire_calls(expr, pool_name) -> Expr
 
-Transform acquire!/unsafe_acquire!/convenience function calls to their _impl! counterparts.
+Transform acquire!/acquire_view!/convenience function calls to their _impl! counterparts.
 Only transforms calls where the first argument matches `pool_name`.
 
 This allows macro-transformed code to bypass the type touch recording overhead,
@@ -1428,9 +1427,8 @@ since the macro already knows about these calls at compile time.
 
 Transformation rules:
 - `acquire!(pool, ...)` → `_acquire_impl!(pool, ...)`
-- `acquire_view!(pool, ...)` → `_acquire_impl!(pool, ...)`
-- `unsafe_acquire!(pool, ...)` → `_unsafe_acquire_impl!(pool, ...)`
-- `acquire_array!(pool, ...)` → `_unsafe_acquire_impl!(pool, ...)`
+- `acquire_array!(pool, ...)` → `_acquire_impl!(pool, ...)`
+- `acquire_view!(pool, ...)` → `_acquire_view_impl!(pool, ...)`
 - `zeros!(pool, ...)` → `_zeros_impl!(pool, ...)`
 - `ones!(pool, ...)` → `_ones_impl!(pool, ...)`
 - `similar!(pool, ...)` → `_similar_impl!(pool, ...)`
@@ -1438,15 +1436,12 @@ Transformation rules:
 # Module-qualified references for transformed acquire calls
 # Using GlobalRef ensures the function is looked up in AdaptiveArrayPools, not the caller's module
 const _ACQUIRE_IMPL_REF = GlobalRef(@__MODULE__, :_acquire_impl!)
-const _UNSAFE_ACQUIRE_IMPL_REF = GlobalRef(@__MODULE__, :_unsafe_acquire_impl!)
+const _ACQUIRE_VIEW_IMPL_REF = GlobalRef(@__MODULE__, :_acquire_view_impl!)
 const _ZEROS_IMPL_REF = GlobalRef(@__MODULE__, :_zeros_impl!)
 const _ONES_IMPL_REF = GlobalRef(@__MODULE__, :_ones_impl!)
 const _TRUES_IMPL_REF = GlobalRef(@__MODULE__, :_trues_impl!)
 const _FALSES_IMPL_REF = GlobalRef(@__MODULE__, :_falses_impl!)
 const _SIMILAR_IMPL_REF = GlobalRef(@__MODULE__, :_similar_impl!)
-const _UNSAFE_ZEROS_IMPL_REF = GlobalRef(@__MODULE__, :_unsafe_zeros_impl!)
-const _UNSAFE_ONES_IMPL_REF = GlobalRef(@__MODULE__, :_unsafe_ones_impl!)
-const _UNSAFE_SIMILAR_IMPL_REF = GlobalRef(@__MODULE__, :_unsafe_similar_impl!)
 const _RESHAPE_IMPL_REF = GlobalRef(@__MODULE__, :_reshape_impl!)
 
 function _transform_acquire_calls(expr, pool_name)
@@ -1459,10 +1454,10 @@ function _transform_acquire_calls(expr, pool_name)
             # Only transform if pool argument matches
             if pool_arg == pool_name
                 # Check for acquire functions (including qualified names)
-                if fn == :acquire! || fn == :acquire_view!
+                if fn == :acquire! || fn == :acquire_array!
                     expr = Expr(:call, _ACQUIRE_IMPL_REF, expr.args[2:end]...)
-                elseif fn == :unsafe_acquire! || fn == :acquire_array!
-                    expr = Expr(:call, _UNSAFE_ACQUIRE_IMPL_REF, expr.args[2:end]...)
+                elseif fn == :acquire_view!
+                    expr = Expr(:call, _ACQUIRE_VIEW_IMPL_REF, expr.args[2:end]...)
                 elseif fn == :zeros!
                     expr = Expr(:call, _ZEROS_IMPL_REF, expr.args[2:end]...)
                 elseif fn == :ones!
@@ -1475,19 +1470,13 @@ function _transform_acquire_calls(expr, pool_name)
                     expr = Expr(:call, _SIMILAR_IMPL_REF, expr.args[2:end]...)
                 elseif fn == :reshape!
                     expr = Expr(:call, _RESHAPE_IMPL_REF, expr.args[2:end]...)
-                elseif fn == :unsafe_zeros!
-                    expr = Expr(:call, _UNSAFE_ZEROS_IMPL_REF, expr.args[2:end]...)
-                elseif fn == :unsafe_ones!
-                    expr = Expr(:call, _UNSAFE_ONES_IMPL_REF, expr.args[2:end]...)
-                elseif fn == :unsafe_similar!
-                    expr = Expr(:call, _UNSAFE_SIMILAR_IMPL_REF, expr.args[2:end]...)
                 elseif fn isa Expr && fn.head == :. && length(fn.args) >= 2
                     # Qualified name: AdaptiveArrayPools.acquire! etc.
                     qn = fn.args[end]
-                    if qn == QuoteNode(:acquire!) || qn == QuoteNode(:acquire_view!)
+                    if qn == QuoteNode(:acquire!) || qn == QuoteNode(:acquire_array!)
                         expr = Expr(:call, _ACQUIRE_IMPL_REF, expr.args[2:end]...)
-                    elseif qn == QuoteNode(:unsafe_acquire!) || qn == QuoteNode(:acquire_array!)
-                        expr = Expr(:call, _UNSAFE_ACQUIRE_IMPL_REF, expr.args[2:end]...)
+                    elseif qn == QuoteNode(:acquire_view!)
+                        expr = Expr(:call, _ACQUIRE_VIEW_IMPL_REF, expr.args[2:end]...)
                     elseif qn == QuoteNode(:zeros!)
                         expr = Expr(:call, _ZEROS_IMPL_REF, expr.args[2:end]...)
                     elseif qn == QuoteNode(:ones!)
@@ -1500,12 +1489,6 @@ function _transform_acquire_calls(expr, pool_name)
                         expr = Expr(:call, _SIMILAR_IMPL_REF, expr.args[2:end]...)
                     elseif qn == QuoteNode(:reshape!)
                         expr = Expr(:call, _RESHAPE_IMPL_REF, expr.args[2:end]...)
-                    elseif qn == QuoteNode(:unsafe_zeros!)
-                        expr = Expr(:call, _UNSAFE_ZEROS_IMPL_REF, expr.args[2:end]...)
-                    elseif qn == QuoteNode(:unsafe_ones!)
-                        expr = Expr(:call, _UNSAFE_ONES_IMPL_REF, expr.args[2:end]...)
-                    elseif qn == QuoteNode(:unsafe_similar!)
-                        expr = Expr(:call, _UNSAFE_SIMILAR_IMPL_REF, expr.args[2:end]...)
                     end
                 end
             end
@@ -1546,10 +1529,9 @@ const _TRACKED_MASK_REF = GlobalRef(@__MODULE__, :_tracked_mask_for_types)
 """Set of all transformed `_*_impl!` function names (GlobalRef targets)."""
 const _IMPL_FUNC_NAMES = Set{Symbol}(
     [
-        :_acquire_impl!, :_unsafe_acquire_impl!,
+        :_acquire_impl!, :_acquire_view_impl!,
         :_zeros_impl!, :_ones_impl!, :_trues_impl!, :_falses_impl!,
         :_similar_impl!, :_reshape_impl!,
-        :_unsafe_zeros_impl!, :_unsafe_ones_impl!, :_unsafe_similar_impl!,
     ]
 )
 
@@ -1906,9 +1888,8 @@ Used by `_extract_acquired_vars` to identify assignments like `v = acquire!(pool
 """
 const _ALL_ACQUIRE_NAMES = Set{Symbol}(
     [
-        :acquire!, :unsafe_acquire!, :acquire_view!, :acquire_array!,
+        :acquire!, :acquire_view!, :acquire_array!,
         :zeros!, :ones!, :similar!, :reshape!,
-        :unsafe_zeros!, :unsafe_ones!, :unsafe_similar!,
         :trues!, :falses!,
     ]
 )
@@ -1916,17 +1897,15 @@ const _ALL_ACQUIRE_NAMES = Set{Symbol}(
 """Function names that return views (SubArray) from pool memory."""
 const _VIEW_ACQUIRE_NAMES = Set{Symbol}(
     [
-        :acquire!, :acquire_view!,
-        :zeros!, :ones!, :similar!,
-        :unsafe_zeros!, :unsafe_ones!, :unsafe_similar!,
-        :reshape!,
+        :acquire_view!,
     ]
 )
 
-"""Function names that return raw Arrays backed by pool memory (unsafe_wrap)."""
+"""Function names that return raw Arrays backed by pool memory."""
 const _ARRAY_ACQUIRE_NAMES = Set{Symbol}(
     [
-        :unsafe_acquire!, :acquire_array!,
+        :acquire!, :acquire_array!,
+        :zeros!, :ones!, :similar!, :reshape!,
     ]
 )
 
@@ -2304,8 +2283,8 @@ end
     _classify_escaped_vars(expr, target_pool, escaped, acquired)
 
 Classify each escaped variable by its origin for better error messages:
-- `:pool_view` — from acquire!, zeros!, etc. (returns SubArray)
-- `:pool_array` — from unsafe_acquire! (returns Array via unsafe_wrap)
+- `:pool_view` — from acquire_view! (returns SubArray)
+- `:pool_array` — from acquire!, zeros!, etc. (returns Array)
 - `:pool_bitarray` — from trues!, falses! (returns BitArray)
 - `:alias` — alias of another acquired variable (e.g., `d = v`)
 - `:container` — wraps acquired variables in a literal (e.g., `d = [v, 1]`)
