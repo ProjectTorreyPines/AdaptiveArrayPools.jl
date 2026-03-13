@@ -26,9 +26,9 @@
             @test occursin("checkpoint!", expr_str)
             @test occursin("rewind!", expr_str)
 
-            # Should have try-finally structure
-            @test occursin("try", expr_str)
-            @test occursin("finally", expr_str)
+            # Direct-rewind path: NO try-finally, uses entry depth guard instead
+            @test !occursin("finally", expr_str)
+            @test occursin("_current_depth", expr_str)
         end
 
         # Test @maybe_with_pool expansion (has MAYBE_POOLING branch)
@@ -322,6 +322,19 @@
             @test occursin("default_eltype", expr_str)
         end
 
+    end
+
+    @testset "@safe_with_pool expansion retains try-finally" begin
+        expr = @macroexpand @safe_with_pool pool begin
+            v = acquire!(pool, Float64, 10)
+            sum(v)
+        end
+
+        expr_str = string(expr)
+
+        # Safe path must use try-finally (unlike @with_pool which uses direct rewind)
+        @test occursin("finally", expr_str)
+        @test !occursin("_current_depth", expr_str)  # no entry depth guard
     end
 
 end # Macro Expansion Details
@@ -866,8 +879,10 @@ end
         expr_str = string(expr)
 
         @test occursin("_lazy_rewind!", expr_str)
-        # Full rewind must NOT appear; selective rewind is the only rewind call
-        @test !occursin("AdaptiveArrayPools.rewind!", expr_str)
+        # Entry depth guard uses full rewind! (cold path for leaked inner scopes),
+        # but the hot-path own-scope rewind uses _lazy_rewind!
+        # Verify _lazy_rewind! is the primary rewind mechanism
+        @test count("_lazy_rewind!", expr_str) >= 1
     end
 
     # =========================================================================
@@ -899,8 +914,8 @@ end
 
         # Phase 5: else-branch uses selective rewind
         @test occursin("_typed_lazy_rewind!", expr_str)
-        # Full no-arg rewind!(pool) must NOT appear
-        @test !occursin("AdaptiveArrayPools.rewind!(pool)", expr_str)
+        # Full rewind!(pool) appears ONLY in the entry depth guard, not as the main rewind path
+        @test count("AdaptiveArrayPools.rewind!(pool)", expr_str) == 1  # entry depth guard only
     end
 
 end # Dynamic selective mode expansion

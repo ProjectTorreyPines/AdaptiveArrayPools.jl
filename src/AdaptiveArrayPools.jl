@@ -8,7 +8,7 @@ export acquire_view!, acquire_array!  # Explicit naming aliases
 export zeros!, ones!, trues!, falses!, similar!, reshape!, default_eltype  # Convenience functions
 export unsafe_zeros!, unsafe_ones!, unsafe_similar!  # Unsafe convenience functions
 export Bit  # Sentinel type for BitArray (use with acquire!, trues!, falses!)
-export @with_pool, @maybe_with_pool
+export @with_pool, @maybe_with_pool, @safe_with_pool, @safe_maybe_with_pool
 export STATIC_POOLING, MAYBE_POOLING, RUNTIME_CHECK
 export PoolEscapeError, EscapePoint
 export checkpoint!, rewind!, reset!
