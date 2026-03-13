@@ -665,9 +665,9 @@ const Dual_f2_11 = FakeDual{FakeTag{:f2}, Float64, 11}
         @test others_n_active(pool, UInt8) == 0
     end
 
-    @testset "13b. @with_pool exception safety with fallback types" begin
+    @testset "13b. @safe_with_pool exception safety with fallback types" begin
         try
-            @with_pool pool begin
+            @safe_with_pool pool begin
                 acquire!(pool, UInt8, 10)
                 acquire!(pool, Float16, 20)
                 error("simulated failure")
@@ -675,7 +675,7 @@ const Dual_f2_11 = FakeDual{FakeTag{:f2}, Float64, 11}
         catch
         end
 
-        # After exception + rewind via finally, pool should be clean
+        # After exception + rewind via try-finally, pool should be clean
         pool = AdaptiveArrayPools.get_task_local_pool()
         @test others_n_active(pool, UInt8) == 0
         @test others_n_active(pool, Float16) == 0

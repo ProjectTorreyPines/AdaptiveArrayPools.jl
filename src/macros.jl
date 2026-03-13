@@ -756,13 +756,13 @@ function _generate_block_inner(pool_name, expr, safe::Bool, source)
         transformed_expr = _transform_break_continue(transformed_expr, raw_rewind, raw_guard)
 
         return quote
-            local $entry_depth_var = $(esc(pool_name))._current_depth
+            local $(esc(entry_depth_var)) = $(esc(pool_name))._current_depth
             $checkpoint_call
             local _result = $(esc(transformed_expr))
             if $_RUNTIME_CHECK_REF($(esc(pool_name)))
                 $_validate_pool_return(_result, $(esc(pool_name)))
             end
-            while $(esc(pool_name))._current_depth > $entry_depth_var + 1
+            while $(esc(pool_name))._current_depth > $(esc(entry_depth_var)) + 1
                 $rewind!($(esc(pool_name)))
             end
             $rewind_call
@@ -826,13 +826,13 @@ function _generate_function_inner(pool_name, expr, safe::Bool, source)
                                                     entry_depth_guard = raw_guard)
 
         return quote
-            local $entry_depth_var = $(esc(pool_name))._current_depth
+            local $(esc(entry_depth_var)) = $(esc(pool_name))._current_depth
             $checkpoint_call
             local _result = $(esc(transformed_expr))
             if $_RUNTIME_CHECK_REF($(esc(pool_name)))
                 $_validate_pool_return(_result, $(esc(pool_name)))
             end
-            while $(esc(pool_name))._current_depth > $entry_depth_var + 1
+            while $(esc(pool_name))._current_depth > $(esc(entry_depth_var)) + 1
                 $rewind!($(esc(pool_name)))
             end
             $rewind_call

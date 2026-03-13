@@ -256,4 +256,113 @@ import AdaptiveArrayPools: checkpoint!, rewind!
         MAYBE_POOLING[] = true
     end
 
+    # ==============================================================================
+    # Direct-rewind path tests (no try-finally)
+    # ==============================================================================
+
+    @testset "Direct rewind: explicit return in @with_pool function" begin
+        @with_pool pool function early_return_test(flag)
+            v = acquire!(pool, Float64, 10)
+            v .= 1.0
+            if flag
+                return sum(v)  # rewind should happen before return
+            end
+            v .= 2.0
+            sum(v)
+        end
+
+        @test early_return_test(true) == 10.0
+        @test early_return_test(false) == 20.0
+
+        # Pool should be clean after both paths
+        pool = get_task_local_pool()
+        @test pool._current_depth == 1
+    end
+
+    @testset "Direct rewind: break inside @with_pool block in loop" begin
+        result = 0.0
+        for i in 1:10
+            @with_pool pool begin
+                v = acquire!(pool, Float64, 5)
+                v .= Float64(i)
+                result = sum(v)
+                if i == 3
+                    break  # rewind should happen before break
+                end
+            end
+        end
+
+        @test result == 15.0  # 3 * 5
+        pool = get_task_local_pool()
+        @test pool._current_depth == 1
+    end
+
+    @testset "Direct rewind: continue inside @with_pool block in loop" begin
+        total = 0.0
+        for i in 1:5
+            @with_pool pool begin
+                v = acquire!(pool, Float64, 3)
+                v .= Float64(i)
+                if i == 3
+                    continue  # rewind should happen before continue
+                end
+                total += sum(v)
+            end
+        end
+
+        # sum for i=1,2,4,5 → 3*(1+2+4+5) = 36
+        @test total == 36.0
+        pool = get_task_local_pool()
+        @test pool._current_depth == 1
+    end
+
+    @testset "Direct rewind: nested catch recovery (entry depth guard)" begin
+        @with_pool pool function outer_catches()
+            v = acquire!(pool, Float64, 10)
+            v .= 1.0
+            result = try
+                @with_pool pool begin
+                    w = acquire!(pool, UInt8, 5)
+                    error("boom")  # inner scope leaks
+                end
+            catch
+                42
+            end
+            sum(v) + result
+        end
+
+        @test outer_catches() == 52.0  # 10.0 + 42
+        pool = get_task_local_pool()
+        @test pool._current_depth == 1
+    end
+
+    @testset "@safe_with_pool preserves try-finally behavior" begin
+        reset!(get_task_local_pool())  # ensure clean state
+        try
+            @safe_with_pool pool begin
+                acquire!(pool, Float64, 10)
+                error("simulated failure")
+            end
+        catch
+        end
+
+        # try-finally guarantees cleanup even after exception
+        pool = get_task_local_pool()
+        @test pool._current_depth == 1
+    end
+
+    @testset "@safe_maybe_with_pool preserves try-finally behavior" begin
+        reset!(get_task_local_pool())  # ensure clean state
+        try
+            @safe_maybe_with_pool pool begin
+                acquire!(pool, Float64, 10)
+                error("simulated failure")
+            end
+        catch
+        end
+
+        pool = get_task_local_pool()
+        @test pool._current_depth == 1
+    end
+
 end # Macro System

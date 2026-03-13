@@ -31,9 +31,9 @@
             @test occursin("checkpoint!", expr_str)
             @test occursin("rewind!", expr_str)
 
-            # Should have try-finally
-            @test occursin("try", expr_str)
-            @test occursin("finally", expr_str)
+            # Direct-rewind path: NO try-finally, uses entry depth guard
+            @test !occursin("finally", expr_str)
+            @test occursin("_current_depth", expr_str)
         end
 
         @testset "Different backends" begin
@@ -157,8 +157,9 @@
 
             @test occursin("_get_pool_for_backend", body_str)
             @test occursin("checkpoint!", body_str)
-            @test occursin("try", body_str)
-            @test occursin("finally", body_str)
+            # Direct-rewind path: no try-finally, uses entry depth guard
+            @test !occursin("finally", body_str)
+            @test occursin("_current_depth", body_str)
             @test occursin("rewind!", body_str)
         end
 
@@ -408,13 +409,13 @@
                 v = acquire!(pool, Float64, 10)
             end
 
-            # Both should have checkpoint/rewind/try-finally
+            # Both should have checkpoint/rewind with direct-rewind path (no try-finally)
             for expr in [expr_regular, expr_backend]
                 expr_str = string(expr)
                 @test occursin("checkpoint!", expr_str)
                 @test occursin("rewind!", expr_str)
-                @test occursin("try", expr_str)
-                @test occursin("finally", expr_str)
+                @test !occursin("finally", expr_str)
+                @test occursin("_current_depth", expr_str)
             end
         end
 

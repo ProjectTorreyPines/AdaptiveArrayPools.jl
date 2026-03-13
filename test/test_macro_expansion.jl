@@ -26,9 +26,9 @@
             @test occursin("checkpoint!", expr_str)
             @test occursin("rewind!", expr_str)
 
-            # Should have try-finally structure
-            @test occursin("try", expr_str)
-            @test occursin("finally", expr_str)
+            # Direct-rewind path: NO try-finally, uses entry depth guard instead
+            @test !occursin("finally", expr_str)
+            @test occursin("_current_depth", expr_str)
         end
 
         # Test @maybe_with_pool expansion (has MAYBE_POOLING branch)
@@ -866,8 +866,10 @@ end
         expr_str = string(expr)
 
         @test occursin("_lazy_rewind!", expr_str)
-        # Full rewind must NOT appear; selective rewind is the only rewind call
-        @test !occursin("AdaptiveArrayPools.rewind!", expr_str)
+        # Entry depth guard uses full rewind! (cold path for leaked inner scopes),
+        # but the hot-path own-scope rewind uses _lazy_rewind!
+        # Verify _lazy_rewind! is the primary rewind mechanism
+        @test count("_lazy_rewind!", expr_str) >= 1
     end
 
     # =========================================================================
