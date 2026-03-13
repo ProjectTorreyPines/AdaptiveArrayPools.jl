@@ -764,6 +764,9 @@ function _generate_block_inner(pool_name, expr, safe::Bool, source)
             if $_RUNTIME_CHECK_REF($(esc(pool_name)))
                 $_validate_pool_return(_result, $(esc(pool_name)))
             end
+            if $_RUNTIME_CHECK_REF($(esc(pool_name))) && $(esc(pool_name))._current_depth > $(esc(entry_depth_var)) + 1
+                $_WARN_LEAKED_SCOPE_REF($(esc(pool_name)), $(esc(entry_depth_var)))
+            end
             while $(esc(pool_name))._current_depth > $(esc(entry_depth_var)) + 1
                 $rewind!($(esc(pool_name)))
             end
@@ -835,6 +838,9 @@ function _generate_function_inner(pool_name, expr, safe::Bool, source)
             local _result = $(esc(transformed_expr))
             if $_RUNTIME_CHECK_REF($(esc(pool_name)))
                 $_validate_pool_return(_result, $(esc(pool_name)))
+            end
+            if $_RUNTIME_CHECK_REF($(esc(pool_name))) && $(esc(pool_name))._current_depth > $(esc(entry_depth_var)) + 1
+                $_WARN_LEAKED_SCOPE_REF($(esc(pool_name)), $(esc(entry_depth_var)))
             end
             while $(esc(pool_name))._current_depth > $(esc(entry_depth_var)) + 1
                 $rewind!($(esc(pool_name)))
@@ -1530,6 +1536,7 @@ const _RUNTIME_CHECK_REF = GlobalRef(@__MODULE__, :_runtime_check)
 # GlobalRefs for direct-rewind path (no try-finally):
 # Used by _transform_return_stmts and _transform_break_continue to inject
 # rewind calls into the un-escaped AST (outer esc() handles escaping).
+const _WARN_LEAKED_SCOPE_REF = GlobalRef(@__MODULE__, :_warn_leaked_scope)
 const _REWIND_REF = GlobalRef(@__MODULE__, :rewind!)
 const _LAZY_REWIND_REF = GlobalRef(@__MODULE__, :_lazy_rewind!)
 const _TYPED_LAZY_REWIND_REF = GlobalRef(@__MODULE__, :_typed_lazy_rewind!)

@@ -541,4 +541,65 @@ import AdaptiveArrayPools: checkpoint!, rewind!
         end
     end
 
+    # ==============================================================================
+    # Leaked scope warning (RUNTIME_CHECK-gated)
+    # ==============================================================================
+
+    @testset "Leaked scope warning" begin
+        import AdaptiveArrayPools: _warn_leaked_scope, _runtime_check
+
+        # 1. Macro expansion includes _warn_leaked_scope call
+        @testset "Warning present in macro expansion" begin
+            expr = @macroexpand @with_pool pool begin
+                v = acquire!(pool, Float64, 10)
+                sum(v)
+            end
+            expr_str = string(expr)
+            @test occursin("_warn_leaked_scope", expr_str)
+        end
+
+        # 2. Warning is gated by _runtime_check (returns false at RUNTIME_CHECK=0)
+        @testset "Warning gated by _runtime_check" begin
+            pool_s0 = AdaptiveArrayPool{0}()
+            @test _runtime_check(pool_s0) == false   # guard is false → warning never fires
+
+            pool_s1 = AdaptiveArrayPool{1}()
+            @test _runtime_check(pool_s1) == true    # guard is true → warning can fire
+        end
+
+        # 3. Warning fires on RUNTIME_CHECK=1 pool with simulated leak
+        @testset "Warning fires on leaked scope (RUNTIME_CHECK=1)" begin
+            pool = AdaptiveArrayPool{1}()
+            @test _runtime_check(pool) == true
+
+            # Simulate: checkpoint without matching rewind (leak)
+            checkpoint!(pool)         # depth 1→2 (outer scope)
+            checkpoint!(pool)         # depth 2→3 (inner scope, will "leak")
+            # skip inner rewind — simulates leaked @with_pool
+
+            entry_depth = 1  # outer scope's entry depth
+            @test pool._current_depth > entry_depth + 1  # guard condition is true
+
+            # Verify _warn_leaked_scope fires @error log
+            @test_logs (:error, r"Leaked @with_pool scope") _warn_leaked_scope(pool, entry_depth)
+
+            # Cleanup
+            reset!(pool)
+        end
+
+        # 4. Warning does NOT fire when depth is correct
+        @testset "No warning on normal depth" begin
+            pool = AdaptiveArrayPool{1}()
+            checkpoint!(pool)   # depth 1→2
+            # No leak — depth is entry_depth + 1
+
+            entry_depth = 1
+            @test pool._current_depth == entry_depth + 1  # guard condition is false
+            # _warn_leaked_scope would NOT be called (the if guard prevents it)
+
+            rewind!(pool)
+            @test pool._current_depth == 1
+        end
+    end
+
 end # Macro System

@@ -224,6 +224,25 @@ _validate_pool_return(val, ::DisabledPool) = nothing
 _validate_pool_return(val, ::AbstractArrayPool) = nothing
 
 # ==============================================================================
+# Leaked Scope Warning (direct-rewind path, RUNTIME_CHECK >= 1)
+# ==============================================================================
+#
+# Detects when entry depth guard fires (inner scope didn't rewind properly).
+# @noinline to keep it out of the inlined hot path — only called on error.
+
+@noinline function _warn_leaked_scope(pool::AbstractArrayPool, entry_depth::Int)
+    @error(
+        "Leaked @with_pool scope detected! " *
+        "Pool depth is $(pool._current_depth), expected $(entry_depth + 1). " *
+        "A macro inside @with_pool may have generated an unseen `return`/`break`, " *
+        "or an inner scope threw without try-finally protection. " *
+        "Consider using @safe_with_pool for exception safety.",
+        current_depth = pool._current_depth,
+        expected_depth = entry_depth + 1,
+    )
+end
+
+# ==============================================================================
 # Poisoning: Fill released vectors with sentinel values (S >= 1)
 # ==============================================================================
 #
