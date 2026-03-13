@@ -1385,6 +1385,48 @@ function _generate_lazy_rewind_call(pool_expr)
     return :($_lazy_rewind!($pool_expr))
 end
 
+# ==============================================================================
+# Internal: Raw (Un-Escaped) Rewind/Guard Generators for Direct-Rewind Path
+# ==============================================================================
+#
+# These generate Expr nodes using raw pool_name symbols (NOT esc'd) and GlobalRef
+# function references. They are embedded inside the un-escaped AST processed by
+# _transform_return_stmts and _transform_break_continue. The outer esc() applied
+# to the full transformed_expr handles escaping for all embedded nodes at once.
+
+"""
+    _generate_raw_rewind_call(pool_name, use_typed, static_types) -> Expr
+
+Generate un-escaped rewind call for embedding in AST transforms.
+Uses GlobalRef function references and raw pool_name symbol.
+"""
+function _generate_raw_rewind_call(pool_name, use_typed::Bool, static_types)
+    if !use_typed || isempty(static_types)
+        return Expr(:call, _LAZY_REWIND_REF, pool_name)
+    else
+        typed_call = Expr(:call, _REWIND_REF, pool_name, static_types...)
+        mask_call = Expr(:call, _TRACKED_MASK_REF, static_types...)
+        selective_call = Expr(:call, _TYPED_LAZY_REWIND_REF, pool_name, mask_call)
+        condition = Expr(:call, _CAN_USE_TYPED_PATH_REF, pool_name, mask_call)
+        return Expr(:if, condition, typed_call, selective_call)
+    end
+end
+
+"""
+    _generate_raw_entry_depth_guard(pool_name, entry_depth_var) -> Expr
+
+Generate un-escaped entry depth guard for cleaning up leaked inner scopes.
+
+Produces: `while pool._current_depth > _entry_depth + 1; rewind!(pool); end`
+Uses full `rewind!(pool)` (not typed/lazy) because leaked inner scope may have
+touched types outside this scope's static type set.
+"""
+function _generate_raw_entry_depth_guard(pool_name, entry_depth_var)
+    depth_access = Expr(:., pool_name, QuoteNode(:_current_depth))
+    condition = Expr(:call, :>, depth_access, Expr(:call, :+, entry_depth_var, 1))
+    body = Expr(:call, _REWIND_REF, pool_name)
+    return Expr(:while, condition, body)
+end
 
 # ==============================================================================
 # Internal: Acquire Call Transformation
@@ -1641,15 +1683,24 @@ end
 const _VALIDATE_POOL_RETURN_REF = GlobalRef(@__MODULE__, :_validate_pool_return)
 
 """
-    _transform_return_stmts(expr, pool_name) -> Expr
+    _transform_return_stmts(expr, pool_name; rewind_call=nothing, entry_depth_guard=nothing) -> Expr
 
 Walk AST and wrap explicit `return value` statements with escape validation.
 Generates: `local _ret = value; if _runtime_check(pool) validate(_ret, pool); end; return _ret`
 
+When `rewind_call` and `entry_depth_guard` are provided (direct-rewind path,
+`safe=false`), they are inserted after validation but before `return`:
+  `local _ret = value; validate; entry_depth_guard; rewind_call; return _ret`
+
+When `nothing` (safe path / try-finally), behavior is unchanged — rewind
+happens in the `finally` clause instead.
+
 Does NOT recurse into nested `:function` or `:->` expressions (inner functions
 have their own `return` semantics).
 """
-function _transform_return_stmts(expr, pool_name, current_lnn = nothing)
+function _transform_return_stmts(expr, pool_name, current_lnn = nothing;
+                                  rewind_call = nothing,
+                                  entry_depth_guard = nothing)
     expr isa Expr || return expr
 
     # Don't recurse into nested function definitions (return belongs to inner function)
@@ -1659,12 +1710,16 @@ function _transform_return_stmts(expr, pool_name, current_lnn = nothing)
 
     if expr.head == :return && length(expr.args) >= 1
         value_expr = expr.args[1]
-        # Bare return (return nothing) — skip validation
+        # Bare return (return nothing) — skip validation but still need rewind
         if value_expr === nothing
+            if rewind_call !== nothing
+                return Expr(:block, entry_depth_guard, rewind_call, expr)
+            end
             return expr
         end
         # Recurse into the value expression first (may contain nested returns in ternary etc.)
-        value_expr = _transform_return_stmts(value_expr, pool_name, current_lnn)
+        value_expr = _transform_return_stmts(value_expr, pool_name, current_lnn;
+                                              rewind_call, entry_depth_guard)
         retvar = gensym(:_pool_ret)
 
         # Build return-site string for S=1 display (e.g. "file:line\nreturn v")
@@ -1693,16 +1748,17 @@ function _transform_return_stmts(expr, pool_name, current_lnn = nothing)
             Expr(:call, _VALIDATE_POOL_RETURN_REF, retvar, pool_name)
         end
 
-        return Expr(
-            :block,
+        # Build statement list: validate → [guard → rewind] → return
+        stmts = Any[
             Expr(:local, Expr(:(=), retvar, value_expr)),
-            Expr(
-                :if,
-                Expr(:call, _RUNTIME_CHECK_REF, pool_name),
-                validate_expr
-            ),
-            Expr(:return, retvar)
-        )
+            Expr(:if, Expr(:call, _RUNTIME_CHECK_REF, pool_name), validate_expr),
+        ]
+        if rewind_call !== nothing
+            push!(stmts, entry_depth_guard)
+            push!(stmts, rewind_call)
+        end
+        push!(stmts, Expr(:return, retvar))
+        return Expr(:block, stmts...)
     end
 
     # For blocks, track LineNumberNodes
@@ -1714,15 +1770,85 @@ function _transform_return_stmts(expr, pool_name, current_lnn = nothing)
                 lnn = arg
                 push!(new_args, arg)
             else
-                push!(new_args, _transform_return_stmts(arg, pool_name, lnn))
+                push!(new_args, _transform_return_stmts(arg, pool_name, lnn;
+                                                         rewind_call, entry_depth_guard))
             end
         end
         return Expr(:block, new_args...)
     end
 
     # Other expressions: recurse with current_lnn
-    new_args = Any[_transform_return_stmts(arg, pool_name, current_lnn) for arg in expr.args]
+    new_args = Any[_transform_return_stmts(arg, pool_name, current_lnn;
+                                            rewind_call, entry_depth_guard) for arg in expr.args]
     return Expr(expr.head, new_args...)
+end
+
+# ==============================================================================
+# Internal: Break/Continue Transformation (Direct-Rewind Path)
+# ==============================================================================
+#
+# For block-form @with_pool (NOT function form), `break` and `continue` at the
+# pool scope level exit the pool scope (the block is inside a loop). Without
+# try-finally, we must insert rewind before these statements.
+#
+# The walker SKIPS :for/:while bodies — break/continue inside nested loops
+# belong to those loops, not the pool scope. Also skips :function/:-> bodies.
+
+"""
+    _transform_break_continue(expr, rewind_call, entry_depth_guard) -> Expr
+
+Walk AST and insert entry depth guard + rewind before `break`/`continue` statements
+that would exit the pool scope. Only used for block-form `@with_pool` (not function form).
+
+Skips `:for`, `:while` bodies (break/continue there are for those loops).
+Skips `:function`, `:->` bodies (inner function scope boundary).
+"""
+function _transform_break_continue(expr, rewind_call, entry_depth_guard)
+    expr isa Expr || return expr
+
+    # Don't recurse into nested functions
+    expr.head in (:function, :->) && return expr
+
+    # Don't recurse into loop bodies — break/continue there are for those loops
+    expr.head in (:for, :while) && return expr
+
+    # Transform bare break/continue at pool-block level
+    if expr.head in (:break, :continue)
+        return Expr(:block, entry_depth_guard, rewind_call, expr)
+    end
+
+    # Recurse into other expressions (if, try, let, block, etc.)
+    new_args = Any[_transform_break_continue(arg, rewind_call, entry_depth_guard)
+                   for arg in expr.args]
+    return Expr(expr.head, new_args...)
+end
+
+# ==============================================================================
+# Internal: @goto Detection (Direct-Rewind Path)
+# ==============================================================================
+
+"""
+    _check_goto_usage(expr, source)
+
+Warn at compile time if `@goto` is found inside a pool scope body.
+`@goto` bypasses the rewind insertion, so pool state may be corrupted.
+Suggests using `@safe_with_pool` instead.
+
+Skips `:function`/`:->` bodies (goto in inner function is irrelevant).
+"""
+function _check_goto_usage(expr, source)
+    expr isa Expr || return
+    if expr.head == :symbolicgoto
+        label = length(expr.args) >= 1 ? string(expr.args[1]) : "?"
+        @warn "@with_pool: @goto $label detected inside pool scope. " *
+              "rewind! will NOT be inserted before @goto. " *
+              "Use @safe_with_pool for exception-safe behavior." _file=string(source.file) _line=source.line
+        return
+    end
+    expr.head in (:function, :->) && return
+    for arg in expr.args
+        _check_goto_usage(arg, source)
+    end
 end
 
 # ==============================================================================
