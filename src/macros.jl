@@ -1873,9 +1873,9 @@ function _check_unsafe_goto(expr)
     return if !isempty(unsafe)
         targets = join(unsafe, ", ")
         error(
-            "@with_pool: @goto to external label(s) ($targets) detected. " *
+            "Pool scope: @goto to external label(s) ($targets) detected. " *
                 "This would bypass rewind! and corrupt pool state. " *
-                "Use @safe_with_pool for exception-safe behavior with @goto."
+                "Use the @safe_* variant (e.g., @safe_with_pool) for @goto across pool boundaries."
         )
     end
 end
