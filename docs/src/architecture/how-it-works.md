@@ -84,7 +84,7 @@ When you call `acquire!(pool, Float64, n)`, the compiler inlines directly to `po
 
 ## N-D Wrapper Reuse (CPU)
 
-For `unsafe_acquire!` (which returns native `Array` types), the caching strategy depends on the Julia version:
+For `acquire!` (which returns native `Array` types), the caching strategy depends on the Julia version:
 
 ### Julia 1.11+: `setfield!`-based Wrapper Reuse (Zero-Allocation)
 
@@ -101,7 +101,7 @@ nd_wrappers[N][slot] → cached Array{T,N}
 
 ```julia
 # Pseudocode for Julia 1.11+ path
-function unsafe_acquire!(pool, T, dims...)
+function acquire!(pool, T, dims...)
     typed_pool = get_typed_pool!(pool, T)
     flat_view = get_view!(typed_pool, prod(dims))
     slot = typed_pool.n_active
@@ -134,26 +134,23 @@ See [Configuration](../features/configuration.md) for `CACHE_WAYS` tuning (Julia
 
 The CUDA backend still uses the N-way set-associative cache (same as Julia 1.10 legacy), since `CuArray` does not support `setfield!`-based mutation.
 
-## View vs Array Return Types
+## Array vs View Return Types
 
 Type stability is critical for performance. AdaptiveArrayPools provides two APIs:
 
 | API | 1D Return | N-D Return | Allocation (Julia 1.11+) | Allocation (Julia 1.10 / CUDA) |
 |-----|-----------|------------|--------------------------|-------------------------------|
-| `acquire!` | `SubArray{T,1}` | `ReshapedArray{T,N}` | Always 0 bytes | Always 0 bytes |
-| `unsafe_acquire!` | `Vector{T}` | `Array{T,N}` | 0 bytes (setfield! reuse) | 0 bytes (hit) / ~100 bytes (miss) |
+| `acquire!` | `Vector{T}` | `Array{T,N}` | 0 bytes (setfield! reuse) | 0 bytes (hit) / ~100 bytes (miss) |
+| `acquire_view!` | `SubArray{T,1}` | `ReshapedArray{T,N}` | Always 0 bytes | Always 0 bytes |
 
 !!! note "`Bit` type behavior"
-    For `T === Bit`, both `acquire!` and `unsafe_acquire!` return native `BitVector` / `BitArray{N}` (not views). Cache hit achieves 0 bytes allocation.
+    For `T === Bit`, both `acquire!` and `acquire_view!` return native `BitVector` / `BitArray{N}` (not views). Cache hit achieves 0 bytes allocation.
 
 ### Why Two APIs?
 
-**`acquire!` (views)** — The compiler can eliminate view wrappers entirely through SROA (Scalar Replacement of Aggregates) and escape analysis. This is why 1D `SubArray` and N-D `ReshapedArray` achieve true zero allocation.
+**`acquire!` (arrays, default)** — Returns concrete `Array{T,N}` types, which is the natural choice for most code. The N-D wrapper caching mechanism (see above) ensures zero allocation on Julia 1.11+ after warmup. Use this unless you have a specific reason to prefer views.
 
-**`unsafe_acquire!` (arrays)** — Sometimes you need a concrete `Array` type:
-- FFI/C interop requiring `Ptr{T}` from contiguous memory
-- Type signatures that explicitly require `Array{T,N}`
-- Avoiding runtime dispatch in polymorphic code
+**`acquire_view!` (views)** — Returns `SubArray` / `ReshapedArray` view types. The compiler can eliminate view wrappers entirely through SROA (Scalar Replacement of Aggregates) and escape analysis, achieving true zero allocation on all platforms. Prefer this when view types are acceptable and you want guaranteed zero allocation regardless of Julia version.
 
 ## Typed Checkpoint/Rewind Optimization
 
@@ -183,7 +180,7 @@ This pattern reduces branching in hot paths where every nanosecond counts.
 
 For detailed design documents:
 
-- [`hybrid_api_design.md`](https://github.com/ProjectTorreyPines/AdaptiveArrayPools.jl/blob/master/docs/design/hybrid_api_design.md) — Two-API strategy (`acquire!` vs `unsafe_acquire!`) and type stability analysis
+- [`hybrid_api_design.md`](https://github.com/ProjectTorreyPines/AdaptiveArrayPools.jl/blob/master/docs/design/hybrid_api_design.md) — Two-API strategy (`acquire!` vs `acquire_view!`) and type stability analysis
 - [`nd_array_approach_comparison.md`](https://github.com/ProjectTorreyPines/AdaptiveArrayPools.jl/blob/master/docs/design/nd_array_approach_comparison.md) — N-way cache design, boxing analysis, and ReshapedArray benchmarks
 - [`untracked_acquire_design.md`](https://github.com/ProjectTorreyPines/AdaptiveArrayPools.jl/blob/master/docs/design/untracked_acquire_design.md) — Macro-based untracked acquire detection and 1-based sentinel pattern
 - [`fixed_slots_codegen_design.md`](https://github.com/ProjectTorreyPines/AdaptiveArrayPools.jl/blob/master/docs/design/fixed_slots_codegen_design.md) — Zero-allocation iteration via `@generated` functions

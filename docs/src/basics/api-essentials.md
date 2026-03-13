@@ -6,40 +6,32 @@ This page covers the core functions you'll use 99% of the time. For the complete
 
 ### `acquire!(pool, T, dims...)`
 
-The primary function. Returns a view (`SubArray` for 1D, `ReshapedArray` for N-D) for most `T`. For `T === Bit`, returns a native `BitVector`/`BitArray{N}`.
+The primary function. Returns `Array{T,N}` for most `T`. For `T === Bit`, returns a native `BitVector`/`BitArray{N}`.
 
 ```julia
 @with_pool pool begin
-    v = acquire!(pool, Float64, 100)        # 1D: SubArray{Float64,1}
-    m = acquire!(pool, Float64, 10, 10)     # 2D: ReshapedArray{Float64,2}
-    t = acquire!(pool, Int64, 2, 3, 4)      # 3D: ReshapedArray{Int64,3}
+    v = acquire!(pool, Float64, 100)        # 1D: Array{Float64,1} (Vector)
+    m = acquire!(pool, Float64, 10, 10)     # 2D: Array{Float64,2} (Matrix)
+    t = acquire!(pool, Int64, 2, 3, 4)      # 3D: Array{Int64,3}
     mask = acquire!(pool, Bit, 1000)        # BitVector (bit-packed)
 end
 ```
 
-**Always use `acquire!` by default.** Views are zero-allocation and work with BLAS/LAPACK; `Bit` masks are bit-packed and optimized for boolean-kernel operations (`count`, `any`, `all`, etc.).
+**Always use `acquire!` by default.** Returns native `Array{T,N}` that works seamlessly with BLAS/LAPACK, FFI/ccall, and any function expecting `Array`; `Bit` masks are bit-packed and optimized for boolean-kernel operations (`count`, `any`, `all`, etc.). `acquire_array!` is an alias for `acquire!`.
 
-### `unsafe_acquire!(pool, T, dims...)`
+### `acquire_view!(pool, T, dims...)`
 
-Returns a native `Array` type. On **Julia 1.11+**, always **zero-allocation** via `setfield!`-based wrapper reuse (unlimited dimension patterns). On Julia 1.10 and CUDA, zero-allocation on cache hit with a small header (~80-144 bytes) on cache miss. Use when you specifically need `Array{T,N}`:
+Returns a lightweight view into pool storage (`SubArray` for 1D, `ReshapedArray` for N-D). This is the old `acquire!` behavior from v0.2.x. Use when you want zero-allocation views and don't need a native `Array`:
 
 ```julia
 @with_pool pool begin
-    # Use when you need Array for:
-    arr = unsafe_acquire!(pool, Float64, 100)
-
-    # - FFI/ccall requiring Ptr{T}
-    ccall(:some_c_function, Cvoid, (Ptr{Float64}, Cint), arr, length(arr))
-
-    # - Functions with strict Array{T,N} type signatures
+    v = acquire_view!(pool, Float64, 100)      # SubArray{Float64,1}
+    m = acquire_view!(pool, Float64, 10, 10)   # ReshapedArray{Float64,2}
 end
 ```
 
-!!! tip "Cache behavior"
-    On Julia 1.11+: **always 0 bytes** regardless of dimension pattern (setfield!-based reuse). On Julia 1.10 / CUDA: same dimension pattern → 0 bytes, different pattern → 80-144 bytes header only (data always reused). See [N-D Wrapper Caching](../architecture/type-dispatch.md#n-d-wrapper-caching-for-unsafe_acquire) for details.
-
 !!! note "`Bit` behavior"
-    For `T === Bit`, `unsafe_acquire!` is equivalent to `acquire!` and returns native `BitVector`/`BitArray{N}`.
+    For `T === Bit`, `acquire_view!` returns native `BitVector`/`BitArray{N}` (same as `acquire!`).
 
 ## Convenience Functions
 
@@ -96,7 +88,7 @@ For values other than 0 or 1, use Julia's built-in `fill!`:
 end
 ```
 
-This pattern works because pool arrays are mutable views into the underlying storage.
+This pattern works because pool arrays share underlying storage with the pool.
 
 ## Pool Management
 
@@ -132,11 +124,12 @@ end
 
 | Function | Returns | Allocation | Use Case |
 |----------|---------|------------|----------|
-| `acquire!(pool, T, dims...)` | View type | 0 bytes | Default choice |
-| `unsafe_acquire!(pool, T, dims...)` | `Array{T,N}` | 0 bytes (1.11+) / 0-144 (1.10/CUDA) | FFI, type constraints |
-| `zeros!(pool, [T,] dims...)` | View type | 0 bytes | Zero-initialized |
-| `ones!(pool, [T,] dims...)` | View type | 0 bytes | One-initialized |
-| `similar!(pool, A)` | View type | 0 bytes | Match existing array |
+| `acquire!(pool, T, dims...)` | `Array{T,N}` | 0 bytes | Default choice |
+| `acquire_array!(pool, T, dims...)` | `Array{T,N}` | 0 bytes | Alias for `acquire!` |
+| `acquire_view!(pool, T, dims...)` | View type | 0 bytes | Lightweight views |
+| `zeros!(pool, [T,] dims...)` | `Array{T,N}` | 0 bytes | Zero-initialized |
+| `ones!(pool, [T,] dims...)` | `Array{T,N}` | 0 bytes | One-initialized |
+| `similar!(pool, A)` | `Array{T,N}` | 0 bytes | Match existing array |
 | `reshape!(pool, A, dims...)` | Reshaped array | 0 bytes (1.11+) | Reshape sharing memory |
 | `reset!(pool)` | `nothing` | - | Release all memory |
 | `pooling_enabled(pool)` | `Bool` | - | Check pool status |

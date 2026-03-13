@@ -5,7 +5,7 @@ For in-depth analysis of design decisions, implementation tradeoffs, and archite
 ## API Design
 
 - **[hybrid_api_design.md](https://github.com/ProjectTorreyPines/AdaptiveArrayPools.jl/blob/master/docs/design/hybrid_api_design.md)**
-  Two-API strategy (`acquire!` vs `unsafe_acquire!`) and type stability analysis
+  Historical two-API strategy (`acquire!` vs `acquire_view!`) and type stability analysis
 
 ## Caching & Performance
 
@@ -31,7 +31,7 @@ For in-depth analysis of design decisions, implementation tradeoffs, and archite
 
 | Document | Focus Area | Key Insights |
 |----------|------------|--------------|
-| hybrid_api_design | API strategy | View types for zero-alloc, Array for FFI |
+| hybrid_api_design | API strategy | Array by default, views via `acquire_view!` |
 | nd_array_approach_comparison | Caching | N-way cache (legacy); setfield! reuse on Julia 1.11+ CPU |
 | fixed_slots_codegen_design | Codegen | @generated functions enable type-stable iteration |
 | untracked_acquire_design | Macro safety | Sentinel pattern ensures correct cleanup |
