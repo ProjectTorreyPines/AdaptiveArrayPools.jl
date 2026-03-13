@@ -142,16 +142,16 @@
             @test r isa AbstractMatrix{Float64}
             @test size(r) == (3, 4)
 
-            # unsafe variants
-            uz = unsafe_zeros!(pool, Float64, 5)
+            # All convenience functions return Array when pooling disabled
+            uz = zeros!(pool, Float64, 5)
             @test uz isa Vector{Float64}
             @test all(uz .== 0.0)
 
-            uo = unsafe_ones!(pool, Float64, 5)
+            uo = ones!(pool, Float64, 5)
             @test uo isa Vector{Float64}
             @test all(uo .== 1.0)
 
-            us = unsafe_similar!(pool, template)
+            us = similar!(pool, template)
             @test us isa Matrix{Float64}
         end
     end

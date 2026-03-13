@@ -362,6 +362,7 @@ const Dual_f2_11 = FakeDual{FakeTag{:f2}, Float64, 11}
         checkpoint!(pool)
         v1 = acquire!(pool, UInt8, 100)
         v1 .= 0x42
+        backing1 = pool.others[UInt8].vectors[1]
         rewind!(pool)
         @test others_n_active(pool, UInt8) == 0
 
@@ -369,8 +370,8 @@ const Dual_f2_11 = FakeDual{FakeTag{:f2}, Float64, 11}
         checkpoint!(pool)
         v2 = acquire!(pool, UInt8, 100)
         @test others_n_active(pool, UInt8) == 1
-        # The backing vector should be reused (same object)
-        @test parent(v1) === parent(v2)
+        # The pool's backing vector should be reused (same object)
+        @test pool.others[UInt8].vectors[1] === backing1
         rewind!(pool)
         @test others_n_active(pool, UInt8) == 0
     end
@@ -586,14 +587,14 @@ const Dual_f2_11 = FakeDual{FakeTag{:f2}, Float64, 11}
     end
 
     # ==============================================================================
-    # 11. unsafe_acquire! with Fallback Types
+    # 11. acquire! with Fallback Types (all dimensionalities)
     # ==============================================================================
 
-    @testset "11. unsafe_acquire! with fallback types" begin
+    @testset "11. acquire! with fallback types" begin
         pool = AdaptiveArrayPool()
 
         checkpoint!(pool)
-        v = unsafe_acquire!(pool, UInt8, 10)
+        v = acquire!(pool, UInt8, 10)
         @test v isa Array{UInt8, 1}
         @test length(v) == 10
         @test others_n_active(pool, UInt8) == 1
@@ -602,11 +603,11 @@ const Dual_f2_11 = FakeDual{FakeTag{:f2}, Float64, 11}
         @test others_n_active(pool, UInt8) == 0
     end
 
-    @testset "11b. unsafe_acquire! N-D with fallback types" begin
+    @testset "11b. acquire! N-D with fallback types" begin
         pool = AdaptiveArrayPool()
 
         checkpoint!(pool)
-        m = unsafe_acquire!(pool, UInt8, 3, 4)
+        m = acquire!(pool, UInt8, 3, 4)
         @test m isa Array{UInt8, 2}
         @test size(m) == (3, 4)
         @test others_n_active(pool, UInt8) == 1
@@ -726,7 +727,7 @@ const Dual_f2_11 = FakeDual{FakeTag{:f2}, Float64, 11}
 
         checkpoint!(pool)
         v = acquire!(pool, MyTestElement, 5)
-        @test v isa SubArray
+        @test v isa Vector{MyTestElement}
         @test length(v) == 5
         @test eltype(v) == MyTestElement
         @test others_n_active(pool, MyTestElement) == 1
@@ -1464,7 +1465,7 @@ const Dual_f2_11 = FakeDual{FakeTag{:f2}, Float64, 11}
 
     @testset "29b. Repeated typed checkpoint: multiple Dual variants + helpers" begin
         pool = AdaptiveArrayPool()
-        using AdaptiveArrayPools: _acquire_impl!, _unsafe_acquire_impl!,
+        using AdaptiveArrayPools: _acquire_impl!,
             _typed_lazy_checkpoint!, _typed_lazy_rewind!,
             _tracked_mask_for_types, _can_use_typed_path
 
@@ -1478,8 +1479,8 @@ const Dual_f2_11 = FakeDual{FakeTag{:f2}, Float64, 11}
                 _typed_lazy_checkpoint!(pool, Dual_f1_11, Float64)
             end
 
-            # Outer scope: multi-dim Dual acquire (unsafe_acquire, macro-transformed)
-            _unsafe_acquire_impl!(pool, Dual_f1_11, 4, 11, 11)
+            # Outer scope: multi-dim Dual acquire (macro-transformed)
+            _acquire_impl!(pool, Dual_f1_11, 4, 11, 11)
             @test others_n_active(pool, Dual_f1_11) == 1
 
             # Helper function: normal acquire! for Float64 + Int32 (extra touched types)

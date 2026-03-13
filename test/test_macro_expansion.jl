@@ -156,9 +156,9 @@
             @test !occursin("_acquire_impl!", expr_str)
         end
 
-        @testset "unsafe_acquire! type extraction" begin
+        @testset "acquire_view! type extraction" begin
             expr = @macroexpand @with_pool pool begin
-                v = unsafe_acquire!(pool, Float64, 100)
+                v = acquire_view!(pool, Float64, 100)
                 sum(v)
             end
 
@@ -169,10 +169,10 @@
             @test occursin("Float64", expr_str)
         end
 
-        @testset "Mixed acquire! and unsafe_acquire!" begin
+        @testset "Mixed acquire! and acquire_view!" begin
             expr = @macroexpand @with_pool pool begin
                 v1 = acquire!(pool, Float64, 10)
-                v2 = unsafe_acquire!(pool, Int64, 20)
+                v2 = acquire_view!(pool, Int64, 20)
                 sum(v1) + sum(v2)
             end
 
@@ -183,10 +183,10 @@
             @test occursin("Int64", expr_str)
         end
 
-        @testset "Similar-style + traditional + unsafe mixed" begin
+        @testset "Similar-style + traditional + view mixed" begin
             expr = @macroexpand @with_pool pool begin
                 v1 = acquire!(pool, Float64, 10)
-                v2 = unsafe_acquire!(pool, Int32, 5)
+                v2 = acquire_view!(pool, Int32, 5)
                 v3 = acquire!(pool, external_data)  # similar-style
                 sum(v1) + sum(v2) + sum(v3)
             end
@@ -237,7 +237,7 @@
             expr = @macroexpand @with_pool pool begin
                 v1 = acquire!(pool, Float64, 10)
                 v2 = acquire!(pool, MyData, 5)
-                v3 = unsafe_acquire!(pool, T, 3)
+                v3 = acquire!(pool, T, 3)
                 length(v1) + length(v2) + length(v3)
             end
 
@@ -286,9 +286,9 @@
             @test occursin("default_eltype", expr_str)
         end
 
-        @testset "unsafe_zeros! default type uses default_eltype(pool)" begin
+        @testset "zeros! default type uses default_eltype(pool) (second check)" begin
             expr = @macroexpand @with_pool pool begin
-                v = unsafe_zeros!(pool, 10)
+                v = zeros!(pool, 10)
             end
 
             expr_str = string(expr)
@@ -296,9 +296,9 @@
             @test occursin("default_eltype", expr_str)
         end
 
-        @testset "unsafe_ones! default type uses default_eltype(pool)" begin
+        @testset "ones! default type uses default_eltype(pool) (second check)" begin
             expr = @macroexpand @with_pool pool begin
-                v = unsafe_ones!(pool, 10)
+                v = ones!(pool, 10)
             end
 
             expr_str = string(expr)

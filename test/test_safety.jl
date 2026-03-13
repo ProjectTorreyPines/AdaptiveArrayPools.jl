@@ -14,45 +14,45 @@ _test_leak(x) = x
     end
 
     # ==============================================================================
-    # S=1: acquire! SubArray invalidation
+    # S=1: acquire! Array invalidation (same mechanism as acquire!)
     # ==============================================================================
 
-    @testset "acquire! SubArray invalidated on rewind" begin
+    @testset "acquire! Array invalidated on rewind" begin
         pool = _make_pool(true)
         checkpoint!(pool)
         v = acquire!(pool, Float64, 10)
         v .= 42.0  # write to confirm it's valid before rewind
         rewind!(pool)
 
-        # Backing vector resized to 0 -> SubArray parent is length 0
-        @test length(parent(v)) == 0
+        # Array size set to (0,) via invalidation
+        @test size(v) == (0,)
 
-        # Accessing stale SubArray should throw BoundsError
+        # Accessing stale Array should throw BoundsError
         @test_throws BoundsError v[1]
     end
 
-    @testset "acquire! N-D ReshapedArray invalidated on rewind" begin
+    @testset "acquire! N-D Array invalidated on rewind" begin
         pool = _make_pool(true)
         checkpoint!(pool)
         mat = acquire!(pool, Float64, 5, 5)
         mat .= 1.0
         rewind!(pool)
 
-        # Parent chain: ReshapedArray -> SubArray -> Vector (now length 0)
-        @test length(parent(parent(mat))) == 0
+        # Array size set to (0, 0) via invalidation
+        @test size(mat) == (0, 0)
         @test_throws BoundsError mat[1, 1]
     end
 
     # ==============================================================================
-    # S=1: unsafe_acquire! Array wrapper invalidation (Julia 1.11+ only)
+    # S=1: acquire! Array wrapper invalidation via setfield! (Julia 1.11+ only)
     # On Julia 1.10, Array is a C struct — setfield!(:size) is not available.
     # ==============================================================================
 
     @static if VERSION >= v"1.11-"
-        @testset "unsafe_acquire! Array wrapper invalidated on rewind" begin
+        @testset "acquire! Array (setfield! path) invalidated on rewind" begin
             pool = _make_pool(true)
             checkpoint!(pool)
-            arr = unsafe_acquire!(pool, Float64, 10)
+            arr = acquire!(pool, Float64, 10)
             arr .= 99.0
             @test size(arr) == (10,)
             rewind!(pool)
@@ -62,10 +62,10 @@ _test_leak(x) = x
             @test_throws BoundsError arr[1]
         end
 
-        @testset "unsafe_acquire! N-D Array wrapper invalidated on rewind" begin
+        @testset "acquire! N-D Array (setfield! path) invalidated on rewind" begin
             pool = _make_pool(true)
             checkpoint!(pool)
-            mat = unsafe_acquire!(pool, Float64, 4, 3)
+            mat = acquire!(pool, Float64, 4, 3)
             mat .= 1.0
             @test size(mat) == (4, 3)
             rewind!(pool)
@@ -116,8 +116,8 @@ _test_leak(x) = x
         v .= 7.0
         rewind!(pool)
 
-        # With safety off, backing vector still has length >= 10
-        @test length(parent(v)) >= 10
+        # With safety off, array still has length >= 10
+        @test length(v) >= 10
         # Stale access works (this is the unsafe behavior we're protecting against)
         @test v[1] == 7.0
     end
@@ -142,27 +142,25 @@ _test_leak(x) = x
         checkpoint!(pool)
         v2 = acquire!(pool, Float64, 50)
         v2 .= 2.0
-        @test length(parent(v2)) >= 50
+        @test length(v2) >= 50
         @test v2[1] == 2.0
-        # Same backing vector object (capacity preserved through resize round-trip)
-        @test parent(v2) === pool.float64.vectors[1]
         rewind!(pool)
     end
 
     @static if VERSION >= v"1.11-"
-        @testset "Re-acquire unsafe_acquire! after invalidation" begin
+        @testset "Re-acquire after invalidation (setfield! path)" begin
             pool = _make_pool(true)
 
             # First cycle
             checkpoint!(pool)
-            arr = unsafe_acquire!(pool, Float64, 20)
+            arr = acquire!(pool, Float64, 20)
             arr .= 3.0
             rewind!(pool)
             @test size(arr) == (0,)
 
             # Second cycle: wrapper reused, size restored
             checkpoint!(pool)
-            arr2 = unsafe_acquire!(pool, Float64, 15)
+            arr2 = acquire!(pool, Float64, 15)
             @test size(arr2) == (15,)
             arr2 .= 4.0
             @test arr2[1] == 4.0
@@ -187,16 +185,16 @@ _test_leak(x) = x
         rewind!(pool)
 
         # Inner is invalidated (slot 2 released)
-        @test length(parent(v_inner)) == 0
+        @test size(v_inner) == (0,)
 
         # Outer is still valid (slot 1 not released)
-        @test length(parent(v_outer)) >= 10
+        @test length(v_outer) >= 10
         @test v_outer[1] == 1.0
 
         rewind!(pool)
 
         # Now outer is also invalidated
-        @test length(parent(v_outer)) == 0
+        @test size(v_outer) == (0,)
     end
 
     # ==============================================================================
@@ -227,13 +225,13 @@ _test_leak(x) = x
         checkpoint!(pool)
         v = acquire!(pool, UInt8, 50)
         v .= 0xff
-        @test length(parent(v)) >= 50
+        @test length(v) >= 50
         rewind!(pool)
 
         # Fallback type also invalidated
         tp = pool.others[UInt8]
         @test length(tp.vectors[1]) == 0
-        @test length(parent(v)) == 0
+        @test size(v) == (0,)
     end
 
     # ==============================================================================
@@ -251,8 +249,8 @@ _test_leak(x) = x
         vb .= true
         rewind!(pool)
 
-        @test length(parent(vf)) == 0
-        @test length(parent(vi)) == 0
+        @test size(vf) == (0,)
+        @test size(vi) == (0,)
         @test length(vb) == 0
     end
 
@@ -269,8 +267,8 @@ _test_leak(x) = x
         rewind!(pool)
 
         @test result == 50.0
-        # After rewind, the pool's vectors should be invalidated
-        @test length(parent(v)) == 0
+        # After rewind, the pool's arrays should be invalidated
+        @test size(v) == (0,)
         @test_throws BoundsError v[1]
     end
 

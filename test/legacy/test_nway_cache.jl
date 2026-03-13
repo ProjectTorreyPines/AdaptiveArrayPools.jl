@@ -1,24 +1,19 @@
 using Test
 using AdaptiveArrayPools
 
-@testset "N-way Cache for unsafe_acquire!" begin
+@testset "N-way Cache for acquire!" begin
 
     @testset "Type checks" begin
         pool = AdaptiveArrayPool()
 
         @with_pool pool begin
-            # acquire! returns ReshapedArray for N-D
+            # acquire! returns Array for N-D
             arr = acquire!(pool, Float64, 10, 10)
-            @test arr isa Base.ReshapedArray{Float64, 2}
+            @test arr isa Matrix{Float64}
 
-            # acquire! returns SubArray for 1D
+            # acquire! returns Vector for 1D
             vec = acquire!(pool, Float64, 100)
-            @test vec isa SubArray{Float64, 1}
-
-            # unsafe_acquire! returns Array
-            raw = unsafe_acquire!(pool, Float64, 10, 10)
-            @test raw isa Array{Float64, 2}
-            @test raw isa Matrix{Float64}
+            @test vec isa Vector{Float64}
         end
     end
 
@@ -52,7 +47,7 @@ end
 
 @testset "N-way Zero-Allocation" begin
 
-    @testset "N-D unsafe_acquire!: 4-way alternating is zero-alloc" begin
+    @testset "N-D acquire!: 4-way alternating is zero-alloc (legacy)" begin
         pool = AdaptiveArrayPool()
 
         function test_nd_4way!(p)
@@ -60,7 +55,7 @@ end
             for _ in 1:100
                 for dims in dims_list
                     @with_pool p begin
-                        unsafe_acquire!(p, Float64, dims...)
+                        acquire!(p, Float64, dims...)
                     end
                 end
             end
@@ -76,8 +71,8 @@ end
         @test allocs == 0
     end
 
-    @testset "N-D acquire!: 5-way is zero-alloc (ReshapedArray)" begin
-        # acquire! returns ReshapedArray → no N-way cache needed → always 0 alloc
+    @testset "N-D acquire!: 5-way is zero-alloc (Array)" begin
+        # acquire! returns Array → uses cached wrapper → always 0 alloc
         pool = AdaptiveArrayPool()
 
         function test_nd_5way_acquire!(p)
@@ -85,7 +80,7 @@ end
             for _ in 1:100
                 for dims in dims_list
                     @with_pool p begin
-                        acquire!(p, Float64, dims...)  # ReshapedArray
+                        acquire!(p, Float64, dims...)  # Array
                     end
                 end
             end
@@ -95,13 +90,13 @@ end
         test_nd_5way_acquire!(pool)
         test_nd_5way_acquire!(pool)
 
-        # acquire! uses reshape(1D_view, dims) → 0 alloc regardless of pattern count
+        # acquire! uses cached Array wrapper → 0 alloc regardless of pattern count
         allocs = @allocated test_nd_5way_acquire!(pool)
         allocs > 0 && @warn "N-D acquire! 5-way: $allocs bytes (expected 0)"
         @test allocs == 0
     end
 
-    @testset "N-D unsafe_acquire!: 5-way behavior" begin
+    @testset "N-D acquire!: 5-way behavior (legacy eviction)" begin
         pool = AdaptiveArrayPool()
 
         function test_nd_5way_unsafe!(p)
@@ -109,7 +104,7 @@ end
             for _ in 1:100
                 for dims in dims_list
                     @with_pool p begin
-                        unsafe_acquire!(p, Float64, dims...)
+                        acquire!(p, Float64, dims...)
                     end
                 end
             end
@@ -129,12 +124,12 @@ end
 
         # Warmup with small array
         @with_pool pool begin
-            unsafe_acquire!(pool, Float64, 10, 10)
+            acquire!(pool, Float64, 10, 10)
         end
 
         # Request larger array (forces resize, invalidates cache)
         @with_pool pool begin
-            arr = unsafe_acquire!(pool, Float64, 100, 100)
+            arr = acquire!(pool, Float64, 100, 100)
             @test size(arr) == (100, 100)
         end
 
@@ -142,7 +137,7 @@ end
         # needs function boundary to avoid @allocated counting JIT artifacts)
         function _test_resize_cache!()
             @with_pool pool begin
-                unsafe_acquire!(pool, Float64, 100, 100)
+                acquire!(pool, Float64, 100, 100)
             end
         end
 
@@ -161,26 +156,26 @@ end
         # Warmup: each slot gets 2 different shapes
         for _ in 1:2
             @with_pool pool begin
-                unsafe_acquire!(pool, Float64, 5, 5)   # Slot 1
-                unsafe_acquire!(pool, Float64, 10, 10) # Slot 2
+                acquire!(pool, Float64, 5, 5)   # Slot 1
+                acquire!(pool, Float64, 10, 10) # Slot 2
             end
             @with_pool pool begin
-                unsafe_acquire!(pool, Float64, 6, 6)   # Slot 1, different dims
-                unsafe_acquire!(pool, Float64, 12, 12) # Slot 2, different dims
+                acquire!(pool, Float64, 6, 6)   # Slot 1, different dims
+                acquire!(pool, Float64, 12, 12) # Slot 2, different dims
             end
         end
 
         # Wrap in functions for proper JIT warmup
         function _test_multi_slot_a!()
             @with_pool pool begin
-                unsafe_acquire!(pool, Float64, 5, 5)
-                unsafe_acquire!(pool, Float64, 10, 10)
+                acquire!(pool, Float64, 5, 5)
+                acquire!(pool, Float64, 10, 10)
             end
         end
         function _test_multi_slot_b!()
             @with_pool pool begin
-                unsafe_acquire!(pool, Float64, 6, 6)
-                unsafe_acquire!(pool, Float64, 12, 12)
+                acquire!(pool, Float64, 6, 6)
+                acquire!(pool, Float64, 12, 12)
             end
         end
 

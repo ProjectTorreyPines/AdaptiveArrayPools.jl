@@ -437,9 +437,9 @@ end
         @test result == 100.0f0
     end
 
-    @testset "unsafe_acquire!" begin
+    @testset "acquire! returns Array" begin
         result = @with_pool :cuda pool begin
-            A = unsafe_acquire!(pool, Float32, 100)
+            A = acquire!(pool, Float32, 100)
             @test A isa CuArray{Float32, 1}
             A .= 2.0f0
             sum(A)
@@ -555,16 +555,16 @@ end
         @test eltype(A) == eltype(original)
     end
 
-    @testset "unsafe_acquire! variants" begin
+    @testset "acquire! all dimensionalities" begin
         pool = CuAdaptiveArrayPool()
 
-        v = unsafe_acquire!(pool, Float32, 100)
+        v = acquire!(pool, Float32, 100)
         @test v isa CuArray{Float32, 1}
 
-        A = unsafe_acquire!(pool, Float64, 10, 10)
+        A = acquire!(pool, Float64, 10, 10)
         @test A isa CuArray{Float64, 2}
 
-        B = unsafe_acquire!(pool, Int32, (5, 5))
+        B = acquire!(pool, Int32, (5, 5))
         @test B isa CuArray{Int32, 2}
     end
 end

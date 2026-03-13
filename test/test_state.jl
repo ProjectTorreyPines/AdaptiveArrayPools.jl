@@ -19,11 +19,10 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
         rewind!(pool)
         @test pool.float64.n_active == 0
 
-        # Second iteration - reuses same vectors
+        # Second iteration - reuses same pool slot
         v1_new = acquire!(pool, Float64, 5)
         @test pool.float64.n_active == 1
         @test length(v1_new) == 5
-        @test parent(v1_new) === parent(v1)
     end
 
     @testset "Warm-up pattern" begin
@@ -124,14 +123,13 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
         checkpoint!(pool)
         v2 = acquire!(pool, Float64, 100)
         @test length(v2) == 100
-        @test parent(v1) === parent(v2)  # Same backing vector
         rewind!(pool)
 
         # Larger size - cache miss, needs resize
         checkpoint!(pool)
         v3 = acquire!(pool, Float64, 200)
         @test length(v3) == 200
-        @test length(parent(v3)) >= 200  # Backing vector was resized
+        @test length(pool.float64.vectors[1]) >= 200  # Backing vector was resized
         rewind!(pool)
 
         # Test capacity preservation with S=0 pool (no invalidation on rewind)
@@ -143,7 +141,7 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
         checkpoint!(pool0)
         v4 = acquire!(pool0, Float64, 50)
         @test length(v4) == 50
-        @test length(parent(v4)) >= 200  # Backing vector still large
+        @test length(pool0.float64.vectors[1]) >= 200  # Backing vector still large
         rewind!(pool0)
     end
 
@@ -280,8 +278,8 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
             # Acquire arrays (populates vectors)
             v1 = acquire!(pool, Float64, 100)
             v2 = acquire!(pool, Float64, 200)
-            # Use unsafe_acquire! to populate 1D cache
-            v3 = unsafe_acquire!(pool, Float64, 50)
+            # Populate 1D cache
+            v3 = acquire!(pool, Float64, 50)
             # Use N-D acquire to populate nd cache
             m1 = acquire!(pool, Float64, 10, 10)
             @test length(pool.float64.vectors) >= 3
@@ -348,7 +346,7 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
             # First use
             v1 = acquire!(pool, Float64, 100)
             v1 .= 42.0
-            backing1 = parent(v1)
+            backing1 = pool.float64.vectors[1]
 
             # Reset
             reset!(pool)
@@ -356,7 +354,7 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
             # Should be usable and reuse existing vector
             checkpoint!(pool)
             v2 = acquire!(pool, Float64, 100)
-            @test parent(v2) === backing1  # Same backing vector reused
+            @test pool.float64.vectors[1] === backing1  # Same backing vector reused
             @test pool.float64.n_active == 1
             rewind!(pool)
             @test pool.float64.n_active == 0
@@ -1013,9 +1011,8 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
         empty!(pool)
     end
 
-    @testset "Complex nested with unsafe_acquire! (L1→L2→L3)" begin
-        # Same L1→L2→L3 pattern but using unsafe_acquire! instead of acquire!
-        # This tests that unsafe_acquire! also triggers untracked detection correctly
+    @testset "Complex nested with acquire! Array path (L1→L2→L3)" begin
+        # Same L1→L2→L3 pattern, testing that acquire! triggers untracked detection correctly
 
         pool = get_task_local_pool()
         empty!(pool)
@@ -1023,10 +1020,10 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
         l3_results = Ref{NamedTuple}((;))
         l2_results = Ref{NamedTuple}((;))
 
-        # L3: innermost @with_pool function using unsafe_acquire!
+        # L3: innermost @with_pool function using acquire!
         @with_pool pool function level3_unsafe()
-            # unsafe_acquire! returns raw Array, not SubArray
-            v_bool = unsafe_acquire!(pool, Bool, 10)
+            # acquire! returns Array
+            v_bool = acquire!(pool, Bool, 10)
             @test v_bool isa Vector{Bool}
             v_bool .= true
             l3_results[] = (
@@ -1035,15 +1032,15 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
             )
         end
 
-        # L2: plain function using unsafe_acquire! (untracked)
+        # L2: plain function using acquire! (untracked)
         function level2_unsafe_untracked()
             p = get_task_local_pool()
-            # These are untracked unsafe_acquire! calls
-            v_i64 = unsafe_acquire!(p, Int64, 50)
+            # These are untracked acquire! calls
+            v_i64 = acquire!(p, Int64, 50)
             @test v_i64 isa Vector{Int64}
             v_i64 .= 64
 
-            v_f32 = unsafe_acquire!(p, Float32, 20)
+            v_f32 = acquire!(p, Float32, 20)
             @test v_f32 isa Vector{Float32}
             v_f32 .= 32.0f0
 
@@ -1057,9 +1054,9 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
             )
         end
 
-        # L1: outermost @with_pool function using unsafe_acquire!
+        # L1: outermost @with_pool function using acquire!
         @with_pool pool function level1_unsafe()
-            v_f64 = unsafe_acquire!(pool, Float64, 100)
+            v_f64 = acquire!(pool, Float64, 100)
             @test v_f64 isa Vector{Float64}
             v_f64 .= 64.0
 
@@ -1091,7 +1088,7 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
     end
 
     @testset "Complex nested with acquire_array! alias (L1→L2→L3)" begin
-        # Same pattern using acquire_array! (alias for unsafe_acquire!)
+        # Same pattern using acquire_array! (alias for acquire!)
 
         pool = get_task_local_pool()
         empty!(pool)
@@ -1139,7 +1136,7 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
         empty!(pool)
     end
 
-    @testset "Mixed acquire!/unsafe_acquire!/acquire_array! in nested scopes" begin
+    @testset "Mixed acquire!/acquire_array! in nested scopes" begin
         # Test mixing all acquire variants in a single nested scenario
 
         pool = get_task_local_pool()
@@ -1147,13 +1144,13 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
 
         results = Ref{NamedTuple}((;))
 
-        # L3: @with_pool mixing acquire! and unsafe_acquire!
+        # L3: @with_pool mixing acquire! and acquire!
         @with_pool pool function level3_mixed()
-            v_bool = acquire!(pool, Bool, 10)           # SubArray
-            v_i32 = unsafe_acquire!(pool, Int32, 5)      # Vector
+            v_bool = acquire!(pool, Bool, 10)           # Vector{Bool}
+            v_i32 = acquire!(pool, Int32, 5)      # Vector
             v_cf64 = acquire_array!(pool, ComplexF64, 3) # Vector (alias)
 
-            @test v_bool isa SubArray
+            @test v_bool isa Vector{Bool}
             @test v_i32 isa Vector{Int32}
             @test v_cf64 isa Vector{ComplexF64}
 
@@ -1169,10 +1166,10 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
             p = get_task_local_pool()
 
             # Mix of acquire variants (all untracked)
-            v_i64 = acquire!(p, Int64, 20)           # SubArray (untracked)
-            v_f32 = unsafe_acquire!(p, Float32, 15)  # Vector (untracked)
+            v_i64 = acquire!(p, Int64, 20)           # Vector (untracked)
+            v_f32 = acquire!(p, Float32, 15)  # Vector (untracked)
 
-            @test v_i64 isa SubArray
+            @test v_i64 isa Vector{Int64}
             @test v_f32 isa Vector{Float32}
 
             l3_active = level3_mixed()
@@ -1191,10 +1188,10 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
 
         # L1: @with_pool with mixed acquire calls
         @with_pool pool function level1_mixed()
-            v_f64_view = acquire!(pool, Float64, 100)        # SubArray
-            v_f64_array = unsafe_acquire!(pool, Float64, 50) # Vector (same type!)
+            v_f64_view = acquire!(pool, Float64, 100)        # Array
+            v_f64_array = acquire!(pool, Float64, 50) # Vector (same type!)
 
-            @test v_f64_view isa SubArray
+            @test v_f64_view isa Vector{Float64}
             @test v_f64_array isa Vector{Float64}
 
             v_f64_view .= 1.0
@@ -1273,27 +1270,27 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
         empty!(pool)
     end
 
-    @testset "N-D unsafe_acquire! in nested scopes" begin
-        # Test multi-dimensional unsafe_acquire! in complex nested scenario
+    @testset "N-D acquire! in nested scopes" begin
+        # Test multi-dimensional acquire! in complex nested scenario
 
         pool = get_task_local_pool()
         empty!(pool)
 
         results = Ref{NamedTuple}((;))
 
-        # L3: @with_pool with 3D unsafe_acquire!
+        # L3: @with_pool with 3D acquire!
         @with_pool pool function level3_nd()
-            v_3d = unsafe_acquire!(pool, Float32, 2, 3, 4)
+            v_3d = acquire!(pool, Float32, 2, 3, 4)
             @test v_3d isa Array{Float32, 3}
             @test size(v_3d) == (2, 3, 4)
             v_3d .= 3.0f0
             results[] = (float32_n_active = pool.float32.n_active,)
         end
 
-        # L2: untracked 2D unsafe_acquire!
+        # L2: untracked 2D acquire!
         function level2_nd_untracked()
             p = get_task_local_pool()
-            v_2d = unsafe_acquire!(p, Int64, 5, 5)
+            v_2d = acquire!(p, Int64, 5, 5)
             @test v_2d isa Matrix{Int64}
             v_2d .= 2
 
@@ -1302,7 +1299,7 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
 
         # L1: @with_pool with tuple-style dimensions
         @with_pool pool function level1_nd()
-            v_tuple = unsafe_acquire!(pool, Float64, (3, 4, 5))
+            v_tuple = acquire!(pool, Float64, (3, 4, 5))
             @test v_tuple isa Array{Float64, 3}
             @test size(v_tuple) == (3, 4, 5)
             v_tuple .= 1.0
@@ -1606,13 +1603,13 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
         rewind!(pool)
     end
 
-    @testset "Public unsafe_acquire! sets typed bitmask" begin
+    @testset "Public acquire! sets typed bitmask (Float32)" begin
         using AdaptiveArrayPools: _fixed_slot_bit
 
         pool = AdaptiveArrayPool()
         checkpoint!(pool)
 
-        unsafe_acquire!(pool, Float32, 10)
+        acquire!(pool, Float32, 10)
         @test pool._touched_type_masks[2] == _fixed_slot_bit(Float32)
 
         rewind!(pool)

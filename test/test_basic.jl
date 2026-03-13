@@ -6,7 +6,7 @@
         # First acquire (Float64 uses fixed slot)
         v1 = acquire!(pool, Float64, 5)
         @test length(v1) == 5
-        @test v1 isa SubArray
+        @test v1 isa Vector{Float64}
         @test eltype(v1) == Float64
 
         # Access internal state via fixed slot
@@ -37,7 +37,7 @@
         v3 = acquire!(pool, Float64, 5)
         @test pool.float64.n_active == 3
         @test length(pool.float64.vectors) >= 3
-        @test v3 isa SubArray
+        @test v3 isa Vector{Float64}
     end
 
     @testset "Vector resize" begin

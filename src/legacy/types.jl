@@ -267,7 +267,7 @@ end
 
 ## Return Types (Unified for Performance)
 Unlike other types, `Bit` always returns native `BitVector`/`BitArray`:
-- **1D**: `BitVector` (both `acquire!` and `unsafe_acquire!`)
+- **1D**: `BitVector` (both `acquire!` and `acquire_view!`)
 - **N-D**: `BitArray{N}` (reshaped, preserves SIMD optimization)
 
 This design ensures users always get SIMD-optimized performance without

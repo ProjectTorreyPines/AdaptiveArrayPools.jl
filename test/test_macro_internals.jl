@@ -515,20 +515,20 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
             end
 
             # ==================================================================
-            # unsafe_acquire! support
+            # acquire_array! support (alias for acquire!)
             # ==================================================================
 
-            @testset "unsafe_acquire! single call" begin
-                expr = :(unsafe_acquire!(pool, Float64, 100))
+            @testset "acquire_array! single call" begin
+                expr = :(acquire_array!(pool, Float64, 100))
                 types = _extract_acquire_types(expr, :pool)
                 @test :Float64 in types
                 @test length(types) == 1
             end
 
-            @testset "unsafe_acquire! multiple types" begin
+            @testset "acquire_array! multiple types" begin
                 expr = quote
-                    v1 = unsafe_acquire!(pool, Float64, 10, 10)
-                    v2 = unsafe_acquire!(pool, Int32, 5)
+                    v1 = acquire_array!(pool, Float64, 10, 10)
+                    v2 = acquire_array!(pool, Int32, 5)
                 end
                 types = _extract_acquire_types(expr, :pool)
                 @test :Float64 in types
@@ -536,10 +536,10 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
                 @test length(types) == 2
             end
 
-            @testset "mixed acquire! and unsafe_acquire!" begin
+            @testset "mixed acquire! and acquire_array!" begin
                 expr = quote
                     v1 = acquire!(pool, Float64, 10)
-                    v2 = unsafe_acquire!(pool, Int64, 20)
+                    v2 = acquire_array!(pool, Int64, 20)
                     v3 = acquire!(pool, input)  # similar-style
                 end
                 types = _extract_acquire_types(expr, :pool)
@@ -551,16 +551,16 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
                 @test length(types) == 3
             end
 
-            @testset "qualified unsafe_acquire!" begin
-                expr = :(AdaptiveArrayPools.unsafe_acquire!(pool, Int16, 5))
+            @testset "qualified acquire_array!" begin
+                expr = :(AdaptiveArrayPools.acquire_array!(pool, Int16, 5))
                 types = _extract_acquire_types(expr, :pool)
                 @test :Int16 in types
             end
 
-            @testset "unsafe_acquire! different pool (no pollution)" begin
+            @testset "acquire_array! different pool (no pollution)" begin
                 expr = quote
-                    v1 = unsafe_acquire!(p1, Float64, 10)
-                    v2 = unsafe_acquire!(p2, Int, 10)
+                    v1 = acquire_array!(p1, Float64, 10)
+                    v2 = acquire_array!(p2, Int, 10)
                 end
                 types_p1 = _extract_acquire_types(expr, :p1)
                 @test :Float64 in types_p1
@@ -587,7 +587,7 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
                 expr = quote
                     v1 = acquire!(pool, MyData, 10)
                     v2 = acquire!(pool, MyOtherType, 5)
-                    v3 = unsafe_acquire!(pool, UserStruct, 3)
+                    v3 = acquire_array!(pool, UserStruct, 3)
                 end
                 types = _extract_acquire_types(expr, :pool)
                 @test :MyData in types
@@ -671,7 +671,7 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
             end
 
             # ==================================================================
-            # acquire_array! support (alias for unsafe_acquire!)
+            # acquire_array! support (alias for acquire!)
             # ==================================================================
 
             @testset "acquire_array! single call" begin
@@ -705,7 +705,7 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
             @testset "all acquire functions mixed" begin
                 expr = quote
                     v1 = acquire!(pool, Float64, 10)
-                    v2 = unsafe_acquire!(pool, Int64, 20)
+                    v2 = acquire_array!(pool, Int64, 20)
                     v3 = acquire_view!(pool, Float32, 5)
                     v4 = acquire_array!(pool, Int32, 15)
                     v5 = acquire_view!(pool, input)  # similar-style
@@ -893,9 +893,9 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
                 @test has_dynamic
             end
 
-            @testset "unsafe_acquire! integration" begin
+            @testset "acquire_array! integration" begin
                 expr = quote
-                    v1 = unsafe_acquire!(pool, Float64, 10, 10)
+                    v1 = acquire_array!(pool, Float64, 10, 10)
                     v2 = acquire!(pool, Int64, 5)
                 end
                 local_vars = _extract_local_assignments(expr)
@@ -907,10 +907,10 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
                 @test !has_dynamic
             end
 
-            @testset "mixed: acquire!, unsafe_acquire!, similar-style" begin
+            @testset "mixed: acquire!, acquire_array!, similar-style" begin
                 expr = quote
                     v1 = acquire!(pool, Float64, 10)
-                    v2 = unsafe_acquire!(pool, Int32, 5)
+                    v2 = acquire_array!(pool, Int32, 5)
                     v3 = acquire!(pool, external_input)  # external
                 end
                 local_vars = _extract_local_assignments(expr)
@@ -974,7 +974,7 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
                 expr = quote
                     v1 = acquire!(pool, Float64, 10)
                     v2 = acquire!(pool, MyData, 5)
-                    v3 = unsafe_acquire!(pool, T, 3)
+                    v3 = acquire_array!(pool, T, 3)
                 end
                 local_vars = _extract_local_assignments(expr)
                 types = _extract_acquire_types(expr, :pool)
@@ -1037,7 +1037,7 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
             @testset "all acquire functions integration" begin
                 expr = quote
                     v1 = acquire!(pool, Float64, 10)
-                    v2 = unsafe_acquire!(pool, Int64, 20)
+                    v2 = acquire_array!(pool, Int64, 20)
                     v3 = acquire_view!(pool, Float32, 5)
                     v4 = acquire_array!(pool, Int32, 15)
                     v5 = acquire_view!(pool, external_input)
@@ -1158,7 +1158,7 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
     # ==========================================================================
 
     @testset "_transform_acquire_calls" begin
-        using AdaptiveArrayPools: _transform_acquire_calls, _ACQUIRE_IMPL_REF, _UNSAFE_ACQUIRE_IMPL_REF
+        using AdaptiveArrayPools: _transform_acquire_calls, _ACQUIRE_IMPL_REF, _ACQUIRE_VIEW_IMPL_REF
 
         @testset "basic transformation" begin
             @testset "acquire! → _acquire_impl!" begin
@@ -1170,23 +1170,16 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
                 @test transformed.args[4] == 10
             end
 
-            @testset "unsafe_acquire! → _unsafe_acquire_impl!" begin
-                expr = :(unsafe_acquire!(pool, Float64, 10, 10))
-                transformed = _transform_acquire_calls(expr, :pool)
-                @test transformed.args[1] == _UNSAFE_ACQUIRE_IMPL_REF
-                @test transformed.args[2] == :pool
-            end
-
-            @testset "acquire_view! → _acquire_impl!" begin
+            @testset "acquire_view! → _acquire_view_impl!" begin
                 expr = :(acquire_view!(pool, Int32, 5))
                 transformed = _transform_acquire_calls(expr, :pool)
-                @test transformed.args[1] == _ACQUIRE_IMPL_REF
+                @test transformed.args[1] == _ACQUIRE_VIEW_IMPL_REF
             end
 
-            @testset "acquire_array! → _unsafe_acquire_impl!" begin
+            @testset "acquire_array! → _acquire_impl!" begin
                 expr = :(acquire_array!(pool, Int64, 3, 4))
                 transformed = _transform_acquire_calls(expr, :pool)
-                @test transformed.args[1] == _UNSAFE_ACQUIRE_IMPL_REF
+                @test transformed.args[1] == _ACQUIRE_IMPL_REF
             end
         end
 
@@ -1219,22 +1212,16 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
                 @test transformed.args[1] == _ACQUIRE_IMPL_REF
             end
 
-            @testset "qualified unsafe_acquire!" begin
-                expr = :(SomeAlias.unsafe_acquire!(pool, Float64, 10, 10))
-                transformed = _transform_acquire_calls(expr, :pool)
-                @test transformed.args[1] == _UNSAFE_ACQUIRE_IMPL_REF
-            end
-
             @testset "qualified acquire_view!" begin
                 expr = :(Pkg.acquire_view!(pool, Int64, 5))
                 transformed = _transform_acquire_calls(expr, :pool)
-                @test transformed.args[1] == _ACQUIRE_IMPL_REF
+                @test transformed.args[1] == _ACQUIRE_VIEW_IMPL_REF
             end
 
             @testset "qualified acquire_array!" begin
                 expr = :(MyModule.acquire_array!(pool, Float32, 3, 4, 5))
                 transformed = _transform_acquire_calls(expr, :pool)
-                @test transformed.args[1] == _UNSAFE_ACQUIRE_IMPL_REF
+                @test transformed.args[1] == _ACQUIRE_IMPL_REF
             end
         end
 
@@ -1259,7 +1246,7 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
             @testset "nested in block" begin
                 expr = quote
                     v1 = acquire!(pool, Float64, 10)
-                    v2 = unsafe_acquire!(pool, Int64, 5)
+                    v2 = acquire_array!(pool, Int64, 5)
                 end
                 transformed = _transform_acquire_calls(expr, :pool)
                 # Find the transformed calls in the block
@@ -1370,19 +1357,19 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
 
             # Verify that GlobalRef points to AdaptiveArrayPools module
             @test _ACQUIRE_IMPL_REF isa GlobalRef
-            @test _UNSAFE_ACQUIRE_IMPL_REF isa GlobalRef
+            @test _ACQUIRE_VIEW_IMPL_REF isa GlobalRef
             @test _ZEROS_IMPL_REF isa GlobalRef
             @test _ONES_IMPL_REF isa GlobalRef
             @test _SIMILAR_IMPL_REF isa GlobalRef
 
             @test _ACQUIRE_IMPL_REF.mod == AdaptiveArrayPools
-            @test _UNSAFE_ACQUIRE_IMPL_REF.mod == AdaptiveArrayPools
+            @test _ACQUIRE_VIEW_IMPL_REF.mod == AdaptiveArrayPools
             @test _ZEROS_IMPL_REF.mod == AdaptiveArrayPools
             @test _ONES_IMPL_REF.mod == AdaptiveArrayPools
             @test _SIMILAR_IMPL_REF.mod == AdaptiveArrayPools
 
             @test _ACQUIRE_IMPL_REF.name == :_acquire_impl!
-            @test _UNSAFE_ACQUIRE_IMPL_REF.name == :_unsafe_acquire_impl!
+            @test _ACQUIRE_VIEW_IMPL_REF.name == :_acquire_view_impl!
             @test _ZEROS_IMPL_REF.name == :_zeros_impl!
             @test _ONES_IMPL_REF.name == :_ones_impl!
             @test _SIMILAR_IMPL_REF.name == :_similar_impl!

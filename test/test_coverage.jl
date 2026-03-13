@@ -17,29 +17,29 @@
     @testset "DisabledPool convenience functions" begin
         pool = DISABLED_CPU
 
-        # unsafe_zeros! without explicit type (uses default_eltype)
-        v = unsafe_zeros!(pool, 5)
+        # zeros! without explicit type (uses default_eltype)
+        v = zeros!(pool, 5)
         @test v isa Vector{Float64}
         @test all(v .== 0.0)
 
-        v = unsafe_zeros!(pool, (3, 3))
+        v = zeros!(pool, (3, 3))
         @test v isa Matrix{Float64}
 
-        # unsafe_ones! without explicit type
-        v = unsafe_ones!(pool, 5)
+        # ones! without explicit type
+        v = ones!(pool, 5)
         @test v isa Vector{Float64}
         @test all(v .== 1.0)
 
-        v = unsafe_ones!(pool, (3, 3))
+        v = ones!(pool, (3, 3))
         @test v isa Matrix{Float64}
 
-        # unsafe_similar! with dims
+        # similar! with dims
         template = rand(5, 5)
-        v = unsafe_similar!(pool, template, 3, 3)
+        v = similar!(pool, template, 3, 3)
         @test v isa Matrix{Float64}
         @test size(v) == (3, 3)
 
-        v = unsafe_similar!(pool, template, Int, 4, 4)
+        v = similar!(pool, template, Int, 4, 4)
         @test v isa Matrix{Int}
         @test size(v) == (4, 4)
     end
@@ -60,14 +60,14 @@
         v = acquire!(pool, template)
         @test v isa Array{Int32, 2}
 
-        # unsafe_acquire! variants
-        v = unsafe_acquire!(pool, Float32, 3, 3)
+        # acquire! with vararg dims (returns Array now)
+        v = acquire!(pool, Float32, 3, 3)
         @test v isa Array{Float32, 2}
 
-        v = unsafe_acquire!(pool, Float32, (2, 2))
+        v = acquire!(pool, Float32, (2, 2))
         @test v isa Array{Float32, 2}
 
-        v = unsafe_acquire!(pool, template)
+        v = acquire!(pool, template)
         @test v isa Array{Int32, 2}
     end
 
@@ -95,7 +95,7 @@
         @test_throws Exception zeros!(fake_pool, 10)
         @test_throws Exception ones!(fake_pool, 10)
         @test_throws Exception acquire!(fake_pool, Float64, 10)
-        @test_throws Exception unsafe_acquire!(fake_pool, Float64, 10)
+        @test_throws Exception acquire!(fake_pool, Float64, 10)
     end
 
 
@@ -193,21 +193,6 @@
         # Test qualified name transformation (AdaptiveArrayPools.function!)
         # These test the elseif branches for qualified names in _transform_acquire_calls
 
-        # Qualified unsafe_zeros!
-        expr1 = :(AdaptiveArrayPools.unsafe_zeros!(pool, Float64, 10))
-        result1 = AdaptiveArrayPools._transform_acquire_calls(expr1, :pool)
-        @test result1.args[1] === AdaptiveArrayPools._UNSAFE_ZEROS_IMPL_REF
-
-        # Qualified unsafe_ones!
-        expr2 = :(AdaptiveArrayPools.unsafe_ones!(pool, Float64, 10))
-        result2 = AdaptiveArrayPools._transform_acquire_calls(expr2, :pool)
-        @test result2.args[1] === AdaptiveArrayPools._UNSAFE_ONES_IMPL_REF
-
-        # Qualified unsafe_similar!
-        expr3 = :(AdaptiveArrayPools.unsafe_similar!(pool, x))
-        result3 = AdaptiveArrayPools._transform_acquire_calls(expr3, :pool)
-        @test result3.args[1] === AdaptiveArrayPools._UNSAFE_SIMILAR_IMPL_REF
-
         # Qualified zeros!
         expr4 = :(AdaptiveArrayPools.zeros!(pool, Float64, 10))
         result4 = AdaptiveArrayPools._transform_acquire_calls(expr4, :pool)
@@ -228,20 +213,15 @@
         result7 = AdaptiveArrayPools._transform_acquire_calls(expr7, :pool)
         @test result7.args[1] === AdaptiveArrayPools._ACQUIRE_IMPL_REF
 
-        # Qualified unsafe_acquire!
-        expr8 = :(AdaptiveArrayPools.unsafe_acquire!(pool, Float64, 10))
-        result8 = AdaptiveArrayPools._transform_acquire_calls(expr8, :pool)
-        @test result8.args[1] === AdaptiveArrayPools._UNSAFE_ACQUIRE_IMPL_REF
-
-        # Qualified acquire_view! (alias)
+        # Qualified acquire_view!
         expr9 = :(AdaptiveArrayPools.acquire_view!(pool, Float64, 10))
         result9 = AdaptiveArrayPools._transform_acquire_calls(expr9, :pool)
-        @test result9.args[1] === AdaptiveArrayPools._ACQUIRE_IMPL_REF
+        @test result9.args[1] === AdaptiveArrayPools._ACQUIRE_VIEW_IMPL_REF
 
-        # Qualified acquire_array! (alias)
+        # Qualified acquire_array! (alias for acquire!)
         expr10 = :(AdaptiveArrayPools.acquire_array!(pool, Float64, 10))
         result10 = AdaptiveArrayPools._transform_acquire_calls(expr10, :pool)
-        @test result10.args[1] === AdaptiveArrayPools._UNSAFE_ACQUIRE_IMPL_REF
+        @test result10.args[1] === AdaptiveArrayPools._ACQUIRE_IMPL_REF
     end
 
     @testset "_generate_pool_code_with_backend" begin
@@ -416,7 +396,7 @@
 
     @testset "AbstractArrayPool _impl! default type overloads" begin
         # These are called when convenience functions are used without type parameter
-        # inside @with_pool macro: unsafe_ones!(pool, 10) → _unsafe_ones_impl!(pool, 10)
+        # inside @with_pool macro: ones!(pool, 10) → _ones_impl!(pool, 10)
         pool = AdaptiveArrayPool()
 
         # --- _zeros_impl! without type (uses default_eltype) ---
@@ -435,24 +415,6 @@
 
         v = AdaptiveArrayPools._ones_impl!(pool, 3, 4)
         @test eltype(v) == Float64
-        @test size(v) == (3, 4)
-
-        # --- _unsafe_zeros_impl! without type ---
-        v = AdaptiveArrayPools._unsafe_zeros_impl!(pool, 5)
-        @test v isa Vector{Float64}
-        @test all(v .== 0.0)
-
-        v = AdaptiveArrayPools._unsafe_zeros_impl!(pool, 3, 4)
-        @test v isa Matrix{Float64}
-        @test size(v) == (3, 4)
-
-        # --- _unsafe_ones_impl! without type ---
-        v = AdaptiveArrayPools._unsafe_ones_impl!(pool, 5)
-        @test v isa Vector{Float64}
-        @test all(v .== 1.0)
-
-        v = AdaptiveArrayPools._unsafe_ones_impl!(pool, 3, 4)
-        @test v isa Matrix{Float64}
         @test size(v) == (3, 4)
 
         empty!(pool)

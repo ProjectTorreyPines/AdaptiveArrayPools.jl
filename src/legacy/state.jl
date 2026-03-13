@@ -264,7 +264,7 @@ _invalidate_released_slots!(::AbstractTypedPool, ::Int) = nothing  # legacy 2-ar
 @noinline function _invalidate_released_slots!(tp::TypedPool{T}, old_n_active::Int, S::Int) where {T}
     new_n = tp.n_active
     # S=1: poison vectors with NaN/sentinel before structural invalidation.
-    # Especially useful on legacy (1.10) where unsafe_acquire! Array wrappers
+    # Especially useful on legacy (1.10) where Array wrappers
     # can't be structurally invalidated (Array is a C struct, no setfield!).
     if S >= 1
         _poison_released_vectors!(tp, old_n_active)

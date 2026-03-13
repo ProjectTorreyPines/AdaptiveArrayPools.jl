@@ -29,13 +29,13 @@ _test_leak(x) = x
         @test contains(err.callsite, ":")  # "file:line" format
     end
 
-    @testset "Direct path: unsafe_acquire! escape includes callsite" begin
+    @testset "Direct path: acquire! escape includes callsite" begin
         pool = _make_pool(true)
         _lazy_checkpoint!(pool)
 
         err = try
-            pool._pending_callsite = "test_borrow:2\nv = unsafe_acquire!(pool, Float64, 10)"
-            v = unsafe_acquire!(pool, Float64, 10)
+            pool._pending_callsite = "test_borrow:2\nv = acquire!(pool, Float64, 10)"
+            v = acquire!(pool, Float64, 10)
             _validate_pool_return(_test_leak(v), pool)
             nothing
         catch e
@@ -67,24 +67,6 @@ _test_leak(x) = x
 
         @test err isa PoolRuntimeEscapeError
         @test err.callsite == "<direct acquire! call>"
-
-        _lazy_rewind!(pool)
-    end
-
-    @testset "Direct unsafe_acquire! shows generic callsite label" begin
-        pool = _make_pool(true)
-        _lazy_checkpoint!(pool)
-
-        v = unsafe_acquire!(pool, Float64, 10)
-        err = try
-            _validate_pool_return(v, pool)
-            nothing
-        catch e
-            e
-        end
-
-        @test err isa PoolRuntimeEscapeError
-        @test err.callsite == "<direct unsafe_acquire! call>"
 
         _lazy_rewind!(pool)
     end
@@ -222,7 +204,7 @@ _test_leak(x) = x
     # ==============================================================================
 
     @testset "showerror: 'acquired at' shown when callsite present (S=1)" begin
-        err = PoolRuntimeEscapeError("SubArray{Float64, 1}", "Float64", "test.jl:42", nothing)
+        err = PoolRuntimeEscapeError("Vector{Float64}", "Float64", "test.jl:42", nothing)
         io = IOBuffer()
         showerror(io, err)
         msg = String(take!(io))
@@ -235,7 +217,7 @@ _test_leak(x) = x
 
     @testset "showerror: expression text shown when present in callsite" begin
         err = PoolRuntimeEscapeError(
-            "SubArray{Float64, 1}", "Float64",
+            "Vector{Float64}", "Float64",
             "test.jl:42\nzeros!(pool, Float64, 10)", nothing
         )
         io = IOBuffer()
@@ -249,7 +231,7 @@ _test_leak(x) = x
 
     @testset "showerror: short path used for absolute paths" begin
         err = PoolRuntimeEscapeError(
-            "SubArray{Float64, 1}", "Float64",
+            "Vector{Float64}", "Float64",
             "$(homedir())/.julia/dev/Foo/src/bar.jl:99\nacquire!(pool, Float64, 5)", nothing
         )
         io = IOBuffer()
@@ -264,7 +246,7 @@ _test_leak(x) = x
     end
 
     @testset "showerror: no callsite still works" begin
-        err = PoolRuntimeEscapeError("SubArray{Float64, 1}", "Float64", nothing, nothing)
+        err = PoolRuntimeEscapeError("Vector{Float64}", "Float64", nothing, nothing)
         io = IOBuffer()
         showerror(io, err)
         msg = String(take!(io))

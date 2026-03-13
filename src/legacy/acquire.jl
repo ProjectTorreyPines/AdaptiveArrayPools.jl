@@ -223,94 +223,90 @@ end
 # ==============================================================================
 
 """
-    _acquire_impl!(pool, Type{T}, n) -> SubArray{T,1,Vector{T},...}
-    _acquire_impl!(pool, Type{T}, dims...) -> ReshapedArray{T,N,...}
+    _acquire_impl!(pool, Type{T}, n) -> Array{T,1}
+    _acquire_impl!(pool, Type{T}, dims...) -> Array{T,N}
 
 Internal implementation of acquire!. Called directly by macro-transformed code
-(no type touch recording). User code calls `acquire!` which adds recording.
+(no type touch recording). Returns raw Array via N-way cache (legacy Julia ≤1.10).
 """
 @inline function _acquire_impl!(pool::AbstractArrayPool, ::Type{T}, n::Int) where {T}
     tp = get_typed_pool!(pool, T)
-    return get_view!(tp, n)
+    return get_array!(tp, (n,))
 end
 
 @inline function _acquire_impl!(pool::AbstractArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
     tp = get_typed_pool!(pool, T)
-    return get_nd_view!(tp, dims)
+    return get_array!(tp, dims)
 end
 
 @inline function _acquire_impl!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
-    return _acquire_impl!(pool, T, dims...)
+    tp = get_typed_pool!(pool, T)
+    return get_array!(tp, dims)
 end
 
 # Similar-style
 @inline _acquire_impl!(pool::AbstractArrayPool, x::AbstractArray) = _acquire_impl!(pool, eltype(x), size(x))
 
 """
-    _unsafe_acquire_impl!(pool, Type{T}, dims...) -> Array{T,N}
+    _acquire_view_impl!(pool, Type{T}, n) -> SubArray{T,1,Vector{T},...}
+    _acquire_view_impl!(pool, Type{T}, dims...) -> ReshapedArray{T,N,...}
 
-Internal implementation of unsafe_acquire!. Called directly by macro-transformed code.
+Internal implementation of acquire_view!. Called directly by macro-transformed code
+(no type touch recording). Returns views into pool-managed vectors.
 """
-@inline function _unsafe_acquire_impl!(pool::AbstractArrayPool, ::Type{T}, n::Int) where {T}
+@inline function _acquire_view_impl!(pool::AbstractArrayPool, ::Type{T}, n::Int) where {T}
     tp = get_typed_pool!(pool, T)
-    return get_array!(tp, (n,))
+    return get_view!(tp, n)
 end
 
-@inline function _unsafe_acquire_impl!(pool::AbstractArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
+@inline function _acquire_view_impl!(pool::AbstractArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
     tp = get_typed_pool!(pool, T)
-    return get_array!(tp, dims)
+    return get_nd_view!(tp, dims)
 end
 
-@inline function _unsafe_acquire_impl!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
-    tp = get_typed_pool!(pool, T)
-    return get_array!(tp, dims)
+@inline function _acquire_view_impl!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
+    return _acquire_view_impl!(pool, T, dims...)
 end
 
 # Similar-style
-@inline _unsafe_acquire_impl!(pool::AbstractArrayPool, x::AbstractArray) = _unsafe_acquire_impl!(pool, eltype(x), size(x))
+@inline _acquire_view_impl!(pool::AbstractArrayPool, x::AbstractArray) = _acquire_view_impl!(pool, eltype(x), size(x))
 
 # ==============================================================================
 # Acquisition API (User-facing with type touch recording)
 # ==============================================================================
 
 """
-    acquire!(pool, Type{T}, n) -> view type
-    acquire!(pool, Type{T}, dims...) -> view type
-    acquire!(pool, Type{T}, dims::NTuple{N,Int}) -> view type
+    acquire!(pool, Type{T}, n) -> Array{T,1}
+    acquire!(pool, Type{T}, dims...) -> Array{T,N}
+    acquire!(pool, Type{T}, dims::NTuple{N,Int}) -> Array{T,N}
 
 Acquire a pooled array of type `T` with size `n` or dimensions `dims`.
 
-Returns a pooled array (backend-dependent type):
-- **CPU 1D**: `SubArray{T,1,Vector{T},...}` (parent is `Vector{T}`)
-- **CPU N-D**: `ReshapedArray{T,N,...}` (zero creation cost)
+Returns:
+- **CPU**: `Array{T,N}` (via N-way cache on Julia ≤1.10)
 - **Bit** (`T === Bit`): `BitVector` / `BitArray{N}` (chunks-sharing, SIMD optimized)
-- **CUDA**: `CuArray{T,N}` (unified N-way cache)
 
-For CPU numeric arrays, the return types are `StridedArray`, compatible with
-BLAS and broadcasting.
-
-For type-unspecified paths (struct fields without concrete type parameters),
-use [`unsafe_acquire!`](@ref) instead - cached native array instances can be reused.
+The returned array is only valid within the `@with_pool` scope.
 
 ## Example
 ```julia
 @with_pool pool begin
-    v = acquire!(pool, Float64, 100)      # 1D view
-    m = acquire!(pool, Float64, 10, 10)   # 2D view
+    v = acquire!(pool, Float64, 100)      # Vector{Float64}
+    m = acquire!(pool, Float64, 10, 10)   # Matrix{Float64}
     v .= 1.0
     m .= 2.0
     sum(v) + sum(m)
 end
 ```
 
-See also: [`unsafe_acquire!`](@ref) for native array access.
+See also: [`acquire_view!`](@ref) for view-based access.
 """
 @inline function acquire!(pool::AbstractArrayPool, ::Type{T}, n::Int) where {T}
     _record_type_touch!(pool, T)
     return _acquire_impl!(pool, T, n)
 end
 
-# Multi-dimensional support (zero-allocation with N-D cache)
+# Multi-dimensional support
 @inline function acquire!(pool::AbstractArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
     _record_type_touch!(pool, T)
     return _acquire_impl!(pool, T, dims...)
@@ -324,18 +320,9 @@ end
 
 # Similar-style convenience methods
 """
-    acquire!(pool, x::AbstractArray) -> SubArray
+    acquire!(pool, x::AbstractArray) -> Array
 
 Acquire an array with the same element type and size as `x` (similar to `similar(x)`).
-
-## Example
-```julia
-A = rand(10, 10)
-@with_pool pool begin
-    B = acquire!(pool, A)  # Same type and size as A
-    B .= A .* 2
-end
-```
 """
 @inline function acquire!(pool::AbstractArrayPool, x::AbstractArray)
     _record_type_touch!(pool, eltype(x))
@@ -343,109 +330,53 @@ end
 end
 
 # ==============================================================================
-# Unsafe Acquisition API (Raw Arrays)
+# View Acquisition API
 # ==============================================================================
 
 """
-    unsafe_acquire!(pool, Type{T}, n) -> backend's native array type
-    unsafe_acquire!(pool, Type{T}, dims...) -> backend's native array type
-    unsafe_acquire!(pool, Type{T}, dims::NTuple{N,Int}) -> backend's native array type
+    acquire_view!(pool, Type{T}, n) -> SubArray{T,1,Vector{T},...}
+    acquire_view!(pool, Type{T}, dims...) -> ReshapedArray{T,N,...}
+    acquire_view!(pool, Type{T}, dims::NTuple{N,Int}) -> view type
 
-Acquire a native array backed by pool memory.
+Acquire a view into pool-managed memory.
 
-Returns the backend's native array type:
-- **CPU**: `Array{T,N}` (via `unsafe_wrap`)
-- **Bit** (`T === Bit`): `BitVector` / `BitArray{N}` (chunks-sharing; equivalent to `acquire!`)
-- **CUDA**: `CuArray{T,N}` (via unified view cache)
+Returns a view (SubArray/ReshapedArray) instead of a raw Array.
 
-## Safety Warning
-The returned array is only valid within the `@with_pool` scope. Using it after
-the scope ends leads to undefined behavior (use-after-free, data corruption).
-
-**Do NOT call `resize!`, `push!`, or `append!` on returned arrays** - this causes
-undefined behavior as the memory is owned by the pool.
-
-## When to Use
-- **Type-unspecified paths**: Struct fields without concrete type parameters
-- FFI calls expecting raw pointers
-- APIs that strictly require native array types
-
-## Example
-```julia
-@with_pool pool begin
-    A = unsafe_acquire!(pool, Float64, 100, 100)  # Matrix{Float64}
-    B = unsafe_acquire!(pool, Float64, 100, 100)
-    C = similar(A)  # Regular allocation for result
-    mul!(C, A, B)   # BLAS uses A, B directly
-end
-# A and B are INVALID after this point!
-```
-
-See also: [`acquire!`](@ref) for view-based access.
+See also: [`acquire!`](@ref) for the default array-returning API.
 """
-@inline function unsafe_acquire!(pool::AbstractArrayPool, ::Type{T}, n::Int) where {T}
+@inline function acquire_view!(pool::AbstractArrayPool, ::Type{T}, n::Int) where {T}
     _record_type_touch!(pool, T)
-    return _unsafe_acquire_impl!(pool, T, n)
+    return _acquire_view_impl!(pool, T, n)
 end
 
-@inline function unsafe_acquire!(pool::AbstractArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
+@inline function acquire_view!(pool::AbstractArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
     _record_type_touch!(pool, T)
-    return _unsafe_acquire_impl!(pool, T, dims...)
+    return _acquire_view_impl!(pool, T, dims...)
 end
 
-# Tuple support
-@inline function unsafe_acquire!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
+@inline function acquire_view!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
     _record_type_touch!(pool, T)
-    return _unsafe_acquire_impl!(pool, T, dims)
+    return _acquire_view_impl!(pool, T, dims...)
 end
 
-# Similar-style convenience methods
-"""
-    unsafe_acquire!(pool, x::AbstractArray) -> Array
-
-Acquire a raw array with the same element type and size as `x` (similar to `similar(x)`).
-
-## Example
-```julia
-A = rand(10, 10)
-@with_pool pool begin
-    B = unsafe_acquire!(pool, A)  # Matrix{Float64}, same size as A
-    B .= A .* 2
-end
-```
-"""
-@inline function unsafe_acquire!(pool::AbstractArrayPool, x::AbstractArray)
+@inline function acquire_view!(pool::AbstractArrayPool, x::AbstractArray)
     _record_type_touch!(pool, eltype(x))
-    return _unsafe_acquire_impl!(pool, eltype(x), size(x))
+    return _acquire_view_impl!(pool, eltype(x), size(x))
 end
 
 # ==============================================================================
-# API Aliases
+# API Alias
 # ==============================================================================
-
-"""
-    acquire_view!(pool, Type{T}, dims...)
-
-Alias for [`acquire!`](@ref).
-
-Explicit name emphasizing the return type is a view (`SubArray`/`ReshapedArray`),
-not a raw `Array`. Use when you prefer symmetric naming with `acquire_array!`.
-"""
-const acquire_view! = acquire!
 
 """
     acquire_array!(pool, Type{T}, dims...)
 
-Alias for [`unsafe_acquire!`](@ref).
+Alias for [`acquire!`](@ref).
 
 Explicit name emphasizing the return type is a raw `Array`.
 Use when you prefer symmetric naming with `acquire_view!`.
 """
-const acquire_array! = unsafe_acquire!
-
-# Internal implementation aliases (for macro transformation)
-const _acquire_view_impl! = _acquire_impl!
-const _acquire_array_impl! = _unsafe_acquire_impl!
+const acquire_array! = acquire!
 
 # ==============================================================================
 # DisabledPool Fallbacks (pooling disabled with backend context)
@@ -460,8 +391,8 @@ const _acquire_array_impl! = _unsafe_acquire_impl!
 @inline acquire!(::DisabledPool{:cpu}, ::Type{T}, dims::NTuple{N, Int}) where {T, N} = Array{T, N}(undef, dims)
 @inline acquire!(::DisabledPool{:cpu}, x::AbstractArray) = similar(x)
 
-# --- unsafe_acquire! for DisabledPool{:cpu} ---
-@inline unsafe_acquire!(::DisabledPool{:cpu}, ::Type{T}, n::Int) where {T} = Vector{T}(undef, n)
-@inline unsafe_acquire!(::DisabledPool{:cpu}, ::Type{T}, dims::Vararg{Int, N}) where {T, N} = Array{T, N}(undef, dims)
-@inline unsafe_acquire!(::DisabledPool{:cpu}, ::Type{T}, dims::NTuple{N, Int}) where {T, N} = Array{T, N}(undef, dims)
-@inline unsafe_acquire!(::DisabledPool{:cpu}, x::AbstractArray) = similar(x)
+# --- acquire_view! for DisabledPool{:cpu} (no view caching when disabled) ---
+@inline acquire_view!(::DisabledPool{:cpu}, ::Type{T}, n::Int) where {T} = Vector{T}(undef, n)
+@inline acquire_view!(::DisabledPool{:cpu}, ::Type{T}, dims::Vararg{Int, N}) where {T, N} = Array{T, N}(undef, dims)
+@inline acquire_view!(::DisabledPool{:cpu}, ::Type{T}, dims::NTuple{N, Int}) where {T, N} = Array{T, N}(undef, dims)
+@inline acquire_view!(::DisabledPool{:cpu}, x::AbstractArray) = similar(x)

@@ -265,7 +265,7 @@ end
     for i in (new_n + 1):old_n_active
         @inbounds resize!(tp.vectors[i], 0)
     end
-    # Invalidate N-D Array wrappers from unsafe_acquire! (setfield! size to zeros)
+    # Invalidate N-D Array wrappers (setfield! size to zeros)
     for N_idx in 1:length(tp.arr_wrappers)
         wrappers_for_N = @inbounds tp.arr_wrappers[N_idx]
         wrappers_for_N === nothing && continue

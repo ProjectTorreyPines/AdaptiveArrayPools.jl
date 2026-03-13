@@ -7,7 +7,7 @@
 #
 # Pattern:
 # 1. Create explicit pool (shared across iterations)
-# 2. Inner loop: @with_pool + multiple acquire!/unsafe_acquire! + in-place ops → scalar
+# 2. Inner loop: @with_pool + multiple acquire! + in-place ops → scalar
 # 3. Verify: loop has 0 bytes allocation after warmup
 #
 # Version-dependent allocation threshold:
@@ -21,7 +21,7 @@ const _ZERO_ALLOC_THRESHOLD = @static VERSION >= v"1.12-" ? 0 : 16
 @testset "Zero-allocation Patterns" begin
 
     # ==============================================================================
-    # Pattern 1: acquire! only (SubArray) - N-D matrices
+    # Pattern 1: acquire! only (Array) - N-D matrices
     # ==============================================================================
 
     function _test_acquire_single()
@@ -98,20 +98,20 @@ const _ZERO_ALLOC_THRESHOLD = @static VERSION >= v"1.12-" ? 0 : 16
     end
 
     # ==============================================================================
-    # Pattern 2: unsafe_acquire! only (raw Array)
-    # Note: With N-D array caching, unsafe_acquire! achieves zero allocation on cache hit.
+    # Pattern 2: acquire! with different pool instance (raw Array)
+    # Note: With N-D array caching, acquire! achieves zero allocation on cache hit.
     #       The Array objects are cached and reused, avoiding heap allocations.
     # ==============================================================================
 
-    function _test_unsafe_single()
+    function _test_acquire_nd_single()
         pool = AdaptiveArrayPool()
 
         # Warmup
         for _ in 1:3
             @with_pool pool begin
-                A = unsafe_acquire!(pool, Float64, 10, 10)
-                B = unsafe_acquire!(pool, Float64, 10, 10)
-                C = unsafe_acquire!(pool, Float64, 10, 10)
+                A = acquire!(pool, Float64, 10, 10)
+                B = acquire!(pool, Float64, 10, 10)
+                C = acquire!(pool, Float64, 10, 10)
                 fill!(A, 1.0)
                 fill!(B, 2.0)
                 @. C = A + B
@@ -121,9 +121,9 @@ const _ZERO_ALLOC_THRESHOLD = @static VERSION >= v"1.12-" ? 0 : 16
 
         # Measure single iteration
         alloc = @allocated @with_pool pool begin
-            A = unsafe_acquire!(pool, Float64, 10, 10)
-            B = unsafe_acquire!(pool, Float64, 10, 10)
-            C = unsafe_acquire!(pool, Float64, 10, 10)
+            A = acquire!(pool, Float64, 10, 10)
+            B = acquire!(pool, Float64, 10, 10)
+            C = acquire!(pool, Float64, 10, 10)
             fill!(A, 1.0)
             fill!(B, 2.0)
             @. C = A + B
@@ -133,27 +133,27 @@ const _ZERO_ALLOC_THRESHOLD = @static VERSION >= v"1.12-" ? 0 : 16
         return alloc
     end
 
-    @testset "README pattern: unsafe_acquire! zero-allocation" begin
+    @testset "README pattern: acquire! N-D zero-allocation" begin
         # Compile
-        _test_unsafe_single()
-        _test_unsafe_single()
+        _test_acquire_nd_single()
+        _test_acquire_nd_single()
 
-        alloc = _test_unsafe_single()
-        println("  unsafe_acquire! (single iteration): $alloc bytes")
+        alloc = _test_acquire_nd_single()
+        println("  acquire! N-D (single iteration): $alloc bytes")
 
-        # With N-D array caching, unsafe_acquire! achieves zero allocation
+        # With N-D array caching, acquire! achieves zero allocation
         @test alloc == 0
     end
 
-    function _test_unsafe_loop()
+    function _test_acquire_nd_loop()
         pool = AdaptiveArrayPool()
 
         # Warmup
         for _ in 1:3
             @with_pool pool begin
-                A = unsafe_acquire!(pool, Float64, 10, 10)
-                B = unsafe_acquire!(pool, Float64, 10, 10)
-                C = unsafe_acquire!(pool, Float64, 10, 10)
+                A = acquire!(pool, Float64, 10, 10)
+                B = acquire!(pool, Float64, 10, 10)
+                C = acquire!(pool, Float64, 10, 10)
                 fill!(A, 1.0)
                 fill!(B, 2.0)
                 @. C = A + B
@@ -165,9 +165,9 @@ const _ZERO_ALLOC_THRESHOLD = @static VERSION >= v"1.12-" ? 0 : 16
         total = 0.0
         alloc = @allocated for _ in 1:100
             total += @with_pool pool begin
-                A = unsafe_acquire!(pool, Float64, 10, 10)
-                B = unsafe_acquire!(pool, Float64, 10, 10)
-                C = unsafe_acquire!(pool, Float64, 10, 10)
+                A = acquire!(pool, Float64, 10, 10)
+                B = acquire!(pool, Float64, 10, 10)
+                C = acquire!(pool, Float64, 10, 10)
                 fill!(A, 1.0)
                 fill!(B, 2.0)
                 @. C = A + B
@@ -179,7 +179,7 @@ const _ZERO_ALLOC_THRESHOLD = @static VERSION >= v"1.12-" ? 0 : 16
     end
 
     # ==============================================================================
-    # Pattern 3: Mixed acquire! + unsafe_acquire!
+    # Pattern 3: Mixed acquire! calls
     # ==============================================================================
 
     function _inner_mul!(C, A, B)
@@ -194,7 +194,7 @@ const _ZERO_ALLOC_THRESHOLD = @static VERSION >= v"1.12-" ? 0 : 16
             @with_pool pool begin
                 A = acquire!(pool, Float64, 10, 10)
                 B = acquire!(pool, Float64, 10, 10)
-                C = unsafe_acquire!(pool, Float64, 10, 10)
+                C = acquire!(pool, Float64, 10, 10)
                 fill!(A, 2.0)
                 fill!(B, 3.0)
                 _inner_mul!(C, A, B)
@@ -208,7 +208,7 @@ const _ZERO_ALLOC_THRESHOLD = @static VERSION >= v"1.12-" ? 0 : 16
             total += @with_pool pool begin
                 A = acquire!(pool, Float64, 10, 10)
                 B = acquire!(pool, Float64, 10, 10)
-                C = unsafe_acquire!(pool, Float64, 10, 10)
+                C = acquire!(pool, Float64, 10, 10)
                 fill!(A, 2.0)
                 fill!(B, 3.0)
                 _inner_mul!(C, A, B)
@@ -219,13 +219,13 @@ const _ZERO_ALLOC_THRESHOLD = @static VERSION >= v"1.12-" ? 0 : 16
         return alloc, total
     end
 
-    @testset "README pattern: mixed acquire!/unsafe_acquire! zero-allocation loop" begin
+    @testset "README pattern: mixed acquire! zero-allocation loop" begin
         # Compile
         _test_mixed_loop()
         _test_mixed_loop()
 
         alloc, total = _test_mixed_loop()
-        println("  mixed acquire!/unsafe_acquire! loop (100 iterations): $alloc bytes")
+        println("  mixed acquire! loop (100 iterations): $alloc bytes")
         @test alloc == 0
         @test total == 100 * (10 * 10 * 6.0)  # 2.0 * 3.0 = 6.0
     end
@@ -388,7 +388,7 @@ const _ZERO_ALLOC_THRESHOLD = @static VERSION >= v"1.12-" ? 0 : 16
     #
     # When @inline is applied to a @with_pool function, the compiler inlines
     # everything into the caller — including the let-block pool binding.
-    # This can defeat LLVM's escape analysis, causing SubArray metadata to be
+    # This can defeat LLVM's escape analysis, causing Array metadata to be
     # heap-allocated instead of stack-allocated.
     # ==============================================================================
 
@@ -501,15 +501,15 @@ const _ZERO_ALLOC_THRESHOLD = @static VERSION >= v"1.12-" ? 0 : 16
 
         # Compile all
         _test_acquire_loop()
-        _test_unsafe_loop()
+        _test_acquire_nd_loop()
         _test_mixed_loop()
         _test_1d_nd_loop()
         _test_multi_type_loop()
         _test_3d_loop()
 
         # Measure
-        results["acquire!"], _ = _test_acquire_loop()
-        results["unsafe_acquire!"], _ = _test_unsafe_loop()
+        results["acquire! 1D"], _ = _test_acquire_loop()
+        results["acquire! N-D"], _ = _test_acquire_nd_loop()
         results["mixed"], _ = _test_mixed_loop()
         results["1D+N-D"], _ = _test_1d_nd_loop()
         results["multi-type"], _ = _test_multi_type_loop()

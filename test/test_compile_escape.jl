@@ -30,7 +30,6 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
                 w = zeros!(pool, 5)
                 x = ones!(pool, Int64, 3)
                 y = similar!(pool, some_array)
-                z = unsafe_acquire!(pool, Float64, 20)
                 bv = trues!(pool, 100)
                 bf = falses!(pool, 50)
                 r = reshape!(pool, some_array, 3, 4)
@@ -41,7 +40,6 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
         @test :w in vars
         @test :x in vars
         @test :y in vars
-        @test :z in vars
         @test :bv in vars
         @test :bf in vars
         @test :r in vars
@@ -395,15 +393,6 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
         @test_throws PoolEscapeError _check_compile_time_escape(
             quote
                 v = similar!(pool, some_array)
-                v
-            end,
-            :pool, src
-        )
-
-        # unsafe_acquire! also detected
-        @test_throws PoolEscapeError _check_compile_time_escape(
-            quote
-                v = unsafe_acquire!(pool, Float64, 10)
                 v
             end,
             :pool, src
@@ -1484,15 +1473,15 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
 
     @testset "_acquire_call_kind classification" begin
         # View-returning functions
-        @test _acquire_call_kind(:(acquire!(pool, Float64, 10)), :pool) === :pool_view
-        @test _acquire_call_kind(:(zeros!(pool, 10)), :pool) === :pool_view
-        @test _acquire_call_kind(:(ones!(pool, Int64, 3)), :pool) === :pool_view
-        @test _acquire_call_kind(:(similar!(pool, arr)), :pool) === :pool_view
-        @test _acquire_call_kind(:(reshape!(pool, arr, 3, 4)), :pool) === :pool_view
+        @test _acquire_call_kind(:(acquire_view!(pool, Float64, 10)), :pool) === :pool_view
 
-        # Array-returning functions (unsafe_wrap)
-        @test _acquire_call_kind(:(unsafe_acquire!(pool, Float64, 10)), :pool) === :pool_array
+        # Array-returning functions
+        @test _acquire_call_kind(:(acquire!(pool, Float64, 10)), :pool) === :pool_array
         @test _acquire_call_kind(:(acquire_array!(pool, Float64, 10)), :pool) === :pool_array
+        @test _acquire_call_kind(:(zeros!(pool, 10)), :pool) === :pool_array
+        @test _acquire_call_kind(:(ones!(pool, Int64, 3)), :pool) === :pool_array
+        @test _acquire_call_kind(:(similar!(pool, arr)), :pool) === :pool_array
+        @test _acquire_call_kind(:(reshape!(pool, arr, 3, 4)), :pool) === :pool_array
 
         # BitArray-returning functions
         @test _acquire_call_kind(:(trues!(pool, 100)), :pool) === :pool_bitarray
@@ -1507,7 +1496,7 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
     end
 
     @testset "var_info classification in PoolEscapeError" begin
-        # Direct pool view
+        # Direct pool array (acquire! now returns Array)
         err = try
             @macroexpand(
                 @with_pool pool begin
@@ -1518,24 +1507,24 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
         catch e
             e
         end
-        @test err.var_info[:v] == (:pool_view, Symbol[])
+        @test err.var_info[:v] == (:pool_array, Symbol[])
         msg = sprint(showerror, err)
-        @test occursin("pool-acquired view", msg)
+        @test occursin("pool-acquired array", msg)
 
-        # Direct pool array (unsafe_acquire!)
+        # Direct pool view (acquire_view!)
         err = try
             @macroexpand(
                 @with_pool pool begin
-                    v = unsafe_acquire!(pool, Float64, 10)
+                    v = acquire_view!(pool, Float64, 10)
                     v
                 end
             )
         catch e
             e
         end
-        @test err.var_info[:v] == (:pool_array, Symbol[])
+        @test err.var_info[:v] == (:pool_view, Symbol[])
         msg = sprint(showerror, err)
-        @test occursin("pool-acquired array", msg)
+        @test occursin("pool-acquired view", msg)
 
         # Direct pool BitArray
         err = try
@@ -1616,16 +1605,16 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
         catch e
             e
         end
-        @test err.var_info[:v] == (:pool_view, Symbol[])
+        @test err.var_info[:v] == (:pool_array, Symbol[])
         @test err.var_info[:a] == (:container, [:v])
         msg = sprint(showerror, err)
-        @test occursin("pool-acquired view", msg)
+        @test occursin("pool-acquired array", msg)
         @test occursin("wraps pool variable (v)", msg)
         # Fix section deduplicates: only collect(v), not collect(a)
         @test occursin("collect(v)", msg)
         @test !occursin("collect(a)", msg)
 
-        # zeros! classified as view
+        # zeros! classified as array
         err = try
             @macroexpand(
                 @with_pool pool begin
@@ -1636,7 +1625,7 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
         catch e
             e
         end
-        @test err.var_info[:data] == (:pool_view, Symbol[])
+        @test err.var_info[:data] == (:pool_array, Symbol[])
 
         # Tuple container
         err = try
@@ -1876,13 +1865,13 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
             :(Base.sum(pool, data)), :pool
         )
 
-        # _acquire_call_kind with qualified names (lines 1728-1731)
+        # _acquire_call_kind with qualified names
         @test _acquire_call_kind(
             :(M.acquire!(pool, Float64, 10)), :pool
-        ) === :pool_view
-        @test _acquire_call_kind(
-            :(M.unsafe_acquire!(pool, Float64, 10)), :pool
         ) === :pool_array
+        @test _acquire_call_kind(
+            :(M.acquire_view!(pool, Float64, 10)), :pool
+        ) === :pool_view
         @test _acquire_call_kind(
             :(M.trues!(pool, 10)), :pool
         ) === :pool_bitarray
