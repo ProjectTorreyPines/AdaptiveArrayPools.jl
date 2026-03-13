@@ -750,9 +750,11 @@ function _generate_block_inner(pool_name, expr, safe::Bool, source)
         raw_rewind = _generate_raw_rewind_call(pool_name, use_typed, static_types)
         raw_guard = _generate_raw_entry_depth_guard(pool_name, entry_depth_var)
 
-        transformed_expr = _transform_return_stmts(transformed_expr, pool_name;
-                                                    rewind_call = raw_rewind,
-                                                    entry_depth_guard = raw_guard)
+        transformed_expr = _transform_return_stmts(
+            transformed_expr, pool_name;
+            rewind_call = raw_rewind,
+            entry_depth_guard = raw_guard
+        )
         transformed_expr = _transform_break_continue(transformed_expr, raw_rewind, raw_guard)
 
         return quote
@@ -821,9 +823,11 @@ function _generate_function_inner(pool_name, expr, safe::Bool, source)
         raw_guard = _generate_raw_entry_depth_guard(pool_name, entry_depth_var)
 
         # Function form: transform returns with rewind, but NO break/continue transform
-        transformed_expr = _transform_return_stmts(transformed_expr, pool_name;
-                                                    rewind_call = raw_rewind,
-                                                    entry_depth_guard = raw_guard)
+        transformed_expr = _transform_return_stmts(
+            transformed_expr, pool_name;
+            rewind_call = raw_rewind,
+            entry_depth_guard = raw_guard
+        )
 
         return quote
             local $(esc(entry_depth_var)) = $(esc(pool_name))._current_depth
@@ -1673,9 +1677,11 @@ happens in the `finally` clause instead.
 Does NOT recurse into nested `:function` or `:->` expressions (inner functions
 have their own `return` semantics).
 """
-function _transform_return_stmts(expr, pool_name, current_lnn = nothing;
-                                  rewind_call = nothing,
-                                  entry_depth_guard = nothing)
+function _transform_return_stmts(
+        expr, pool_name, current_lnn = nothing;
+        rewind_call = nothing,
+        entry_depth_guard = nothing
+    )
     expr isa Expr || return expr
 
     # Don't recurse into nested function definitions (return belongs to inner function)
@@ -1693,8 +1699,10 @@ function _transform_return_stmts(expr, pool_name, current_lnn = nothing;
             return expr
         end
         # Recurse into the value expression first (may contain nested returns in ternary etc.)
-        value_expr = _transform_return_stmts(value_expr, pool_name, current_lnn;
-                                              rewind_call, entry_depth_guard)
+        value_expr = _transform_return_stmts(
+            value_expr, pool_name, current_lnn;
+            rewind_call, entry_depth_guard
+        )
         retvar = gensym(:_pool_ret)
 
         # Build return-site string for S=1 display (e.g. "file:line\nreturn v")
@@ -1745,16 +1753,24 @@ function _transform_return_stmts(expr, pool_name, current_lnn = nothing;
                 lnn = arg
                 push!(new_args, arg)
             else
-                push!(new_args, _transform_return_stmts(arg, pool_name, lnn;
-                                                         rewind_call, entry_depth_guard))
+                push!(
+                    new_args, _transform_return_stmts(
+                        arg, pool_name, lnn;
+                        rewind_call, entry_depth_guard
+                    )
+                )
             end
         end
         return Expr(:block, new_args...)
     end
 
     # Other expressions: recurse with current_lnn
-    new_args = Any[_transform_return_stmts(arg, pool_name, current_lnn;
-                                            rewind_call, entry_depth_guard) for arg in expr.args]
+    new_args = Any[
+        _transform_return_stmts(
+                arg, pool_name, current_lnn;
+                rewind_call, entry_depth_guard
+            ) for arg in expr.args
+    ]
     return Expr(expr.head, new_args...)
 end
 
@@ -1793,8 +1809,10 @@ function _transform_break_continue(expr, rewind_call, entry_depth_guard)
     end
 
     # Recurse into other expressions (if, try, let, block, etc.)
-    new_args = Any[_transform_break_continue(arg, rewind_call, entry_depth_guard)
-                   for arg in expr.args]
+    new_args = Any[
+        _transform_break_continue(arg, rewind_call, entry_depth_guard)
+            for arg in expr.args
+    ]
     return Expr(expr.head, new_args...)
 end
 
@@ -1833,6 +1851,7 @@ function _collect_local_gotos_and_labels(expr)
         for arg in node.args
             walk(arg)
         end
+        return
     end
 
     walk(expr)
@@ -1851,11 +1870,13 @@ and allowed — they don't exit the pool scope.
 function _check_unsafe_goto(expr)
     gotos, labels = _collect_local_gotos_and_labels(expr)
     unsafe = setdiff(gotos, labels)
-    if !isempty(unsafe)
+    return if !isempty(unsafe)
         targets = join(unsafe, ", ")
-        error("@with_pool: @goto to external label(s) ($targets) detected. " *
-              "This would bypass rewind! and corrupt pool state. " *
-              "Use @safe_with_pool for exception-safe behavior with @goto.")
+        error(
+            "@with_pool: @goto to external label(s) ($targets) detected. " *
+                "This would bypass rewind! and corrupt pool state. " *
+                "Use @safe_with_pool for exception-safe behavior with @goto."
+        )
     end
 end
 
