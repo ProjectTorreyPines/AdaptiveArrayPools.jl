@@ -257,7 +257,8 @@ end
     @with_pool :backend expr
 
 Executes code within a pooling scope with automatic lifecycle management.
-Calls `checkpoint!` on entry and `rewind!` on exit (even if errors occur).
+Calls `checkpoint!` on entry and inserts `rewind!` at every exit point
+(implicit return, explicit `return`, `break`, `continue`).
 
 If `pool_name` is omitted, a hidden variable is used (useful when you don't
 need to reference the pool directly).
@@ -323,6 +324,19 @@ Nested `@with_pool` blocks work correctly - each maintains its own checkpoint.
     sum(v1) + inner
 end
 ```
+
+## Exception Behavior
+
+`@with_pool` does **not** use `try-finally` (for inlining performance). Implications:
+
+1. **Uncaught exceptions**: If an exception propagates out of all `@with_pool` scopes,
+   pool state is invalid. Call `reset!(pool)` or use a fresh pool.
+2. **Caught exceptions (nested)**: If an inner `@with_pool` throws and an outer scope
+   catches, the outer scope's exit will clean up leaked inner scopes automatically
+   (deferred recovery). Do not use pool operations inside the catch block.
+3. **`PoolRuntimeEscapeError`**: After this error fires, the pool is poisoned.
+   Fix the bug in your code and restart.
+4. For full exception safety (`try-finally` guarantee), use [`@safe_with_pool`](@ref).
 """
 macro with_pool(pool_name, expr)
     return _generate_pool_code(pool_name, expr, true; source = __source__)
@@ -352,6 +366,9 @@ If disabled, `pool_name` is bound to a `DisabledPool` sentinel (e.g. `DISABLED_C
 and `acquire!` falls back to standard allocation.
 
 Useful for libraries that want to let users control pooling behavior at runtime.
+
+Like `@with_pool`, does **not** use `try-finally` — see `@with_pool` for exception
+behavior details. For exception safety, use [`@safe_maybe_with_pool`](@ref).
 
 ## Function Definition
 Like `@with_pool`, wrap function definitions:
