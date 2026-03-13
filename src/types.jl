@@ -102,9 +102,8 @@ Internal structure managing pooled vectors for a specific element type `T`.
 - `_checkpoint_depths`: Depth of each checkpoint entry (sentinel: `[0]`)
 
 ## Design Notes
-- 1D views (`SubArray`) are created fresh on every `acquire!` call — SubArray is stack-allocated
-  via SROA in modern Julia, making caching unnecessary (and slower due to memory indirection).
-- `acquire!` uses `setfield!` wrapper reuse — unlimited dim patterns, 0-alloc after warmup.
+- `acquire!` returns `Array{T,N}` via `setfield!` wrapper reuse — unlimited dim patterns, 0-alloc after warmup.
+- `acquire_view!` returns 1D `SubArray` (created fresh, stack-allocated via SROA) or N-D `ReshapedArray`.
 - Slot management is unified via `_claim_slot!` — the shared primitive for all acquisition paths.
 """
 mutable struct TypedPool{T} <: AbstractTypedPool{T, Vector{T}}

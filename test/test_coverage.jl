@@ -60,14 +60,14 @@
         v = acquire!(pool, template)
         @test v isa Array{Int32, 2}
 
-        # acquire! with vararg dims (returns Array now)
-        v = acquire!(pool, Float32, 3, 3)
+        # acquire_view! variants (explicit view path)
+        v = acquire_view!(pool, Float32, 3, 3)
+        @test v isa Array{Float32, 2}  # DisabledPool always returns Array
+
+        v = acquire_view!(pool, Float32, (2, 2))
         @test v isa Array{Float32, 2}
 
-        v = acquire!(pool, Float32, (2, 2))
-        @test v isa Array{Float32, 2}
-
-        v = acquire!(pool, template)
+        v = acquire_view!(pool, template)
         @test v isa Array{Int32, 2}
     end
 
@@ -95,7 +95,7 @@
         @test_throws Exception zeros!(fake_pool, 10)
         @test_throws Exception ones!(fake_pool, 10)
         @test_throws Exception acquire!(fake_pool, Float64, 10)
-        @test_throws Exception acquire!(fake_pool, Float64, 10)
+        @test_throws Exception acquire_view!(fake_pool, Float64, 10)
     end
 
 

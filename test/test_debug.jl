@@ -131,6 +131,43 @@ _test_leak(x) = x  # opaque to compile-time escape checker (only identity() is t
         rewind!(pool)
     end
 
+    @testset "_validate_pool_return with acquire_view! N-D (ReshapedArray{SubArray})" begin
+        pool = AdaptiveArrayPool()
+        checkpoint!(pool)
+
+        # acquire_view! N-D returns ReshapedArray{T,N,SubArray} — escape detection
+        mat = acquire_view!(pool, Float64, 3, 4)
+        @test mat isa Base.ReshapedArray
+        @test parent(mat) isa SubArray
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(mat, pool)
+
+        # 3D acquire_view!
+        tensor = acquire_view!(pool, Float64, 2, 3, 4)
+        @test tensor isa Base.ReshapedArray
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(tensor, pool)
+
+        # External ReshapedArray should pass
+        ext_sub = view(rand(12), :)
+        ext_reshaped = reshape(ext_sub, 3, 4)
+        @test ext_reshaped isa Base.ReshapedArray
+        _validate_pool_return(ext_reshaped, pool)  # Should not throw
+
+        rewind!(pool)
+    end
+
+    @testset "_validate_pool_return with reshape!(pool, ...) (Array)" begin
+        pool = AdaptiveArrayPool()
+        checkpoint!(pool)
+
+        # reshape! returns Array — caught by raw Array branch (#3)
+        v = acquire!(pool, Float64, 12)
+        mat = reshape!(pool, v, 3, 4)
+        @test mat isa Array{Float64, 2}
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(mat, pool)
+
+        rewind!(pool)
+    end
+
     @testset "_validate_pool_return external arrays pass" begin
         pool = AdaptiveArrayPool()
         checkpoint!(pool)
