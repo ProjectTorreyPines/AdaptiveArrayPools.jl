@@ -324,6 +324,19 @@
 
     end
 
+    @testset "@safe_with_pool expansion retains try-finally" begin
+        expr = @macroexpand @safe_with_pool pool begin
+            v = acquire!(pool, Float64, 10)
+            sum(v)
+        end
+
+        expr_str = string(expr)
+
+        # Safe path must use try-finally (unlike @with_pool which uses direct rewind)
+        @test occursin("finally", expr_str)
+        @test !occursin("_current_depth", expr_str)  # no entry depth guard
+    end
+
 end # Macro Expansion Details
 
 # ==============================================================================
@@ -901,8 +914,8 @@ end
 
         # Phase 5: else-branch uses selective rewind
         @test occursin("_typed_lazy_rewind!", expr_str)
-        # Full no-arg rewind!(pool) must NOT appear
-        @test !occursin("AdaptiveArrayPools.rewind!(pool)", expr_str)
+        # Full rewind!(pool) appears ONLY in the entry depth guard, not as the main rewind path
+        @test count("AdaptiveArrayPools.rewind!(pool)", expr_str) == 1  # entry depth guard only
     end
 
 end # Dynamic selective mode expansion

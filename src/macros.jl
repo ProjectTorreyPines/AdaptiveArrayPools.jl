@@ -768,7 +768,7 @@ function _generate_block_inner(pool_name, expr, safe::Bool, source)
                 $_WARN_LEAKED_SCOPE_REF($(esc(pool_name)), $(esc(entry_depth_var)))
             end
             while $(esc(pool_name))._current_depth > $(esc(entry_depth_var)) + 1
-                $rewind!($(esc(pool_name)))
+                $_REWIND_REF($(esc(pool_name)))
             end
             $rewind_call
             _result
@@ -843,7 +843,7 @@ function _generate_function_inner(pool_name, expr, safe::Bool, source)
                 $_WARN_LEAKED_SCOPE_REF($(esc(pool_name)), $(esc(entry_depth_var)))
             end
             while $(esc(pool_name))._current_depth > $(esc(entry_depth_var)) + 1
-                $rewind!($(esc(pool_name)))
+                $_REWIND_REF($(esc(pool_name)))
             end
             $rewind_call
             _result
@@ -923,7 +923,7 @@ end
     _generate_function_pool_code_with_backend(backend, pool_name, func_def, force_enable, disable_pooling)
 
 Generate function code for a specific backend (e.g., :cuda).
-Wraps the function body with pool getter, checkpoint, try-finally, rewind.
+Wraps the function body with pool getter, checkpoint, and rewind.
 
 When `disable_pooling=true` (STATIC_POOLING=false), generates DisabledPool binding.
 When `force_enable=true` (@with_pool), always uses the real pool.
@@ -1691,8 +1691,8 @@ function _transform_return_stmts(
     )
     expr isa Expr || return expr
 
-    # Don't recurse into nested function definitions (return belongs to inner function)
-    if expr.head in (:function, :->)
+    # Don't recurse into nested function definitions or quoted AST
+    if expr.head in (:function, :->, :quote)
         return expr
     end
 
@@ -1804,8 +1804,8 @@ Skips `:function`, `:->` bodies (inner function scope boundary).
 function _transform_break_continue(expr, rewind_call, entry_depth_guard)
     expr isa Expr || return expr
 
-    # Don't recurse into nested functions
-    expr.head in (:function, :->) && return expr
+    # Don't recurse into nested functions or quoted AST
+    expr.head in (:function, :->, :quote) && return expr
 
     # Don't recurse into loop bodies — break/continue there are for those loops
     expr.head in (:for, :while) && return expr
@@ -1852,8 +1852,8 @@ function _collect_local_gotos_and_labels(expr)
             end
         end
 
-        # Skip nested function bodies (separate scope)
-        node.head in (:function, :->) && return
+        # Skip nested function bodies (separate scope) and quoted AST (not executable here)
+        node.head in (:function, :->, :quote) && return
 
         for arg in node.args
             walk(arg)

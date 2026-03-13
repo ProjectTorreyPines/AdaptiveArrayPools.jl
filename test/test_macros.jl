@@ -452,6 +452,28 @@ import AdaptiveArrayPools: checkpoint!, rewind!
                 @goto external_label  # this one has no matching @label
             end
         end
+
+        # Quoted @label must NOT mask real external @goto
+        @testset "Quoted @label does not mask external @goto" begin
+            @test_throws ErrorException @macroexpand @with_pool pool begin
+                q = quote
+                    @label escape  # just AST data, not a real label
+                end
+                @goto escape  # real goto — should be caught as external
+            end
+        end
+
+        # Quoted @goto should NOT trigger false-positive error
+        @testset "Quoted @goto does not trigger false error" begin
+            expr = @macroexpand @with_pool pool begin
+                v = acquire!(pool, Float64, 10)
+                q = quote
+                    @goto somewhere  # just AST data, harmless
+                end
+                sum(v)
+            end
+            @test expr isa Expr  # no error — quoted @goto is ignored
+        end
     end
 
     # ==============================================================================
