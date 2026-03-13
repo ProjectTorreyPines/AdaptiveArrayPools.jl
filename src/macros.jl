@@ -653,50 +653,8 @@ function _generate_pool_code(pool_name, expr, force_enable; safe::Bool = false, 
     _esc = _check_compile_time_escape(expr, pool_name, source)
     _esc !== nothing && return :(throw($_esc))
 
-    # Block logic
-    # Extract types from acquire! calls for optimized checkpoint/rewind
-    # Only extract types for calls to the target pool (pool_name)
-    all_types = _extract_acquire_types(expr, pool_name)
-    local_vars = _extract_local_assignments(expr)
-    static_types, has_dynamic = _filter_static_types(all_types, local_vars)
-
-    # Use typed checkpoint/rewind if all types are static, otherwise fallback to full
-    use_typed = !has_dynamic && !isempty(static_types)
-
-    # For typed path: transform acquire! → _acquire_impl! (bypasses type touch recording)
-    # For dynamic path: keep acquire! untransformed so _record_type_touch! is called
-    transformed_expr = use_typed ? _transform_acquire_calls(expr, pool_name) : expr
-
-    # Inject borrow callsite recording + return validation.
-    # Always injected — _runtime_check(pool) gates at runtime (dead-code-eliminated when false).
-    transformed_expr = _inject_pending_callsite(transformed_expr, pool_name, expr)
-    transformed_expr = _transform_return_stmts(transformed_expr, pool_name)
-
-    if use_typed
-        checkpoint_call = _generate_typed_checkpoint_call(esc(pool_name), static_types)
-    else
-        checkpoint_call = _generate_lazy_checkpoint_call(esc(pool_name))
-    end
-
-    if use_typed
-        rewind_call = _generate_typed_rewind_call(esc(pool_name), static_types)
-    else
-        rewind_call = _generate_lazy_rewind_call(esc(pool_name))
-    end
-
-    # Build the inner body (runs inside let-block where pool has concrete type)
-    inner = quote
-        $checkpoint_call
-        try
-            local _result = $(esc(transformed_expr))
-            if $_RUNTIME_CHECK_REF($(esc(pool_name)))
-                $_validate_pool_return(_result, $(esc(pool_name)))
-            end
-            _result
-        finally
-            $rewind_call
-        end
-    end
+    # Block logic — shared with backend-specific code generation
+    inner = _generate_block_inner(pool_name, expr, safe, source)
 
     if force_enable
         return _wrap_with_dispatch(esc(pool_name), :(get_task_local_pool()), inner)
@@ -713,6 +671,155 @@ function _generate_pool_code(pool_name, expr, force_enable; safe::Bool = false, 
                     $(esc(expr))
                 end
             end
+        end
+    end
+end
+
+# ==============================================================================
+# Internal: Shared Block-Form Inner Body Generator
+# ==============================================================================
+#
+# Shared between _generate_pool_code (CPU) and _generate_pool_code_with_backend.
+# Produces the `inner` quote block containing checkpoint → body → validate → rewind.
+
+"""
+    _generate_block_inner(pool_name, expr, safe, source) -> Expr
+
+Generate the inner body for block-form `@with_pool`. Handles both safe (try-finally)
+and direct-rewind paths. Used by both CPU and backend-specific code generators.
+
+Does NOT handle the outer dispatch wrapper or MAYBE_POOLING branching — callers
+handle those after receiving the inner body.
+"""
+function _generate_block_inner(pool_name, expr, safe::Bool, source)
+    # @goto detection (direct-rewind path only)
+    if !safe && source !== nothing
+        _check_goto_usage(expr, source)
+    end
+
+    all_types = _extract_acquire_types(expr, pool_name)
+    local_vars = _extract_local_assignments(expr)
+    static_types, has_dynamic = _filter_static_types(all_types, local_vars)
+    use_typed = !has_dynamic && !isempty(static_types)
+
+    # Generate checkpoint/rewind calls (esc'd, for inner body template)
+    if use_typed
+        checkpoint_call = _generate_typed_checkpoint_call(esc(pool_name), static_types)
+        rewind_call = _generate_typed_rewind_call(esc(pool_name), static_types)
+    else
+        checkpoint_call = _generate_lazy_checkpoint_call(esc(pool_name))
+        rewind_call = _generate_lazy_rewind_call(esc(pool_name))
+    end
+
+    transformed_expr = use_typed ? _transform_acquire_calls(expr, pool_name) : expr
+    transformed_expr = _inject_pending_callsite(transformed_expr, pool_name, expr)
+
+    if safe
+        transformed_expr = _transform_return_stmts(transformed_expr, pool_name)
+        return quote
+            $checkpoint_call
+            try
+                local _result = $(esc(transformed_expr))
+                if $_RUNTIME_CHECK_REF($(esc(pool_name)))
+                    $_validate_pool_return(_result, $(esc(pool_name)))
+                end
+                _result
+            finally
+                $rewind_call
+            end
+        end
+    else
+        entry_depth_var = gensym(:_entry_depth)
+        raw_rewind = _generate_raw_rewind_call(pool_name, use_typed, static_types)
+        raw_guard = _generate_raw_entry_depth_guard(pool_name, entry_depth_var)
+
+        transformed_expr = _transform_return_stmts(transformed_expr, pool_name;
+                                                    rewind_call = raw_rewind,
+                                                    entry_depth_guard = raw_guard)
+        transformed_expr = _transform_break_continue(transformed_expr, raw_rewind, raw_guard)
+
+        return quote
+            local $entry_depth_var = $(esc(pool_name))._current_depth
+            $checkpoint_call
+            local _result = $(esc(transformed_expr))
+            if $_RUNTIME_CHECK_REF($(esc(pool_name)))
+                $_validate_pool_return(_result, $(esc(pool_name)))
+            end
+            while $(esc(pool_name))._current_depth > $entry_depth_var + 1
+                $rewind!($(esc(pool_name)))
+            end
+            $rewind_call
+            _result
+        end
+    end
+end
+
+"""
+    _generate_function_inner(pool_name, expr, safe, source)
+
+Shared helper for function-form code generation (both CPU and backend variants).
+Like `_generate_block_inner` but does NOT apply `_transform_break_continue` —
+`break`/`continue` cannot exit a function scope.
+"""
+function _generate_function_inner(pool_name, expr, safe::Bool, source)
+    # @goto detection (direct-rewind path only)
+    if !safe && source !== nothing
+        _check_goto_usage(expr, source)
+    end
+
+    all_types = _extract_acquire_types(expr, pool_name)
+    local_vars = _extract_local_assignments(expr)
+    static_types, has_dynamic = _filter_static_types(all_types, local_vars)
+    use_typed = !has_dynamic && !isempty(static_types)
+
+    # Generate checkpoint/rewind calls (esc'd, for inner body template)
+    if use_typed
+        checkpoint_call = _generate_typed_checkpoint_call(esc(pool_name), static_types)
+        rewind_call = _generate_typed_rewind_call(esc(pool_name), static_types)
+    else
+        checkpoint_call = _generate_lazy_checkpoint_call(esc(pool_name))
+        rewind_call = _generate_lazy_rewind_call(esc(pool_name))
+    end
+
+    transformed_expr = use_typed ? _transform_acquire_calls(expr, pool_name) : expr
+    transformed_expr = _inject_pending_callsite(transformed_expr, pool_name, expr)
+
+    if safe
+        transformed_expr = _transform_return_stmts(transformed_expr, pool_name)
+        return quote
+            $checkpoint_call
+            try
+                local _result = $(esc(transformed_expr))
+                if $_RUNTIME_CHECK_REF($(esc(pool_name)))
+                    $_validate_pool_return(_result, $(esc(pool_name)))
+                end
+                _result
+            finally
+                $rewind_call
+            end
+        end
+    else
+        entry_depth_var = gensym(:_entry_depth)
+        raw_rewind = _generate_raw_rewind_call(pool_name, use_typed, static_types)
+        raw_guard = _generate_raw_entry_depth_guard(pool_name, entry_depth_var)
+
+        # Function form: transform returns with rewind, but NO break/continue transform
+        transformed_expr = _transform_return_stmts(transformed_expr, pool_name;
+                                                    rewind_call = raw_rewind,
+                                                    entry_depth_guard = raw_guard)
+
+        return quote
+            local $entry_depth_var = $(esc(pool_name))._current_depth
+            $checkpoint_call
+            local _result = $(esc(transformed_expr))
+            if $_RUNTIME_CHECK_REF($(esc(pool_name)))
+                $_validate_pool_return(_result, $(esc(pool_name)))
+            end
+            while $(esc(pool_name))._current_depth > $entry_depth_var + 1
+                $rewind!($(esc(pool_name)))
+            end
+            $rewind_call
+            _result
         end
     end
 end
@@ -756,37 +863,8 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, forc
         _esc !== nothing && return :(throw($_esc))
 
         # Block logic with runtime check
-        all_types = _extract_acquire_types(expr, pool_name)
-        local_vars = _extract_local_assignments(expr)
-        static_types, has_dynamic = _filter_static_types(all_types, local_vars)
-        use_typed = !has_dynamic && !isempty(static_types)
-        # For typed path: transform acquire! → _acquire_impl! (bypasses type touch recording)
-        # For dynamic path: keep acquire! untransformed so _record_type_touch! is called
-        transformed_expr = use_typed ? _transform_acquire_calls(expr, pool_name) : expr
-        transformed_expr = _inject_pending_callsite(transformed_expr, pool_name, expr)
-        transformed_expr = _transform_return_stmts(transformed_expr, pool_name)
+        inner = _generate_block_inner(pool_name, expr, safe, source)
         pool_getter = :($_get_pool_for_backend($(Val{backend}())))
-
-        if use_typed
-            checkpoint_call = _generate_typed_checkpoint_call(esc(pool_name), static_types)
-            rewind_call = _generate_typed_rewind_call(esc(pool_name), static_types)
-        else
-            checkpoint_call = _generate_lazy_checkpoint_call(esc(pool_name))
-            rewind_call = _generate_lazy_rewind_call(esc(pool_name))
-        end
-
-        inner = quote
-            $checkpoint_call
-            try
-                local _result = $(esc(transformed_expr))
-                if $_RUNTIME_CHECK_REF($(esc(pool_name)))
-                    $_validate_pool_return(_result, $(esc(pool_name)))
-                end
-                _result
-            finally
-                $rewind_call
-            end
-        end
         enabled_branch = _wrap_with_dispatch(esc(pool_name), pool_getter, inner; backend)
         return quote
             if $MAYBE_POOLING[]
@@ -808,47 +886,9 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, forc
     _esc = _check_compile_time_escape(expr, pool_name, source)
     _esc !== nothing && return :(throw($_esc))
 
-    # Block logic: Extract types from acquire! calls for optimized checkpoint/rewind
-    all_types = _extract_acquire_types(expr, pool_name)
-    local_vars = _extract_local_assignments(expr)
-    static_types, has_dynamic = _filter_static_types(all_types, local_vars)
-
-    # Use typed checkpoint/rewind if all types are static, otherwise fallback to full
-    use_typed = !has_dynamic && !isempty(static_types)
-
-    # For typed path: transform acquire! → _acquire_impl! (bypasses type touch recording)
-    # For dynamic path: keep acquire! untransformed so _record_type_touch! is called
-    transformed_expr = use_typed ? _transform_acquire_calls(expr, pool_name) : expr
-    transformed_expr = _inject_pending_callsite(transformed_expr, pool_name, expr)
-    transformed_expr = _transform_return_stmts(transformed_expr, pool_name)
-
-    # Use Val{backend}() for compile-time dispatch - fully inlinable
+    # Block logic (force_enable=true path)
+    inner = _generate_block_inner(pool_name, expr, safe, source)
     pool_getter = :($_get_pool_for_backend($(Val{backend}())))
-
-    if use_typed
-        checkpoint_call = _generate_typed_checkpoint_call(esc(pool_name), static_types)
-    else
-        checkpoint_call = _generate_lazy_checkpoint_call(esc(pool_name))
-    end
-
-    if use_typed
-        rewind_call = _generate_typed_rewind_call(esc(pool_name), static_types)
-    else
-        rewind_call = _generate_lazy_rewind_call(esc(pool_name))
-    end
-
-    inner = quote
-        $checkpoint_call
-        try
-            local _result = $(esc(transformed_expr))
-            if $_RUNTIME_CHECK_REF($(esc(pool_name)))
-                $_validate_pool_return(_result, $(esc(pool_name)))
-            end
-            _result
-        finally
-            $rewind_call
-        end
-    end
     return _wrap_with_dispatch(esc(pool_name), pool_getter, inner; backend)
 end
 
@@ -882,43 +922,11 @@ function _generate_function_pool_code_with_backend(backend::Symbol, pool_name, f
     _esc = _check_compile_time_escape(body, pool_name, source)
     _esc !== nothing && return :(throw($_esc))
 
-    # Analyze body for types
-    all_types = _extract_acquire_types(body, pool_name)
-    local_vars = _extract_local_assignments(body)
-    static_types, has_dynamic = _filter_static_types(all_types, local_vars)
-    use_typed = !has_dynamic && !isempty(static_types)
-
-    # For typed path: transform acquire! → _acquire_impl! (bypasses type touch recording)
-    # For dynamic path: keep acquire! untransformed so _record_type_touch! is called
-    transformed_body = use_typed ? _transform_acquire_calls(body, pool_name) : body
-    transformed_body = _inject_pending_callsite(transformed_body, pool_name, body)
-    transformed_body = _transform_return_stmts(transformed_body, pool_name)
+    # Function body inner — no break/continue transform (can't break out of a function)
+    inner = _generate_function_inner(pool_name, body, safe, source)
 
     # Use Val{backend}() for compile-time dispatch
     pool_getter = :($_get_pool_for_backend($(Val{backend}())))
-
-    if use_typed
-        checkpoint_call = _generate_typed_checkpoint_call(esc(pool_name), static_types)
-        rewind_call = _generate_typed_rewind_call(esc(pool_name), static_types)
-    else
-        checkpoint_call = _generate_lazy_checkpoint_call(esc(pool_name))
-        rewind_call = _generate_lazy_rewind_call(esc(pool_name))
-    end
-
-    inner = quote
-        $checkpoint_call
-        try
-            local _result = begin
-                $(esc(transformed_body))
-            end
-            if $_RUNTIME_CHECK_REF($(esc(pool_name)))
-                $_validate_pool_return(_result, $(esc(pool_name)))
-            end
-            _result
-        finally
-            $rewind_call
-        end
-    end
 
     if force_enable
         new_body = quote
@@ -964,63 +972,13 @@ function _generate_function_pool_code(pool_name, func_def, force_enable, disable
     _esc = _check_compile_time_escape(body, pool_name, source)
     _esc !== nothing && return :(throw($_esc))
 
-    # Analyze body for types
-    all_types = _extract_acquire_types(body, pool_name)
-    local_vars = _extract_local_assignments(body)
-    static_types, has_dynamic = _filter_static_types(all_types, local_vars)
-    use_typed = !has_dynamic && !isempty(static_types)
-
-    # For typed path: transform acquire! → _acquire_impl! (bypasses type touch recording)
-    # For dynamic path: keep acquire! untransformed so _record_type_touch! is called
-    transformed_body = use_typed ? _transform_acquire_calls(body, pool_name) : body
-    # Safety transforms — always inject; dead-code-eliminated at S=0 inside dispatch closure
-    transformed_body = _inject_pending_callsite(transformed_body, pool_name, body)
-    transformed_body = _transform_return_stmts(transformed_body, pool_name)
-
-    if use_typed
-        checkpoint_call = _generate_typed_checkpoint_call(esc(pool_name), static_types)
-    else
-        checkpoint_call = _generate_lazy_checkpoint_call(esc(pool_name))
-    end
-
-    if use_typed
-        rewind_call = _generate_typed_rewind_call(esc(pool_name), static_types)
-    else
-        rewind_call = _generate_lazy_rewind_call(esc(pool_name))
-    end
+    # Function body inner — no break/continue transform (can't break out of a function)
+    inner = _generate_function_inner(pool_name, body, safe, source)
 
     if force_enable
-        inner = quote
-            $checkpoint_call
-            try
-                local _result = begin
-                    $(esc(transformed_body))
-                end
-                if $_RUNTIME_CHECK_REF($(esc(pool_name)))
-                    $_validate_pool_return(_result, $(esc(pool_name)))
-                end
-                _result
-            finally
-                $rewind_call
-            end
-        end
         new_body = _wrap_with_dispatch(esc(pool_name), :(get_task_local_pool()), inner)
     else
         disabled_pool = _disabled_pool_expr(backend)
-        inner = quote
-            $checkpoint_call
-            try
-                local _result = begin
-                    $(esc(transformed_body))
-                end
-                if $_RUNTIME_CHECK_REF($(esc(pool_name)))
-                    $_validate_pool_return(_result, $(esc(pool_name)))
-                end
-                _result
-            finally
-                $rewind_call
-            end
-        end
         enabled_branch = _wrap_with_dispatch(esc(pool_name), :(get_task_local_pool()), inner)
         new_body = quote
             if $MAYBE_POOLING[]
