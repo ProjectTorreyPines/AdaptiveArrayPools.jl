@@ -446,6 +446,84 @@ end
         end
         @test result == 200.0f0
     end
+
+    # ==================================================================
+    # Direct-rewind path: CUDA pool runtime verification
+    # (Macro AST logic tested on CPU; here we verify CUDA rewind!/checkpoint!)
+    # ==================================================================
+
+    @testset "Direct rewind: explicit return" begin
+        @with_pool :cuda pool function cuda_early_return(flag)
+            v = acquire!(pool, Float32, 10)
+            v .= 1.0f0
+            if flag
+                return sum(v)
+            end
+            v .= 2.0f0
+            sum(v)
+        end
+
+        @test cuda_early_return(true) == 10.0f0
+        @test cuda_early_return(false) == 20.0f0
+        @test get_task_local_cuda_pool()._current_depth == 1
+    end
+
+    @testset "Direct rewind: break/continue in loop" begin
+        pool = get_task_local_cuda_pool()
+        reset!(pool)
+
+        total = 0.0f0
+        for i in 1:5
+            @with_pool :cuda p begin
+                v = acquire!(p, Float32, 3)
+                v .= Float32(i)
+                if i == 3
+                    continue
+                end
+                total += sum(v)
+            end
+        end
+        @test total == 3.0f0 * (1 + 2 + 4 + 5)  # skip i=3
+        @test pool._current_depth == 1
+    end
+
+    @testset "Direct rewind: nested catch recovery (entry depth guard)" begin
+        reset!(get_task_local_cuda_pool())
+
+        @with_pool :cuda pool function cuda_outer_catches()
+            v = acquire!(pool, Float32, 10)
+            v .= 1.0f0
+            result = try
+                @with_pool :cuda pool begin
+                    acquire!(pool, Float64, 5)
+                    error("boom")
+                end
+            catch
+                42
+            end
+            sum(v) + result
+        end
+
+        @test cuda_outer_catches() == 52.0f0
+        @test get_task_local_cuda_pool()._current_depth == 1
+    end
+
+    @testset "Uncaught exception corrupts CUDA pool (documented)" begin
+        pool = get_task_local_cuda_pool()
+        reset!(pool)
+
+        try
+            @with_pool :cuda p begin
+                acquire!(p, Float32, 10)
+                error("uncaught!")
+            end
+        catch
+        end
+
+        @test pool._current_depth > 1  # corrupted — expected
+        reset!(pool)
+        @test pool._current_depth == 1
+    end
 end
 
 @testset "Acquire API" begin
