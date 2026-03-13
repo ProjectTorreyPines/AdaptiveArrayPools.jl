@@ -415,7 +415,7 @@ end
         reset!(pool)
 
         try
-            @with_pool :cuda p begin
+            @safe_with_pool :cuda p begin
                 acquire!(p, Float32, 100)
                 @test p.float32.n_active == 1
                 error("Intentional error")
