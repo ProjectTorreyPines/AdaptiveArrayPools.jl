@@ -77,4 +77,11 @@ else
     else
         @info "CUDA tests disabled via TEST_CUDA=false"
     end
+
+    # Metal extension tests (auto-detect, skip with TEST_METAL=false)
+    if get(ENV, "TEST_METAL", "true") != "false"
+        include("metal/runtests.jl")
+    else
+        @info "Metal tests disabled via TEST_METAL=false"
+    end
 end
