@@ -670,6 +670,9 @@ function _generate_pool_code(pool_name, expr, force_enable; safe::Bool = false, 
     _esc = _check_compile_time_escape(expr, pool_name, source)
     _esc !== nothing && return :(throw($_esc))
 
+    # Compile-time structural mutation detection (zero runtime cost)
+    _check_structural_mutation(expr, pool_name, source)
+
     # Block logic — shared with backend-specific code generation
     inner = _generate_block_inner(pool_name, expr, safe, source)
 
@@ -889,6 +892,9 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, forc
         _esc = _check_compile_time_escape(expr, pool_name, source)
         _esc !== nothing && return :(throw($_esc))
 
+        # Compile-time structural mutation detection (zero runtime cost)
+        _check_structural_mutation(expr, pool_name, source)
+
         # Block logic with runtime check
         inner = _generate_block_inner(pool_name, expr, safe, source)
         pool_getter = :($_get_pool_for_backend($(Val{backend}())))
@@ -912,6 +918,9 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, forc
     # Compile-time escape detection (zero runtime cost)
     _esc = _check_compile_time_escape(expr, pool_name, source)
     _esc !== nothing && return :(throw($_esc))
+
+    # Compile-time structural mutation detection (zero runtime cost)
+    _check_structural_mutation(expr, pool_name, source)
 
     # Block logic (force_enable=true path)
     inner = _generate_block_inner(pool_name, expr, safe, source)
@@ -948,6 +957,9 @@ function _generate_function_pool_code_with_backend(backend::Symbol, pool_name, f
     # Compile-time escape detection (zero runtime cost)
     _esc = _check_compile_time_escape(body, pool_name, source)
     _esc !== nothing && return :(throw($_esc))
+
+    # Compile-time structural mutation detection (zero runtime cost)
+    _check_structural_mutation(body, pool_name, source)
 
     # Function body inner — no break/continue transform (can't break out of a function)
     inner = _generate_function_inner(pool_name, body, safe, source)
@@ -998,6 +1010,9 @@ function _generate_function_pool_code(pool_name, func_def, force_enable, disable
     # Compile-time escape detection (zero runtime cost)
     _esc = _check_compile_time_escape(body, pool_name, source)
     _esc !== nothing && return :(throw($_esc))
+
+    # Compile-time structural mutation detection (zero runtime cost)
+    _check_structural_mutation(body, pool_name, source)
 
     # Function body inner — no break/continue transform (can't break out of a function)
     inner = _generate_function_inner(pool_name, body, safe, source)
@@ -2428,4 +2443,229 @@ function _check_compile_time_escape(expr, pool_name, source::Union{LineNumberNod
     file = source !== nothing ? string(source.file) : nothing
     line = source !== nothing ? source.line : nothing
     throw(PoolEscapeError(sorted, file, line, points, var_info, declarations))
+end
+
+# ==============================================================================
+# PoolMutationError — Compile-time structural mutation detection
+# ==============================================================================
+
+"""Per-mutation-site detail: which expression, at which line, mutates which var."""
+struct MutationPoint
+    expr::Any
+    line::Union{Int, Nothing}
+    var::Symbol
+    func::Symbol
+end
+
+"""
+    PoolMutationError <: Exception
+
+Thrown at macro expansion time when structural mutation functions (`resize!`,
+`push!`, `pop!`, etc.) are called on pool-backed variables within `@with_pool` /
+`@maybe_with_pool` blocks.
+
+Pool-backed arrays share memory with the pool's backing storage. Structural
+mutations may cause pooling benefits (zero-alloc reuse) to be lost and
+temporary extra memory retention until the next `acquire!` at the same slot.
+
+This is a compile-time check with zero runtime cost.
+"""
+struct PoolMutationError <: Exception
+    file::Union{String, Nothing}
+    line::Union{Int, Nothing}
+    points::Vector{MutationPoint}
+    declarations::Vector{DeclarationSite}
+end
+
+function Base.showerror(io::IO, e::PoolMutationError)
+    # Header
+    printstyled(io, "PoolMutationError"; color = :red, bold = true)
+    printstyled(io, " (compile-time)"; color = :light_black)
+    println(io)
+
+    # Descriptive message
+    println(io)
+    n = length(e.points)
+    if n == 1
+        printstyled(io, "  Structural mutation of pool-backed array detected:\n"; color = :light_black)
+    else
+        printstyled(io, "  ", n, " structural mutations of pool-backed arrays detected:\n"; color = :light_black)
+    end
+
+    # Declaration sites
+    if !isempty(e.declarations)
+        println(io)
+        printstyled(io, "  Declarations:\n"; bold = true)
+        for (idx, decl) in enumerate(e.declarations)
+            printstyled(io, "    [", idx, "]  "; color = :light_black)
+            printstyled(io, string(decl.expr); color = :cyan)
+            decl_file = (decl.file !== nothing && decl.file !== :none) ? decl.file : e.file
+            loc = _format_location_str(decl_file, decl.line)
+            if loc !== nothing
+                printstyled(io, "  ["; color = :cyan, bold = true)
+                printstyled(io, loc; color = :cyan, bold = true)
+                printstyled(io, "] "; color = :cyan, bold = true)
+            end
+            println(io)
+        end
+    end
+
+    # Mutation points
+    println(io)
+    label = n == 1 ? "  Dangerous call:" : "  Dangerous calls:"
+    printstyled(io, label, "\n"; bold = true)
+    for (idx, pt) in enumerate(e.points)
+        printstyled(io, "    [", idx, "]  "; color = :light_black)
+        printstyled(io, string(pt.func); color = :red, bold = true)
+        printstyled(io, "("; color = :normal)
+        printstyled(io, string(pt.var); color = :red, bold = true)
+        printstyled(io, ", ...)"; color = :normal)
+        loc = _format_point_location(e.file, pt.line)
+        if loc !== nothing
+            printstyled(io, "  ["; color = :magenta, bold = true)
+            printstyled(io, loc; color = :magenta, bold = true)
+            printstyled(io, "] "; color = :magenta, bold = true)
+        end
+        println(io)
+    end
+
+    # Suggestion
+    println(io)
+    printstyled(io, "  Tip: "; bold = true)
+    printstyled(io, "Consider requesting the exact size via "; color = :light_black)
+    printstyled(io, "acquire!(pool, T, n)"; bold = true)
+    printstyled(io, " if known in advance.\n"; color = :light_black)
+    printstyled(io, "       resize!/push!/pop! may trigger memory reallocation — pooling benefits\n"; color = :light_black)
+    printstyled(io, "       (zero-alloc reuse) may be lost; temporary extra memory retention may occur.\n"; color = :light_black)
+
+    # False positive
+    println(io)
+    printstyled(io, "  False positive?\n"; bold = true)
+    printstyled(io, "    Please file an issue at "; color = :light_black)
+    printstyled(io, "https://github.com/ProjectTorreyPines/AdaptiveArrayPools.jl/issues"; bold = true)
+    return printstyled(io, "\n    with a minimal reproducer so we can improve the mutation detector.\n"; color = :light_black)
+end
+
+# Suppress stacktrace
+Base.showerror(io::IO, e::PoolMutationError, ::Any; backtrace = true) = showerror(io, e)
+
+# ==============================================================================
+# Internal: Structural Mutation Detection
+# ==============================================================================
+
+"""Set of function names that structurally mutate arrays (resize, grow, shrink)."""
+const _STRUCTURAL_MUTATION_NAMES = Set{Symbol}(
+    [
+        :resize!, :push!, :pop!, :pushfirst!, :popfirst!,
+        :append!, :prepend!, :deleteat!, :insert!, :splice!,
+        :empty!, :sizehint!,
+    ]
+)
+
+"""
+    _is_mutation_call(expr, acquired) -> Union{Tuple{Symbol, Symbol}, Nothing}
+
+Check if `expr` is a call to a structural mutation function with a pool-backed
+variable as the first argument. Returns `(func_name, var_name)` or `nothing`.
+"""
+function _is_mutation_call(expr, acquired::Set{Symbol})
+    expr isa Expr && expr.head == :call && length(expr.args) >= 2 || return nothing
+
+    fn = expr.args[1]
+    first_arg = expr.args[2]
+    first_arg isa Symbol && first_arg in acquired || return nothing
+
+    # Direct name: resize!(v, ...)
+    if fn isa Symbol && fn in _STRUCTURAL_MUTATION_NAMES
+        return (fn, first_arg)
+    end
+    # Qualified name: Base.resize!(v, ...)
+    if fn isa Expr && fn.head == :. && length(fn.args) >= 2
+        qn = fn.args[end]
+        if qn isa QuoteNode && qn.value isa Symbol && qn.value in _STRUCTURAL_MUTATION_NAMES
+            return (qn.value, first_arg)
+        end
+    end
+    return nothing
+end
+
+"""
+    _find_mutation_calls(expr, acquired) -> Vector{MutationPoint}
+
+Walk AST to find all structural mutation calls on pool-backed variables.
+Tracks LineNumberNodes for precise error locations. Skips nested function
+definitions (lambdas within @with_pool are separate scopes).
+"""
+function _find_mutation_calls(expr, acquired::Set{Symbol})
+    points = MutationPoint[]
+    _find_mutation_calls!(points, expr, acquired, nothing)
+    return points
+end
+
+function _find_mutation_calls!(points, expr, acquired, current_line::Union{Int, Nothing})
+    expr isa Expr || return
+
+    # Skip nested function definitions (they have their own scope)
+    expr.head in (:function, :(->)) && return
+
+    # Track line numbers
+    if expr.head == :block
+        line = current_line
+        for arg in expr.args
+            if arg isa LineNumberNode
+                line = arg.line
+            else
+                _find_mutation_calls!(points, arg, acquired, line)
+            end
+        end
+        return
+    end
+
+    # Check if this is a mutation call
+    result = _is_mutation_call(expr, acquired)
+    if result !== nothing
+        func, var = result
+        push!(points, MutationPoint(expr, current_line, var, func))
+    end
+
+    # Recurse into sub-expressions
+    for arg in expr.args
+        if arg isa LineNumberNode
+            current_line = arg.line
+        else
+            _find_mutation_calls!(points, arg, acquired, current_line)
+        end
+    end
+    return
+end
+
+"""
+    _check_structural_mutation(expr, pool_name, source)
+
+Compile-time (macro expansion time) structural mutation detection.
+
+Checks if any pool-backed variable is passed to `resize!`, `push!`, `pop!`,
+or other functions that change array structure. These operations may cause
+pooling benefits (zero-alloc reuse) to be lost and temporary extra memory
+retention, because pool-backed arrays share memory with backing storage.
+
+Skipped when `STATIC_POOLING = false` (pooling disabled, acquire returns normal arrays).
+"""
+function _check_structural_mutation(expr, pool_name, source::Union{LineNumberNode, Nothing})
+    acquired = _extract_acquired_vars(expr, pool_name)
+    isempty(acquired) && return nothing
+
+    _remove_flat_reassigned!(expr, acquired, pool_name)
+    isempty(acquired) && return nothing
+
+    points = _find_mutation_calls(expr, acquired)
+    isempty(points) && return nothing
+
+    # Collect declaration sites for the mutated variables
+    mutated_vars = Set{Symbol}(pt.var for pt in points)
+    declarations = _extract_declaration_sites(expr, mutated_vars)
+
+    file = source !== nothing ? string(source.file) : nothing
+    line = source !== nothing ? source.line : nothing
+    throw(PoolMutationError(file, line, points, declarations))
 end

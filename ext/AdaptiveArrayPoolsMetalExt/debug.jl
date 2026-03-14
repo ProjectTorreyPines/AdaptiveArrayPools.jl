@@ -15,7 +15,7 @@
 
 using AdaptiveArrayPools: _runtime_check, _validate_pool_return,
     _set_pending_callsite!, _maybe_record_borrow!,
-    _invalidate_released_slots!, _zero_dims_tuple,
+    _invalidate_released_slots!, _check_wrapper_mutation!, _zero_dims_tuple,
     _throw_pool_escape_error,
     PoolRuntimeEscapeError
 
@@ -41,18 +41,75 @@ Fill a MtlArray with a detectable sentinel value (NaN for floats, typemax for in
 end
 
 # ==============================================================================
+# Runtime Structural Mutation Detection for MetalTypedPool (R >= 1)
+# ==============================================================================
+#
+# Detects if pool-backed MtlArray wrappers were structurally mutated (resize!, etc.)
+# by comparing the wrapper's DataRef and dims against the backing vector at rewind time.
+# Called from _invalidate_released_slots! BEFORE poison/invalidation zeroes everything.
+
+"""
+    _check_wrapper_mutation!(tp::MetalTypedPool{T,S}, new_n, old_n)
+
+Check released slots for structural mutation of cached MtlArray wrappers.
+Two checks per wrapper:
+1. DataRef identity (`wrapper.data.rc !== vec.data.rc`) — detects GPU buffer reallocation
+2. Length divergence (`prod(wrapper.dims) > length(vec)`) — detects any size growth
+"""
+@noinline function AdaptiveArrayPools._check_wrapper_mutation!(tp::MetalTypedPool{T, S}, new_n::Int, old_n::Int) where {T, S}
+    for i in (new_n + 1):old_n
+        @inbounds vec = tp.vectors[i]
+        vec_len = length(vec)
+
+        for N_idx in 1:length(tp.arr_wrappers)
+            wrappers_for_N = @inbounds tp.arr_wrappers[N_idx]
+            wrappers_for_N === nothing && continue
+            wrappers = wrappers_for_N::Vector{Any}
+            i > length(wrappers) && continue
+            wrapper = @inbounds wrappers[i]
+            wrapper === nothing && continue
+
+            mtl = wrapper::MtlArray
+            # Check 1: DataRef identity — detects GPU buffer reallocation from resize! beyond capacity
+            if getfield(mtl, :data).rc !== getfield(vec, :data).rc
+                @warn "Pool-backed MtlArray{$T}: resize!/push! caused GPU buffer reallocation " *
+                    "(slot $i). Pooling benefits (zero-alloc reuse) may be lost; " *
+                    "temporary extra GPU memory retention may occur. " *
+                    "Consider requesting the exact size via acquire!(pool, T, n) if known in advance." maxlog = 1
+                return
+            end
+            # Check 2: wrapper length exceeds backing vector — detects growth beyond backing
+            wrapper_len = prod(getfield(mtl, :dims))
+            if wrapper_len > vec_len
+                @warn "Pool-backed MtlArray{$T}: wrapper grew beyond backing vector " *
+                    "(slot $i, wrapper: $wrapper_len, backing: $vec_len). " *
+                    "Pooling benefits (zero-alloc reuse) may be lost; " *
+                    "temporary extra GPU memory retention may occur. " *
+                    "Consider requesting the exact size via acquire!(pool, T, n) if known in advance." maxlog = 1
+                return
+            end
+        end
+    end
+    return nothing
+end
+
+# ==============================================================================
 # _invalidate_released_slots! for MetalTypedPool (R=1)
 # ==============================================================================
 #
 # Overrides the no-op fallback in base. On Metal:
 # - R=0: no-op (base _rewind_typed_pool! gates with S >= 1, so never called)
-# - R=1: poison released MtlArrays + invalidate arr_wrappers
+# - R=1: mutation check + poison released MtlArrays + invalidate arr_wrappers
 # - NO resize!(mtl, 0) — would free GPU memory; use _resize_to_fit! instead
 
 @noinline function AdaptiveArrayPools._invalidate_released_slots!(
         tp::MetalTypedPool{T, S}, old_n_active::Int, safety::Int
     ) where {T, S}
     new_n = tp.n_active
+    # R=1: check for structural mutation before invalidation (wrappers still intact)
+    if safety >= 1
+        _check_wrapper_mutation!(tp, new_n, old_n_active)
+    end
     # Poison released MtlArrays + shrink logical length to 0
     for i in (new_n + 1):old_n_active
         _metal_poison_fill!(@inbounds tp.vectors[i])

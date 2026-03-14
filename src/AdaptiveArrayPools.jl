@@ -9,7 +9,7 @@ export zeros!, ones!, trues!, falses!, similar!, reshape!, default_eltype  # Con
 export Bit  # Sentinel type for BitArray (use with acquire!, trues!, falses!)
 export @with_pool, @maybe_with_pool, @safe_with_pool, @safe_maybe_with_pool
 export STATIC_POOLING, MAYBE_POOLING, RUNTIME_CHECK
-export PoolEscapeError, EscapePoint
+export PoolEscapeError, EscapePoint, PoolMutationError, MutationPoint
 export checkpoint!, rewind!, reset!
 export get_task_local_cuda_pool, get_task_local_cuda_pools  # CUDA (stubs, overridden by extension)
 export get_task_local_metal_pool, get_task_local_metal_pools  # Metal (stubs, overridden by extension)

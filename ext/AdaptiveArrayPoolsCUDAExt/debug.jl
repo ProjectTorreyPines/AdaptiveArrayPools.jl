@@ -15,7 +15,7 @@
 
 using AdaptiveArrayPools: _runtime_check, _validate_pool_return,
     _set_pending_callsite!, _maybe_record_borrow!,
-    _invalidate_released_slots!, _zero_dims_tuple,
+    _invalidate_released_slots!, _check_wrapper_mutation!, _zero_dims_tuple,
     _throw_pool_escape_error,
     PoolRuntimeEscapeError
 
@@ -41,18 +41,75 @@ Fill a CuVector with a detectable sentinel value (NaN for floats, typemax for in
 end
 
 # ==============================================================================
+# Runtime Structural Mutation Detection for CuTypedPool (S >= 1)
+# ==============================================================================
+#
+# Detects if pool-backed CuArray wrappers were structurally mutated (resize!, etc.)
+# by comparing the wrapper's DataRef and dims against the backing vector at rewind time.
+# Called from _invalidate_released_slots! BEFORE poison/invalidation zeroes everything.
+
+"""
+    _check_wrapper_mutation!(tp::CuTypedPool{T}, new_n, old_n)
+
+Check released slots for structural mutation of cached CuArray wrappers.
+Two checks per wrapper:
+1. DataRef identity (`wrapper.data.rc !== vec.data.rc`) — detects GPU buffer reallocation
+2. Length divergence (`prod(wrapper.dims) > length(vec)`) — detects any size growth
+"""
+@noinline function AdaptiveArrayPools._check_wrapper_mutation!(tp::CuTypedPool{T}, new_n::Int, old_n::Int) where {T}
+    for i in (new_n + 1):old_n
+        @inbounds vec = tp.vectors[i]
+        vec_len = length(vec)
+
+        for N_idx in 1:length(tp.arr_wrappers)
+            wrappers_for_N = @inbounds tp.arr_wrappers[N_idx]
+            wrappers_for_N === nothing && continue
+            wrappers = wrappers_for_N::Vector{Any}
+            i > length(wrappers) && continue
+            wrapper = @inbounds wrappers[i]
+            wrapper === nothing && continue
+
+            cu = wrapper::CuArray
+            # Check 1: DataRef identity — detects GPU buffer reallocation from resize! beyond capacity
+            if cu.data.rc !== vec.data.rc
+                @warn "Pool-backed CuArray{$T}: resize!/push! caused GPU buffer reallocation " *
+                    "(slot $i). Pooling benefits (zero-alloc reuse) may be lost; " *
+                    "temporary extra GPU memory retention may occur. " *
+                    "Consider requesting the exact size via acquire!(pool, T, n) if known in advance." maxlog = 1
+                return
+            end
+            # Check 2: wrapper length exceeds backing vector — detects growth beyond backing
+            wrapper_len = prod(cu.dims)
+            if wrapper_len > vec_len
+                @warn "Pool-backed CuArray{$T}: wrapper grew beyond backing vector " *
+                    "(slot $i, wrapper: $wrapper_len, backing: $vec_len). " *
+                    "Pooling benefits (zero-alloc reuse) may be lost; " *
+                    "temporary extra GPU memory retention may occur. " *
+                    "Consider requesting the exact size via acquire!(pool, T, n) if known in advance." maxlog = 1
+                return
+            end
+        end
+    end
+    return nothing
+end
+
+# ==============================================================================
 # _invalidate_released_slots! for CuTypedPool (S=1)
 # ==============================================================================
 #
 # Overrides the no-op fallback in base. On CUDA:
 # - S=0: no-op (base _rewind_typed_pool! gates with S >= 1, so never called)
-# - S=1: poison released CuVectors + invalidate arr_wrappers
+# - S=1: mutation check + poison released CuVectors + invalidate arr_wrappers
 # - NO resize!(cuv, 0) — would free GPU memory; use _resize_to_fit! instead
 
 @noinline function AdaptiveArrayPools._invalidate_released_slots!(
         tp::CuTypedPool{T}, old_n_active::Int, S::Int
     ) where {T}
     new_n = tp.n_active
+    # S=1: check for structural mutation before invalidation (wrappers still intact)
+    if S >= 1
+        _check_wrapper_mutation!(tp, new_n, old_n_active)
+    end
     # Poison released CuVectors + shrink logical length to 0
     for i in (new_n + 1):old_n_active
         _cuda_poison_fill!(@inbounds tp.vectors[i])

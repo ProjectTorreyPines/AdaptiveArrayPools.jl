@@ -257,6 +257,10 @@ end
 
 @noinline function _invalidate_released_slots!(tp::TypedPool{T}, old_n_active::Int, S::Int) where {T}
     new_n = tp.n_active
+    # S=1: check for structural mutation before invalidation (wrappers still intact)
+    if S >= 1
+        _check_wrapper_mutation!(tp, new_n, old_n_active)
+    end
     # S=1: poison vectors with NaN/sentinel before structural invalidation
     if S >= 1
         _poison_released_vectors!(tp, old_n_active)
@@ -281,6 +285,10 @@ end
 
 @noinline function _invalidate_released_slots!(tp::BitTypedPool, old_n_active::Int, S::Int)
     new_n = tp.n_active
+    # S=1: check for structural mutation before invalidation (wrappers still intact)
+    if S >= 1
+        _check_wrapper_mutation!(tp, new_n, old_n_active)
+    end
     # S=1: poison BitVectors (all bits set to true)
     if S >= 1
         _poison_released_vectors!(tp, old_n_active)

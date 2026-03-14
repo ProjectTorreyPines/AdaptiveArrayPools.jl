@@ -46,5 +46,6 @@ else
         include("test_convenience.jl")
         include("test_disabled_pool.jl")
         include("test_cuda_safety.jl")
+        include("test_runtime_mutation.jl")
     end
 end
