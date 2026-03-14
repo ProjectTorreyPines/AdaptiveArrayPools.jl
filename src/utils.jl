@@ -113,12 +113,14 @@ end
 """
 function pool_stats(; io::IO = stdout)
     pool_stats(:cpu; io)
-    # Show CUDA pools if extension is loaded and pools exist
-    try
-        pool_stats(Val(:cuda); io)
-    catch e
-        e isa MethodError || rethrow()
-        # CUDA extension not loaded - silently skip
+    # Show GPU pools if extensions are loaded
+    for backend in (:cuda, :metal)
+        try
+            pool_stats(Val(backend); io)
+        catch e
+            e isa MethodError || rethrow()
+            # Extension not loaded - silently skip
+        end
     end
     return nothing
 end

@@ -124,3 +124,27 @@ Returns the dictionary of all CUDA pools for the current task (one per device).
 Requires CUDA.jl to be loaded. Throws an error if CUDA extension is not available.
 """
 function get_task_local_cuda_pools end
+
+# ==============================================================================
+# Metal Pool Stubs (overridden by extension when Metal is loaded)
+# ==============================================================================
+
+"""
+    get_task_local_metal_pool() -> MetalAdaptiveArrayPool
+
+Retrieves (or creates) the Metal pool for the current Task and current Metal device.
+
+Requires Metal.jl to be loaded. Throws an error if Metal extension is not available.
+
+See also: [`get_task_local_pool`](@ref) for CPU pools.
+"""
+function get_task_local_metal_pool end
+
+"""
+    get_task_local_metal_pools() -> Dict{UInt64, MetalAdaptiveArrayPool}
+
+Returns the dictionary of all Metal pools for the current task (one per device).
+
+Requires Metal.jl to be loaded. Throws an error if Metal extension is not available.
+"""
+function get_task_local_metal_pools end

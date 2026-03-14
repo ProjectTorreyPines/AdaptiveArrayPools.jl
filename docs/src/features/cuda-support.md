@@ -48,24 +48,10 @@ The CUDA backend uses the same API as CPU, with `:cuda` backend specifier:
 **GPU Memory**: Always 0 bytes allocation after warmup. The underlying `CuVector` is resized as needed and reused.
 
 **CPU-side Wrapper Memory** (for `acquire!` N-D on CUDA):
-- The CUDA backend uses an N-way set-associative cache for `CuArray` wrapper reuse
-- Cache hit (≤`CACHE_WAYS` dimension patterns per slot): 0 bytes
-- Cache miss (>`CACHE_WAYS` patterns): ~100 bytes for wrapper metadata
-- See [Configuration](configuration.md) for `CACHE_WAYS` tuning
-
-!!! note "CPU vs CUDA caching"
-    On CPU (Julia 1.11+), `acquire!` uses `setfield!`-based wrapper reuse with **zero allocation for any number of dimension patterns**. The CUDA backend does not yet support this optimization and still uses the N-way cache.
-
-```julia
-# Example: 4 patterns fit in default 4-way cache → zero CPU-side allocation
-dims_list = ((10, 10), (5, 20), (20, 5), (4, 25))
-for dims in dims_list
-    @with_pool :cuda p begin
-        A = acquire!(p, Float64, dims...)
-        # Use A...
-    end
-end
-```
+- The CUDA backend uses `arr_wrappers`-based direct-index caching for `CuArray` wrapper reuse
+- Each dimensionality `N` has one cached wrapper per slot, reused via `setfield!(:dims)`
+- After warmup: **zero CPU-side allocation for any number of dimension patterns** (same `N`)
+- Different `N` values each get their own cached wrapper (also zero-alloc after first use)
 
 ## Fixed Slot Types
 
@@ -86,6 +72,7 @@ Other types use the fallback dictionary (`.others`).
 
 ## Limitations
 
+- **Julia 1.11+**: Required for `setfield!`-based Array internals used by GPU extensions
 - **No `@maybe_with_pool :cuda`**: Runtime toggle not supported for CUDA backend
 - **Task-local only**: Each Task gets its own CUDA pool, same as CPU
 - **Same device**: All arrays in a pool use the same CUDA device
