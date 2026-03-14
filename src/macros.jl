@@ -2531,10 +2531,10 @@ function Base.showerror(io::IO, e::PoolMutationError)
 
     # Suggestion
     println(io)
-    printstyled(io, "  Fix: "; bold = true)
-    printstyled(io, "Request the exact size via "; color = :light_black)
+    printstyled(io, "  Tip: "; bold = true)
+    printstyled(io, "Consider requesting the exact size via "; color = :light_black)
     printstyled(io, "acquire!(pool, T, n)"; bold = true)
-    printstyled(io, ".\n"; color = :light_black)
+    printstyled(io, " if known in advance.\n"; color = :light_black)
     printstyled(io, "       resize!/push!/pop! may trigger memory reallocation — pooling benefits\n"; color = :light_black)
     printstyled(io, "       (zero-alloc reuse) may be lost; temporary extra memory retention may occur.\n"; color = :light_black)
 

@@ -75,7 +75,7 @@ Two checks per wrapper:
                 @warn "Pool-backed CuArray{$T}: resize!/push! caused GPU buffer reallocation " *
                     "(slot $i). Pooling benefits (zero-alloc reuse) may be lost; " *
                     "temporary extra GPU memory retention may occur. " *
-                    "Request the exact size via acquire!(pool, T, n)." maxlog = 1
+                    "Consider requesting the exact size via acquire!(pool, T, n) if known in advance." maxlog = 1
                 return
             end
             # Check 2: wrapper length exceeds backing vector — detects growth beyond backing
@@ -85,7 +85,7 @@ Two checks per wrapper:
                     "(slot $i, wrapper: $wrapper_len, backing: $vec_len). " *
                     "Pooling benefits (zero-alloc reuse) may be lost; " *
                     "temporary extra GPU memory retention may occur. " *
-                    "Request the exact size via acquire!(pool, T, n)." maxlog = 1
+                    "Consider requesting the exact size via acquire!(pool, T, n) if known in advance." maxlog = 1
                 return
             end
         end
