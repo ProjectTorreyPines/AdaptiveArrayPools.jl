@@ -13,8 +13,8 @@ A lightweight library that lets you write natural, allocation-style code while a
 
 **Supported backends:**
 - **CPU** — `Array`, works out of the box
-- **CUDA** — `CuArray`, loads automatically when [CUDA.jl](https://github.com/JuliaGPU/CUDA.jl) is available
-- **Metal** — `MtlArray`, loads automatically when [Metal.jl](https://github.com/JuliaGPU/Metal.jl) is available (Apple Silicon)
+- **CUDA** — `CuArray`, loads automatically when [CUDA.jl](https://github.com/JuliaGPU/CUDA.jl) is available (Julia 1.11+)
+- **Metal** — `MtlArray`, loads automatically when [Metal.jl](https://github.com/JuliaGPU/Metal.jl) is available (Apple Silicon, Julia 1.11+)
 
 ## The Problem
 
