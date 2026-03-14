@@ -396,7 +396,7 @@ _check_wrapper_mutation!(::AbstractTypedPool, ::Int, ::Int) = nothing
                     @warn "Pool-backed Array{$T}: resize!/push! caused memory reallocation " *
                         "(slot $i). Pooling benefits (zero-alloc reuse) may be lost; " *
                         "temporary extra memory retention may occur. " *
-                        "Request the exact size via acquire!(pool, T, n), or copy() before resizing." maxlog = 1
+                        "Request the exact size via acquire!(pool, T, n)." maxlog = 1
                     return
                 end
                 # Check 2: wrapper length exceeds backing vector — detects growth beyond backing
@@ -406,7 +406,7 @@ _check_wrapper_mutation!(::AbstractTypedPool, ::Int, ::Int) = nothing
                         "(slot $i, wrapper: $wrapper_len, backing: $vec_len). " *
                         "Pooling benefits (zero-alloc reuse) may be lost; " *
                         "temporary extra memory retention may occur. " *
-                        "Request the exact size via acquire!(pool, T, n), or copy() before resizing." maxlog = 1
+                        "Request the exact size via acquire!(pool, T, n)." maxlog = 1
                     return
                 end
             end
@@ -440,7 +440,7 @@ _check_wrapper_mutation!(::AbstractTypedPool, ::Int, ::Int) = nothing
                     @warn "Pool-backed BitArray: resize!/push! caused chunks reallocation " *
                         "(slot $i). Pooling benefits (zero-alloc reuse) may be lost; " *
                         "temporary extra memory retention may occur. " *
-                        "Request the exact size via acquire!(pool, Bit, n), or copy() before resizing." maxlog = 1
+                        "Request the exact size via acquire!(pool, Bit, n)." maxlog = 1
                     return
                 end
                 # Check 2: wrapper length exceeds backing
@@ -449,7 +449,7 @@ _check_wrapper_mutation!(::AbstractTypedPool, ::Int, ::Int) = nothing
                         "(slot $i, wrapper: $(ba.len) bits, backing: $bv_len). " *
                         "Pooling benefits (zero-alloc reuse) may be lost; " *
                         "temporary extra memory retention may occur. " *
-                        "Request the exact size via acquire!(pool, Bit, n), or copy() before resizing." maxlog = 1
+                        "Request the exact size via acquire!(pool, Bit, n)." maxlog = 1
                     return
                 end
             end

@@ -257,7 +257,7 @@ import AdaptiveArrayPools: _extract_acquired_vars, _check_structural_mutation,
         @test occursin("PoolMutationError", msg)
         @test occursin("resize!", msg)
         @test occursin("push!", msg)
-        @test occursin("copy(v)", msg)
+        @test occursin("acquire!(pool, T, n)", msg)
     end
 
     # ==============================================================================
