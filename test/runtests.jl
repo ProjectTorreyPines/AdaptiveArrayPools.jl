@@ -31,6 +31,7 @@ else
         include("test_safety.jl")
         include("test_compile_escape.jl")
         include("test_compile_mutation.jl")
+        include("test_runtime_mutation.jl")
         include("test_macro_expansion.jl")
         include("test_macro_internals.jl")
         include("test_zero_allocation.jl")

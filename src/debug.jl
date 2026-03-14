@@ -348,3 +348,107 @@ no borrow was recorded (S=0 or non-macro path without callsite info).
     log === nothing && return nothing
     return get(log, v, nothing)
 end
+
+# ==============================================================================
+# Runtime Structural Mutation Detection (S >= 1)
+# ==============================================================================
+#
+# Detects if pool-backed Array wrappers were structurally mutated (resize!, push!, etc.)
+# by comparing the wrapper's MemoryRef against the backing vector's MemoryRef at rewind time.
+#
+# Called from _invalidate_released_slots! BEFORE poison/invalidation zeroes everything.
+# Uses @warn (not throw) because throwing during rewind would skip cleanup of other pools.
+
+# No-op fallback for extension types (e.g. CuTypedPool) and legacy (1.10) TypedPool/BitTypedPool
+# (legacy structs lack arr_wrappers field — they use N-way nd_arrays cache instead)
+_check_wrapper_mutation!(::AbstractTypedPool, ::Int, ::Int) = nothing
+
+# Julia 1.11+: TypedPool uses arr_wrappers (1:1 wrappers) and MemoryRef-based Array internals.
+# Must not be defined on 1.10 where TypedPool has no arr_wrappers and Array has no :ref field.
+@static if VERSION >= v"1.11-"
+
+"""
+    _check_wrapper_mutation!(tp::TypedPool{T}, new_n, old_n)
+
+Check released slots for structural mutation of cached Array wrappers.
+Compares wrapper's Memory identity and length against the backing vector.
+
+Called before invalidation (resize! to 0, setfield! size to zeros) while both
+wrapper and backing vector are still intact.
+"""
+@noinline function _check_wrapper_mutation!(tp::TypedPool{T}, new_n::Int, old_n::Int) where {T}
+    for i in (new_n + 1):old_n
+        @inbounds vec = tp.vectors[i]
+        vec_mem = getfield(vec, :ref).mem
+        vec_len = length(vec)
+
+        for N_idx in 1:length(tp.arr_wrappers)
+            wrappers_for_N = @inbounds tp.arr_wrappers[N_idx]
+            wrappers_for_N === nothing && continue
+            wrappers = wrappers_for_N::Vector{Any}
+            i > length(wrappers) && continue
+            wrapper = @inbounds wrappers[i]
+            wrapper === nothing && continue
+
+            arr = wrapper::Array
+            # Check 1: Memory identity — detects reallocation from resize!/push! beyond capacity
+            if getfield(arr, :ref).mem !== vec_mem
+                @warn "Pool-backed Array{$T} wrapper at slot $i was structurally mutated " *
+                      "(memory reallocation detected). resize!/push!/append! on pool-backed " *
+                      "arrays corrupts pool invariants. Use copy() first if you need to resize."
+                return  # one warning per rewind is enough
+            end
+            # Check 2: wrapper length exceeds backing vector — detects growth beyond backing
+            wrapper_len = prod(getfield(arr, :size))
+            if wrapper_len > vec_len
+                @warn "Pool-backed Array{$T} wrapper at slot $i grew beyond backing vector " *
+                      "(wrapper: $wrapper_len elements, backing: $vec_len). resize!/push! on " *
+                      "pool-backed arrays corrupts pool invariants. Use copy() first if you need to resize."
+                return
+            end
+        end
+    end
+    return nothing
+end
+
+"""
+    _check_wrapper_mutation!(tp::BitTypedPool, new_n, old_n)
+
+Check released BitArray wrappers for structural mutation.
+BitArrays share their `chunks` Vector{UInt64} with the backing BitVector.
+"""
+@noinline function _check_wrapper_mutation!(tp::BitTypedPool, new_n::Int, old_n::Int)
+    for i in (new_n + 1):old_n
+        @inbounds bv = tp.vectors[i]
+        bv_chunks = bv.chunks
+        bv_len = length(bv)
+
+        for N_idx in 1:length(tp.arr_wrappers)
+            wrappers_for_N = @inbounds tp.arr_wrappers[N_idx]
+            wrappers_for_N === nothing && continue
+            wrappers = wrappers_for_N::Vector{Any}
+            i > length(wrappers) && continue
+            wrapper = @inbounds wrappers[i]
+            wrapper === nothing && continue
+
+            ba = wrapper::BitArray
+            # Check 1: chunks identity — detects reallocation
+            if ba.chunks !== bv_chunks
+                @warn "Pool-backed BitArray wrapper at slot $i was structurally mutated " *
+                      "(chunks reallocation detected). resize!/push! on pool-backed " *
+                      "arrays corrupts pool invariants. Use copy() first if you need to resize."
+                return
+            end
+            # Check 2: wrapper length exceeds backing
+            if ba.len > bv_len
+                @warn "Pool-backed BitArray wrapper at slot $i grew beyond backing BitVector " *
+                      "(wrapper: $(ba.len) bits, backing: $bv_len). resize!/push! on " *
+                      "pool-backed arrays corrupts pool invariants. Use copy() first if you need to resize."
+                return
+            end
+        end
+    end
+    return nothing
+end
+
+end # @static if VERSION >= v"1.11-"
