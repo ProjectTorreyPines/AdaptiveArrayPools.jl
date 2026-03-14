@@ -196,4 +196,4 @@ The name-less `@with_pool` still performs checkpoint/rewind but doesn't expose t
 ## See Also
 
 - [`@with_pool` Patterns](../basics/with-pool-patterns.md) - Basic usage patterns
-- [Safety Rules](../basics/safety-rules.md) - Scope rules
+- [Pool Safety](../safety/overview.md) - Scope rules and safety

@@ -84,4 +84,4 @@ end
 ## See Also
 
 - [Essential API](api-essentials.md) - Core functions for pool operations
-- [Safety Rules](safety-rules.md) - Important scope rules
+- [Pool Safety](../safety/overview.md) - Scope rules and safety

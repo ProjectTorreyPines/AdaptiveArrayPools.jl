@@ -36,7 +36,7 @@ const README_PATH_MAPPINGS = [
     (r"\(docs/metal\.md(#[^)]+)?\)", s"(features/metal-support.md\1)"),
 
     # Basics
-    (r"\(docs/safety\.md(#[^)]+)?\)", s"(basics/safety-rules.md\1)"),
+    (r"\(docs/safety\.md(#[^)]+)?\)", s"(safety/overview.md\1)"),
 ]
 
 """
@@ -120,14 +120,17 @@ makedocs(
             "Quick Start" => "basics/quick-start.md",
             "`@with_pool` Patterns" => "basics/with-pool-patterns.md",
             "Essential API" => "basics/api-essentials.md",
-            "Safety Rules" => "basics/safety-rules.md",
+        ],
+        "Pool Safety" => [
+            "Overview" => "safety/overview.md",
+            "Compile-Time Detection" => "safety/compile-time.md",
+            "Runtime Safety" => "safety/runtime.md",
         ],
         "Advanced" => [
             "Pool Patterns" => "advanced/pool-patterns.md",
             "Multi-threading" => "features/multi-threading.md",
         ],
         "Features" => [
-            "Pool Safety" => "features/safety.md",
             "`@maybe_with_pool`" => "features/maybe-with-pool.md",
             "Bit Arrays" => "features/bit-arrays.md",
             "CUDA Support" => "features/cuda-support.md",

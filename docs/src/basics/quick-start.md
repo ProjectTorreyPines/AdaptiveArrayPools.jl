@@ -108,11 +108,11 @@ end
 end
 ```
 
-For complete safety guidelines, see [Safety Rules](safety-rules.md).
+For complete safety guidelines, see [Pool Safety](../safety/overview.md).
 
 ## Next Steps
 
-- [Safety Rules](safety-rules.md) - Complete scope rules and anti-patterns
+- [Pool Safety](../safety/overview.md) - Scope rules and safety
 - [Full API Reference](../reference/api.md) - Complete function and macro reference
 - [Configuration](../features/configuration.md) - Preferences and cache tuning
 - [Multi-threading](../features/multi-threading.md) - Task/thread safety patterns

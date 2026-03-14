@@ -360,5 +360,5 @@ end
 ## See Also
 
 - [How It Works](how-it-works.md) — Overview of pool architecture
-- [Safety Rules](../basics/safety-rules.md) — Scope rules and best practices
+- [Pool Safety](../safety/overview.md) — Scope rules, compile-time & runtime safety
 - [Configuration](../features/configuration.md) — Performance tuning options

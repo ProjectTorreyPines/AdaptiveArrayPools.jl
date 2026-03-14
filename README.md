@@ -115,7 +115,7 @@ Pkg.add("AdaptiveArrayPools")
 | [API Reference](https://projecttorreypines.github.io/AdaptiveArrayPools.jl/stable/reference/api) | Complete function and macro reference |
 | [CUDA Backend](https://projecttorreypines.github.io/AdaptiveArrayPools.jl/stable/features/cuda-support) | NVIDIA GPU usage and examples |
 | [Metal Backend](https://projecttorreypines.github.io/AdaptiveArrayPools.jl/stable/features/metal-support) | Apple Silicon GPU usage and examples |
-| [Safety Guide](https://projecttorreypines.github.io/AdaptiveArrayPools.jl/stable/basics/safety-rules) | Scope rules and best practices |
+| [Pool Safety](https://projecttorreypines.github.io/AdaptiveArrayPools.jl/stable/safety/overview) | Scope rules, compile-time & runtime safety |
 | [Multi-Threading](https://projecttorreypines.github.io/AdaptiveArrayPools.jl/stable/features/multi-threading) | Task/thread safety patterns |
 | [Configuration](https://projecttorreypines.github.io/AdaptiveArrayPools.jl/stable/features/configuration) | Preferences and cache tuning |
 

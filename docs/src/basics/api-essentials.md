@@ -138,4 +138,4 @@ end
 
 - [Full API Reference](../reference/api.md) - Complete function list
 - [@with_pool Patterns](with-pool-patterns.md) - Usage patterns
-- [Safety Rules](safety-rules.md) - Scope rules
+- [Pool Safety](../safety/overview.md) - Scope rules and safety
