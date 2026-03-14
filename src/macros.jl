@@ -2465,7 +2465,8 @@ Thrown at macro expansion time when structural mutation functions (`resize!`,
 `@maybe_with_pool` blocks.
 
 Pool-backed arrays share memory with the pool's backing storage. Structural
-mutations corrupt pool invariants and cause undefined behavior on `rewind!`.
+mutations may cause pooling benefits (zero-alloc reuse) to be lost and
+temporary extra memory retention until the next `acquire!` at the same slot.
 
 This is a compile-time check with zero runtime cost.
 """
@@ -2531,11 +2532,13 @@ function Base.showerror(io::IO, e::PoolMutationError)
     # Suggestion
     println(io)
     printstyled(io, "  Fix: "; bold = true)
-    printstyled(io, "Acquire with the correct size upfront, or "; color = :light_black)
+    printstyled(io, "Request the exact size via "; color = :light_black)
+    printstyled(io, "acquire!(pool, T, n)"; bold = true)
+    printstyled(io, ", or "; color = :light_black)
     printstyled(io, "copy(v)"; bold = true)
-    printstyled(io, " first if you need to resize.\n"; color = :light_black)
-    printstyled(io, "       Pool-backed arrays share memory with the pool's backing storage.\n"; color = :light_black)
-    printstyled(io, "       Structural mutations (resize!, push!, pop!, ...) corrupt pool invariants.\n"; color = :light_black)
+    printstyled(io, " before resizing.\n"; color = :light_black)
+    printstyled(io, "       resize!/push!/pop! may trigger memory reallocation — pooling benefits\n"; color = :light_black)
+    printstyled(io, "       (zero-alloc reuse) may be lost; temporary extra memory retention may occur.\n"; color = :light_black)
 
     # False positive
     println(io)
@@ -2553,11 +2556,13 @@ Base.showerror(io::IO, e::PoolMutationError, ::Any; backtrace = true) = showerro
 # ==============================================================================
 
 """Set of function names that structurally mutate arrays (resize, grow, shrink)."""
-const _STRUCTURAL_MUTATION_NAMES = Set{Symbol}([
-    :resize!, :push!, :pop!, :pushfirst!, :popfirst!,
-    :append!, :prepend!, :deleteat!, :insert!, :splice!,
-    :empty!, :sizehint!,
-])
+const _STRUCTURAL_MUTATION_NAMES = Set{Symbol}(
+    [
+        :resize!, :push!, :pop!, :pushfirst!, :popfirst!,
+        :append!, :prepend!, :deleteat!, :insert!, :splice!,
+        :empty!, :sizehint!,
+    ]
+)
 
 """
     _is_mutation_call(expr, acquired) -> Union{Tuple{Symbol, Symbol}, Nothing}
@@ -2642,8 +2647,9 @@ end
 Compile-time (macro expansion time) structural mutation detection.
 
 Checks if any pool-backed variable is passed to `resize!`, `push!`, `pop!`,
-or other functions that change array structure. These operations corrupt pool
-invariants because pool-backed arrays share memory with backing storage.
+or other functions that change array structure. These operations may cause
+pooling benefits (zero-alloc reuse) to be lost and temporary extra memory
+retention, because pool-backed arrays share memory with backing storage.
 
 Skipped when `STATIC_POOLING = false` (pooling disabled, acquire returns normal arrays).
 """

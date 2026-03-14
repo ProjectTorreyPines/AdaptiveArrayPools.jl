@@ -16,7 +16,7 @@ import AdaptiveArrayPools: _make_pool, _check_wrapper_mutation!
         resize!(v, 10_000)
 
         # rewind! should emit a warning about structural mutation
-        @test_logs (:warn, r"structurally mutated.*reallocation") rewind!(pool)
+        @test_logs (:warn, r"resize!.*reallocation") rewind!(pool)
     end
 
     @testset "push! reallocation detected (TypedPool)" begin
@@ -30,7 +30,7 @@ import AdaptiveArrayPools: _make_pool, _check_wrapper_mutation!
             push!(v, 99.0)
         end
 
-        @test_logs (:warn, r"structurally mutated.*reallocation") rewind!(pool)
+        @test_logs (:warn, r"resize!.*reallocation") rewind!(pool)
     end
 
     @testset "no mutation → no warning (TypedPool)" begin
@@ -153,6 +153,6 @@ import AdaptiveArrayPools: _make_pool, _check_wrapper_mutation!
         resize!(v2, 10_000)
 
         # Should only warn once (first detected mutation), not twice
-        @test_logs (:warn, r"structurally mutated") rewind!(pool)
+        @test_logs (:warn, r"resize!.*reallocation") rewind!(pool)
     end
 end

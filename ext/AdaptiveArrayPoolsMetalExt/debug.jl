@@ -72,17 +72,20 @@ Two checks per wrapper:
             mtl = wrapper::MtlArray
             # Check 1: DataRef identity — detects GPU buffer reallocation from resize! beyond capacity
             if getfield(mtl, :data).rc !== getfield(vec, :data).rc
-                @warn "Pool-backed MtlArray{$T} wrapper at slot $i was structurally mutated " *
-                      "(GPU buffer reallocation detected). resize! on pool-backed " *
-                      "arrays corrupts pool invariants. Use copy() first if you need to resize."
+                @warn "Pool-backed MtlArray{$T}: resize!/push! caused GPU buffer reallocation " *
+                    "(slot $i). Pooling benefits (zero-alloc reuse) may be lost; " *
+                    "temporary extra GPU memory retention may occur. " *
+                    "Request the exact size via acquire!(pool, T, n), or copy() before resizing." maxlog = 1
                 return
             end
             # Check 2: wrapper length exceeds backing vector — detects growth beyond backing
             wrapper_len = prod(getfield(mtl, :dims))
             if wrapper_len > vec_len
-                @warn "Pool-backed MtlArray{$T} wrapper at slot $i grew beyond backing vector " *
-                      "(wrapper: $wrapper_len elements, backing: $vec_len). resize! on " *
-                      "pool-backed arrays corrupts pool invariants. Use copy() first if you need to resize."
+                @warn "Pool-backed MtlArray{$T}: wrapper grew beyond backing vector " *
+                    "(slot $i, wrapper: $wrapper_len, backing: $vec_len). " *
+                    "Pooling benefits (zero-alloc reuse) may be lost; " *
+                    "temporary extra GPU memory retention may occur. " *
+                    "Request the exact size via acquire!(pool, T, n), or copy() before resizing." maxlog = 1
                 return
             end
         end

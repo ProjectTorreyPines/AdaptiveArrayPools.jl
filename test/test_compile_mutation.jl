@@ -86,7 +86,7 @@ import AdaptiveArrayPools: _extract_acquired_vars, _check_structural_mutation,
         # Mutation inside nested function definition → skipped
         points = _find_mutation_calls(
             quote
-                f = function(x)
+                f = function (x)
                     resize!(v, 100)
                 end
             end,

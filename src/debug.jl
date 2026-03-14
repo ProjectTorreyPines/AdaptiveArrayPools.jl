@@ -367,88 +367,94 @@ _check_wrapper_mutation!(::AbstractTypedPool, ::Int, ::Int) = nothing
 # Must not be defined on 1.10 where TypedPool has no arr_wrappers and Array has no :ref field.
 @static if VERSION >= v"1.11-"
 
-"""
-    _check_wrapper_mutation!(tp::TypedPool{T}, new_n, old_n)
+    """
+        _check_wrapper_mutation!(tp::TypedPool{T}, new_n, old_n)
 
-Check released slots for structural mutation of cached Array wrappers.
-Compares wrapper's Memory identity and length against the backing vector.
+    Check released slots for structural mutation of cached Array wrappers.
+    Compares wrapper's Memory identity and length against the backing vector.
 
-Called before invalidation (resize! to 0, setfield! size to zeros) while both
-wrapper and backing vector are still intact.
-"""
-@noinline function _check_wrapper_mutation!(tp::TypedPool{T}, new_n::Int, old_n::Int) where {T}
-    for i in (new_n + 1):old_n
-        @inbounds vec = tp.vectors[i]
-        vec_mem = getfield(vec, :ref).mem
-        vec_len = length(vec)
+    Called before invalidation (resize! to 0, setfield! size to zeros) while both
+    wrapper and backing vector are still intact.
+    """
+    @noinline function _check_wrapper_mutation!(tp::TypedPool{T}, new_n::Int, old_n::Int) where {T}
+        for i in (new_n + 1):old_n
+            @inbounds vec = tp.vectors[i]
+            vec_mem = getfield(vec, :ref).mem
+            vec_len = length(vec)
 
-        for N_idx in 1:length(tp.arr_wrappers)
-            wrappers_for_N = @inbounds tp.arr_wrappers[N_idx]
-            wrappers_for_N === nothing && continue
-            wrappers = wrappers_for_N::Vector{Any}
-            i > length(wrappers) && continue
-            wrapper = @inbounds wrappers[i]
-            wrapper === nothing && continue
+            for N_idx in 1:length(tp.arr_wrappers)
+                wrappers_for_N = @inbounds tp.arr_wrappers[N_idx]
+                wrappers_for_N === nothing && continue
+                wrappers = wrappers_for_N::Vector{Any}
+                i > length(wrappers) && continue
+                wrapper = @inbounds wrappers[i]
+                wrapper === nothing && continue
 
-            arr = wrapper::Array
-            # Check 1: Memory identity — detects reallocation from resize!/push! beyond capacity
-            if getfield(arr, :ref).mem !== vec_mem
-                @warn "Pool-backed Array{$T} wrapper at slot $i was structurally mutated " *
-                      "(memory reallocation detected). resize!/push!/append! on pool-backed " *
-                      "arrays corrupts pool invariants. Use copy() first if you need to resize."
-                return  # one warning per rewind is enough
-            end
-            # Check 2: wrapper length exceeds backing vector — detects growth beyond backing
-            wrapper_len = prod(getfield(arr, :size))
-            if wrapper_len > vec_len
-                @warn "Pool-backed Array{$T} wrapper at slot $i grew beyond backing vector " *
-                      "(wrapper: $wrapper_len elements, backing: $vec_len). resize!/push! on " *
-                      "pool-backed arrays corrupts pool invariants. Use copy() first if you need to resize."
-                return
-            end
-        end
-    end
-    return nothing
-end
-
-"""
-    _check_wrapper_mutation!(tp::BitTypedPool, new_n, old_n)
-
-Check released BitArray wrappers for structural mutation.
-BitArrays share their `chunks` Vector{UInt64} with the backing BitVector.
-"""
-@noinline function _check_wrapper_mutation!(tp::BitTypedPool, new_n::Int, old_n::Int)
-    for i in (new_n + 1):old_n
-        @inbounds bv = tp.vectors[i]
-        bv_chunks = bv.chunks
-        bv_len = length(bv)
-
-        for N_idx in 1:length(tp.arr_wrappers)
-            wrappers_for_N = @inbounds tp.arr_wrappers[N_idx]
-            wrappers_for_N === nothing && continue
-            wrappers = wrappers_for_N::Vector{Any}
-            i > length(wrappers) && continue
-            wrapper = @inbounds wrappers[i]
-            wrapper === nothing && continue
-
-            ba = wrapper::BitArray
-            # Check 1: chunks identity — detects reallocation
-            if ba.chunks !== bv_chunks
-                @warn "Pool-backed BitArray wrapper at slot $i was structurally mutated " *
-                      "(chunks reallocation detected). resize!/push! on pool-backed " *
-                      "arrays corrupts pool invariants. Use copy() first if you need to resize."
-                return
-            end
-            # Check 2: wrapper length exceeds backing
-            if ba.len > bv_len
-                @warn "Pool-backed BitArray wrapper at slot $i grew beyond backing BitVector " *
-                      "(wrapper: $(ba.len) bits, backing: $bv_len). resize!/push! on " *
-                      "pool-backed arrays corrupts pool invariants. Use copy() first if you need to resize."
-                return
+                arr = wrapper::Array
+                # Check 1: Memory identity — detects reallocation from resize!/push! beyond capacity
+                if getfield(arr, :ref).mem !== vec_mem
+                    @warn "Pool-backed Array{$T}: resize!/push! caused memory reallocation " *
+                        "(slot $i). Pooling benefits (zero-alloc reuse) may be lost; " *
+                        "temporary extra memory retention may occur. " *
+                        "Request the exact size via acquire!(pool, T, n), or copy() before resizing." maxlog = 1
+                    return
+                end
+                # Check 2: wrapper length exceeds backing vector — detects growth beyond backing
+                wrapper_len = prod(getfield(arr, :size))
+                if wrapper_len > vec_len
+                    @warn "Pool-backed Array{$T}: wrapper grew beyond backing vector " *
+                        "(slot $i, wrapper: $wrapper_len, backing: $vec_len). " *
+                        "Pooling benefits (zero-alloc reuse) may be lost; " *
+                        "temporary extra memory retention may occur. " *
+                        "Request the exact size via acquire!(pool, T, n), or copy() before resizing." maxlog = 1
+                    return
+                end
             end
         end
+        return nothing
     end
-    return nothing
-end
+
+    """
+        _check_wrapper_mutation!(tp::BitTypedPool, new_n, old_n)
+
+    Check released BitArray wrappers for structural mutation.
+    BitArrays share their `chunks` Vector{UInt64} with the backing BitVector.
+    """
+    @noinline function _check_wrapper_mutation!(tp::BitTypedPool, new_n::Int, old_n::Int)
+        for i in (new_n + 1):old_n
+            @inbounds bv = tp.vectors[i]
+            bv_chunks = bv.chunks
+            bv_len = length(bv)
+
+            for N_idx in 1:length(tp.arr_wrappers)
+                wrappers_for_N = @inbounds tp.arr_wrappers[N_idx]
+                wrappers_for_N === nothing && continue
+                wrappers = wrappers_for_N::Vector{Any}
+                i > length(wrappers) && continue
+                wrapper = @inbounds wrappers[i]
+                wrapper === nothing && continue
+
+                ba = wrapper::BitArray
+                # Check 1: chunks identity — detects reallocation
+                if ba.chunks !== bv_chunks
+                    @warn "Pool-backed BitArray: resize!/push! caused chunks reallocation " *
+                        "(slot $i). Pooling benefits (zero-alloc reuse) may be lost; " *
+                        "temporary extra memory retention may occur. " *
+                        "Request the exact size via acquire!(pool, Bit, n), or copy() before resizing." maxlog = 1
+                    return
+                end
+                # Check 2: wrapper length exceeds backing
+                if ba.len > bv_len
+                    @warn "Pool-backed BitArray: wrapper grew beyond backing BitVector " *
+                        "(slot $i, wrapper: $(ba.len) bits, backing: $bv_len). " *
+                        "Pooling benefits (zero-alloc reuse) may be lost; " *
+                        "temporary extra memory retention may occur. " *
+                        "Request the exact size via acquire!(pool, Bit, n), or copy() before resizing." maxlog = 1
+                    return
+                end
+            end
+        end
+        return nothing
+    end
 
 end # @static if VERSION >= v"1.11-"
