@@ -14,6 +14,7 @@ A lightweight library that lets you write natural, allocation-style code while a
 **Supported backends:**
 - **CPU** — `Array`, works out of the box
 - **CUDA** — `CuArray`, loads automatically when [CUDA.jl](https://github.com/JuliaGPU/CUDA.jl) is available
+- **Metal** — `MtlArray`, loads automatically when [Metal.jl](https://github.com/JuliaGPU/Metal.jl) is available (Apple Silicon)
 
 ## The Problem
 
@@ -68,7 +69,7 @@ end
 | Allocations | ⚠️ 90,000 (2.75 GiB) | ✅ **0** | 100% eliminated |
 | GC Time | ⚠️ 31% | ✅ **0%** | No GC pauses |
 
-> **CUDA support**: Same API—just use `@with_pool :cuda pool`. See [CUDA Backend](https://projecttorreypines.github.io/AdaptiveArrayPools.jl/stable/usage/cuda).
+> **GPU support**: Same API—just use `@with_pool :cuda pool` or `@with_pool :metal pool`. See [CUDA Backend](https://projecttorreypines.github.io/AdaptiveArrayPools.jl/stable/features/cuda-support) and [Metal Backend](https://projecttorreypines.github.io/AdaptiveArrayPools.jl/stable/features/metal-support).
 
 ## How It Works
 
@@ -111,11 +112,12 @@ Pkg.add("AdaptiveArrayPools")
 
 | Guide | Description |
 |-------|-------------|
-| [API Reference](https://projecttorreypines.github.io/AdaptiveArrayPools.jl/stable/usage/api) | Complete function and macro reference |
-| [CUDA Backend](https://projecttorreypines.github.io/AdaptiveArrayPools.jl/stable/usage/cuda) | GPU-specific usage and examples |
-| [Safety Guide](https://projecttorreypines.github.io/AdaptiveArrayPools.jl/stable/guide/safety) | Scope rules and best practices |
-| [Multi-Threading](https://projecttorreypines.github.io/AdaptiveArrayPools.jl/stable/advanced/multi-threading) | Task/thread safety patterns |
-| [Configuration](https://projecttorreypines.github.io/AdaptiveArrayPools.jl/stable/usage/configuration) | Preferences and cache tuning |
+| [API Reference](https://projecttorreypines.github.io/AdaptiveArrayPools.jl/stable/reference/api) | Complete function and macro reference |
+| [CUDA Backend](https://projecttorreypines.github.io/AdaptiveArrayPools.jl/stable/features/cuda-support) | NVIDIA GPU usage and examples |
+| [Metal Backend](https://projecttorreypines.github.io/AdaptiveArrayPools.jl/stable/features/metal-support) | Apple Silicon GPU usage and examples |
+| [Safety Guide](https://projecttorreypines.github.io/AdaptiveArrayPools.jl/stable/basics/safety-rules) | Scope rules and best practices |
+| [Multi-Threading](https://projecttorreypines.github.io/AdaptiveArrayPools.jl/stable/features/multi-threading) | Task/thread safety patterns |
+| [Configuration](https://projecttorreypines.github.io/AdaptiveArrayPools.jl/stable/features/configuration) | Preferences and cache tuning |
 
 ## License
 

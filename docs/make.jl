@@ -33,6 +33,7 @@ const README_PATH_MAPPINGS = [
     (r"\(docs/configuration\.md(#[^)]+)?\)", s"(features/configuration.md\1)"),
     (r"\(docs/maybe_with_pool\.md(#[^)]+)?\)", s"(features/maybe-with-pool.md\1)"),
     (r"\(docs/multi-threading\.md(#[^)]+)?\)", s"(features/multi-threading.md\1)"),
+    (r"\(docs/metal\.md(#[^)]+)?\)", s"(features/metal-support.md\1)"),
 
     # Basics
     (r"\(docs/safety\.md(#[^)]+)?\)", s"(basics/safety-rules.md\1)"),
@@ -130,6 +131,7 @@ makedocs(
             "`@maybe_with_pool`" => "features/maybe-with-pool.md",
             "Bit Arrays" => "features/bit-arrays.md",
             "CUDA Support" => "features/cuda-support.md",
+            "Metal Support" => "features/metal-support.md",
             "Configuration" => "features/configuration.md",
         ],
         "Reference" => [
