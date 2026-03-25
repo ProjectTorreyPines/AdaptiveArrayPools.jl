@@ -7,9 +7,9 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap,
 # Scope-Aware Validation: outer-scope arrays must NOT trigger escape errors
 # in inner scopes.
 #
-# Bug: _check_pointer_overlap iterates ALL tp.vectors, not just the ones
-# acquired in the current scope. Arrays acquired in an outer scope should be
-# freely usable (and returnable) in inner scopes without false-positive errors.
+# Fixed bug: _check_pointer_overlap previously iterated ALL tp.vectors,
+# not just the ones acquired in the current scope. Now uses _scope_boundary()
+# to skip vectors from outer scopes (index <= checkpoint boundary).
 # ==============================================================================
 
 @testset "Scope-depth-aware validation" begin
@@ -454,6 +454,159 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap,
 
         _lazy_rewind!(pool)
         _lazy_rewind!(pool)
+    end
+
+    # ------------------------------------------------------------------
+    # Scenario 16: ReshapedArray wrapping outer-scope pool vector
+    #   acquire! returns a Vector; reshape() wraps it in ReshapedArray.
+    #   The parent-chain traversal in _validate_pool_return must
+    #   propagate scope-awareness through ReshapedArray → parent.
+    # ------------------------------------------------------------------
+    @testset "ReshapedArray of outer array — should NOT throw" begin
+        pool = _make_pool(true)
+
+        checkpoint!(pool)
+        v = acquire!(pool, Float64, 12)
+        fill!(v, 1.0)
+
+        checkpoint!(pool)
+        _ = acquire!(pool, Float64, 6)   # inner-scope acquire
+
+        # reshape outer-scope vector into a matrix
+        mat = reshape(v, 3, 4)
+        _validate_pool_return(mat, pool)   # ← Should NOT throw
+
+        rewind!(pool)
+        @test sum(mat) == 12.0
+        rewind!(pool)
+    end
+
+    @testset "ReshapedArray of inner array — SHOULD throw" begin
+        pool = _make_pool(true)
+
+        checkpoint!(pool)
+        _ = acquire!(pool, Float64, 12)   # outer
+
+        checkpoint!(pool)
+        v_inner = acquire!(pool, Float64, 8)   # inner
+        fill!(v_inner, 2.0)
+
+        mat_inner = reshape(v_inner, 2, 4)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(mat_inner, pool)
+
+        rewind!(pool)
+        rewind!(pool)
+    end
+
+    @testset "view of ReshapedArray — scope propagation through parent chain" begin
+        pool = _make_pool(true)
+
+        checkpoint!(pool)
+        v_outer = acquire!(pool, Float64, 12)
+        fill!(v_outer, 3.0)
+
+        checkpoint!(pool)
+        v_inner = acquire!(pool, Float64, 8)
+
+        # outer: reshape → view → validate (two levels of wrapping)
+        mat_outer = reshape(v_outer, 3, 4)
+        sv = view(mat_outer, 1:2, :)
+        _validate_pool_return(sv, pool)   # ← Should NOT throw
+
+        # inner: reshape → view → validate
+        mat_inner = reshape(v_inner, 2, 4)
+        sv_inner = view(mat_inner, 1:1, :)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(sv_inner, pool)
+
+        rewind!(pool)
+        rewind!(pool)
+    end
+
+    # ------------------------------------------------------------------
+    # Scenario 17: sentinel edge case — no checkpoint (depth 0)
+    #   _scope_boundary falls back to tp.n_active, meaning "skip all".
+    #   Calling _validate_pool_return on a pool with no checkpoint
+    #   should never throw (there's no scope to escape from).
+    # ------------------------------------------------------------------
+    @testset "no checkpoint (depth 0) — validate should NOT throw" begin
+        pool = _make_pool(true)
+
+        # Directly acquire without any checkpoint (depth stays at 0/1 depending on init)
+        # This simulates arrays that exist outside any @with_pool scope.
+        v = acquire!(pool, Float64, 50)
+        fill!(v, 7.0)
+
+        # No checkpoint was pushed, so _scope_boundary should return n_active
+        # for every typed pool → empty check range → no false positive
+        _validate_pool_return(v, pool)   # ← Should NOT throw
+
+        # BitArray variant
+        bv = acquire!(pool, Bit, 50)
+        fill!(bv, true)
+        _validate_pool_return(bv, pool)   # ← Should NOT throw
+    end
+
+    # ------------------------------------------------------------------
+    # Scenario 18: leaked inner scope (caught exception) — validation
+    #   must use the OUTER scope's depth, not the leaked inner depth.
+    #
+    #   Bug (pre-fix): inner @with_pool throws → pool._current_depth stays
+    #   at inner depth → _scope_boundary treats outer arrays as "outer scope"
+    #   relative to the leaked depth → false negative (escape not caught).
+    #
+    #   Fix: macro reorders leaked scope cleanup BEFORE validation, so
+    #   _current_depth is normalized before _scope_boundary runs.
+    # ------------------------------------------------------------------
+    @testset "leaked inner scope — outer array must still be caught" begin
+        pool = _make_pool(true)
+
+        # Simulate outer @with_pool: save entry depth, checkpoint
+        entry_depth = pool._current_depth
+        checkpoint!(pool)
+
+        v = acquire!(pool, Float64, 100)
+        fill!(v, 1.0)
+
+        # Simulate inner @with_pool that throws (no rewind)
+        checkpoint!(pool)
+        _ = acquire!(pool, Float64, 50)
+        # "throw" happens here — inner scope never rewinds
+        # pool._current_depth is now entry_depth + 2 (leaked)
+
+        # Simulate the macro's leaked scope cleanup (runs BEFORE validation now)
+        while pool._current_depth > entry_depth + 1
+            rewind!(pool)
+        end
+
+        # Now validation runs at the correct depth (entry_depth + 1)
+        # v was acquired at this depth → it IS an escapee → must throw
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(v, pool)
+
+        rewind!(pool)   # main rewind
+    end
+
+    @testset "leaked inner scope — BitArray must still be caught" begin
+        pool = _make_pool(true)
+
+        entry_depth = pool._current_depth
+        checkpoint!(pool)
+
+        bv = acquire!(pool, Bit, 100)
+        fill!(bv, true)
+
+        # Inner scope leaks
+        checkpoint!(pool)
+        _ = acquire!(pool, Bit, 50)
+
+        # Leaked scope cleanup
+        while pool._current_depth > entry_depth + 1
+            rewind!(pool)
+        end
+
+        # bv acquired at outer scope depth → escape → must throw
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(bv, pool)
+
+        rewind!(pool)
     end
 
 end

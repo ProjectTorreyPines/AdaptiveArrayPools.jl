@@ -764,14 +764,17 @@ function _generate_block_inner(pool_name, expr, safe::Bool, source)
             local $(esc(entry_depth_var)) = $(esc(pool_name))._current_depth
             $checkpoint_call
             local _result = $(esc(transformed_expr))
-            if $_RUNTIME_CHECK_REF($(esc(pool_name)))
-                $_validate_pool_return(_result, $(esc(pool_name)))
-            end
+            # Leaked scope cleanup BEFORE validation: if an inner @with_pool threw
+            # without rewind, _current_depth is still the inner depth. Validation
+            # uses _current_depth via _scope_boundary, so we must normalize first.
             if $_RUNTIME_CHECK_REF($(esc(pool_name))) && $(esc(pool_name))._current_depth > $(esc(entry_depth_var)) + 1
                 $_WARN_LEAKED_SCOPE_REF($(esc(pool_name)), $(esc(entry_depth_var)))
             end
             while $(esc(pool_name))._current_depth > $(esc(entry_depth_var)) + 1
                 $_REWIND_REF($(esc(pool_name)))
+            end
+            if $_RUNTIME_CHECK_REF($(esc(pool_name)))
+                $_validate_pool_return(_result, $(esc(pool_name)))
             end
             $rewind_call
             _result
@@ -839,14 +842,17 @@ function _generate_function_inner(pool_name, expr, safe::Bool, source)
             local $(esc(entry_depth_var)) = $(esc(pool_name))._current_depth
             $checkpoint_call
             local _result = $(esc(transformed_expr))
-            if $_RUNTIME_CHECK_REF($(esc(pool_name)))
-                $_validate_pool_return(_result, $(esc(pool_name)))
-            end
+            # Leaked scope cleanup BEFORE validation: if an inner @with_pool threw
+            # without rewind, _current_depth is still the inner depth. Validation
+            # uses _current_depth via _scope_boundary, so we must normalize first.
             if $_RUNTIME_CHECK_REF($(esc(pool_name))) && $(esc(pool_name))._current_depth > $(esc(entry_depth_var)) + 1
                 $_WARN_LEAKED_SCOPE_REF($(esc(pool_name)), $(esc(entry_depth_var)))
             end
             while $(esc(pool_name))._current_depth > $(esc(entry_depth_var)) + 1
                 $_REWIND_REF($(esc(pool_name)))
+            end
+            if $_RUNTIME_CHECK_REF($(esc(pool_name)))
+                $_validate_pool_return(_result, $(esc(pool_name)))
             end
             $rewind_call
             _result
