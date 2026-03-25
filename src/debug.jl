@@ -66,7 +66,17 @@ _eltype_may_contain_arrays(::Type{Symbol}) = false
 _eltype_may_contain_arrays(::Type{Char}) = false
 _eltype_may_contain_arrays(::Type) = true
 
-# Check if array memory overlaps with any pool vector.
+# Scope-aware boundary: returns the n_active saved at checkpoint for `depth`.
+# Vectors with index <= boundary belong to an outer scope and are NOT escapees.
+# If this type has no checkpoint at `depth`, it was never touched in this scope → all safe.
+@inline function _scope_boundary(tp::AbstractTypedPool, depth::Int)
+    @inbounds if tp._checkpoint_depths[end] == depth
+        return tp._checkpoint_n_active[end]   # vectors[1:boundary] are from outer scopes
+    end
+    return tp.n_active   # no checkpoint at this depth → nothing acquired here → all safe
+end
+
+# Check if array memory overlaps with any pool vector **acquired in the current scope**.
 # `original_val` is the user-visible value (e.g., SubArray) for error reporting;
 # `arr` may be its parent Array used for the actual pointer comparison.
 function _check_pointer_overlap(arr::Array, pool::AdaptiveArrayPool, original_val = arr)
@@ -78,8 +88,12 @@ function _check_pointer_overlap(arr::Array, pool::AdaptiveArrayPool, original_va
         isempty(rs) ? nothing : rs
     end
 
+    current_depth = pool._current_depth
+
     check_overlap = function (tp)
-        for v in tp.vectors
+        boundary = _scope_boundary(tp, current_depth)
+        for i in (boundary + 1):tp.n_active
+            v = @inbounds tp.vectors[i]
             v isa Array || continue  # Skip BitVector (no pointer(); checked via _check_bitchunks_overlap)
             v_ptr = UInt(pointer(v))
             v_len = length(v) * sizeof(eltype(v))
