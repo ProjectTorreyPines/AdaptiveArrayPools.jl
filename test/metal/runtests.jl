@@ -46,6 +46,7 @@ else
         include("test_disabled_pool.jl")
         include("test_metal_safety.jl")
         include("test_runtime_mutation.jl")
+        include("test_scope_depth_validation.jl")
         include("test_reshape.jl")
         include("test_task_local_pool.jl")
     end
