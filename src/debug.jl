@@ -66,7 +66,17 @@ _eltype_may_contain_arrays(::Type{Symbol}) = false
 _eltype_may_contain_arrays(::Type{Char}) = false
 _eltype_may_contain_arrays(::Type) = true
 
-# Check if array memory overlaps with any pool vector.
+# Scope-aware boundary: returns the n_active saved at checkpoint for `depth`.
+# Vectors with index <= boundary belong to an outer scope and are NOT escapees.
+# If this type has no checkpoint at `depth`, it was never touched in this scope → all safe.
+@inline function _scope_boundary(tp::AbstractTypedPool, depth::Int)
+    @inbounds if tp._checkpoint_depths[end] == depth
+        return tp._checkpoint_n_active[end]   # vectors[1:boundary] are from outer scopes
+    end
+    return tp.n_active   # no checkpoint at this depth → nothing acquired here → all safe
+end
+
+# Check if array memory overlaps with any pool vector **acquired in the current scope**.
 # `original_val` is the user-visible value (e.g., SubArray) for error reporting;
 # `arr` may be its parent Array used for the actual pointer comparison.
 function _check_pointer_overlap(arr::Array, pool::AdaptiveArrayPool, original_val = arr)
@@ -78,8 +88,12 @@ function _check_pointer_overlap(arr::Array, pool::AdaptiveArrayPool, original_va
         isempty(rs) ? nothing : rs
     end
 
+    current_depth = pool._current_depth
+
     check_overlap = function (tp)
-        for v in tp.vectors
+        boundary = _scope_boundary(tp, current_depth)
+        for i in (boundary + 1):tp.n_active
+            v = @inbounds tp.vectors[i]
             v isa Array || continue  # Skip BitVector (no pointer(); checked via _check_bitchunks_overlap)
             v_ptr = UInt(pointer(v))
             v_len = length(v) * sizeof(eltype(v))
@@ -260,9 +274,27 @@ end
 _poison_value(::Type{T}) where {T <: AbstractFloat} = T(NaN)
 _poison_value(::Type{T}) where {T <: Integer} = typemax(T)
 _poison_value(::Type{Complex{T}}) where {T} = Complex{T}(_poison_value(T), _poison_value(T))
-_poison_value(::Type{T}) where {T} = zero(T)  # generic fallback
+_poison_value(::Type{T}) where {T} = zero(T)  # generic fallback (Rational, etc.)
 
-_poison_fill!(v::Vector{T}) where {T} = fill!(v, _poison_value(T))
+function _poison_fill!(v::Vector{T}) where {T}
+    isempty(v) && return nothing
+    if !isbitstype(T)
+        # non-isbits (reference types): skip poison, resize!(v, 0) handles invalidation
+        return nothing
+    end
+    # isbits: try _poison_value dispatch (NaN, typemax, zero for known types),
+    # then duck-type 0 * first(v) for custom structs without zero(T).
+    # If neither works, skip poisoning — must not throw during rewind.
+    try
+        fill!(v, _poison_value(T))
+    catch
+        try
+            fill!(v, 0 * first(v))
+        catch
+        end
+    end
+    return nothing
+end
 _poison_fill!(v::BitVector) = fill!(v, true)
 
 """

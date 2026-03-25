@@ -46,6 +46,7 @@ else
         include("test_coverage.jl")
         include("test_allocation.jl")
         include("test_fallback_reclamation.jl")
+        include("test_scope_depth_validation.jl")
     else
         include("test_aqua.jl")
         include("test_basic.jl")
@@ -72,6 +73,7 @@ else
         include("test_coverage.jl")
         include("test_allocation.jl")
         include("test_fallback_reclamation.jl")
+        include("test_scope_depth_validation.jl")
     end
 
     # CUDA extension tests (auto-detect, skip with TEST_CUDA=false)

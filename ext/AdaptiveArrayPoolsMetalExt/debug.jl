@@ -16,7 +16,7 @@
 using AdaptiveArrayPools: _runtime_check, _validate_pool_return,
     _set_pending_callsite!, _maybe_record_borrow!,
     _invalidate_released_slots!, _check_wrapper_mutation!, _zero_dims_tuple,
-    _throw_pool_escape_error,
+    _throw_pool_escape_error, _scope_boundary,
     PoolRuntimeEscapeError
 
 # ==============================================================================
@@ -289,23 +289,27 @@ function _check_metal_overlap(arr::MtlArray, pool::MetalAdaptiveArrayPool, origi
         isempty(rs) ? nothing : rs
     end
 
+    current_depth = pool._current_depth
+
     # Check fixed slots
     AdaptiveArrayPools.foreach_fixed_slot(pool) do tp
-        _check_tp_metal_overlap(tp, arr_buf, arr_off, arr_end, pool, return_site, original_val)
+        _check_tp_metal_overlap(tp, arr_buf, arr_off, arr_end, current_depth, pool, return_site, original_val)
     end
 
     # Check others
     for tp in values(pool.others)
-        _check_tp_metal_overlap(tp, arr_buf, arr_off, arr_end, pool, return_site, original_val)
+        _check_tp_metal_overlap(tp, arr_buf, arr_off, arr_end, current_depth, pool, return_site, original_val)
     end
     return
 end
 
 @noinline function _check_tp_metal_overlap(
         tp::AbstractTypedPool, abuf, aoff::Int, aend::Int,
-        pool::MetalAdaptiveArrayPool, return_site, original_val
+        current_depth::Int, pool::MetalAdaptiveArrayPool, return_site, original_val
     )
-    for v in tp.vectors
+    boundary = _scope_boundary(tp, current_depth)
+    for i in (boundary + 1):tp.n_active
+        v = @inbounds tp.vectors[i]
         vptr = pointer(v)
         vbuf = vptr.buffer
         voff = Int(vptr.offset)

@@ -47,5 +47,6 @@ else
         include("test_disabled_pool.jl")
         include("test_cuda_safety.jl")
         include("test_runtime_mutation.jl")
+        include("test_scope_depth_validation.jl")
     end
 end

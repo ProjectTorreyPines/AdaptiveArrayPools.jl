@@ -220,14 +220,18 @@ end
 # Safety Validation (S=1 runtime check mode)
 # ==============================================================================
 
-# Check if BitArray chunks overlap with the pool's BitTypedPool storage
+# Check if BitArray chunks overlap with pool's BitTypedPool storage
+# (scope-aware: only checks vectors acquired in the current scope)
 function _check_bitchunks_overlap(arr::BitArray, pool::AdaptiveArrayPool, original_val = arr)
     arr_chunks = arr.chunks
     arr_ptr = UInt(pointer(arr_chunks))
     arr_len = length(arr_chunks) * sizeof(UInt64)
     arr_end = arr_ptr + arr_len
 
-    for v in pool.bits.vectors
+    tp = pool.bits
+    boundary = _scope_boundary(tp, pool._current_depth)
+    for i in (boundary + 1):tp.n_active
+        v = @inbounds tp.vectors[i]
         v_chunks = v.chunks
         v_ptr = UInt(pointer(v_chunks))
         v_len = length(v_chunks) * sizeof(UInt64)
