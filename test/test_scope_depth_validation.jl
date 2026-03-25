@@ -609,4 +609,75 @@ import AdaptiveArrayPools: _validate_pool_return, _check_bitchunks_overlap,
         rewind!(pool)
     end
 
+    # ==================================================================
+    # Custom struct scenarios: others pool (non-fixed-slot types)
+    # ==================================================================
+
+    # Custom isbits struct — no zero(T) defined, poison uses 0 * first(v)
+    struct TestPoint
+        x::Float64
+        y::Float64
+    end
+    Base.:(*)(a::Int, p::TestPoint) = TestPoint(a * p.x, a * p.y)
+
+    # Mutable struct — non-isbits, poison skipped (resize! only)
+    mutable struct TestParticle
+        x::Float64
+        y::Float64
+    end
+
+    # ------------------------------------------------------------------
+    # Scenario 19: custom isbits struct — scope-aware validation + poison
+    # ------------------------------------------------------------------
+    @testset "custom isbits struct — scope-aware + poison on rewind" begin
+        pool = _make_pool(true)
+
+        checkpoint!(pool)
+        v = acquire!(pool, TestPoint, 10)
+        fill!(v, TestPoint(1.0, 2.0))
+
+        checkpoint!(pool)
+        w = acquire!(pool, TestPoint, 5)
+
+        # v from outer scope → safe
+        _validate_pool_return(v, pool)
+
+        # w from inner scope → escape
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(w, pool)
+
+        rewind!(pool)   # inner — should poison w with 0 * first(w) without error
+        @test v[1] == TestPoint(1.0, 2.0)   # v still valid
+
+        # v is now current scope → escape
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(v, pool)
+        rewind!(pool)   # outer — poisons v
+    end
+
+    # ------------------------------------------------------------------
+    # Scenario 20: mutable struct (non-isbits) — poison skipped gracefully
+    # ------------------------------------------------------------------
+    @testset "mutable struct (non-isbits) — poison skipped, resize! only" begin
+        pool = _make_pool(true)
+
+        checkpoint!(pool)
+        v = acquire!(pool, TestParticle, 10)
+        for i in 1:10
+            v[i] = TestParticle(Float64(i), 0.0)
+        end
+
+        checkpoint!(pool)
+        w = acquire!(pool, TestParticle, 5)
+
+        # v from outer scope → safe
+        _validate_pool_return(v, pool)
+
+        # w from inner scope → escape
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(w, pool)
+
+        rewind!(pool)   # inner — poison skipped (non-isbits), resize!(w, 0) only
+        @test v[1].x == 1.0   # v still valid
+
+        rewind!(pool)   # outer — resize!(v, 0)
+    end
+
 end

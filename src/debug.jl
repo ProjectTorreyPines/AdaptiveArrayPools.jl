@@ -274,9 +274,24 @@ end
 _poison_value(::Type{T}) where {T <: AbstractFloat} = T(NaN)
 _poison_value(::Type{T}) where {T <: Integer} = typemax(T)
 _poison_value(::Type{Complex{T}}) where {T} = Complex{T}(_poison_value(T), _poison_value(T))
-_poison_value(::Type{T}) where {T} = zero(T)  # generic fallback
+_poison_value(::Type{T}) where {T} = zero(T)  # generic fallback (Rational, etc.)
 
-_poison_fill!(v::Vector{T}) where {T} = fill!(v, _poison_value(T))
+function _poison_fill!(v::Vector{T}) where {T}
+    isempty(v) && return nothing
+    if !isbitstype(T)
+        # non-isbits (reference types): skip poison, resize!(v, 0) handles invalidation
+        return nothing
+    end
+    # isbits: try _poison_value dispatch first (NaN, typemax, zero for known types),
+    # fall back to duck-type 0 * first(v) for custom structs without zero(T).
+    val = try
+        _poison_value(T)
+    catch
+        0 * first(v)
+    end
+    fill!(v, val)
+    return nothing
+end
 _poison_fill!(v::BitVector) = fill!(v, true)
 
 """
