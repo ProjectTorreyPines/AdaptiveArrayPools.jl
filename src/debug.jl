@@ -282,14 +282,17 @@ function _poison_fill!(v::Vector{T}) where {T}
         # non-isbits (reference types): skip poison, resize!(v, 0) handles invalidation
         return nothing
     end
-    # isbits: try _poison_value dispatch first (NaN, typemax, zero for known types),
-    # fall back to duck-type 0 * first(v) for custom structs without zero(T).
-    val = try
-        _poison_value(T)
+    # isbits: try _poison_value dispatch (NaN, typemax, zero for known types),
+    # then duck-type 0 * first(v) for custom structs without zero(T).
+    # If neither works, skip poisoning — must not throw during rewind.
+    try
+        fill!(v, _poison_value(T))
     catch
-        0 * first(v)
+        try
+            fill!(v, 0 * first(v))
+        catch
+        end
     end
-    fill!(v, val)
     return nothing
 end
 _poison_fill!(v::BitVector) = fill!(v, true)
