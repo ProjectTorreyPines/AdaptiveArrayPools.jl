@@ -414,6 +414,10 @@ end
 # (legacy structs lack arr_wrappers field — they use N-way nd_arrays cache instead)
 _check_wrapper_mutation!(::AbstractTypedPool, ::Int, ::Int) = nothing
 
+# Function barrier: reads wrapper's :size field and computes prod() without boxing NTuple{N,Int}.
+# Using length() instead would be simpler but doesn't reflect setfield!(:size) on Julia 1.11.
+@noinline _wrapper_prod_size(wrapper)::Int = prod(getfield(wrapper, :size))
+
 # Julia 1.11+: TypedPool uses arr_wrappers (1:1 wrappers) and MemoryRef-based Array internals.
 # Must not be defined on 1.10 where TypedPool has no arr_wrappers and Array has no :ref field.
 @static if VERSION >= v"1.11-"
@@ -453,8 +457,9 @@ _check_wrapper_mutation!(::AbstractTypedPool, ::Int, ::Int) = nothing
                     return
                 end
                 # Check 2: wrapper length exceeds backing vector — detects growth beyond backing
-                # Use length(::Array{T}) to avoid NTuple{N,Int} boxing from prod(getfield(arr, :size))
-                wrapper_len = length(wrapper::Array{T})
+                # Function barrier avoids NTuple{N,Int} boxing from prod(getfield(:size))
+                # (length() is not used because it may not reflect setfield!(:size) on Julia 1.11)
+                wrapper_len = _wrapper_prod_size(wrapper)
                 if wrapper_len > vec_len
                     @warn "Pool-backed Array{$T}: wrapper grew beyond backing vector " *
                         "(slot $i, wrapper: $wrapper_len, backing: $vec_len). " *
