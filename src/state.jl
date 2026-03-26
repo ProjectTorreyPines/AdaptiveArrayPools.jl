@@ -269,7 +269,7 @@ end
     for i in (new_n + 1):old_n_active
         @inbounds resize!(tp.vectors[i], 0)
     end
-    # Invalidate N-D Array wrappers (setfield! size to zeros)
+    # Invalidate N-D Array wrappers (setfield! size to zeros, then clear slot)
     for N_idx in 1:length(tp.arr_wrappers)
         wrappers_for_N = @inbounds tp.arr_wrappers[N_idx]
         wrappers_for_N === nothing && continue
@@ -278,6 +278,9 @@ end
             wrapper = @inbounds wrappers[i]
             wrapper === nothing && continue
             setfield!(wrapper::Array, :size, _zero_dims_tuple(N_idx))
+            # Clear slot so _check_wrapper_mutation! can distinguish stale wrappers
+            # from legitimately zero-sized arrays (e.g., after resize!(v, 0))
+            @inbounds wrappers[i] = nothing
         end
     end
     return nothing
@@ -297,7 +300,7 @@ end
     for i in (new_n + 1):old_n_active
         @inbounds resize!(tp.vectors[i], 0)
     end
-    # Invalidate N-D BitArray wrappers (setfield! len and dims to zeros)
+    # Invalidate N-D BitArray wrappers (setfield! len and dims to zeros, then clear slot)
     for N_idx in 1:length(tp.arr_wrappers)
         wrappers_for_N = @inbounds tp.arr_wrappers[N_idx]
         wrappers_for_N === nothing && continue
@@ -308,6 +311,7 @@ end
             ba = wrapper::BitArray
             setfield!(ba, :len, 0)
             setfield!(ba, :dims, _zero_dims_tuple(N_idx))
+            @inbounds wrappers[i] = nothing
         end
     end
     return nothing
