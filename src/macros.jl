@@ -2534,24 +2534,35 @@ function _extract_container_vars!(containers, expr, target_pool)
 end
 
 """
-    _find_dot_access_exposure(expr, containers) -> Set{Symbol}
+    _find_dot_access_exposure(expr, containers) -> Vector{Tuple{Any, Union{Int,Nothing}, Symbol}}
 
 Find container symbols exposed via dot access (e.g., `container.field`)
-in return expressions. Returns the set of exposed container symbols.
+in return expressions. Returns `(ret_expr, line, container_sym)` tuples.
 """
-function _find_dot_access_exposure(expr, containers)
-    found = Set{Symbol}()
+function _find_dot_access_exposure(return_values, containers)
+    results = Tuple{Any, Union{Int, Nothing}, Symbol}[]
+    for (ret_expr, ret_line) in return_values
+        syms = _collect_dot_access_syms(ret_expr, containers)
+        for sym in syms
+            push!(results, (ret_expr, ret_line, sym))
+        end
+    end
+    return results
+end
+
+function _collect_dot_access_syms(expr, containers)
+    found = Symbol[]
     if expr isa Expr
         if expr.head == :return
             for arg in expr.args
-                union!(found, _find_dot_access_exposure(arg, containers))
+                append!(found, _collect_dot_access_syms(arg, containers))
             end
         elseif expr.head in (:tuple, :vect)
             for arg in expr.args
                 if Meta.isexpr(arg, :(=)) && length(arg.args) >= 2
-                    union!(found, _find_dot_access_exposure(arg.args[2], containers))
+                    append!(found, _collect_dot_access_syms(arg.args[2], containers))
                 else
-                    union!(found, _find_dot_access_exposure(arg, containers))
+                    append!(found, _collect_dot_access_syms(arg, containers))
                 end
             end
         elseif expr.head == :. && length(expr.args) >= 1
@@ -2562,6 +2573,45 @@ function _find_dot_access_exposure(expr, containers)
         end
     end
     return found
+end
+
+"""Extract the assignment expression for a container variable from the AST."""
+function _find_container_declaration(expr, var::Symbol)
+    if expr isa Expr
+        if expr.head == :(=) && length(expr.args) >= 2 && expr.args[1] === var
+            return expr
+        end
+        for arg in expr.args
+            result = _find_container_declaration(arg, var)
+            result !== nothing && return result
+        end
+    end
+    return nothing
+end
+
+"""Find the LineNumberNode preceding a given expression in a block."""
+function _find_line_for_expr(block, target_expr)
+    if block isa Expr && block.head == :block
+        current_line = nothing
+        for arg in block.args
+            if arg isa LineNumberNode
+                current_line = arg.line
+            elseif arg === target_expr || (arg isa Expr && _contains_expr(arg, target_expr))
+                return current_line
+            end
+        end
+    end
+    return nothing
+end
+
+function _contains_expr(expr, target)
+    expr === target && return true
+    if expr isa Expr
+        for arg in expr.args
+            _contains_expr(arg, target) && return true
+        end
+    end
+    return false
 end
 
 """
@@ -2580,23 +2630,57 @@ function _warn_compile_time_container_escape(expr, pool_name, source::Union{Line
     return_values = _collect_all_return_values(expr)
     isempty(return_values) && return
 
-    exposed = Set{Symbol}()
-    for (ret_expr, _) in return_values
-        union!(exposed, _find_dot_access_exposure(ret_expr, containers))
-    end
-    isempty(exposed) && return
+    exposures = _find_dot_access_exposure(return_values, containers)
+    isempty(exposures) && return
 
-    file = source !== nothing ? string(source.file) : "<unknown>"
-    line = source !== nothing ? source.line : 0
-    vars_str = join(sort!(collect(exposed)), ", ")
-    @warn string(
-        "Possible pool escape via container dot access (compile-time, conservative).\n",
-        "  Variables: ", vars_str, "\n",
-        "  At: ", file, ":", line, "\n",
-        "  Container(s) hold pool-backed arrays — returning fields may expose pool memory.\n",
-        "  If the accessed field is NOT pool-backed, this warning is a false positive.\n",
-        "  Use RUNTIME_CHECK=1 for precise detection, or restructure to avoid containers."
-    )
+    exposed_vars = sort!(unique([sym for (_, _, sym) in exposures]))
+
+    # Build structured message matching PoolEscapeError style
+    io = IOBuffer()
+    println(io, "PoolContainerEscapeWarning (compile-time, conservative)\n")
+
+    # Variable summary
+    println(io, "  The following container field(s) may escape the @with_pool scope:\n")
+    for var in exposed_vars
+        println(io, "    ", var, "  ← container holds pool-backed arrays (zeros!, acquire!, etc.)")
+    end
+
+    # Declarations
+    decls_found = false
+    for var in exposed_vars
+        decl_expr = _find_container_declaration(expr, var)
+        if decl_expr !== nothing
+            if !decls_found
+                println(io, "\n  Declarations:")
+                decls_found = true
+            end
+            decl_line = _find_line_for_expr(expr, decl_expr)
+            loc = decl_line !== nothing ? "  [line $decl_line]" : ""
+            println(io, "    ", string(decl_expr), loc)
+        end
+    end
+
+    # Escaping returns
+    println(io, "\n  Escaping return:")
+    seen = Set{String}()
+    for (ret_expr, ret_line, _) in exposures
+        s = string(ret_expr)
+        s in seen && continue
+        push!(seen, s)
+        loc = ret_line !== nothing ? "  [line $ret_line]" : ""
+        println(io, "    ", s, loc)
+    end
+
+    # Fix suggestion
+    println(io, "\n  Fix: Use collect(", exposed_vars[1], ".field) to return owned copies.")
+    println(io, "       Or restructure to avoid wrapping pool arrays in containers.")
+
+    # False positive note
+    println(io, "\n  False positive?")
+    println(io, "    If the accessed field is NOT pool-backed, this warning is safe to ignore.")
+    print(io, "    Use RUNTIME_CHECK=1 for precise runtime detection.")
+
+    @warn String(take!(io))
     return
 end
 
