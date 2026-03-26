@@ -2709,9 +2709,10 @@ function _warn_compile_time_container_escape(expr, pool_name, source::Union{Line
     println(io)
     printstyled(io, "  Note: "; color = :light_black)
     printstyled(io, "This is a conservative warning — it may be a false positive if\n"; color = :light_black)
-    printstyled(io, "        the accessed field is not pool-backed. Use "; color = :light_black)
-    printstyled(io, "RUNTIME_CHECK=1"; bold = true)
-    printstyled(io, " for precise detection.\n"; color = :light_black)
+    printstyled(io, "        the accessed field is not pool-backed. For precise runtime detection:\n"; color = :light_black)
+    printstyled(io, "        julia> "; color = :light_black)
+    printstyled(io, "using Preferences; set_preferences!(\"AdaptiveArrayPools\", \"runtime_check\" => true)"; color = :light_black, bold = true)
+    println(io)
     println(io)
 
     return
