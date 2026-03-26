@@ -2634,15 +2634,21 @@ function _warn_compile_time_container_escape(expr, pool_name, source::Union{Line
     isempty(exposures) && return
 
     exposed_vars = sort!(unique([sym for (_, _, sym) in exposures]))
+    io = stderr
 
-    # Build structured message matching PoolEscapeError style
-    io = IOBuffer()
-    println(io, "PoolContainerEscapeWarning (compile-time, conservative)\n")
+    # Header
+    printstyled(io, "PoolContainerEscapeWarning"; color = :yellow, bold = true)
+    printstyled(io, " (compile-time, conservative)"; color = :light_black)
+    println(io)
 
     # Variable summary
-    println(io, "  The following container field(s) may escape the @with_pool scope:\n")
+    println(io)
+    printstyled(io, "  The following container field(s) may escape the @with_pool scope:\n"; color = :light_black)
+    println(io)
     for var in exposed_vars
-        println(io, "    ", var, "  ← container holds pool-backed arrays (zeros!, acquire!, etc.)")
+        printstyled(io, "    "; color = :normal)
+        printstyled(io, string(var); color = :yellow, bold = true)
+        printstyled(io, "  ← container holds pool-backed arrays (zeros!, acquire!, etc.)\n"; color = :light_black)
     end
 
     # Declarations
@@ -2651,36 +2657,53 @@ function _warn_compile_time_container_escape(expr, pool_name, source::Union{Line
         decl_expr = _find_container_declaration(expr, var)
         if decl_expr !== nothing
             if !decls_found
-                println(io, "\n  Declarations:")
+                println(io)
+                printstyled(io, "  Declarations:\n"; bold = true)
                 decls_found = true
             end
             decl_line = _find_line_for_expr(expr, decl_expr)
-            loc = decl_line !== nothing ? "  [line $decl_line]" : ""
-            println(io, "    ", string(decl_expr), loc)
+            printstyled(io, "    "; color = :normal)
+            printstyled(io, string(decl_expr); color = :cyan)
+            if decl_line !== nothing
+                printstyled(io, "  [line $decl_line]"; color = :cyan, bold = true)
+            end
+            println(io)
         end
     end
 
     # Escaping returns
-    println(io, "\n  Escaping return:")
+    println(io)
+    printstyled(io, "  Escaping return:\n"; bold = true)
     seen = Set{String}()
     for (ret_expr, ret_line, _) in exposures
         s = string(ret_expr)
         s in seen && continue
         push!(seen, s)
-        loc = ret_line !== nothing ? "  [line $ret_line]" : ""
-        println(io, "    ", s, loc)
+        printstyled(io, "    "; color = :normal)
+        printstyled(io, s; color = :magenta)
+        if ret_line !== nothing
+            printstyled(io, "  [line $ret_line]"; color = :magenta, bold = true)
+        end
+        println(io)
     end
 
     # Fix suggestion
-    println(io, "\n  Fix: Use collect(", exposed_vars[1], ".field) to return owned copies.")
-    println(io, "       Or restructure to avoid wrapping pool arrays in containers.")
+    println(io)
+    printstyled(io, "  Fix: "; bold = true)
+    printstyled(io, "Use "; color = :light_black)
+    printstyled(io, "collect($(exposed_vars[1]).field)"; bold = true)
+    printstyled(io, " to return owned copies.\n"; color = :light_black)
+    printstyled(io, "       Or restructure to avoid wrapping pool arrays in containers.\n"; color = :light_black)
 
     # False positive note
-    println(io, "\n  False positive?")
-    println(io, "    If the accessed field is NOT pool-backed, this warning is safe to ignore.")
-    print(io, "    Use RUNTIME_CHECK=1 for precise runtime detection.")
+    println(io)
+    printstyled(io, "  False positive?\n"; color = :light_black)
+    printstyled(io, "    If the accessed field is NOT pool-backed, this warning is safe to ignore.\n"; color = :light_black)
+    printstyled(io, "    Use "; color = :light_black)
+    printstyled(io, "RUNTIME_CHECK=1"; bold = true)
+    printstyled(io, " for precise runtime detection.\n"; color = :light_black)
+    println(io)
 
-    @warn String(take!(io))
     return
 end
 
