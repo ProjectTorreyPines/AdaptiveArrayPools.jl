@@ -673,6 +673,9 @@ function _generate_pool_code(pool_name, expr, force_enable; safe::Bool = false, 
     # Compile-time container-escape warning (conservative, may have false positives)
     _warn_compile_time_container_escape(expr, pool_name, source)
 
+    # Compile-time reassignment-escape warning (v = f(v) ambiguity)
+    _warn_compile_time_reassign_escape(expr, pool_name, source)
+
     # Compile-time structural mutation detection (zero runtime cost)
     _check_structural_mutation(expr, pool_name, source)
 
@@ -970,6 +973,9 @@ function _generate_function_pool_code_with_backend(backend::Symbol, pool_name, f
     # Compile-time container-escape warning (conservative, may have false positives)
     _warn_compile_time_container_escape(body, pool_name, source)
 
+    # Compile-time reassignment-escape warning (v = f(v) ambiguity)
+    _warn_compile_time_reassign_escape(body, pool_name, source)
+
     # Compile-time structural mutation detection (zero runtime cost)
     _check_structural_mutation(body, pool_name, source)
 
@@ -1025,6 +1031,9 @@ function _generate_function_pool_code(pool_name, func_def, force_enable, disable
 
     # Compile-time container-escape warning (conservative, may have false positives)
     _warn_compile_time_container_escape(body, pool_name, source)
+
+    # Compile-time reassignment-escape warning (v = f(v) ambiguity)
+    _warn_compile_time_reassign_escape(body, pool_name, source)
 
     # Compile-time structural mutation detection (zero runtime cost)
     _check_structural_mutation(body, pool_name, source)
@@ -2204,6 +2213,77 @@ function _remove_flat_reassigned!(expr, acquired, target_pool)
 end
 
 """
+    _extract_ordered_acquired(expr, target_pool) -> Set{Symbol}
+
+Order-aware extraction of pool-tainted variables. Combines the logic of
+`_extract_acquired_vars` and `_remove_flat_reassigned!` into a single forward
+pass over top-level block statements, correctly handling statement ordering.
+
+For top-level assignments, taint is added/removed as statements are scanned
+in source order. For nested blocks (if/for/while), recursion adds taint
+conservatively (never removes inside branches — can't resolve control flow).
+
+Tuple destructuring is handled atomically: all RHS values are evaluated against
+the current taint set before any LHS updates are applied.
+"""
+function _extract_ordered_acquired(expr, target_pool)
+    if !(expr isa Expr && expr.head == :block)
+        # Not a block — fall back to recursive extraction
+        return _extract_acquired_vars(expr, target_pool)
+    end
+    tainted = Set{Symbol}()
+    for arg in expr.args
+        arg isa LineNumberNode && continue
+        if arg isa Expr && arg.head == :(=) && length(arg.args) >= 2
+            lhs = arg.args[1]
+            rhs = arg.args[2]
+            if lhs isa Symbol
+                if _is_acquire_call(rhs, target_pool)
+                    push!(tainted, lhs)
+                elseif rhs isa Symbol && rhs in tainted
+                    # Alias: d = v where v is tainted
+                    push!(tainted, lhs)
+                elseif _literal_contains_acquired(rhs, tainted)
+                    # Container wrapping: d = (v,), d = [v, w]
+                    push!(tainted, lhs)
+                else
+                    # Non-pool reassignment — remove taint
+                    delete!(tainted, lhs)
+                end
+            elseif Meta.isexpr(lhs, :tuple)
+                if Meta.isexpr(rhs, :tuple) && length(rhs.args) == length(lhs.args)
+                    # Atomic destructuring: evaluate all RHS against current taint,
+                    # then apply all LHS changes
+                    rhs_tainted = [
+                        _is_acquire_call(r, target_pool) ||
+                        (r isa Symbol && r in tainted) for r in rhs.args
+                    ]
+                    for (i, l) in enumerate(lhs.args)
+                        l isa Symbol || continue
+                        if rhs_tainted[i]
+                            push!(tainted, l)
+                        else
+                            delete!(tainted, l)
+                        end
+                    end
+                else
+                    # Opaque RHS (function call) — all destructured vars become untainted
+                    for l in lhs.args
+                        l isa Symbol && delete!(tainted, l)
+                    end
+                end
+            end
+            # Recurse into RHS for nested blocks containing acquire calls
+            _extract_acquired_vars(rhs, target_pool, tainted)
+        else
+            # Recurse into non-assignment expressions (if/for/while/etc.)
+            _extract_acquired_vars(arg, target_pool, tainted)
+        end
+    end
+    return tainted
+end
+
+"""
     _find_direct_exposure(expr, acquired) -> Set{Symbol}
 
 Check if the expression directly exposes any acquired variable.
@@ -2422,12 +2502,8 @@ container patterns (`(v, w)`, `[v]`, `(key=v,)`).
 Skipped when `STATIC_POOLING = false` (pooling disabled, acquire returns normal arrays).
 """
 function _check_compile_time_escape(expr, pool_name, source::Union{LineNumberNode, Nothing})
-    # Extract variables assigned from acquire calls
-    acquired = _extract_acquired_vars(expr, pool_name)
-    isempty(acquired) && return
-
-    # Remove vars that were unconditionally reassigned to non-acquire values
-    _remove_flat_reassigned!(expr, acquired, pool_name)
+    # Order-aware extraction: single forward pass that tracks taint per statement order
+    acquired = _extract_ordered_acquired(expr, pool_name)
     isempty(acquired) && return
 
     # Collect ALL return points: explicit returns + implicit (last expr / if-else branches)
@@ -2720,6 +2796,241 @@ function _warn_compile_time_container_escape(expr, pool_name, source::Union{Line
 end
 
 # ==============================================================================
+# Compile-time reassignment-escape WARNING
+# ==============================================================================
+#
+# Detects patterns like:
+#   v = acquire!(pool, Float64, 10)
+#   v = f(v)            # ← ambiguous: f may return the same pool-backed array
+#   return v            # ← pool memory may escape
+#
+# This is a WARNING (not error) because:
+# - f(v) might return a new array (e.g., custom transform) — safe
+# - f(v) might return the same array (e.g., identity, reshape) — unsafe
+# - Macro can't resolve f at compile time
+# - Known-safe functions (collect, copy, deepcopy) are excluded
+
+"""
+Functions known to return a new independent array (not a view or alias
+of the input). Reassignment through these is always safe.
+"""
+const _SAFE_COPY_FUNCTIONS = Set{Symbol}([:collect, :copy, :deepcopy, :Array, :Vector, :Matrix])
+
+"""
+    _rhs_call_contains_sym(rhs, sym) -> Bool
+
+Check if a `:call` expression transitively contains `sym` as an argument.
+Returns `false` for non-call expressions.
+"""
+function _rhs_call_contains_sym(rhs, sym::Symbol)
+    rhs isa Expr || return false
+    if rhs.head == :call
+        # Check arguments (skip function name at position 1)
+        for i in 2:length(rhs.args)
+            arg = rhs.args[i]
+            arg === sym && return true
+            _rhs_call_contains_sym(arg, sym) && return true
+        end
+    elseif rhs.head in (:ref, :., :comprehension, :generator)
+        for arg in rhs.args
+            arg === sym && return true
+            _rhs_call_contains_sym(arg, sym) && return true
+        end
+    end
+    return false
+end
+
+"""
+    _is_safe_copy_call(rhs) -> Bool
+
+Check if `rhs` is a call to a known-safe function that always returns a new
+independent array: `collect`, `copy`, `deepcopy`, broadcast calls (`.+`, `f.(v)`).
+"""
+function _is_safe_copy_call(rhs)
+    rhs isa Expr || return false
+    # Broadcast function call: f.(v) → Expr(:., :f, Expr(:tuple, :v))
+    # (Distinguished from dot-access a.field by tuple second arg)
+    if rhs.head == :. && length(rhs.args) >= 2 && Meta.isexpr(rhs.args[2], :tuple)
+        return true
+    end
+    rhs.head == :call || return false
+    fname = rhs.args[1]
+    # Dotted operator: .+, .*, .-, etc. — broadcast, always allocates new array
+    if fname isa Symbol && startswith(string(fname), ".")
+        return true
+    end
+    # Handle Module.func form: e.g., Base.collect(v)
+    if Meta.isexpr(fname, :.)
+        fname = fname.args[end]
+        fname isa QuoteNode && (fname = fname.value)
+    end
+    return fname isa Symbol && fname in _SAFE_COPY_FUNCTIONS
+end
+
+"""
+    _find_reassign_maybe_tainted(expr, target_pool) -> Set{Symbol}
+
+Forward pass that identifies variables which were pool-tainted and then
+reassigned to a function call containing themselves as an argument.
+
+These variables MAY still reference pool memory (e.g., `v = identity(v)`)
+or MAY be safe (e.g., `v = custom_transform(v)` returning a new array).
+"""
+function _find_reassign_maybe_tainted(expr, target_pool)
+    maybe_tainted = Set{Symbol}()
+    if !(expr isa Expr && expr.head == :block)
+        return maybe_tainted
+    end
+    tainted = Set{Symbol}()
+    for arg in expr.args
+        arg isa LineNumberNode && continue
+        if arg isa Expr && arg.head == :(=) && length(arg.args) >= 2
+            lhs = arg.args[1]
+            rhs = arg.args[2]
+            if lhs isa Symbol
+                if _is_acquire_call(rhs, target_pool)
+                    push!(tainted, lhs)
+                    delete!(maybe_tainted, lhs)
+                elseif rhs isa Symbol && rhs in tainted
+                    push!(tainted, lhs)
+                elseif rhs isa Symbol && rhs in maybe_tainted
+                    push!(maybe_tainted, lhs)
+                elseif _literal_contains_acquired(rhs, tainted)
+                    push!(tainted, lhs)
+                elseif _literal_contains_acquired(rhs, maybe_tainted)
+                    push!(maybe_tainted, lhs)
+                else
+                    # Non-pool reassignment — check if it's an ambiguous call
+                    if lhs in tainted && !_is_safe_copy_call(rhs) &&
+                            _rhs_call_contains_sym(rhs, lhs)
+                        push!(maybe_tainted, lhs)
+                    else
+                        delete!(maybe_tainted, lhs)
+                    end
+                    delete!(tainted, lhs)
+                end
+            end
+        else
+            # Recurse into nested blocks for acquire calls (conservative: add only)
+            _extract_acquired_vars(arg, target_pool, tainted)
+        end
+    end
+    return maybe_tainted
+end
+
+"""
+    _warn_compile_time_reassign_escape(expr, pool_name, source)
+
+Emit a compile-time WARNING when a pool-backed variable is reassigned to a
+function call containing itself (e.g., `v = f(v)`) and then escapes the scope.
+
+The function `f` might return the same pool-backed array (identity, reshape)
+or a new independent array. Since the macro can't resolve this, it warns
+rather than errors.
+"""
+function _warn_compile_time_reassign_escape(expr, pool_name, source::Union{LineNumberNode, Nothing})
+    maybe_tainted = _find_reassign_maybe_tainted(expr, pool_name)
+    isempty(maybe_tainted) && return
+
+    return_values = _collect_all_return_values(expr)
+    isempty(return_values) && return
+
+    # Check each return point for exposure of maybe-tainted vars
+    escaped = Set{Symbol}()
+    for (ret_expr, _) in return_values
+        union!(escaped, _find_direct_exposure(ret_expr, maybe_tainted))
+    end
+    isempty(escaped) && return
+
+    escaped_sorted = sort!(collect(escaped))
+    file = source !== nothing ? string(source.file) : nothing
+    io = stderr
+
+    # Header
+    printstyled(io, "PoolReassignEscapeWarning"; color = :yellow, bold = true)
+    printstyled(io, " (compile-time, conservative)"; color = :light_black)
+    println(io)
+
+    # Description
+    println(io)
+    n = length(escaped_sorted)
+    if n == 1
+        printstyled(io, "  A pool-acquired variable was reassigned and may still reference pool memory:\n"; color = :light_black)
+    else
+        printstyled(io, "  ", n, " pool-acquired variables were reassigned and may still reference pool memory:\n"; color = :light_black)
+    end
+
+    # Variables
+    println(io)
+    for var in escaped_sorted
+        printstyled(io, "    "; color = :normal)
+        printstyled(io, string(var); color = :yellow, bold = true)
+        printstyled(io, "  ← reassigned from call containing itself (may be same array)\n"; color = :light_black)
+    end
+
+    # Declarations
+    declarations = _extract_declaration_sites(expr, escaped)
+    if !isempty(declarations)
+        println(io)
+        printstyled(io, "  Declarations:\n"; bold = true)
+        for (i, decl) in enumerate(declarations)
+            printstyled(io, "    [", i, "]  "; color = :light_black)
+            printstyled(io, string(decl.expr); color = :cyan)
+            loc = _format_location_str(file, decl.line)
+            if loc !== nothing
+                printstyled(io, "  ["; color = :cyan, bold = true)
+                printstyled(io, loc; color = :cyan, bold = true)
+                printstyled(io, "] "; color = :cyan, bold = true)
+            end
+            println(io)
+        end
+    end
+
+    # Escaping returns
+    println(io)
+    printstyled(io, "  Escaping return:\n"; bold = true)
+    seen = Set{String}()
+    ret_idx = 0
+    for (ret_expr, ret_line) in return_values
+        point_escaped = _find_direct_exposure(ret_expr, maybe_tainted)
+        isempty(point_escaped) && continue
+        s = string(ret_expr)
+        s in seen && continue
+        push!(seen, s)
+        ret_idx += 1
+        printstyled(io, "    [", ret_idx, "]  "; color = :light_black)
+        printstyled(io, s; color = :magenta)
+        loc = _format_point_location(file, ret_line)
+        if loc !== nothing
+            printstyled(io, "  ["; color = :magenta, bold = true)
+            printstyled(io, loc; color = :magenta, bold = true)
+            printstyled(io, "] "; color = :magenta, bold = true)
+        end
+        println(io)
+    end
+
+    # Fix suggestion
+    println(io)
+    printstyled(io, "  Fix: "; bold = true)
+    printstyled(io, "If "; color = :light_black)
+    printstyled(io, "f(v)"; color = :cyan)
+    printstyled(io, " returns the same array, use "; color = :light_black)
+    printstyled(io, "collect(v)"; color = :green, bold = true)
+    printstyled(io, " before returning.\n"; color = :light_black)
+    printstyled(io, "       If it returns a new independent array, this warning is a false positive.\n"; color = :light_black)
+    println(io)
+    printstyled(io, "  Note: "; color = :light_black)
+    printstyled(io, "For precise runtime detection:\n"; color = :light_black)
+    printstyled(io, "        julia> "; color = :light_black)
+    printstyled(io, "using Preferences; set_preferences!(\"AdaptiveArrayPools\", \"runtime_check\" => true)"; color = :light_black, bold = true)
+    println(io)
+    printstyled(io, "        Then restart Julia (compile-time constant, requires fresh session).\n"; color = :light_black)
+    println(io)
+
+    return
+end
+
+# ==============================================================================
 # PoolMutationError — Compile-time structural mutation detection
 # ==============================================================================
 
@@ -2926,10 +3237,7 @@ retention, because pool-backed arrays share memory with backing storage.
 Skipped when `STATIC_POOLING = false` (pooling disabled, acquire returns normal arrays).
 """
 function _check_structural_mutation(expr, pool_name, source::Union{LineNumberNode, Nothing})
-    acquired = _extract_acquired_vars(expr, pool_name)
-    isempty(acquired) && return nothing
-
-    _remove_flat_reassigned!(expr, acquired, pool_name)
+    acquired = _extract_ordered_acquired(expr, pool_name)
     isempty(acquired) && return nothing
 
     points = _find_mutation_calls(expr, acquired)

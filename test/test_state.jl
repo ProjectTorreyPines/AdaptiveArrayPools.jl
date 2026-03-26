@@ -1818,6 +1818,7 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
             v = acquire!(pool, Float64, 10)
             v .= 1.0
             _scenario_a_helper!(pool)  # untracked Float64 → subset of tracked
+            nothing  # prevent pool-backed implicit return
         end
 
         # Pool state should be correct after rewind
@@ -1861,6 +1862,7 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
             v = acquire!(pool, Float64, 10)
             v .= 1.0
             _scenario_c_helper!(pool)  # untracked UInt8 → has_others → full
+            nothing  # prevent pool-backed implicit return
         end
 
         @test pool.float64.n_active == 0
@@ -1913,6 +1915,7 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
             @with_pool pool begin
                 v2 = acquire!(pool, Float64, 5)
                 v2 .= 2.0
+                nothing  # prevent pool-backed implicit return
             end
         end
 

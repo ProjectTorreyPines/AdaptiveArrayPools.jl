@@ -7,7 +7,8 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
     _format_location_str, _format_point_location,
     _find_acquire_call_expr, _literal_contains_acquired,
     _collect_acquired_in_literal,
-    _find_first_lnn_index, _ensure_body_has_toplevel_lnn
+    _find_first_lnn_index, _ensure_body_has_toplevel_lnn,
+    _extract_ordered_acquired
 
 @testset "Compile-Time Escape Detection" begin
 
@@ -1050,6 +1051,135 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
         @test_throws PoolEscapeError @macroexpand @with_pool pool begin
             v = acquire!(pool, Float64, 10)
             (v, w) = (zeros!(pool, 5), safe())
+            v
+        end
+    end
+
+    # ==============================================================================
+    # Order-aware taint tracking (_extract_ordered_acquired)
+    # ==============================================================================
+
+    @testset "_extract_ordered_acquired: statement ordering" begin
+        # Pre-acquire non-pool assignment must NOT clear taint
+        vars = _extract_ordered_acquired(
+            quote
+                v = 1
+                v = acquire!(pool, Float64, 3, 3)
+            end, :pool,
+        )
+        @test :v in vars
+
+        # Post-acquire non-pool assignment correctly clears taint
+        vars = _extract_ordered_acquired(
+            quote
+                v = acquire!(pool, Float64, 3, 3)
+                v = 1
+            end, :pool,
+        )
+        @test :v ∉ vars
+
+        # Pre-acquire assignment on alias chain must NOT clear taint
+        vars = _extract_ordered_acquired(
+            quote
+                v = acquire!(pool, Float64, 3, 3)
+                v2 = 1
+                v2 = v
+            end, :pool,
+        )
+        @test :v in vars
+        @test :v2 in vars
+
+        # Swap pattern: v becomes safe, x becomes tainted
+        vars = _extract_ordered_acquired(
+            quote
+                v = acquire!(pool, Float64, 10)
+                x = zeros(10)
+                v, x = x, v
+            end, :pool,
+        )
+        @test :v ∉ vars
+        @test :x in vars
+
+        # Container wrapping after pre-acquire assignment
+        vars = _extract_ordered_acquired(
+            quote
+                v = 1
+                v = acquire!(pool, Float64, 3, 3)
+                wrapper = (v,)
+            end, :pool,
+        )
+        @test :v in vars
+        @test :wrapper in vars
+
+        # Re-acquire after non-pool assignment
+        vars = _extract_ordered_acquired(
+            quote
+                v = acquire!(pool, Float64, 10)
+                v = 1
+                v = acquire!(pool, Float64, 5)
+            end, :pool,
+        )
+        @test :v in vars
+    end
+
+    # ==============================================================================
+    # Order-aware escape detection through macro pipeline
+    # ==============================================================================
+
+    @testset "Order-aware escape detection (false negative fixes)" begin
+        # BUG FIX: pre-acquire assignment used to suppress escape detection
+        # v=1 before v=acquire!(...) must NOT make v safe
+        @test_throws PoolEscapeError @macroexpand @with_pool pool begin
+            v = 1
+            v = acquire!(pool, Float64, 3, 3)
+            wrapper = (v,)
+            return wrapper
+        end
+
+        # BUG FIX: same pattern in function form
+        @test_throws PoolEscapeError @macroexpand @with_pool pool function test()
+            v = 1
+            v = acquire!(pool, Float64, 3, 3)
+            wrapper = (v,)
+            return wrapper
+        end
+
+        # BUG FIX: alias with pre-assignment on the alias variable
+        @test_throws PoolEscapeError @macroexpand @with_pool pool begin
+            v = acquire!(pool, Float64, 3, 3)
+            v2 = 1
+            v2 = v
+            wrapper = [v2]
+            return wrapper
+        end
+
+        # BUG FIX: same in function form
+        @test_throws PoolEscapeError @macroexpand @with_pool pool function test()
+            v = acquire!(pool, Float64, 3, 3)
+            v2 = 1
+            v2 = v
+            wrapper = [v2]
+            return wrapper
+        end
+
+        # Bare variable with pre-assignment — still escapes
+        @test_throws PoolEscapeError @macroexpand @with_pool pool begin
+            v = 1
+            v = acquire!(pool, Float64, 10)
+            v
+        end
+
+        # Control: post-acquire reassignment IS safe (no regression)
+        @test_nowarn @macroexpand @with_pool pool begin
+            v = acquire!(pool, Float64, 10)
+            v = 1
+            v
+        end
+
+        # Control: post-acquire collect IS safe (no regression)
+        @test_nowarn @macroexpand @with_pool pool begin
+            v = acquire!(pool, Float64, 10)
+            v = collect(v)
             v
         end
     end
