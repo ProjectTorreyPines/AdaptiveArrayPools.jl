@@ -2056,6 +2056,12 @@ function _extract_acquired_vars(expr, target_pool, vars = Set{Symbol}())
             # Recurse into RHS (for nested blocks with acquire calls)
             _extract_acquired_vars(rhs, target_pool, vars)
         else
+            # Skip scope-introducing expressions: variables inside these
+            # are in a different scope and must not taint outer variables.
+            # (let, function, ->, macro all create new variable scopes)
+            if expr.head in (:let, :function, :(->), :macro)
+                return vars
+            end
             for arg in expr.args
                 _extract_acquired_vars(arg, target_pool, vars)
             end

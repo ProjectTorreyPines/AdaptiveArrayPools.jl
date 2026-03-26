@@ -984,6 +984,69 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
         end
     end
 
+    # ==============================================================================
+    # Scope shadowing: inner scope variables must not taint outer scope
+    # ==============================================================================
+
+    @testset "Scope shadowing: no false positives from inner scopes" begin
+        # let block: inner v is a different variable from outer v
+        @test_nowarn @macroexpand @with_pool pool begin
+            v = 1
+            tmp = let v = acquire!(pool, Float64, 3)
+                sum(v)
+            end
+            v
+        end
+
+        # let block with wrapper: inner v acquired, outer v is safe scalar
+        @test_nowarn @macroexpand @with_pool pool begin
+            v = 42
+            result = let v = acquire!(pool, Float64, 10)
+                v .= 1.0
+                sum(v)
+            end
+            (v, result)  # outer v=42, result=scalar — both safe
+        end
+
+        # Anonymous function: inner v is a different scope
+        @test_nowarn @macroexpand @with_pool pool begin
+            v = 1
+            f = (v -> sum(acquire!(pool, Float64, v)))
+            f(10)
+            v
+        end
+
+        # Nested function definition: inner v is scoped
+        @test_nowarn @macroexpand @with_pool pool begin
+            v = "hello"
+            function helper()
+                v = acquire!(pool, Float64, 5)
+                sum(v)
+            end
+            helper()
+            v
+        end
+
+        # do block: inner v is scoped
+        @test_nowarn @macroexpand @with_pool pool begin
+            v = 0
+            map(1:3) do v
+                w = acquire!(pool, Float64, v)
+                sum(w)
+            end
+            v
+        end
+
+        # IMPORTANT: acquire in if/for/while body IS outer scope (no new scope)
+        # These SHOULD still be caught as escapes
+        @test_throws PoolEscapeError @macroexpand @with_pool pool begin
+            if true
+                v = acquire!(pool, Float64, 10)
+            end
+            v
+        end
+    end
+
     @testset "Block form: additional escape scenarios" begin
         # zeros! — definite escape
         @test_throws PoolEscapeError @macroexpand @with_pool pool begin
