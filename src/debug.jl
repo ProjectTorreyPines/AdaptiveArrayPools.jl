@@ -447,6 +447,11 @@ _check_wrapper_mutation!(::AbstractTypedPool, ::Int, ::Int) = nothing
                 wrapper === nothing && continue
                 wrapper::Array  # safety: ensure wrapper is Array before ccall (TypeError vs segfault)
 
+                # Skip already-invalidated wrappers (dims zeroed by previous rewind).
+                # When a slot is reused with a different dimensionality, the old wrapper
+                # retains a stale MemoryRef — checking it would be a false positive.
+                _wrapper_prod_size(wrapper) == 0 && continue
+
                 # Check 1: Data pointer identity — detects reallocation from resize!/push! beyond capacity
                 # ccall avoids boxing MemoryRef when wrapper's Array type is erased (from Vector{Any})
                 wrapper_ptr = ccall(:jl_array_ptr, Ptr{Cvoid}, (Any,), wrapper)
