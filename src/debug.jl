@@ -445,6 +445,7 @@ _check_wrapper_mutation!(::AbstractTypedPool, ::Int, ::Int) = nothing
                 i > length(wrappers) && continue
                 wrapper = @inbounds wrappers[i]
                 wrapper === nothing && continue
+                wrapper::Array  # safety: ensure wrapper is Array before ccall (TypeError vs segfault)
 
                 # Check 1: Data pointer identity — detects reallocation from resize!/push! beyond capacity
                 # ccall avoids boxing MemoryRef when wrapper's Array type is erased (from Vector{Any})

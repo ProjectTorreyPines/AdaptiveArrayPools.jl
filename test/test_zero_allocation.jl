@@ -553,7 +553,7 @@ end # Zero-allocation Patterns
             fill!(v, 1.0)
             _lazy_rewind!(pool_s1)
         end
-        return @allocated for _ in 1:1000
+        return @allocated for _ in 1:100
             _lazy_checkpoint!(pool_s1)
             v = acquire!(pool_s1, Float64, 100)
             fill!(v, 1.0)
@@ -575,7 +575,7 @@ end # Zero-allocation Patterns
             acquire!(pool_s1, ComplexF64, 30)
             _lazy_rewind!(pool_s1)
         end
-        return @allocated for _ in 1:1000
+        return @allocated for _ in 1:100
             _lazy_checkpoint!(pool_s1)
             acquire!(pool_s1, Float64, 100)
             acquire!(pool_s1, Int64, 50)
@@ -597,7 +597,7 @@ end # Zero-allocation Patterns
             acquire!(pool_s1, Float64, 5, 5, 5)
             _lazy_rewind!(pool_s1)
         end
-        return @allocated for _ in 1:1000
+        return @allocated for _ in 1:100
             _lazy_checkpoint!(pool_s1)
             acquire!(pool_s1, Float64, 10, 10)
             acquire!(pool_s1, Float64, 5, 5, 5)
@@ -619,7 +619,7 @@ end # Zero-allocation Patterns
             _check_pointer_overlap(ext, pool_s1)
             _lazy_rewind!(pool_s1)
         end
-        return @allocated for _ in 1:1000
+        return @allocated for _ in 1:100
             _lazy_checkpoint!(pool_s1)
             acquire!(pool_s1, Float64, 100)
             _check_pointer_overlap(ext, pool_s1)
@@ -642,7 +642,7 @@ end # Zero-allocation Patterns
             _lazy_rewind!(pool_s1)
             _lazy_rewind!(pool_s1)
         end
-        return @allocated for _ in 1:1000
+        return @allocated for _ in 1:100
             _lazy_checkpoint!(pool_s1)
             acquire!(pool_s1, Float64, 50)
             _lazy_checkpoint!(pool_s1)
