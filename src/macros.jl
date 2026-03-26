@@ -2713,6 +2713,7 @@ function _warn_compile_time_container_escape(expr, pool_name, source::Union{Line
     printstyled(io, "        julia> "; color = :light_black)
     printstyled(io, "using Preferences; set_preferences!(\"AdaptiveArrayPools\", \"runtime_check\" => true)"; color = :light_black, bold = true)
     println(io)
+    printstyled(io, "        Then restart Julia (compile-time constant, requires fresh session).\n"; color = :light_black)
     println(io)
 
     return
