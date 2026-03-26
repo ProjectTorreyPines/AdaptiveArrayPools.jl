@@ -2974,18 +2974,22 @@ function _warn_compile_time_reassign_escape(expr, pool_name, source::Union{LineN
         end
     end
 
-    # Escaping returns
-    println(io)
-    printstyled(io, "  Escaping return:\n"; bold = true)
-    seen = Set{String}()
-    ret_idx = 0
+    # Escaping returns — collect first to determine singular/plural
+    esc_returns = Tuple{Any, Union{Int, Nothing}}[]
+    seen_strs = Set{String}()
     for (ret_expr, ret_line) in return_values
         point_escaped = _find_direct_exposure(ret_expr, maybe_tainted)
         isempty(point_escaped) && continue
         s = string(ret_expr)
-        s in seen && continue
-        push!(seen, s)
-        ret_idx += 1
+        s in seen_strs && continue
+        push!(seen_strs, s)
+        push!(esc_returns, (ret_expr, ret_line))
+    end
+    println(io)
+    label = length(esc_returns) == 1 ? "  Escaping return:" : "  Escaping returns:"
+    printstyled(io, label, "\n"; bold = true)
+    for (ret_idx, (ret_expr, ret_line)) in enumerate(esc_returns)
+        s = string(ret_expr)
         printstyled(io, "    [", ret_idx, "]  "; color = :light_black)
         printstyled(io, s; color = :magenta)
         loc = _format_point_location(file, ret_line)
