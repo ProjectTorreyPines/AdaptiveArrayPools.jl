@@ -16,7 +16,7 @@ import AdaptiveArrayPools: _make_pool, _check_wrapper_mutation!
         resize!(v, 10_000)
 
         # rewind! should emit a warning about structural mutation
-        @test_logs (:warn, r"resize!.*reallocation") rewind!(pool)
+        @test_logs (:warn, r"wrapper reallocation detected") rewind!(pool)
     end
 
     @testset "push! reallocation detected (TypedPool)" begin
@@ -30,7 +30,7 @@ import AdaptiveArrayPools: _make_pool, _check_wrapper_mutation!
             push!(v, 99.0)
         end
 
-        @test_logs (:warn, r"resize!.*reallocation") rewind!(pool)
+        @test_logs (:warn, r"wrapper reallocation detected") rewind!(pool)
     end
 
     @testset "no mutation → no warning (TypedPool)" begin
@@ -76,7 +76,7 @@ import AdaptiveArrayPools: _make_pool, _check_wrapper_mutation!
                 arr = wrapper::Array{Float64}
                 # Artificially set wrapper size larger than backing
                 setfield!(arr, :size, (vec_len + 100,))
-                @test_logs (:warn, r"grew beyond backing") rewind!(pool)
+                @test_logs (:warn, r"wrapper grew beyond backing") rewind!(pool)
             else
                 rewind!(pool)  # no wrapper cached yet, skip
             end
@@ -104,7 +104,7 @@ import AdaptiveArrayPools: _make_pool, _check_wrapper_mutation!
                 arr = wrapper::Array{Float64}
                 # Artificially set wrapper size to something huge
                 setfield!(arr, :size, (1000, 1000))
-                @test_logs (:warn, r"grew beyond backing") rewind!(pool)
+                @test_logs (:warn, r"wrapper grew beyond backing") rewind!(pool)
             else
                 rewind!(pool)
             end
@@ -128,7 +128,7 @@ import AdaptiveArrayPools: _make_pool, _check_wrapper_mutation!
         #  detection is via wrapper.len > backing.len, not chunks reallocation)
         resize!(bv, 100_000)
 
-        @test_logs (:warn, r"grew beyond backing") rewind!(pool)
+        @test_logs (:warn, r"wrapper grew beyond backing") rewind!(pool)
     end
 
     @testset "no mutation → no warning (BitTypedPool)" begin
@@ -153,6 +153,6 @@ import AdaptiveArrayPools: _make_pool, _check_wrapper_mutation!
         resize!(v2, 10_000)
 
         # Should only warn once (first detected mutation), not twice
-        @test_logs (:warn, r"resize!.*reallocation") rewind!(pool)
+        @test_logs (:warn, r"wrapper reallocation detected") rewind!(pool)
     end
 end
