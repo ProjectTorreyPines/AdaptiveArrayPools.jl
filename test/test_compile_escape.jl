@@ -12,6 +12,18 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
     _find_reassign_maybe_tainted, _is_safe_copy_call, _rhs_call_contains_sym,
     _extract_container_vars
 
+function _capture_stderr(f)
+    tmpf = tempname()
+    open(tmpf, "w") do io
+        redirect_stderr(io) do
+            f()
+        end
+    end
+    output = read(tmpf, String)
+    rm(tmpf; force = true)
+    return output
+end
+
 @testset "Compile-Time Escape Detection" begin
 
     # ==============================================================================
@@ -901,23 +913,17 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
     # ==============================================================================
 
     @testset "Scope shadowing: no false positives from inner scopes" begin
-        # let block: inner v is a different variable from outer v
-        @test_nowarn @macroexpand @with_pool pool begin
-            v = 1
-            tmp = let v = acquire!(pool, Float64, 3)
-                sum(v)
-            end
-            v
-        end
+        # IMPORTANT: `let` is NOT skipped — `return` inside `let` exits the
+        # enclosing function, so pool variables acquired there CAN escape.
+        # This means `let v = acquire!(...)` with outer `v` IS a false positive,
+        # but that's the safer trade-off vs missing real escapes.
 
-        # let block with wrapper: inner v acquired, outer v is safe scalar
-        @test_nowarn @macroexpand @with_pool pool begin
-            v = 42
-            result = let v = acquire!(pool, Float64, 10)
-                v .= 1.0
-                sum(v)
+        # return inside let MUST be caught (real escape)
+        @test_throws PoolEscapeError @macroexpand @with_pool pool begin
+            let
+                w = acquire!(pool, Float64, 10)
+                return w
             end
-            (v, result)  # outer v=42, result=scalar — both safe
         end
 
         # Anonymous function: inner v is a different scope
@@ -2142,18 +2148,6 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
     # ==============================================================================
 
     @testset "PoolReassignEscapeWarning output" begin
-        function _capture_stderr(f)
-            tmpf = tempname()
-            result = open(tmpf, "w") do io
-                redirect_stderr(io) do
-                    f()
-                end
-            end
-            output = read(tmpf, String)
-            rm(tmpf; force = true)
-            return output
-        end
-
         # v = f(v) where f is unknown → warning should fire
         warn_output = _capture_stderr() do
             @macroexpand @with_pool pool function test_warn()
@@ -2270,8 +2264,9 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
         @test _is_safe_copy_call(:(copy(v)))
         @test _is_safe_copy_call(:(deepcopy(v)))
         @test _is_safe_copy_call(:(similar(v)))
-        @test _is_safe_copy_call(:(Array(v)))
-        @test _is_safe_copy_call(:(Vector(v)))
+        # Array/Vector/Matrix are NOT safe — they can return the same object via convert
+        @test !_is_safe_copy_call(:(Array(v)))
+        @test !_is_safe_copy_call(:(Vector(v)))
         @test _is_safe_copy_call(:(Base.collect(v)))
         # Broadcast: dotted operators
         @test _is_safe_copy_call(Expr(:call, :.+, :v, 1.0))
@@ -2332,18 +2327,6 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
     end
 
     @testset "PoolContainerEscapeWarning: no false positive after reassignment" begin
-        function _capture_stderr(f)
-            tmpf = tempname()
-            open(tmpf, "w") do io
-                redirect_stderr(io) do
-                    f()
-                end
-            end
-            output = read(tmpf, String)
-            rm(tmpf; force = true)
-            return output
-        end
-
         # Reassigned container → no warning
         warn_output = _capture_stderr() do
             @macroexpand @with_pool pool function test_no_warn()

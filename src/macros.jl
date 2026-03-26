@@ -2056,10 +2056,11 @@ function _extract_acquired_vars(expr, target_pool, vars = Set{Symbol}())
             # Recurse into RHS (for nested blocks with acquire calls)
             _extract_acquired_vars(rhs, target_pool, vars)
         else
-            # Skip scope-introducing expressions: variables inside these
-            # are in a different scope and must not taint outer variables.
-            # (let, function, ->, macro all create new variable scopes)
-            if expr.head in (:let, :function, :(->), :macro)
+            # Skip scope-introducing expressions whose `return` does NOT
+            # return from the enclosing function (function, ->, macro).
+            # NOTE: `let` is NOT skipped — `return` inside `let` exits the
+            # enclosing function, so pool variables acquired there can escape.
+            if expr.head in (:function, :(->), :macro)
                 return vars
             end
             for arg in expr.args
@@ -2577,8 +2578,9 @@ end
 
 function _extract_container_vars!(containers, expr, target_pool)
     expr isa Expr || return
-    # Skip scope-introducing expressions (same as _extract_acquired_vars)
-    if expr.head in (:let, :function, :(->), :macro)
+    # Skip scope-introducing expressions whose `return` does NOT
+    # return from the enclosing function (same as _extract_acquired_vars)
+    if expr.head in (:function, :(->), :macro)
         return
     end
     if expr.head == :block
@@ -2805,7 +2807,7 @@ end
 Functions known to return a new independent array (not a view or alias
 of the input). Reassignment through these is always safe.
 """
-const _SAFE_COPY_FUNCTIONS = Set{Symbol}([:collect, :copy, :deepcopy, :similar, :Array, :Vector, :Matrix])
+const _SAFE_COPY_FUNCTIONS = Set{Symbol}([:collect, :copy, :deepcopy, :similar])
 
 """
     _rhs_call_contains_sym(rhs, sym) -> Bool
