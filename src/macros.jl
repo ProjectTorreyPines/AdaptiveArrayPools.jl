@@ -2218,7 +2218,7 @@ function _extract_ordered_acquired(expr, target_pool)
                     # then apply all LHS changes
                     rhs_tainted = [
                         _is_acquire_call(r, target_pool) ||
-                        (r isa Symbol && r in tainted) for r in rhs.args
+                            (r isa Symbol && r in tainted) for r in rhs.args
                     ]
                     for (i, l) in enumerate(lhs.args)
                         l isa Symbol || continue
