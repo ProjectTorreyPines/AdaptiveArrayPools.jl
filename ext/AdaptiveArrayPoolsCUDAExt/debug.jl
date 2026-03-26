@@ -79,7 +79,8 @@ Two checks per wrapper:
                 return
             end
             # Check 2: wrapper length exceeds backing vector — detects growth beyond backing
-            wrapper_len = prod(cu.dims)
+            # Use length() to avoid NTuple{N,Int} boxing from prod(cu.dims) when N is erased
+            wrapper_len = length(cu)
             if wrapper_len > vec_len
                 @warn "Pool-backed CuArray{$T}: wrapper grew beyond backing vector " *
                     "(slot $i, wrapper: $wrapper_len, backing: $vec_len). " *
@@ -282,8 +283,7 @@ Throws `PoolRuntimeEscapeError` on overlap.
 """
 function _check_cuda_pointer_overlap(arr::CuArray, pool::CuAdaptiveArrayPool, original_val = arr)
     arr_ptr = UInt(pointer(arr))
-    arr_bytes = length(arr) * sizeof(eltype(arr))
-    arr_end = arr_ptr + arr_bytes
+    arr_end = arr_ptr + length(arr) * sizeof(eltype(arr))
 
     return_site = let rs = pool._pending_return_site
         isempty(rs) ? nothing : rs
@@ -291,16 +291,33 @@ function _check_cuda_pointer_overlap(arr::CuArray, pool::CuAdaptiveArrayPool, or
 
     current_depth = pool._current_depth
 
-    # Check fixed slots
-    AdaptiveArrayPools.foreach_fixed_slot(pool) do tp
-        _check_tp_cuda_overlap(tp, arr_ptr, arr_end, current_depth, pool, return_site, original_val)
-    end
-
-    # Check others
-    for tp in values(pool.others)
-        _check_tp_cuda_overlap(tp, arr_ptr, arr_end, current_depth, pool, return_site, original_val)
-    end
+    # Explicit per-slot calls via @generated — avoids do-block closure allocation
+    _check_all_cuda_slots_overlap(pool, arr_ptr, arr_end, current_depth, return_site, original_val)
     return
+end
+
+# @generated unrolling over GPU_FIXED_SLOT_FIELDS — zero-allocation dispatch
+@generated function _check_all_cuda_slots_overlap(
+        pool::CuAdaptiveArrayPool, arr_ptr::UInt, arr_end::UInt,
+        current_depth::Int, return_site, original_val
+    )
+    calls = [
+        :(
+                _check_tp_cuda_overlap(
+                    getfield(pool, $(QuoteNode(f))), arr_ptr, arr_end,
+                    current_depth, pool, return_site, original_val
+                )
+            )
+            for f in GPU_FIXED_SLOT_FIELDS
+    ]
+    return quote
+        Base.@_inline_meta
+        $(calls...)
+        for tp in values(pool.others)
+            _check_tp_cuda_overlap(tp, arr_ptr, arr_end, current_depth, pool, return_site, original_val)
+        end
+        nothing
+    end
 end
 
 @noinline function _check_tp_cuda_overlap(
