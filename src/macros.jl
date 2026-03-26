@@ -670,6 +670,9 @@ function _generate_pool_code(pool_name, expr, force_enable; safe::Bool = false, 
     _esc = _check_compile_time_escape(expr, pool_name, source)
     _esc !== nothing && return :(throw($_esc))
 
+    # Compile-time container-escape warning (conservative, may have false positives)
+    _warn_compile_time_container_escape(expr, pool_name, source)
+
     # Compile-time structural mutation detection (zero runtime cost)
     _check_structural_mutation(expr, pool_name, source)
 
@@ -964,6 +967,9 @@ function _generate_function_pool_code_with_backend(backend::Symbol, pool_name, f
     _esc = _check_compile_time_escape(body, pool_name, source)
     _esc !== nothing && return :(throw($_esc))
 
+    # Compile-time container-escape warning (conservative, may have false positives)
+    _warn_compile_time_container_escape(body, pool_name, source)
+
     # Compile-time structural mutation detection (zero runtime cost)
     _check_structural_mutation(body, pool_name, source)
 
@@ -1016,6 +1022,9 @@ function _generate_function_pool_code(pool_name, func_def, force_enable, disable
     # Compile-time escape detection (zero runtime cost)
     _esc = _check_compile_time_escape(body, pool_name, source)
     _esc !== nothing && return :(throw($_esc))
+
+    # Compile-time container-escape warning (conservative, may have false positives)
+    _warn_compile_time_container_escape(body, pool_name, source)
 
     # Compile-time structural mutation detection (zero runtime cost)
     _check_structural_mutation(body, pool_name, source)
@@ -2449,6 +2458,146 @@ function _check_compile_time_escape(expr, pool_name, source::Union{LineNumberNod
     file = source !== nothing ? string(source.file) : nothing
     line = source !== nothing ? source.line : nothing
     throw(PoolEscapeError(sorted, file, line, points, var_info, declarations))
+end
+
+# ==============================================================================
+# Compile-time container-escape WARNING (conservative, may have false positives)
+# ==============================================================================
+#
+# Detects patterns like:
+#   vac = (wv=zeros!(pool, ...), grri=acquire!(pool, ...))
+#   return vac.wv   # ← pool-backed array escaping via dot access
+#
+# This is a WARNING (not error) because:
+# - `return vac.name` where `name="hello"` is safe (false positive)
+# - Macro can't distinguish pool-backed vs non-pool fields in a container
+# - Runtime check (RUNTIME_CHECK=1) catches true positives precisely
+
+"""
+    _tuple_contains_acquire_call(expr, target_pool) -> Bool
+
+Check if a tuple/vect literal contains any acquire calls as values.
+Unlike `_literal_contains_acquired`, this checks the RHS calls directly,
+so it works even when `vars` is empty (solves the chicken-and-egg problem).
+"""
+function _tuple_contains_acquire_call(expr, target_pool)
+    expr isa Expr || return false
+    if expr.head in (:tuple, :vect)
+        for arg in expr.args
+            if Meta.isexpr(arg, :(=)) && length(arg.args) >= 2
+                # NamedTuple value: (wv=zeros!(pool, ...), ...)
+                _is_acquire_call(arg.args[2], target_pool) && return true
+                _tuple_contains_acquire_call(arg.args[2], target_pool) && return true
+            elseif Meta.isexpr(arg, :kw) && length(arg.args) >= 2
+                _is_acquire_call(arg.args[2], target_pool) && return true
+                _tuple_contains_acquire_call(arg.args[2], target_pool) && return true
+            else
+                _is_acquire_call(arg, target_pool) && return true
+                _tuple_contains_acquire_call(arg, target_pool) && return true
+            end
+        end
+    end
+    return false
+end
+
+"""
+    _extract_container_vars(expr, target_pool) -> Set{Symbol}
+
+Find variables assigned from tuple/vect literals that contain acquire calls.
+E.g., `vac = (wv=zeros!(pool, ...), ...)` → returns `{:vac}`.
+"""
+function _extract_container_vars(expr, target_pool)
+    containers = Set{Symbol}()
+    _extract_container_vars!(containers, expr, target_pool)
+    return containers
+end
+
+function _extract_container_vars!(containers, expr, target_pool)
+    expr isa Expr || return
+    if expr.head == :block
+        for arg in expr.args
+            _extract_container_vars!(containers, arg, target_pool)
+        end
+    elseif expr.head == :(=) && length(expr.args) >= 2
+        lhs = expr.args[1]
+        rhs = expr.args[2]
+        if lhs isa Symbol && _tuple_contains_acquire_call(rhs, target_pool)
+            push!(containers, lhs)
+        end
+        _extract_container_vars!(containers, rhs, target_pool)
+    else
+        for arg in expr.args
+            _extract_container_vars!(containers, arg, target_pool)
+        end
+    end
+    return
+end
+
+"""
+    _find_dot_access_exposure(expr, containers) -> Set{Symbol}
+
+Find container symbols exposed via dot access (e.g., `container.field`)
+in return expressions. Returns the set of exposed container symbols.
+"""
+function _find_dot_access_exposure(expr, containers)
+    found = Set{Symbol}()
+    if expr isa Expr
+        if expr.head == :return
+            for arg in expr.args
+                union!(found, _find_dot_access_exposure(arg, containers))
+            end
+        elseif expr.head in (:tuple, :vect)
+            for arg in expr.args
+                if Meta.isexpr(arg, :(=)) && length(arg.args) >= 2
+                    union!(found, _find_dot_access_exposure(arg.args[2], containers))
+                else
+                    union!(found, _find_dot_access_exposure(arg, containers))
+                end
+            end
+        elseif expr.head == :. && length(expr.args) >= 1
+            base = expr.args[1]
+            if base isa Symbol && base in containers
+                push!(found, base)
+            end
+        end
+    end
+    return found
+end
+
+"""
+    _warn_compile_time_container_escape(expr, pool_name, source)
+
+Emit a compile-time WARNING (not error) when pool-backed arrays may escape
+via container dot access (e.g., `vac = (wv=zeros!(pool,...)); return vac.wv`).
+
+This is conservative — may have false positives when the accessed field is not
+pool-backed (e.g., `return vac.name` where `name="hello"`).
+"""
+function _warn_compile_time_container_escape(expr, pool_name, source::Union{LineNumberNode, Nothing})
+    containers = _extract_container_vars(expr, pool_name)
+    isempty(containers) && return
+
+    return_values = _collect_all_return_values(expr)
+    isempty(return_values) && return
+
+    exposed = Set{Symbol}()
+    for (ret_expr, _) in return_values
+        union!(exposed, _find_dot_access_exposure(ret_expr, containers))
+    end
+    isempty(exposed) && return
+
+    file = source !== nothing ? string(source.file) : "<unknown>"
+    line = source !== nothing ? source.line : 0
+    vars_str = join(sort!(collect(exposed)), ", ")
+    @warn string(
+        "Possible pool escape via container dot access (compile-time, conservative).\n",
+        "  Variables: ", vars_str, "\n",
+        "  At: ", file, ":", line, "\n",
+        "  Container(s) hold pool-backed arrays — returning fields may expose pool memory.\n",
+        "  If the accessed field is NOT pool-backed, this warning is a false positive.\n",
+        "  Use RUNTIME_CHECK=1 for precise detection, or restructure to avoid containers."
+    )
+    return
 end
 
 # ==============================================================================
