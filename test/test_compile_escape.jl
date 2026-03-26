@@ -2264,9 +2264,11 @@ end
         @test _is_safe_copy_call(:(copy(v)))
         @test _is_safe_copy_call(:(deepcopy(v)))
         @test _is_safe_copy_call(:(similar(v)))
-        # Array/Vector/Matrix are NOT safe — they can return the same object via convert
+        # Array/Vector/Matrix removed — conservative measure (type constructors
+        # may behave unpredictably with certain argument types)
         @test !_is_safe_copy_call(:(Array(v)))
         @test !_is_safe_copy_call(:(Vector(v)))
+        @test !_is_safe_copy_call(:(Matrix(v)))
         @test _is_safe_copy_call(:(Base.collect(v)))
         # Broadcast: dotted operators
         @test _is_safe_copy_call(Expr(:call, :.+, :v, 1.0))
