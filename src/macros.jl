@@ -2172,51 +2172,6 @@ function _collect_implicit_return_values!(values, expr, current_line::Union{Int,
     end
 end
 
-"""
-    _remove_flat_reassigned!(expr, acquired, target_pool)
-
-Walk top-level statements in order and remove variables from `acquired`
-if they are reassigned to a non-acquire call. Handles both simple assignment
-(`v = expr`) and tuple destructuring (`(a, v) = expr`).
-Only handles flat (non-branching) reassignment — conditional is conservatively kept.
-"""
-function _remove_flat_reassigned!(expr, acquired, target_pool)
-    if !(expr isa Expr && expr.head == :block)
-        return
-    end
-    for arg in expr.args
-        arg isa LineNumberNode && continue
-        if arg isa Expr && arg.head == :(=) && length(arg.args) >= 2
-            lhs = arg.args[1]
-            rhs = arg.args[2]
-            if lhs isa Symbol && lhs in acquired && !_is_acquire_call(rhs, target_pool) &&
-                    !(rhs isa Symbol && rhs in acquired) &&  # keep aliases
-                    !_literal_contains_acquired(rhs, acquired)  # keep container wrapping
-                delete!(acquired, lhs)
-            elseif Meta.isexpr(lhs, :tuple)
-                # Destructuring: (a, v, b) = expr
-                if Meta.isexpr(rhs, :tuple) && length(rhs.args) == length(lhs.args)
-                    # RHS is tuple literal — check each element pair
-                    for (l, r) in zip(lhs.args, rhs.args)
-                        if l isa Symbol && l in acquired && !_is_acquire_call(r, target_pool) &&
-                                !(r isa Symbol && r in acquired)  # keep aliases
-                            delete!(acquired, l)
-                        end
-                    end
-                else
-                    # RHS is function call or opaque expression —
-                    # acquired var is now reassigned to unknown value, remove it
-                    for l in lhs.args
-                        if l isa Symbol && l in acquired
-                            delete!(acquired, l)
-                        end
-                    end
-                end
-            end
-        end
-    end
-    return
-end
 
 """
     _extract_ordered_acquired(expr, target_pool) -> Set{Symbol}
@@ -2820,7 +2775,7 @@ end
 Functions known to return a new independent array (not a view or alias
 of the input). Reassignment through these is always safe.
 """
-const _SAFE_COPY_FUNCTIONS = Set{Symbol}([:collect, :copy, :deepcopy, :Array, :Vector, :Matrix])
+const _SAFE_COPY_FUNCTIONS = Set{Symbol}([:collect, :copy, :deepcopy, :similar, :Array, :Vector, :Matrix])
 
 """
     _rhs_call_contains_sym(rhs, sym) -> Bool
@@ -2914,6 +2869,33 @@ function _find_reassign_maybe_tainted(expr, target_pool)
                         delete!(maybe_tainted, lhs)
                     end
                     delete!(tainted, lhs)
+                end
+            elseif Meta.isexpr(lhs, :tuple)
+                if Meta.isexpr(rhs, :tuple) && length(rhs.args) == length(lhs.args)
+                    # Atomic destructuring: evaluate all RHS against current taint
+                    for (l, r) in zip(lhs.args, rhs.args)
+                        l isa Symbol || continue
+                        if _is_acquire_call(r, target_pool)
+                            push!(tainted, l)
+                            delete!(maybe_tainted, l)
+                        elseif r isa Symbol && r in tainted
+                            push!(tainted, l)
+                        elseif r isa Symbol && r in maybe_tainted
+                            push!(maybe_tainted, l)
+                        else
+                            delete!(tainted, l)
+                            delete!(maybe_tainted, l)
+                        end
+                    end
+                else
+                    # Opaque RHS (function call returning tuple) — all become untainted.
+                    # Unlike simple `v = f(v)`, destructuring implies a transform,
+                    # so we don't mark as maybe-tainted.
+                    for l in lhs.args
+                        l isa Symbol || continue
+                        delete!(tainted, l)
+                        delete!(maybe_tainted, l)
+                    end
                 end
             end
         else
