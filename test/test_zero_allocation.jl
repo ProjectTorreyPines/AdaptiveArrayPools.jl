@@ -528,3 +528,130 @@ const _ZERO_ALLOC_THRESHOLD = @static VERSION >= v"1.12-" ? 0 : 16
     end
 
 end # Zero-allocation Patterns
+
+# ==============================================================================
+# RUNTIME_CHECK=1 (S=1) Zero-Allocation Tests
+# ==============================================================================
+#
+# Verifies that runtime safety checks (escape detection, borrow tracking,
+# wrapper mutation detection, poisoning) add zero allocation after warmup.
+# Uses AdaptiveArrayPool{1}() directly to test S=1 regardless of the global
+# RUNTIME_CHECK preference.
+
+@testset "Zero-allocation with RUNTIME_CHECK=1 (S=1)" begin
+    import AdaptiveArrayPools: _check_pointer_overlap, _lazy_checkpoint!, _lazy_rewind!
+
+    pool_s1 = AdaptiveArrayPool{1}()
+
+    # ------------------------------------------------------------------
+    # Pattern 1: Single type acquire + rewind
+    # ------------------------------------------------------------------
+    function _test_s1_single_type()
+        for _ in 1:5
+            _lazy_checkpoint!(pool_s1)
+            v = acquire!(pool_s1, Float64, 100)
+            fill!(v, 1.0)
+            _lazy_rewind!(pool_s1)
+        end
+        return @allocated for _ in 1:100
+            _lazy_checkpoint!(pool_s1)
+            v = acquire!(pool_s1, Float64, 100)
+            fill!(v, 1.0)
+            _lazy_rewind!(pool_s1)
+        end
+    end
+    @testset "S=1 single type" begin
+        @test _test_s1_single_type() == 0
+    end
+
+    # ------------------------------------------------------------------
+    # Pattern 2: Multi-type acquire + rewind
+    # ------------------------------------------------------------------
+    function _test_s1_multi_type()
+        for _ in 1:5
+            _lazy_checkpoint!(pool_s1)
+            acquire!(pool_s1, Float64, 100)
+            acquire!(pool_s1, Int64, 50)
+            acquire!(pool_s1, ComplexF64, 30)
+            _lazy_rewind!(pool_s1)
+        end
+        return @allocated for _ in 1:100
+            _lazy_checkpoint!(pool_s1)
+            acquire!(pool_s1, Float64, 100)
+            acquire!(pool_s1, Int64, 50)
+            acquire!(pool_s1, ComplexF64, 30)
+            _lazy_rewind!(pool_s1)
+        end
+    end
+    @testset "S=1 multi-type" begin
+        @test _test_s1_multi_type() == 0
+    end
+
+    # ------------------------------------------------------------------
+    # Pattern 3: N-D arrays (exercises wrapper mutation check)
+    # ------------------------------------------------------------------
+    function _test_s1_nd_arrays()
+        for _ in 1:5
+            _lazy_checkpoint!(pool_s1)
+            acquire!(pool_s1, Float64, 10, 10)
+            acquire!(pool_s1, Float64, 5, 5, 5)
+            _lazy_rewind!(pool_s1)
+        end
+        return @allocated for _ in 1:100
+            _lazy_checkpoint!(pool_s1)
+            acquire!(pool_s1, Float64, 10, 10)
+            acquire!(pool_s1, Float64, 5, 5, 5)
+            _lazy_rewind!(pool_s1)
+        end
+    end
+    @testset "S=1 N-D arrays" begin
+        @test _test_s1_nd_arrays() == 0
+    end
+
+    # ------------------------------------------------------------------
+    # Pattern 4: _check_pointer_overlap (exercises escape detection)
+    # ------------------------------------------------------------------
+    function _test_s1_overlap_check()
+        ext = Vector{Float64}(undef, 100)
+        for _ in 1:5
+            _lazy_checkpoint!(pool_s1)
+            acquire!(pool_s1, Float64, 100)
+            _check_pointer_overlap(ext, pool_s1)
+            _lazy_rewind!(pool_s1)
+        end
+        return @allocated for _ in 1:100
+            _lazy_checkpoint!(pool_s1)
+            acquire!(pool_s1, Float64, 100)
+            _check_pointer_overlap(ext, pool_s1)
+            _lazy_rewind!(pool_s1)
+        end
+    end
+    @testset "S=1 overlap check" begin
+        @test _test_s1_overlap_check() == 0
+    end
+
+    # ------------------------------------------------------------------
+    # Pattern 5: Nested scopes
+    # ------------------------------------------------------------------
+    function _test_s1_nested()
+        for _ in 1:5
+            _lazy_checkpoint!(pool_s1)
+            acquire!(pool_s1, Float64, 50)
+            _lazy_checkpoint!(pool_s1)
+            acquire!(pool_s1, Float64, 30)
+            _lazy_rewind!(pool_s1)
+            _lazy_rewind!(pool_s1)
+        end
+        return @allocated for _ in 1:100
+            _lazy_checkpoint!(pool_s1)
+            acquire!(pool_s1, Float64, 50)
+            _lazy_checkpoint!(pool_s1)
+            acquire!(pool_s1, Float64, 30)
+            _lazy_rewind!(pool_s1)
+            _lazy_rewind!(pool_s1)
+        end
+    end
+    @testset "S=1 nested scopes" begin
+        @test _test_s1_nested() == 0
+    end
+end

@@ -81,8 +81,7 @@ end
 # `arr` may be its parent Array used for the actual pointer comparison.
 function _check_pointer_overlap(arr::Array, pool::AdaptiveArrayPool, original_val = arr)
     arr_ptr = UInt(pointer(arr))
-    arr_len = length(arr) * sizeof(eltype(arr))
-    arr_end = arr_ptr + arr_len
+    arr_end = arr_ptr + length(arr) * sizeof(eltype(arr))
 
     return_site = let rs = pool._pending_return_site
         isempty(rs) ? nothing : rs
@@ -90,32 +89,52 @@ function _check_pointer_overlap(arr::Array, pool::AdaptiveArrayPool, original_va
 
     current_depth = pool._current_depth
 
-    check_overlap = function (tp)
-        boundary = _scope_boundary(tp, current_depth)
-        for i in (boundary + 1):tp.n_active
-            v = @inbounds tp.vectors[i]
-            v isa Array || continue  # Skip BitVector (no pointer(); checked via _check_bitchunks_overlap)
-            v_ptr = UInt(pointer(v))
-            v_len = length(v) * sizeof(eltype(v))
-            v_end = v_ptr + v_len
-            if !(arr_end <= v_ptr || v_end <= arr_ptr)
-                callsite = _lookup_borrow_callsite(pool, v)
-                _throw_pool_escape_error(original_val, eltype(v), callsite, return_site)
-            end
+    # Explicit per-slot calls via @generated — avoids closure allocation (128 bytes)
+    _check_all_slots_pointer_overlap(pool, arr_ptr, arr_end, current_depth, return_site, original_val)
+    return
+end
+
+# Standalone overlap check for a single TypedPool (no closure capture)
+@noinline function _check_tp_pointer_overlap(
+        tp::AbstractTypedPool, arr_ptr::UInt, arr_end::UInt,
+        current_depth::Int, pool::AdaptiveArrayPool, return_site, original_val
+    )
+    boundary = _scope_boundary(tp, current_depth)
+    for i in (boundary + 1):tp.n_active
+        v = @inbounds tp.vectors[i]
+        v isa Array || continue  # Skip BitVector (checked via _check_bitchunks_overlap)
+        v_ptr = UInt(pointer(v))
+        v_end = v_ptr + length(v) * sizeof(eltype(v))
+        if !(arr_end <= v_ptr || v_end <= arr_ptr)
+            callsite = _lookup_borrow_callsite(pool, v)
+            _throw_pool_escape_error(original_val, eltype(v), callsite, return_site)
         end
-        return
-    end
-
-    # Check fixed slots
-    foreach_fixed_slot(pool) do tp
-        check_overlap(tp)
-    end
-
-    # Check others
-    for tp in values(pool.others)
-        check_overlap(tp)
     end
     return
+end
+
+# @generated unrolling over FIXED_SLOT_FIELDS — zero-allocation dispatch
+@generated function _check_all_slots_pointer_overlap(
+        pool::AdaptiveArrayPool, arr_ptr::UInt, arr_end::UInt,
+        current_depth::Int, return_site, original_val
+    )
+    calls = [
+        :(
+                _check_tp_pointer_overlap(
+                    getfield(pool, $(QuoteNode(f))), arr_ptr, arr_end,
+                    current_depth, pool, return_site, original_val
+                )
+            )
+            for f in FIXED_SLOT_FIELDS
+    ]
+    return quote
+        Base.@_inline_meta
+        $(calls...)
+        for tp in values(pool.others)
+            _check_tp_pointer_overlap(tp, arr_ptr, arr_end, current_depth, pool, return_site, original_val)
+        end
+        nothing
+    end
 end
 
 """
@@ -395,6 +414,10 @@ end
 # (legacy structs lack arr_wrappers field — they use N-way nd_arrays cache instead)
 _check_wrapper_mutation!(::AbstractTypedPool, ::Int, ::Int) = nothing
 
+# Function barrier: reads wrapper's :size field and computes prod() without boxing NTuple{N,Int}.
+# Using length() instead would be simpler but doesn't reflect setfield!(:size) on Julia 1.11.
+@noinline _wrapper_prod_size(wrapper)::Int = prod(getfield(wrapper, :size))
+
 # Julia 1.11+: TypedPool uses arr_wrappers (1:1 wrappers) and MemoryRef-based Array internals.
 # Must not be defined on 1.10 where TypedPool has no arr_wrappers and Array has no :ref field.
 @static if VERSION >= v"1.11-"
@@ -411,7 +434,8 @@ _check_wrapper_mutation!(::AbstractTypedPool, ::Int, ::Int) = nothing
     @noinline function _check_wrapper_mutation!(tp::TypedPool{T}, new_n::Int, old_n::Int) where {T}
         for i in (new_n + 1):old_n
             @inbounds vec = tp.vectors[i]
-            vec_mem = getfield(vec, :ref).mem
+            # Use ccall for data pointer comparison (avoids boxing MemoryRef{T})
+            vec_ptr = ccall(:jl_array_ptr, Ptr{Cvoid}, (Any,), vec)
             vec_len = length(vec)
 
             for N_idx in 1:length(tp.arr_wrappers)
@@ -421,10 +445,12 @@ _check_wrapper_mutation!(::AbstractTypedPool, ::Int, ::Int) = nothing
                 i > length(wrappers) && continue
                 wrapper = @inbounds wrappers[i]
                 wrapper === nothing && continue
+                wrapper::Array  # safety: ensure wrapper is Array before ccall (TypeError vs segfault)
 
-                arr = wrapper::Array
-                # Check 1: Memory identity — detects reallocation from resize!/push! beyond capacity
-                if getfield(arr, :ref).mem !== vec_mem
+                # Check 1: Data pointer identity — detects reallocation from resize!/push! beyond capacity
+                # ccall avoids boxing MemoryRef when wrapper's Array type is erased (from Vector{Any})
+                wrapper_ptr = ccall(:jl_array_ptr, Ptr{Cvoid}, (Any,), wrapper)
+                if wrapper_ptr != vec_ptr
                     @warn "Pool-backed Array{$T}: resize!/push! caused memory reallocation " *
                         "(slot $i). Pooling benefits (zero-alloc reuse) may be lost; " *
                         "temporary extra memory retention may occur. " *
@@ -432,7 +458,9 @@ _check_wrapper_mutation!(::AbstractTypedPool, ::Int, ::Int) = nothing
                     return
                 end
                 # Check 2: wrapper length exceeds backing vector — detects growth beyond backing
-                wrapper_len = prod(getfield(arr, :size))
+                # Function barrier avoids NTuple{N,Int} boxing from prod(getfield(:size))
+                # (length() is not used because it may not reflect setfield!(:size) on Julia 1.11)
+                wrapper_len = _wrapper_prod_size(wrapper)
                 if wrapper_len > vec_len
                     @warn "Pool-backed Array{$T}: wrapper grew beyond backing vector " *
                         "(slot $i, wrapper: $wrapper_len, backing: $vec_len). " *

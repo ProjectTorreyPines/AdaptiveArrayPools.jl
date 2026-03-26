@@ -323,6 +323,10 @@ runtime_check = true   # or 1
 """
 const RUNTIME_CHECK = _normalize_runtime_check(@load_preference("runtime_check", 0))
 
+if RUNTIME_CHECK >= 1
+    @info "AdaptiveArrayPools: RUNTIME_CHECK is ENABLED (runtime escape detection active)"
+end
+
 # ==============================================================================
 # AdaptiveArrayPool
 # ==============================================================================
