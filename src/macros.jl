@@ -2540,17 +2540,47 @@ end
 """
     _extract_container_vars(expr, target_pool) -> Set{Symbol}
 
-Find variables assigned from tuple/vect literals that contain acquire calls.
+Order-aware extraction of container variables (assigned from tuple/vect literals
+containing acquire calls). Single forward pass for top-level block statements;
+removes container taint when a variable is reassigned to a non-acquire container.
 E.g., `vac = (wv=zeros!(pool, ...), ...)` → returns `{:vac}`.
 """
 function _extract_container_vars(expr, target_pool)
+    if !(expr isa Expr && expr.head == :block)
+        containers = Set{Symbol}()
+        _extract_container_vars!(containers, expr, target_pool)
+        return containers
+    end
     containers = Set{Symbol}()
-    _extract_container_vars!(containers, expr, target_pool)
+    for arg in expr.args
+        arg isa LineNumberNode && continue
+        if arg isa Expr && arg.head == :(=) && length(arg.args) >= 2
+            lhs = arg.args[1]
+            rhs = arg.args[2]
+            if lhs isa Symbol
+                if _tuple_contains_acquire_call(rhs, target_pool)
+                    push!(containers, lhs)
+                else
+                    # Reassigned to non-acquire value — no longer a container
+                    delete!(containers, lhs)
+                end
+            end
+            # Recurse into RHS for nested blocks
+            _extract_container_vars!(containers, rhs, target_pool)
+        else
+            # Recurse into non-assignment expressions (if/for/while/etc.)
+            _extract_container_vars!(containers, arg, target_pool)
+        end
+    end
     return containers
 end
 
 function _extract_container_vars!(containers, expr, target_pool)
     expr isa Expr || return
+    # Skip scope-introducing expressions (same as _extract_acquired_vars)
+    if expr.head in (:let, :function, :(->), :macro)
+        return
+    end
     if expr.head == :block
         for arg in expr.args
             _extract_container_vars!(containers, arg, target_pool)

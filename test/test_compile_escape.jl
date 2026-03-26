@@ -9,7 +9,8 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
     _collect_acquired_in_literal,
     _find_first_lnn_index, _ensure_body_has_toplevel_lnn,
     _extract_ordered_acquired,
-    _find_reassign_maybe_tainted, _is_safe_copy_call, _rhs_call_contains_sym
+    _find_reassign_maybe_tainted, _is_safe_copy_call, _rhs_call_contains_sym,
+    _extract_container_vars
 
 @testset "Compile-Time Escape Detection" begin
 
@@ -2296,6 +2297,62 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
         @test !_rhs_call_contains_sym(:v, :v)  # bare symbol, not a call
         @test !_rhs_call_contains_sym(1, :v)
         @test _rhs_call_contains_sym(:(a[v]), :v)  # ref expression
+    end
+
+    # ==============================================================================
+    # _extract_container_vars: order-aware container tracking
+    # ==============================================================================
+
+    @testset "_extract_container_vars: reassignment clears container taint" begin
+        # Basic: vac assigned from tuple with acquire → tracked
+        cvars = _extract_container_vars(
+            quote
+                vac = (wv = zeros!(pool, 10), grri = acquire!(pool, Float64, 5))
+            end, :pool,
+        )
+        @test :vac in cvars
+
+        # Reassigned to non-acquire tuple → should be cleared
+        cvars = _extract_container_vars(
+            quote
+                vac = (wv = zeros!(pool, 10),)
+                vac = (name = "ok",)
+            end, :pool,
+        )
+        @test :vac ∉ cvars
+
+        # Reassigned to scalar → should be cleared
+        cvars = _extract_container_vars(
+            quote
+                vac = (wv = acquire!(pool, Float64, 3),)
+                vac = nothing
+            end, :pool,
+        )
+        @test :vac ∉ cvars
+    end
+
+    @testset "PoolContainerEscapeWarning: no false positive after reassignment" begin
+        function _capture_stderr(f)
+            tmpf = tempname()
+            open(tmpf, "w") do io
+                redirect_stderr(io) do
+                    f()
+                end
+            end
+            output = read(tmpf, String)
+            rm(tmpf; force = true)
+            return output
+        end
+
+        # Reassigned container → no warning
+        warn_output = _capture_stderr() do
+            @macroexpand @with_pool pool function test_no_warn()
+                vac = (wv = acquire!(pool, Float64, 3),)
+                vac = (name = "ok",)
+                return vac.name
+            end
+        end
+        @test !contains(warn_output, "PoolContainerEscapeWarning")
     end
 
 end # Compile-Time Escape Detection
