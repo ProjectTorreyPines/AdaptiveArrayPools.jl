@@ -2328,16 +2328,28 @@ end
         @test :vac ∉ cvars
     end
 
-    @testset "PoolContainerEscapeWarning: no false positive after reassignment" begin
-        # Reassigned container → no warning
+    @testset "PoolContainerEscapeWarning" begin
+        # Positive: container dot-access SHOULD warn
         warn_output = _capture_stderr() do
+            @macroexpand @with_pool pool function test_container_warn()
+                vac = (wv = acquire!(pool, Float64, 3),)
+                return vac.wv
+            end
+        end
+        @test contains(warn_output, "PoolContainerEscapeWarning")
+        @test contains(warn_output, "vac")
+        @test contains(warn_output, "Declarations:")
+        @test contains(warn_output, "Escaping return:")
+
+        # Negative: reassigned container → no warning
+        warn_output2 = _capture_stderr() do
             @macroexpand @with_pool pool function test_no_warn()
                 vac = (wv = acquire!(pool, Float64, 3),)
                 vac = (name = "ok",)
                 return vac.name
             end
         end
-        @test !contains(warn_output, "PoolContainerEscapeWarning")
+        @test !contains(warn_output2, "PoolContainerEscapeWarning")
     end
 
 end # Compile-Time Escape Detection
