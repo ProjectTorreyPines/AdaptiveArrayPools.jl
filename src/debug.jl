@@ -447,14 +447,20 @@ _check_wrapper_mutation!(::AbstractTypedPool, ::Int, ::Int) = nothing
                 wrapper === nothing && continue
                 wrapper::Array  # safety: ensure wrapper is Array before ccall (TypeError vs segfault)
 
+                # Skip already-invalidated wrappers (dims zeroed by previous rewind).
+                # When a slot is reused with a different dimensionality, the old wrapper
+                # retains a stale MemoryRef — checking it would be a false positive.
+                _wrapper_prod_size(wrapper) == 0 && continue
+
                 # Check 1: Data pointer identity — detects reallocation from resize!/push! beyond capacity
                 # ccall avoids boxing MemoryRef when wrapper's Array type is erased (from Vector{Any})
                 wrapper_ptr = ccall(:jl_array_ptr, Ptr{Cvoid}, (Any,), wrapper)
                 if wrapper_ptr != vec_ptr
-                    @warn "Pool-backed Array{$T}: resize!/push! caused memory reallocation " *
-                        "(slot $i). Pooling benefits (zero-alloc reuse) may be lost; " *
-                        "temporary extra memory retention may occur. " *
-                        "Consider requesting the exact size via acquire!(pool, T, n) if known in advance." maxlog = 1
+                    dims = getfield(wrapper, :size)
+                    @warn "Pool-backed Array{$T,$N_idx} wrapper reallocation detected" *
+                        " (slot $i, $(N_idx)D $(dims), backing vec length $vec_len)." *
+                        " resize!/push! changed the wrapper's backing memory." *
+                        " Pooling benefits (zero-alloc reuse) may be lost." maxlog = 1
                     return
                 end
                 # Check 2: wrapper length exceeds backing vector — detects growth beyond backing
@@ -462,11 +468,10 @@ _check_wrapper_mutation!(::AbstractTypedPool, ::Int, ::Int) = nothing
                 # (length() is not used because it may not reflect setfield!(:size) on Julia 1.11)
                 wrapper_len = _wrapper_prod_size(wrapper)
                 if wrapper_len > vec_len
-                    @warn "Pool-backed Array{$T}: wrapper grew beyond backing vector " *
-                        "(slot $i, wrapper: $wrapper_len, backing: $vec_len). " *
-                        "Pooling benefits (zero-alloc reuse) may be lost; " *
-                        "temporary extra memory retention may occur. " *
-                        "Consider requesting the exact size via acquire!(pool, T, n) if known in advance." maxlog = 1
+                    dims = getfield(wrapper, :size)
+                    @warn "Pool-backed Array{$T,$N_idx} wrapper grew beyond backing" *
+                        " (slot $i, $(N_idx)D $(dims) = $wrapper_len elements, backing vec length $vec_len)." *
+                        " Pooling benefits (zero-alloc reuse) may be lost." maxlog = 1
                     return
                 end
             end

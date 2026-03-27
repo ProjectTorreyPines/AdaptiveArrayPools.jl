@@ -1,5 +1,5 @@
 import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
-    _find_direct_exposure, _remove_flat_reassigned!, _check_compile_time_escape,
+    _find_direct_exposure, _check_compile_time_escape,
     _collect_all_return_values, _collect_explicit_returns!, _collect_implicit_return_values!,
     _get_last_expression_with_line, _render_return_expr,
     _acquire_call_kind, _classify_escaped_vars, _is_acquire_call,
@@ -7,7 +7,22 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
     _format_location_str, _format_point_location,
     _find_acquire_call_expr, _literal_contains_acquired,
     _collect_acquired_in_literal,
-    _find_first_lnn_index, _ensure_body_has_toplevel_lnn
+    _find_first_lnn_index, _ensure_body_has_toplevel_lnn,
+    _extract_ordered_acquired,
+    _find_reassign_maybe_tainted, _is_safe_copy_call, _rhs_call_contains_sym,
+    _extract_container_vars
+
+function _capture_stderr(f)
+    tmpf = tempname()
+    open(tmpf, "w") do io
+        redirect_stderr(io) do
+            f()
+        end
+    end
+    output = read(tmpf, String)
+    rm(tmpf; force = true)
+    return output
+end
 
 @testset "Compile-Time Escape Detection" begin
 
@@ -207,96 +222,6 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
         # Scalar literal → not detected
         @test isempty(_find_direct_exposure(42, acquired))
         @test isempty(_find_direct_exposure(3.14, acquired))
-    end
-
-    # ==============================================================================
-    # _remove_flat_reassigned!: handle v=acquire!() then v=other pattern
-    # ==============================================================================
-
-    @testset "_remove_flat_reassigned!" begin
-        # Simple reassignment removes from set
-        acquired = Set{Symbol}([:v])
-        _remove_flat_reassigned!(
-            quote
-                v = acquire!(pool, Float64, 10)
-                v = zeros(10)
-            end,
-            acquired, :pool
-        )
-        @test isempty(acquired)
-
-        # Reassignment to another acquire keeps it
-        acquired = Set{Symbol}([:v])
-        _remove_flat_reassigned!(
-            quote
-                v = acquire!(pool, Float64, 10)
-                v = zeros!(pool, 10)
-            end,
-            acquired, :pool
-        )
-        @test :v in acquired
-
-        # Different variable reassigned → original stays
-        acquired = Set{Symbol}([:v])
-        _remove_flat_reassigned!(
-            quote
-                v = acquire!(pool, Float64, 10)
-                w = zeros(10)
-            end,
-            acquired, :pool
-        )
-        @test :v in acquired
-
-        # Non-block expression → no change
-        acquired = Set{Symbol}([:v])
-        _remove_flat_reassigned!(:(v = zeros(10)), acquired, :pool)
-        @test :v in acquired  # only processes :block heads
-
-        # Destructuring with function call RHS: v removed (reassigned to unknown)
-        acquired = Set{Symbol}([:v])
-        _remove_flat_reassigned!(
-            quote
-                v = acquire!(pool, Float64, 10)
-                (result, v) = process(v)
-            end,
-            acquired, :pool
-        )
-        @test isempty(acquired)
-
-        # Destructuring with tuple RHS: element-wise check
-        acquired = Set{Symbol}([:v, :w])
-        _remove_flat_reassigned!(
-            quote
-                v = acquire!(pool, Float64, 10)
-                w = acquire!(pool, Float64, 5)
-                (v, w) = (safe_func(), acquire!(pool, Float64, 3))
-            end,
-            acquired, :pool
-        )
-        @test !(:v in acquired)  # reassigned to safe_func() → removed
-        @test :w in acquired     # reassigned to acquire!() → stays
-
-        # Comma destructuring (same AST as tuple): v removed
-        acquired = Set{Symbol}([:v])
-        _remove_flat_reassigned!(
-            quote
-                v = acquire!(pool, Float64, 10)
-                a, v = foo()
-            end,
-            acquired, :pool
-        )
-        @test isempty(acquired)
-
-        # Destructuring doesn't affect vars not in acquired
-        acquired = Set{Symbol}([:v])
-        _remove_flat_reassigned!(
-            quote
-                v = acquire!(pool, Float64, 10)
-                (x, y) = foo()
-            end,
-            acquired, :pool
-        )
-        @test :v in acquired  # v not in destructuring → untouched
     end
 
     # ==============================================================================
@@ -983,6 +908,63 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
         end
     end
 
+    # ==============================================================================
+    # Scope shadowing: inner scope variables must not taint outer scope
+    # ==============================================================================
+
+    @testset "Scope shadowing: no false positives from inner scopes" begin
+        # IMPORTANT: `let` is NOT skipped — `return` inside `let` exits the
+        # enclosing function, so pool variables acquired there CAN escape.
+        # This means `let v = acquire!(...)` with outer `v` IS a false positive,
+        # but that's the safer trade-off vs missing real escapes.
+
+        # return inside let MUST be caught (real escape)
+        @test_throws PoolEscapeError @macroexpand @with_pool pool begin
+            let
+                w = acquire!(pool, Float64, 10)
+                return w
+            end
+        end
+
+        # Anonymous function: inner v is a different scope
+        @test_nowarn @macroexpand @with_pool pool begin
+            v = 1
+            f = (v -> sum(acquire!(pool, Float64, v)))
+            f(10)
+            v
+        end
+
+        # Nested function definition: inner v is scoped
+        @test_nowarn @macroexpand @with_pool pool begin
+            v = "hello"
+            function helper()
+                v = acquire!(pool, Float64, 5)
+                sum(v)
+            end
+            helper()
+            v
+        end
+
+        # do block: inner v is scoped
+        @test_nowarn @macroexpand @with_pool pool begin
+            v = 0
+            map(1:3) do v
+                w = acquire!(pool, Float64, v)
+                sum(w)
+            end
+            v
+        end
+
+        # IMPORTANT: acquire in if/for/while body IS outer scope (no new scope)
+        # These SHOULD still be caught as escapes
+        @test_throws PoolEscapeError @macroexpand @with_pool pool begin
+            if true
+                v = acquire!(pool, Float64, 10)
+            end
+            v
+        end
+    end
+
     @testset "Block form: additional escape scenarios" begin
         # zeros! — definite escape
         @test_throws PoolEscapeError @macroexpand @with_pool pool begin
@@ -1050,6 +1032,135 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
         @test_throws PoolEscapeError @macroexpand @with_pool pool begin
             v = acquire!(pool, Float64, 10)
             (v, w) = (zeros!(pool, 5), safe())
+            v
+        end
+    end
+
+    # ==============================================================================
+    # Order-aware taint tracking (_extract_ordered_acquired)
+    # ==============================================================================
+
+    @testset "_extract_ordered_acquired: statement ordering" begin
+        # Pre-acquire non-pool assignment must NOT clear taint
+        vars = _extract_ordered_acquired(
+            quote
+                v = 1
+                v = acquire!(pool, Float64, 3, 3)
+            end, :pool,
+        )
+        @test :v in vars
+
+        # Post-acquire non-pool assignment correctly clears taint
+        vars = _extract_ordered_acquired(
+            quote
+                v = acquire!(pool, Float64, 3, 3)
+                v = 1
+            end, :pool,
+        )
+        @test :v ∉ vars
+
+        # Pre-acquire assignment on alias chain must NOT clear taint
+        vars = _extract_ordered_acquired(
+            quote
+                v = acquire!(pool, Float64, 3, 3)
+                v2 = 1
+                v2 = v
+            end, :pool,
+        )
+        @test :v in vars
+        @test :v2 in vars
+
+        # Swap pattern: v becomes safe, x becomes tainted
+        vars = _extract_ordered_acquired(
+            quote
+                v = acquire!(pool, Float64, 10)
+                x = zeros(10)
+                v, x = x, v
+            end, :pool,
+        )
+        @test :v ∉ vars
+        @test :x in vars
+
+        # Container wrapping after pre-acquire assignment
+        vars = _extract_ordered_acquired(
+            quote
+                v = 1
+                v = acquire!(pool, Float64, 3, 3)
+                wrapper = (v,)
+            end, :pool,
+        )
+        @test :v in vars
+        @test :wrapper in vars
+
+        # Re-acquire after non-pool assignment
+        vars = _extract_ordered_acquired(
+            quote
+                v = acquire!(pool, Float64, 10)
+                v = 1
+                v = acquire!(pool, Float64, 5)
+            end, :pool,
+        )
+        @test :v in vars
+    end
+
+    # ==============================================================================
+    # Order-aware escape detection through macro pipeline
+    # ==============================================================================
+
+    @testset "Order-aware escape detection (false negative fixes)" begin
+        # BUG FIX: pre-acquire assignment used to suppress escape detection
+        # v=1 before v=acquire!(...) must NOT make v safe
+        @test_throws PoolEscapeError @macroexpand @with_pool pool begin
+            v = 1
+            v = acquire!(pool, Float64, 3, 3)
+            wrapper = (v,)
+            return wrapper
+        end
+
+        # BUG FIX: same pattern in function form
+        @test_throws PoolEscapeError @macroexpand @with_pool pool function test()
+            v = 1
+            v = acquire!(pool, Float64, 3, 3)
+            wrapper = (v,)
+            return wrapper
+        end
+
+        # BUG FIX: alias with pre-assignment on the alias variable
+        @test_throws PoolEscapeError @macroexpand @with_pool pool begin
+            v = acquire!(pool, Float64, 3, 3)
+            v2 = 1
+            v2 = v
+            wrapper = [v2]
+            return wrapper
+        end
+
+        # BUG FIX: same in function form
+        @test_throws PoolEscapeError @macroexpand @with_pool pool function test()
+            v = acquire!(pool, Float64, 3, 3)
+            v2 = 1
+            v2 = v
+            wrapper = [v2]
+            return wrapper
+        end
+
+        # Bare variable with pre-assignment — still escapes
+        @test_throws PoolEscapeError @macroexpand @with_pool pool begin
+            v = 1
+            v = acquire!(pool, Float64, 10)
+            v
+        end
+
+        # Control: post-acquire reassignment IS safe (no regression)
+        @test_nowarn @macroexpand @with_pool pool begin
+            v = acquire!(pool, Float64, 10)
+            v = 1
+            v
+        end
+
+        # Control: post-acquire collect IS safe (no regression)
+        @test_nowarn @macroexpand @with_pool pool begin
+            v = acquire!(pool, Float64, 10)
+            v = collect(v)
             v
         end
     end
@@ -2030,6 +2141,215 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
         @test result.head === :block
         @test result.args[1] isa LineNumberNode
         @test result.args[2] == scalar_body
+    end
+
+    # ==============================================================================
+    # PoolReassignEscapeWarning: verify warning output
+    # ==============================================================================
+
+    @testset "PoolReassignEscapeWarning output" begin
+        # v = f(v) where f is unknown → warning should fire
+        warn_output = _capture_stderr() do
+            @macroexpand @with_pool pool function test_warn()
+                v = acquire!(pool, Float64, 10)
+                v = f(v)
+                return v
+            end
+        end
+        @test contains(warn_output, "PoolReassignEscapeWarning")
+        @test contains(warn_output, "reassigned")
+
+        # v = collect(v) → no warning (safe copy)
+        warn_output2 = _capture_stderr() do
+            @macroexpand @with_pool pool function test_safe()
+                v = acquire!(pool, Float64, 10)
+                v = collect(v)
+                return v
+            end
+        end
+        @test !contains(warn_output2, "PoolReassignEscapeWarning")
+
+        # v = v .+ 1.0 → no warning (broadcast, new array)
+        warn_output3 = _capture_stderr() do
+            @macroexpand @with_pool pool function test_bcast()
+                v = acquire!(pool, Float64, 10)
+                v = v .+ 1.0
+                return v
+            end
+        end
+        @test !contains(warn_output3, "PoolReassignEscapeWarning")
+    end
+
+    # ==============================================================================
+    # _find_reassign_maybe_tainted unit tests
+    # ==============================================================================
+
+    @testset "_find_reassign_maybe_tainted" begin
+        # v = f(v) after acquire → maybe tainted
+        mt = _find_reassign_maybe_tainted(
+            quote
+                v = acquire!(pool, Float64, 10)
+                v = f(v)
+            end, :pool,
+        )
+        @test :v in mt
+
+        # v = collect(v) → NOT maybe tainted (safe copy)
+        mt = _find_reassign_maybe_tainted(
+            quote
+                v = acquire!(pool, Float64, 10)
+                v = collect(v)
+            end, :pool,
+        )
+        @test :v ∉ mt
+
+        # v = g(x) where x is unrelated → NOT maybe tainted
+        mt = _find_reassign_maybe_tainted(
+            quote
+                v = acquire!(pool, Float64, 10)
+                v = g(x)
+            end, :pool,
+        )
+        @test :v ∉ mt
+
+        # Alias propagation: w = v where v is maybe-tainted
+        mt = _find_reassign_maybe_tainted(
+            quote
+                v = acquire!(pool, Float64, 10)
+                v = f(v)
+                w = v
+            end, :pool,
+        )
+        @test :v in mt
+        @test :w in mt
+
+        # Tuple destructuring with tuple literal RHS: element-wise check
+        # (v,) = (f(v),) where f is unknown → v is maybe-tainted
+        # BUT opaque destructuring (v,) = transform(v) → NOT maybe-tainted
+        # (destructuring implies a transform, not identity)
+        mt = _find_reassign_maybe_tainted(
+            quote
+                v = acquire!(pool, Float64, 10)
+                (v,) = transform(v)
+            end, :pool,
+        )
+        @test :v ∉ mt  # opaque destructuring: treated as transform
+
+        # Tuple destructuring with safe copy: (v,) = (collect(v),) → not maybe
+        mt = _find_reassign_maybe_tainted(
+            quote
+                v = acquire!(pool, Float64, 10)
+                (v, w) = (collect(v), 1)
+            end, :pool,
+        )
+        @test :v ∉ mt
+
+        # Re-acquire clears maybe-tainted
+        mt = _find_reassign_maybe_tainted(
+            quote
+                v = acquire!(pool, Float64, 10)
+                v = f(v)
+                v = acquire!(pool, Float64, 5)
+            end, :pool,
+        )
+        @test :v ∉ mt
+    end
+
+    # ==============================================================================
+    # _is_safe_copy_call unit tests
+    # ==============================================================================
+
+    @testset "_is_safe_copy_call" begin
+        @test _is_safe_copy_call(:(collect(v)))
+        @test _is_safe_copy_call(:(copy(v)))
+        @test _is_safe_copy_call(:(deepcopy(v)))
+        @test _is_safe_copy_call(:(similar(v)))
+        # Array/Vector/Matrix removed — conservative measure (type constructors
+        # may behave unpredictably with certain argument types)
+        @test !_is_safe_copy_call(:(Array(v)))
+        @test !_is_safe_copy_call(:(Vector(v)))
+        @test !_is_safe_copy_call(:(Matrix(v)))
+        @test _is_safe_copy_call(:(Base.collect(v)))
+        # Broadcast: dotted operators
+        @test _is_safe_copy_call(Expr(:call, :.+, :v, 1.0))
+        @test _is_safe_copy_call(Expr(:call, :.*, :v, :w))
+        # Broadcast: f.(v) form
+        @test _is_safe_copy_call(Expr(:., :f, Expr(:tuple, :v)))
+        # Non-safe calls
+        @test !_is_safe_copy_call(:(f(v)))
+        @test !_is_safe_copy_call(:(identity(v)))
+        @test !_is_safe_copy_call(:(reshape(v, 3, 3)))
+        @test !_is_safe_copy_call(:v)
+        @test !_is_safe_copy_call(1)
+    end
+
+    # ==============================================================================
+    # _rhs_call_contains_sym unit tests
+    # ==============================================================================
+
+    @testset "_rhs_call_contains_sym" begin
+        @test _rhs_call_contains_sym(:(f(v)), :v)
+        @test _rhs_call_contains_sym(:(f(g(v))), :v)
+        @test !_rhs_call_contains_sym(:(f(w)), :v)
+        @test !_rhs_call_contains_sym(:v, :v)  # bare symbol, not a call
+        @test !_rhs_call_contains_sym(1, :v)
+        @test _rhs_call_contains_sym(:(a[v]), :v)  # ref expression
+    end
+
+    # ==============================================================================
+    # _extract_container_vars: order-aware container tracking
+    # ==============================================================================
+
+    @testset "_extract_container_vars: reassignment clears container taint" begin
+        # Basic: vac assigned from tuple with acquire → tracked
+        cvars = _extract_container_vars(
+            quote
+                vac = (wv = zeros!(pool, 10), grri = acquire!(pool, Float64, 5))
+            end, :pool,
+        )
+        @test :vac in cvars
+
+        # Reassigned to non-acquire tuple → should be cleared
+        cvars = _extract_container_vars(
+            quote
+                vac = (wv = zeros!(pool, 10),)
+                vac = (name = "ok",)
+            end, :pool,
+        )
+        @test :vac ∉ cvars
+
+        # Reassigned to scalar → should be cleared
+        cvars = _extract_container_vars(
+            quote
+                vac = (wv = acquire!(pool, Float64, 3),)
+                vac = nothing
+            end, :pool,
+        )
+        @test :vac ∉ cvars
+    end
+
+    @testset "PoolContainerEscapeWarning" begin
+        # Positive: container dot-access SHOULD warn
+        warn_output = _capture_stderr() do
+            @macroexpand @with_pool pool function test_container_warn()
+                vac = (wv = acquire!(pool, Float64, 3),)
+                return vac.wv
+            end
+        end
+        @test contains(warn_output, "PoolContainerEscapeWarning")
+        @test contains(warn_output, "vac")
+        @test contains(warn_output, "Declarations:")
+        @test contains(warn_output, "Escaping return:")
+
+        # Negative: reassigned container → no warning
+        warn_output2 = _capture_stderr() do
+            @macroexpand @with_pool pool function test_no_warn()
+                vac = (wv = acquire!(pool, Float64, 3),)
+                vac = (name = "ok",)
+                return vac.name
+            end
+        end
+        @test !contains(warn_output2, "PoolContainerEscapeWarning")
     end
 
 end # Compile-Time Escape Detection
