@@ -904,6 +904,12 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, forc
         _esc = _check_compile_time_escape(expr, pool_name, source)
         _esc !== nothing && return :(throw($_esc))
 
+        # Compile-time container-escape warning (conservative, may have false positives)
+        _warn_compile_time_container_escape(expr, pool_name, source)
+
+        # Compile-time reassignment-escape warning (v = f(v) ambiguity)
+        _warn_compile_time_reassign_escape(expr, pool_name, source)
+
         # Compile-time structural mutation detection (zero runtime cost)
         _check_structural_mutation(expr, pool_name, source)
 
@@ -930,6 +936,12 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, forc
     # Compile-time escape detection (zero runtime cost)
     _esc = _check_compile_time_escape(expr, pool_name, source)
     _esc !== nothing && return :(throw($_esc))
+
+    # Compile-time container-escape warning (conservative, may have false positives)
+    _warn_compile_time_container_escape(expr, pool_name, source)
+
+    # Compile-time reassignment-escape warning (v = f(v) ambiguity)
+    _warn_compile_time_reassign_escape(expr, pool_name, source)
 
     # Compile-time structural mutation detection (zero runtime cost)
     _check_structural_mutation(expr, pool_name, source)
