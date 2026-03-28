@@ -125,8 +125,12 @@ end
     )
     bounds = pool._others_ptr_bounds
     if !isempty(bounds)
-        # Fast path: pre-collected UInt bounds (zero-alloc)
-        @inbounds for i in 1:2:length(bounds)
+        # Fast path: pre-collected UInt bounds (zero-alloc).
+        # Only check bounds recorded AFTER the current scope's checkpoint (scope boundary).
+        # Bounds from outer scopes are still valid — returning them is not an escape.
+        ckpts = pool._others_ptr_bounds_checkpoints
+        boundary = @inbounds ckpts[length(ckpts)]  # bounds length saved at checkpoint for current_depth
+        @inbounds for i in (boundary + 1):2:length(bounds)
             v_ptr = bounds[i]
             v_end = bounds[i + 1]
             if !(arr_end <= v_ptr || v_end <= arr_ptr)
