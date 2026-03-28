@@ -657,7 +657,49 @@ end # Zero-allocation Patterns
     end
 
     # ------------------------------------------------------------------
-    # Pattern 6: Others type + _validate_pool_return (Vec{Vec} return)
+    # Pattern 6: Large array — exercises _check_wrapper_mutation!
+    # _check_wrapper_mutation! must be zero-alloc (pointer-first check,
+    # _wrapper_prod_size deferred to rare pointer-mismatch path).
+    # ------------------------------------------------------------------
+    function _test_s1_large_array()
+        for _ in 1:5
+            _lazy_checkpoint!(pool_s1)
+            v = acquire!(pool_s1, Float64, 2000)
+            fill!(v, 1.0)
+            _lazy_rewind!(pool_s1)
+        end
+        return @allocated for _ in 1:100
+            _lazy_checkpoint!(pool_s1)
+            v = acquire!(pool_s1, Float64, 2000)
+            fill!(v, 1.0)
+            _lazy_rewind!(pool_s1)
+        end
+    end
+    @testset "S=1 large array (2000 elements)" begin
+        @test _test_s1_large_array() == 0
+    end
+
+    # ------------------------------------------------------------------
+    # Pattern 7: Large N-D array — exercises wrapper mutation check on N-D
+    # ------------------------------------------------------------------
+    function _test_s1_large_nd()
+        for _ in 1:5
+            _lazy_checkpoint!(pool_s1)
+            v = acquire!(pool_s1, Float64, 4, 21, 21)  # 1764 elements
+            _lazy_rewind!(pool_s1)
+        end
+        return @allocated for _ in 1:100
+            _lazy_checkpoint!(pool_s1)
+            v = acquire!(pool_s1, Float64, 4, 21, 21)
+            _lazy_rewind!(pool_s1)
+        end
+    end
+    @testset "S=1 large N-D array (4×21×21)" begin
+        @test _test_s1_large_nd() == 0
+    end
+
+    # ------------------------------------------------------------------
+    # Pattern 8: Others type + _validate_pool_return (Vec{Vec} return)
     # Exercises: _check_others_pointer_overlap via pre-collected bounds,
     #   _others_values iteration, bounds checkpoint/rewind
     # ------------------------------------------------------------------
@@ -684,7 +726,7 @@ end # Zero-allocation Patterns
     end
 
     # ------------------------------------------------------------------
-    # Pattern 7: Others type + scalar return (no validate overhead)
+    # Pattern 9: Others type + scalar return (no validate overhead)
     # ------------------------------------------------------------------
     function _test_s1_others_scalar()
         for _ in 1:5
