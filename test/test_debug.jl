@@ -41,6 +41,136 @@ _test_leak(x) = x  # opaque to compile-time escape checker (only identity() is t
         _validate_pool_return(42, DISABLED_CPU)
     end
 
+    @testset "non-isbits eltype (Vector{Vector{Float64}})" begin
+        # Verifies _safe_elsize handles non-isbits eltypes without crash.
+        # sizeof(Array{Float64,1}) throws on Julia 1.10 because Array is opaque.
+        pool = AdaptiveArrayPool{1}()
+        vec_of_vec = Vector{Float64}[[1.0, 2.0], [3.0]]
+        _validate_pool_return(vec_of_vec, pool)  # should not throw
+
+        # Also test with pool-backed others type escape detection
+        checkpoint!(pool)
+        pool_u8 = acquire!(pool, UInt8, 10)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(pool_u8, pool)
+        rewind!(pool)
+    end
+
+    @testset "others type: cross-scope return (scope boundary)" begin
+        # Returning an others-type array acquired in an OUTER scope from an
+        # INNER scope is legal — the outer scope still manages it.
+        # This tests that _check_others_pointer_overlap respects scope boundary
+        # (only checks bounds recorded after current scope's checkpoint).
+        pool = AdaptiveArrayPool{1}()
+
+        # Outer scope: acquire others-type vector
+        checkpoint!(pool)
+        v_outer = acquire!(pool, UInt8, 50)  # others type, belongs to depth 2
+
+        # Inner scope: v_outer should NOT trigger escape error
+        checkpoint!(pool)                     # depth 3
+        u_inner = acquire!(pool, UInt8, 10)   # others type, belongs to depth 3
+
+        # Returning outer-scope array from inner scope → NOT an escape
+        _validate_pool_return(v_outer, pool)  # should not throw
+
+        # Returning inner-scope array from inner scope → IS an escape
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(u_inner, pool)
+
+        rewind!(pool)  # depth 3 → 2 (u_inner released, v_outer still valid)
+
+        # After inner rewind, v_outer is still escapable from depth 2
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(v_outer, pool)
+
+        rewind!(pool)  # depth 2 → 1
+    end
+
+    @testset "fixed slot: cross-scope return (scope boundary)" begin
+        # Same test but for fixed-slot types — verifies parity between
+        # fixed-slot _scope_boundary and others _others_ptr_bounds_checkpoints.
+        pool = AdaptiveArrayPool{1}()
+
+        checkpoint!(pool)
+        v_outer = acquire!(pool, Float64, 50)  # fixed slot
+
+        checkpoint!(pool)
+        u_inner = acquire!(pool, Float64, 10)  # fixed slot
+
+        # Outer-scope array from inner scope → NOT an escape
+        _validate_pool_return(v_outer, pool)  # should not throw
+
+        # Inner-scope array → IS an escape
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(u_inner, pool)
+
+        rewind!(pool)
+
+        # After inner rewind, v_outer is still escapable from depth 2
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(v_outer, pool)
+
+        rewind!(pool)
+    end
+
+    @testset "acquire_view! others type escape (S=1, pre-collected bounds)" begin
+        # acquire_view! for non-fixed-slot types must record bounds for the backing
+        # vector so _check_others_pointer_overlap fast path detects escapes.
+        pool = AdaptiveArrayPool{1}()
+
+        # 1D SubArray — others type
+        checkpoint!(pool)
+        sv = acquire_view!(pool, UInt8, 20)
+        @test sv isa SubArray
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(sv, pool)
+        rewind!(pool)
+
+        # N-D ReshapedArray — others type
+        checkpoint!(pool)
+        sm = acquire_view!(pool, UInt8, 4, 5)
+        @test sm isa Base.ReshapedArray
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(sm, pool)
+        rewind!(pool)
+
+        # External view should still pass
+        checkpoint!(pool)
+        _ = acquire_view!(pool, UInt8, 10)  # populate bounds
+        ext = view(Vector{UInt8}(undef, 10), 1:5)
+        _validate_pool_return(ext, pool)  # should not throw
+        rewind!(pool)
+    end
+
+    @testset "acquire_view! fixed slot escape (S=1)" begin
+        # Fixed-slot types go through _check_tp_pointer_overlap, not bounds.
+        # Verify parity: acquire_view! for fixed-slot is also caught at S=1.
+        pool = AdaptiveArrayPool{1}()
+
+        checkpoint!(pool)
+        sv = acquire_view!(pool, Float64, 20)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(sv, pool)
+        rewind!(pool)
+
+        checkpoint!(pool)
+        sm = acquire_view!(pool, Float64, 4, 5)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(sm, pool)
+        rewind!(pool)
+    end
+
+    @testset "mixed acquire! + acquire_view! others escape (S=1)" begin
+        # Regression: mixed acquire! + acquire_view! for different others types
+        # must both be caught by pre-collected bounds fast path.
+        pool = AdaptiveArrayPool{1}()
+        checkpoint!(pool)
+
+        v_arr = acquire!(pool, UInt8, 10)       # others via acquire!
+        v_view = acquire_view!(pool, UInt16, 5)  # others via acquire_view!
+
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(v_arr, pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(v_view, pool)
+
+        # External arrays still pass
+        _validate_pool_return([1, 2, 3], pool)
+        _validate_pool_return(42, pool)
+
+        rewind!(pool)
+    end
+
     @testset "_validate_pool_return with all fixed slots" begin
         pool = AdaptiveArrayPool()
         checkpoint!(pool)

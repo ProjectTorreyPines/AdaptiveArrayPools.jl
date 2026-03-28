@@ -35,6 +35,7 @@ function checkpoint!(pool::AdaptiveArrayPool)
     pool._current_depth += 1
     push!(pool._touched_type_masks, UInt16(0))
     push!(pool._touched_has_others, false)
+    _runtime_check(pool) && push!(pool._others_ptr_bounds_checkpoints, length(pool._others_ptr_bounds))
     depth = pool._current_depth
 
     # Fixed slots - zero allocation via @generated iteration
@@ -42,8 +43,8 @@ function checkpoint!(pool::AdaptiveArrayPool)
         _checkpoint_typed_pool!(tp, depth)
     end
 
-    # Others - iterate without allocation (values() returns iterator)
-    for p in values(pool.others)
+    # Others - iterate without allocation via cached values vector
+    for p in pool._others_values
         _checkpoint_typed_pool!(p, depth)
     end
 
@@ -68,6 +69,7 @@ Also updates _current_depth and bitmask state for type touch tracking.
     # _typed_lazy_rewind! iterates pool.others even if _acquire_impl!
     # (which bypasses _record_type_touch!) is the only acquire path.
     push!(pool._touched_has_others, _fixed_slot_bit(T) == UInt16(0))
+    _runtime_check(pool) && push!(pool._others_ptr_bounds_checkpoints, length(pool._others_ptr_bounds))
     _checkpoint_typed_pool!(get_typed_pool!(pool, T), pool._current_depth)
     return nothing
 end
@@ -98,6 +100,7 @@ compile-time unrolling. Increments _current_depth once for all types.
         pool._current_depth += 1
         push!(pool._touched_type_masks, UInt16(0))
         push!(pool._touched_has_others, $has_any_fallback)
+        _runtime_check(pool) && push!(pool._others_ptr_bounds_checkpoints, length(pool._others_ptr_bounds))
         $(checkpoint_exprs...)
         nothing
     end
@@ -138,10 +141,11 @@ Performance: ~2ns vs ~540ns for full `checkpoint!`.
     # _LAZY_MODE_BIT = lazy mode flag (bits 0–7 are fixed-slot type bits)
     push!(pool._touched_type_masks, _LAZY_MODE_BIT)
     push!(pool._touched_has_others, false)
+    _runtime_check(pool) && push!(pool._others_ptr_bounds_checkpoints, length(pool._others_ptr_bounds))
     depth = pool._current_depth
     # Eagerly checkpoint any pre-existing others entries.
     # New others types created during the scope start at n_active=0 (sentinel covers them).
-    for p in values(pool.others)
+    for p in pool._others_values
         _checkpoint_typed_pool!(p, depth)
         @inbounds pool._touched_has_others[depth] = true
     end
@@ -183,10 +187,13 @@ function rewind!(pool::AdaptiveArrayPool{S}) where {S}
     end
 
     # Process fallback types
-    for tp in values(pool.others)
+    for tp in pool._others_values
         _rewind_typed_pool!(tp, cur_depth, S)
     end
 
+    if S >= 1 && length(pool._others_ptr_bounds_checkpoints) > 1
+        resize!(pool._others_ptr_bounds, pop!(pool._others_ptr_bounds_checkpoints))
+    end
     pop!(pool._touched_type_masks)
     pop!(pool._touched_has_others)
     pool._current_depth -= 1
@@ -208,6 +215,9 @@ Also updates _current_depth and bitmask state.
         return nothing
     end
     _rewind_typed_pool!(get_typed_pool!(pool, T), pool._current_depth, S)
+    if S >= 1 && length(pool._others_ptr_bounds_checkpoints) > 1
+        resize!(pool._others_ptr_bounds, pop!(pool._others_ptr_bounds_checkpoints))
+    end
     pop!(pool._touched_type_masks)
     pop!(pool._touched_has_others)
     pool._current_depth -= 1
@@ -240,6 +250,9 @@ Decrements _current_depth once after all types are rewound.
             return nothing
         end
         $(rewind_exprs...)
+        if $S >= 1 && length(pool._others_ptr_bounds_checkpoints) > 1
+            resize!(pool._others_ptr_bounds, pop!(pool._others_ptr_bounds_checkpoints))
+        end
         pop!(pool._touched_type_masks)
         pop!(pool._touched_has_others)
         pool._current_depth -= 1
@@ -380,9 +393,12 @@ Called directly from the macro-generated `finally` clause as a single function c
     bits = @inbounds(pool._touched_type_masks[d]) & _TYPE_BITS_MASK
     _selective_rewind_fixed_slots!(pool, bits)  # S propagated via pool type
     if @inbounds(pool._touched_has_others[d])
-        for tp in values(pool.others)
+        for tp in pool._others_values
             _rewind_typed_pool!(tp, d, S)
         end
+    end
+    if S >= 1 && length(pool._others_ptr_bounds_checkpoints) > 1
+        resize!(pool._others_ptr_bounds, pop!(pool._others_ptr_bounds_checkpoints))
     end
     pop!(pool._touched_type_masks)
     pop!(pool._touched_has_others)
@@ -418,7 +434,7 @@ lazy first-touch checkpoint for each extra type on first acquire, ensuring Case 
     # used _acquire_impl! (bypassing _record_type_touch!, leaving has_others=false otherwise).
     # Skip re-snapshot for entries already checkpointed at d by checkpoint!(pool, types...)
     # (e.g. Float16 in types... was just checkpointed above — avoid double-push).
-    for p in values(pool.others)
+    for p in pool._others_values
         if @inbounds(p._checkpoint_depths[end]) != d
             _checkpoint_typed_pool!(p, d)
         end
@@ -444,9 +460,12 @@ guaranteed by the `_TYPED_LAZY_BIT` mode set in `_typed_lazy_checkpoint!`.
     combined = tracked_mask | touched
     _selective_rewind_fixed_slots!(pool, combined)  # S propagated via pool type
     if @inbounds(pool._touched_has_others[d])
-        for tp in values(pool.others)
+        for tp in pool._others_values
             _rewind_typed_pool!(tp, d, S)
         end
+    end
+    if S >= 1 && length(pool._others_ptr_bounds_checkpoints) > 1
+        resize!(pool._others_ptr_bounds, pop!(pool._others_ptr_bounds_checkpoints))
     end
     pop!(pool._touched_type_masks)
     pop!(pool._touched_has_others)
@@ -530,11 +549,17 @@ function Base.empty!(pool::AdaptiveArrayPool)
         empty!(tp)
     end
 
-    # Others - clear all TypedPools then the IdDict itself
-    for tp in values(pool.others)
+    # Others - clear all TypedPools then the IdDict and values cache
+    for tp in pool._others_values
         empty!(tp)
     end
     empty!(pool.others)
+    empty!(pool._others_values)
+
+    # Reset pre-collected pointer bounds
+    empty!(pool._others_ptr_bounds)
+    empty!(pool._others_ptr_bounds_checkpoints)
+    push!(pool._others_ptr_bounds_checkpoints, 0)  # Sentinel
 
     # Reset type touch tracking state (1-based sentinel pattern)
     pool._current_depth = 1                   # 1 = global scope (sentinel)
@@ -616,10 +641,15 @@ function reset!(pool::AdaptiveArrayPool{S}) where {S}
         reset!(tp, S)
     end
 
-    # Others - reset all TypedPools
-    for tp in values(pool.others)
+    # Others - reset all TypedPools (don't clear _others_values — pools are kept)
+    for tp in pool._others_values
         reset!(tp, S)
     end
+
+    # Reset pre-collected pointer bounds
+    empty!(pool._others_ptr_bounds)
+    empty!(pool._others_ptr_bounds_checkpoints)
+    push!(pool._others_ptr_bounds_checkpoints, 0)  # Sentinel
 
     # Reset type touch tracking state (1-based sentinel pattern)
     pool._current_depth = 1                   # 1 = global scope (sentinel)

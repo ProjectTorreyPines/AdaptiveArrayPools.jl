@@ -418,6 +418,13 @@ mutable struct AdaptiveArrayPool{S} <: AbstractArrayPool
     _touched_type_masks::Vector{UInt16}  # Per-depth: which fixed slots were touched + mode flags
     _touched_has_others::Vector{Bool}    # Per-depth: any non-fixed-slot type touched?
 
+    # Zero-alloc iteration cache for pool.others (avoids IdDict ValueIterator allocation)
+    _others_values::Vector{Any}
+
+    # Pre-collected pointer bounds for others overlap check (avoids Any-typed TypedPool access)
+    _others_ptr_bounds::Vector{UInt}             # flat [ptr1,end1,ptr2,end2,...]
+    _others_ptr_bounds_checkpoints::Vector{Int}  # per-depth: saved length of bounds vector
+
     # Borrow registry (S = 1 only)
     _pending_callsite::String                        # "" = no pending; set by macro before acquire
     _pending_return_site::String                     # "" = no pending; set by macro before validate
@@ -438,6 +445,9 @@ function AdaptiveArrayPool{S}() where {S}
         1,              # _current_depth: 1 = global scope (sentinel)
         [UInt16(0)],    # _touched_type_masks: sentinel (no bits set)
         [false],        # _touched_has_others: sentinel (no others)
+        Any[],          # _others_values: empty cache
+        UInt[],         # _others_ptr_bounds: no bounds
+        Int[0],         # _others_ptr_bounds_checkpoints: sentinel
         "",             # _pending_callsite: no pending
         "",             # _pending_return_site: no pending
         nothing         # _borrow_log: lazily created at S=1
@@ -487,6 +497,9 @@ _make_pool(runtime_check::Bool, old::AdaptiveArrayPool) = _make_pool(Int(runtime
         old._current_depth,
         old._touched_type_masks,
         old._touched_has_others,
+        old._others_values,
+        old._others_ptr_bounds,
+        old._others_ptr_bounds_checkpoints,
         "",       # _pending_callsite: reset
         "",       # _pending_return_site: reset
         S >= 1 ? IdDict{Any, String}() : nothing  # _borrow_log
@@ -509,23 +522,26 @@ end
 @inline get_typed_pool!(p::AdaptiveArrayPool, ::Type{Bool}) = p.bool
 @inline get_typed_pool!(p::AdaptiveArrayPool, ::Type{Bit}) = p.bits
 
-# Slow Path: rare types via IdDict
+# Slow Path: rare types via IdDict (no get! closure — avoids allocation)
 @inline function get_typed_pool!(p::AdaptiveArrayPool, ::Type{T}) where {T}
-    return get!(p.others, T) do
-        tp = TypedPool{T}()
-        # If inside a checkpoint scope (_current_depth > 1 means inside @with_pool),
-        # auto-checkpoint the new pool to prevent issues on rewind
-        if p._current_depth > 1
-            push!(tp._checkpoint_n_active, 0)  # n_active starts at 0
-            push!(tp._checkpoint_depths, p._current_depth)
-            # Signal that a fallback type was touched so lazy/typed-lazy rewind
-            # iterates pool.others. Without this, _acquire_impl! (which bypasses
-            # _record_type_touch!) would leave has_others=false, causing the
-            # rewind to skip pool.others entirely and leak this new type's n_active.
-            @inbounds p._touched_has_others[p._current_depth] = true
-        end
-        tp
-    end::TypedPool{T}
+    tp = get(p.others, T, nothing)
+    tp !== nothing && return tp::TypedPool{T}
+    # New type — create, register in IdDict + values cache, and auto-checkpoint
+    new_tp = TypedPool{T}()
+    p.others[T] = new_tp
+    push!(p._others_values, new_tp)
+    # If inside a checkpoint scope (_current_depth > 1 means inside @with_pool),
+    # auto-checkpoint the new pool to prevent issues on rewind
+    if p._current_depth > 1
+        push!(new_tp._checkpoint_n_active, 0)  # n_active starts at 0
+        push!(new_tp._checkpoint_depths, p._current_depth)
+        # Signal that a fallback type was touched so lazy/typed-lazy rewind
+        # iterates pool.others. Without this, _acquire_impl! (which bypasses
+        # _record_type_touch!) would leave has_others=false, causing the
+        # rewind to skip pool.others entirely and leak this new type's n_active.
+        @inbounds p._touched_has_others[p._current_depth] = true
+    end
+    return new_tp
 end
 
 # ==============================================================================
@@ -579,3 +595,22 @@ Compiles to no-op when `S=0`.
     return nothing
 end
 @inline _maybe_record_borrow!(::AbstractArrayPool, ::AbstractTypedPool) = nothing
+
+"""
+    _maybe_record_others_bounds!(pool, result::Array{T})
+
+Record pointer bounds [ptr, end] for non-fixed-slot types at acquire time (S=1).
+Called in concrete type context (T known) — avoids Any-typed boxing at validate time.
+Compiles to no-op when `S=0` or when T is a fixed-slot type.
+"""
+@inline function _maybe_record_others_bounds!(pool::AdaptiveArrayPool{S}, result::Array{T}) where {S, T}
+    if S >= 1 && _fixed_slot_bit(T) == UInt16(0)
+        v_ptr = UInt(pointer(result))
+        _esz = isbitstype(T) ? sizeof(T) : sizeof(Ptr{Nothing})
+        v_end = v_ptr + UInt(length(result)) * UInt(_esz)
+        push!(pool._others_ptr_bounds, v_ptr)
+        push!(pool._others_ptr_bounds, v_end)
+    end
+    return nothing
+end
+@inline _maybe_record_others_bounds!(::AbstractArrayPool, ::Array) = nothing

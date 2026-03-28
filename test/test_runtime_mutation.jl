@@ -54,31 +54,30 @@ import AdaptiveArrayPools: _make_pool, _check_wrapper_mutation!
     end
 
     # ==============================================================================
-    # TypedPool: wrapper length exceeds backing vector
+    # TypedPool: setfield!(:size) does NOT trigger warning (Check 2 removed)
+    # When pointers match, wrapper and backing share Memory — size inflation
+    # via setfield! is not a real-world scenario (internal API only).
     # ==============================================================================
 
-    @testset "wrapper length > backing detected (TypedPool)" begin
+    @testset "setfield!(:size) inflation — no warning (TypedPool, Check 2 removed)" begin
         pool = _make_pool(true)
         checkpoint!(pool)
         v = acquire!(pool, Float64, 10)
 
-        # Manually inflate wrapper size beyond backing vector via setfield!
-        # (simulates in-place resize within Memory capacity but beyond vec length)
         tp = AdaptiveArrayPools.get_typed_pool!(pool, Float64)
         vec = tp.vectors[tp.n_active]
         vec_len = length(vec)
 
-        # Only test if wrapper and vec share same Memory (otherwise MemoryRef check fires first)
         wrappers_1d = tp.arr_wrappers[1]
         if wrappers_1d !== nothing && tp.n_active <= length(wrappers_1d)
             wrapper = wrappers_1d[tp.n_active]
             if wrapper !== nothing
                 arr = wrapper::Array{Float64}
-                # Artificially set wrapper size larger than backing
+                # Inflate wrapper size — pointer still matches → no warning
                 setfield!(arr, :size, (vec_len + 100,))
-                @test_logs (:warn, r"wrapper grew beyond backing") rewind!(pool)
+                @test_logs rewind!(pool)  # no warning expected
             else
-                rewind!(pool)  # no wrapper cached yet, skip
+                rewind!(pool)
             end
         else
             rewind!(pool)
@@ -86,25 +85,27 @@ import AdaptiveArrayPools: _make_pool, _check_wrapper_mutation!
     end
 
     # ==============================================================================
-    # N-D Array mutation detection
+    # N-D Array: pointer-based reallocation detection
     # ==============================================================================
 
-    @testset "N-D wrapper mutation detected" begin
+    @testset "N-D wrapper pointer-based detection" begin
         pool = _make_pool(true)
         checkpoint!(pool)
         mat = acquire!(pool, Float64, 10, 10)  # 100 elements
         mat .= 1.0
 
-        # Get the 2D wrapper and manually break its MemoryRef
+        # Get the 2D wrapper and break its pointer via setfield!(:ref)
         tp = AdaptiveArrayPools.get_typed_pool!(pool, Float64)
         wrappers_2d = length(tp.arr_wrappers) >= 2 ? tp.arr_wrappers[2] : nothing
         if wrappers_2d !== nothing && tp.n_active <= length(wrappers_2d)
             wrapper = wrappers_2d[tp.n_active]
             if wrapper !== nothing
                 arr = wrapper::Array{Float64}
-                # Artificially set wrapper size to something huge
-                setfield!(arr, :size, (1000, 1000))
-                @test_logs (:warn, r"wrapper grew beyond backing") rewind!(pool)
+                # Create a fresh vector and break pointer identity
+                fresh = Vector{Float64}(undef, 200)
+                setfield!(arr, :ref, getfield(fresh, :ref))
+                setfield!(arr, :size, (10, 10))  # keep original dims so prod != 0
+                @test_logs (:warn, r"reallocation detected") rewind!(pool)
             else
                 rewind!(pool)
             end

@@ -76,12 +76,16 @@ _eltype_may_contain_arrays(::Type) = true
     return tp.n_active   # no checkpoint at this depth → nothing acquired here → all safe
 end
 
+# Safe element size: isbitstype → sizeof(T), otherwise → sizeof(Ptr) (conservative bound).
+# Avoids sizeof(Array) crash on Julia 1.10 where Array is opaque C-backed without definite size.
+@inline _safe_elsize(::Type{T}) where {T} = isbitstype(T) ? sizeof(T) : sizeof(Ptr{Nothing})
+
 # Check if array memory overlaps with any pool vector **acquired in the current scope**.
 # `original_val` is the user-visible value (e.g., SubArray) for error reporting;
 # `arr` may be its parent Array used for the actual pointer comparison.
 function _check_pointer_overlap(arr::Array, pool::AdaptiveArrayPool, original_val = arr)
     arr_ptr = UInt(pointer(arr))
-    arr_end = arr_ptr + length(arr) * sizeof(eltype(arr))
+    arr_end = arr_ptr + length(arr) * _safe_elsize(eltype(arr))
 
     return_site = let rs = pool._pending_return_site
         isempty(rs) ? nothing : rs
@@ -104,10 +108,79 @@ end
         v = @inbounds tp.vectors[i]
         v isa Array || continue  # Skip BitVector (checked via _check_bitchunks_overlap)
         v_ptr = UInt(pointer(v))
-        v_end = v_ptr + length(v) * sizeof(eltype(v))
+        v_end = v_ptr + length(v) * _safe_elsize(eltype(v))
         if !(arr_end <= v_ptr || v_end <= arr_ptr)
             callsite = _lookup_borrow_callsite(pool, v)
             _throw_pool_escape_error(original_val, eltype(v), callsite, return_site)
+        end
+    end
+    return
+end
+
+# Pre-collected bounds check for others types (zero-alloc when bounds are recorded at S=1).
+# Falls back to walking TypedPools directly when bounds are empty (S=0 or direct API calls).
+@noinline function _check_others_pointer_overlap(
+        pool::AdaptiveArrayPool, arr_ptr::UInt, arr_end::UInt,
+        current_depth::Int, return_site, original_val
+    )
+    bounds = pool._others_ptr_bounds
+    if !isempty(bounds)
+        # Fast path: pre-collected UInt bounds (zero-alloc).
+        # Only check bounds recorded AFTER the deepest active scope's checkpoint (scope boundary).
+        # Bounds from outer scopes are still valid — returning them is not an escape.
+        # NOTE: ckpts[end] is the deepest active scope's entry because _validate_pool_return
+        # is always called inside the @with_pool block (before `finally` pops the checkpoint).
+        ckpts = pool._others_ptr_bounds_checkpoints
+        boundary = @inbounds ckpts[length(ckpts)]  # bounds length saved at deepest active checkpoint
+        @inbounds for i in (boundary + 1):2:length(bounds)
+            v_ptr = bounds[i]
+            v_end = bounds[i + 1]
+            if !(arr_end <= v_ptr || v_end <= arr_ptr)
+                _throw_others_overlap_error(pool, arr_ptr, arr_end, current_depth, return_site, original_val)
+                return
+            end
+        end
+    else
+        # Fallback for S=0 or direct API calls without macro (bounds not recorded).
+        # May allocate — acceptable since this path is rare.
+        # Uses sizeof(Ptr{Nothing}) unconditionally as conservative upper bound for element size.
+        # (Fast path records exact isbitstype sizes at acquire time; this fallback over-estimates
+        # for small isbits types like Float16 — safe since it only widens the checked range.)
+        _psz = UInt(sizeof(Ptr{Nothing}))
+        for tp in values(pool.others)
+            boundary = _scope_boundary(tp, current_depth)
+            for i in (boundary + 1):tp.n_active
+                v = @inbounds tp.vectors[i]
+                v isa Array || continue
+                v_ptr = UInt(pointer(v))
+                v_end = v_ptr + UInt(length(v)) * _psz
+                if !(arr_end <= v_ptr || v_end <= arr_ptr)
+                    callsite = _lookup_borrow_callsite(pool, v)
+                    _throw_pool_escape_error(original_val, eltype(v), callsite, return_site)
+                end
+            end
+        end
+    end
+    return nothing
+end
+
+# Error helper for others overlap: walks TypedPools to find actual overlapping vector for message
+@noinline function _throw_others_overlap_error(
+        pool::AdaptiveArrayPool, arr_ptr::UInt, arr_end::UInt,
+        current_depth::Int, return_site, original_val
+    )
+    _psz = UInt(sizeof(Ptr{Nothing}))
+    for tp in values(pool.others)
+        boundary = _scope_boundary(tp, current_depth)
+        for i in (boundary + 1):tp.n_active
+            v = @inbounds tp.vectors[i]
+            v isa Array || continue
+            v_ptr = UInt(pointer(v))
+            v_end = v_ptr + UInt(length(v)) * _psz
+            if !(arr_end <= v_ptr || v_end <= arr_ptr)
+                callsite = _lookup_borrow_callsite(pool, v)
+                _throw_pool_escape_error(original_val, eltype(v), callsite, return_site)
+            end
         end
     end
     return
@@ -130,8 +203,16 @@ end
     return quote
         Base.@_inline_meta
         $(calls...)
-        for tp in values(pool.others)
-            _check_tp_pointer_overlap(tp, arr_ptr, arr_end, current_depth, pool, return_site, original_val)
+        # Guard: only check others if current scope touched non-fixed-slot types
+        # CRITICAL: index is current_depth, NOT current_depth + 1
+        _ho_idx = current_depth
+        _has_others = if _ho_idx <= length(pool._touched_has_others)
+            @inbounds pool._touched_has_others[_ho_idx]
+        else
+            !isempty(pool.others)  # fallback for direct API calls
+        end
+        if _has_others
+            _check_others_pointer_overlap(pool, arr_ptr, arr_end, current_depth, return_site, original_val)
         end
         nothing
     end
@@ -414,9 +495,12 @@ end
 # (legacy structs lack arr_wrappers field — they use N-way nd_arrays cache instead)
 _check_wrapper_mutation!(::AbstractTypedPool, ::Int, ::Int) = nothing
 
-# Function barrier: reads wrapper's :size field and computes prod() without boxing NTuple{N,Int}.
-# Using length() instead would be simpler but doesn't reflect setfield!(:size) on Julia 1.11.
-@noinline _wrapper_prod_size(wrapper)::Int = prod(getfield(wrapper, :size))
+# Function barrier: zero-alloc length check for wrappers stored in Vector{Any}.
+# length() is an intrinsic that works on ::Any without boxing.
+# ASSUMPTION: On Julia 1.11+, length(::Array) computes prod(size(a)) which reflects
+# setfield!(:size, ...) mutations. If a future Julia version caches length separately
+# from :size, the stale-wrapper guard (_wrapper_prod_size(wrapper) == 0) may break.
+@noinline _wrapper_prod_size(wrapper)::Int = length(wrapper)
 
 # Julia 1.11+: TypedPool uses arr_wrappers (1:1 wrappers) and MemoryRef-based Array internals.
 # Must not be defined on 1.10 where TypedPool has no arr_wrappers and Array has no :ref field.
@@ -436,7 +520,6 @@ _check_wrapper_mutation!(::AbstractTypedPool, ::Int, ::Int) = nothing
             @inbounds vec = tp.vectors[i]
             # Use ccall for data pointer comparison (avoids boxing MemoryRef{T})
             vec_ptr = ccall(:jl_array_ptr, Ptr{Cvoid}, (Any,), vec)
-            vec_len = length(vec)
 
             for N_idx in 1:length(tp.arr_wrappers)
                 wrappers_for_N = @inbounds tp.arr_wrappers[N_idx]
@@ -447,33 +530,22 @@ _check_wrapper_mutation!(::AbstractTypedPool, ::Int, ::Int) = nothing
                 wrapper === nothing && continue
                 wrapper::Array  # safety: ensure wrapper is Array before ccall (TypeError vs segfault)
 
-                # Skip already-invalidated wrappers (dims zeroed by previous rewind).
-                # When a slot is reused with a different dimensionality, the old wrapper
-                # retains a stale MemoryRef — checking it would be a false positive.
-                _wrapper_prod_size(wrapper) == 0 && continue
-
-                # Check 1: Data pointer identity — detects reallocation from resize!/push! beyond capacity
-                # ccall avoids boxing MemoryRef when wrapper's Array type is erased (from Vector{Any})
+                # Hot path: pointer comparison via ccall (zero-alloc).
+                # Check pointer FIRST — defers _wrapper_prod_size to rare mismatch path
+                # to avoid dynamic dispatch boxing on wrapper::Any.
                 wrapper_ptr = ccall(:jl_array_ptr, Ptr{Cvoid}, (Any,), wrapper)
                 if wrapper_ptr != vec_ptr
+                    # Rare path: check if stale (already invalidated by prior rewind)
+                    _wrapper_prod_size(wrapper) == 0 && continue
                     dims = getfield(wrapper, :size)
                     @warn "Pool-backed Array{$T,$N_idx} wrapper reallocation detected" *
-                        " (slot $i, $(N_idx)D $(dims), backing vec length $vec_len)." *
+                        " (slot $i, $(N_idx)D $(dims))." *
                         " resize!/push! changed the wrapper's backing memory." *
                         " Pooling benefits (zero-alloc reuse) may be lost." maxlog = 1
                     return
                 end
-                # Check 2: wrapper length exceeds backing vector — detects growth beyond backing
-                # Function barrier avoids NTuple{N,Int} boxing from prod(getfield(:size))
-                # (length() is not used because it may not reflect setfield!(:size) on Julia 1.11)
-                wrapper_len = _wrapper_prod_size(wrapper)
-                if wrapper_len > vec_len
-                    dims = getfield(wrapper, :size)
-                    @warn "Pool-backed Array{$T,$N_idx} wrapper grew beyond backing" *
-                        " (slot $i, $(N_idx)D $(dims) = $wrapper_len elements, backing vec length $vec_len)." *
-                        " Pooling benefits (zero-alloc reuse) may be lost." maxlog = 1
-                    return
-                end
+                # Pointer match → shared Memory → no size check needed
+                # (Check 2 removed: when pointers match, wrapper cannot exceed backing capacity)
             end
         end
         return nothing

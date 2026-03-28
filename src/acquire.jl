@@ -330,6 +330,7 @@ Returns raw `Array{T,N}` via cached wrapper reuse (setfield!-based on Julia 1.11
     tp = get_typed_pool!(pool, T)
     result = get_array!(tp, (n,))
     _maybe_record_borrow!(pool, tp)
+    _maybe_record_others_bounds!(pool, result)
     return result
 end
 
@@ -337,6 +338,7 @@ end
     tp = get_typed_pool!(pool, T)
     result = get_array!(tp, dims)
     _maybe_record_borrow!(pool, tp)
+    _maybe_record_others_bounds!(pool, result)
     return result
 end
 
@@ -344,6 +346,7 @@ end
     tp = get_typed_pool!(pool, T)
     result = get_array!(tp, dims)
     _maybe_record_borrow!(pool, tp)
+    _maybe_record_others_bounds!(pool, result)
     return result
 end
 
@@ -361,6 +364,7 @@ Internal implementation of acquire_view!. Called directly by macro-transformed c
     tp = get_typed_pool!(pool, T)
     result = get_view!(tp, n)
     _maybe_record_borrow!(pool, tp)
+    _maybe_record_others_bounds!(pool, @inbounds tp.vectors[tp.n_active])
     return result
 end
 
@@ -368,6 +372,7 @@ end
     tp = get_typed_pool!(pool, T)
     result = get_view!(tp, dims)
     _maybe_record_borrow!(pool, tp)
+    _maybe_record_others_bounds!(pool, @inbounds tp.vectors[tp.n_active])
     return result
 end
 
