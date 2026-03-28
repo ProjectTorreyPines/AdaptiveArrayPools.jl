@@ -55,6 +55,60 @@ _test_leak(x) = x  # opaque to compile-time escape checker (only identity() is t
         rewind!(pool)
     end
 
+    @testset "others type: cross-scope return (scope boundary)" begin
+        # Returning an others-type array acquired in an OUTER scope from an
+        # INNER scope is legal — the outer scope still manages it.
+        # This tests that _check_others_pointer_overlap respects scope boundary
+        # (only checks bounds recorded after current scope's checkpoint).
+        pool = AdaptiveArrayPool{1}()
+
+        # Outer scope: acquire others-type vector
+        checkpoint!(pool)
+        v_outer = acquire!(pool, UInt8, 50)  # others type, belongs to depth 2
+
+        # Inner scope: v_outer should NOT trigger escape error
+        checkpoint!(pool)                     # depth 3
+        u_inner = acquire!(pool, UInt8, 10)   # others type, belongs to depth 3
+
+        # Returning outer-scope array from inner scope → NOT an escape
+        _validate_pool_return(v_outer, pool)  # should not throw
+
+        # Returning inner-scope array from inner scope → IS an escape
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(u_inner, pool)
+
+        rewind!(pool)  # depth 3 → 2 (u_inner released, v_outer still valid)
+
+        # After inner rewind, v_outer is still escapable from depth 2
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(v_outer, pool)
+
+        rewind!(pool)  # depth 2 → 1
+    end
+
+    @testset "fixed slot: cross-scope return (scope boundary)" begin
+        # Same test but for fixed-slot types — verifies parity between
+        # fixed-slot _scope_boundary and others _others_ptr_bounds_checkpoints.
+        pool = AdaptiveArrayPool{1}()
+
+        checkpoint!(pool)
+        v_outer = acquire!(pool, Float64, 50)  # fixed slot
+
+        checkpoint!(pool)
+        u_inner = acquire!(pool, Float64, 10)  # fixed slot
+
+        # Outer-scope array from inner scope → NOT an escape
+        _validate_pool_return(v_outer, pool)  # should not throw
+
+        # Inner-scope array → IS an escape
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(u_inner, pool)
+
+        rewind!(pool)
+
+        # After inner rewind, v_outer is still escapable from depth 2
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(v_outer, pool)
+
+        rewind!(pool)
+    end
+
     @testset "_validate_pool_return with all fixed slots" begin
         pool = AdaptiveArrayPool()
         checkpoint!(pool)

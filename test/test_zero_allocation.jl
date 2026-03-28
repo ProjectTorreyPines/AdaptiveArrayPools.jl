@@ -745,4 +745,37 @@ end # Zero-allocation Patterns
     @testset "S=1 others type + scalar" begin
         @test _test_s1_others_scalar() == 0
     end
+
+    # ------------------------------------------------------------------
+    # Pattern 10: Nested scopes with others type + cross-scope validate
+    # Exercises: scope boundary in _check_others_pointer_overlap,
+    #   bounds checkpoint/rewind across nested depths
+    # ------------------------------------------------------------------
+    pool_s1_nested_others = AdaptiveArrayPool{1}()
+    function _test_s1_nested_others()
+        ext = [zeros(10), zeros(10)]  # external, not from pool
+        for _ in 1:5
+            _lazy_checkpoint!(pool_s1_nested_others)
+            acquire!(pool_s1_nested_others, UInt8, 10)  # outer others
+            _lazy_checkpoint!(pool_s1_nested_others)
+            acquire!(pool_s1_nested_others, UInt8, 5)   # inner others
+            _validate_pool_return(ext, pool_s1_nested_others)
+            _lazy_rewind!(pool_s1_nested_others)
+            _validate_pool_return(ext, pool_s1_nested_others)
+            _lazy_rewind!(pool_s1_nested_others)
+        end
+        return @allocated for _ in 1:100
+            _lazy_checkpoint!(pool_s1_nested_others)
+            acquire!(pool_s1_nested_others, UInt8, 10)
+            _lazy_checkpoint!(pool_s1_nested_others)
+            acquire!(pool_s1_nested_others, UInt8, 5)
+            _validate_pool_return(ext, pool_s1_nested_others)
+            _lazy_rewind!(pool_s1_nested_others)
+            _validate_pool_return(ext, pool_s1_nested_others)
+            _lazy_rewind!(pool_s1_nested_others)
+        end
+    end
+    @testset "S=1 nested others + cross-scope validate" begin
+        @test _test_s1_nested_others() == 0
+    end
 end
