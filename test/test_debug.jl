@@ -41,6 +41,20 @@ _test_leak(x) = x  # opaque to compile-time escape checker (only identity() is t
         _validate_pool_return(42, DISABLED_CPU)
     end
 
+    @testset "non-isbits eltype (Vector{Vector{Float64}})" begin
+        # Verifies _safe_elsize handles non-isbits eltypes without crash.
+        # sizeof(Array{Float64,1}) throws on Julia 1.10 because Array is opaque.
+        pool = AdaptiveArrayPool{1}()
+        vec_of_vec = Vector{Float64}[[1.0, 2.0], [3.0]]
+        _validate_pool_return(vec_of_vec, pool)  # should not throw
+
+        # Also test with pool-backed others type escape detection
+        checkpoint!(pool)
+        pool_u8 = acquire!(pool, UInt8, 10)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(pool_u8, pool)
+        rewind!(pool)
+    end
+
     @testset "_validate_pool_return with all fixed slots" begin
         pool = AdaptiveArrayPool()
         checkpoint!(pool)

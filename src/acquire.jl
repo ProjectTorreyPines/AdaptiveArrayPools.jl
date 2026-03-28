@@ -330,6 +330,7 @@ Returns raw `Array{T,N}` via cached wrapper reuse (setfield!-based on Julia 1.11
     tp = get_typed_pool!(pool, T)
     result = get_array!(tp, (n,))
     _maybe_record_borrow!(pool, tp)
+    _maybe_record_others_bounds!(pool, result)
     return result
 end
 
@@ -337,6 +338,7 @@ end
     tp = get_typed_pool!(pool, T)
     result = get_array!(tp, dims)
     _maybe_record_borrow!(pool, tp)
+    _maybe_record_others_bounds!(pool, result)
     return result
 end
 
@@ -344,6 +346,7 @@ end
     tp = get_typed_pool!(pool, T)
     result = get_array!(tp, dims)
     _maybe_record_borrow!(pool, tp)
+    _maybe_record_others_bounds!(pool, result)
     return result
 end
 

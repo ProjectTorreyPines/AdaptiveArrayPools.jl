@@ -231,17 +231,23 @@ Internal implementation of acquire!. Called directly by macro-transformed code
 """
 @inline function _acquire_impl!(pool::AbstractArrayPool, ::Type{T}, n::Int) where {T}
     tp = get_typed_pool!(pool, T)
-    return get_array!(tp, (n,))
+    result = get_array!(tp, (n,))
+    _maybe_record_others_bounds!(pool, result)
+    return result
 end
 
 @inline function _acquire_impl!(pool::AbstractArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
     tp = get_typed_pool!(pool, T)
-    return get_array!(tp, dims)
+    result = get_array!(tp, dims)
+    _maybe_record_others_bounds!(pool, result)
+    return result
 end
 
 @inline function _acquire_impl!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
     tp = get_typed_pool!(pool, T)
-    return get_array!(tp, dims)
+    result = get_array!(tp, dims)
+    _maybe_record_others_bounds!(pool, result)
+    return result
 end
 
 # Similar-style

@@ -539,7 +539,8 @@ end # Zero-allocation Patterns
 # RUNTIME_CHECK preference.
 
 @testset "Zero-allocation with RUNTIME_CHECK=1 (S=1)" begin
-    import AdaptiveArrayPools: _check_pointer_overlap, _lazy_checkpoint!, _lazy_rewind!
+    import AdaptiveArrayPools: _check_pointer_overlap, _lazy_checkpoint!, _lazy_rewind!,
+        _validate_pool_return
 
     pool_s1 = AdaptiveArrayPool{1}()
 
@@ -653,5 +654,53 @@ end # Zero-allocation Patterns
     end
     @testset "S=1 nested scopes" begin
         @test _test_s1_nested() == 0
+    end
+
+    # ------------------------------------------------------------------
+    # Pattern 6: Others type + _validate_pool_return (Vec{Vec} return)
+    # Exercises: _check_others_pointer_overlap via pre-collected bounds,
+    #   _others_values iteration, bounds checkpoint/rewind
+    # ------------------------------------------------------------------
+    pool_s1_others = AdaptiveArrayPool{1}()
+    function _test_s1_others_validate()
+        outputs = [zeros(100), zeros(100)]
+        for _ in 1:5
+            _lazy_checkpoint!(pool_s1_others)
+            acquire!(pool_s1_others, Float64, 100)
+            acquire!(pool_s1_others, UInt8, 10)  # others type
+            _validate_pool_return(outputs, pool_s1_others)
+            _lazy_rewind!(pool_s1_others)
+        end
+        return @allocated for _ in 1:100
+            _lazy_checkpoint!(pool_s1_others)
+            acquire!(pool_s1_others, Float64, 100)
+            acquire!(pool_s1_others, UInt8, 10)
+            _validate_pool_return(outputs, pool_s1_others)
+            _lazy_rewind!(pool_s1_others)
+        end
+    end
+    @testset "S=1 others type + validate" begin
+        @test _test_s1_others_validate() == 0
+    end
+
+    # ------------------------------------------------------------------
+    # Pattern 7: Others type + scalar return (no validate overhead)
+    # ------------------------------------------------------------------
+    function _test_s1_others_scalar()
+        for _ in 1:5
+            _lazy_checkpoint!(pool_s1_others)
+            acquire!(pool_s1_others, Float64, 100)
+            acquire!(pool_s1_others, UInt8, 10)
+            _lazy_rewind!(pool_s1_others)
+        end
+        return @allocated for _ in 1:100
+            _lazy_checkpoint!(pool_s1_others)
+            acquire!(pool_s1_others, Float64, 100)
+            acquire!(pool_s1_others, UInt8, 10)
+            _lazy_rewind!(pool_s1_others)
+        end
+    end
+    @testset "S=1 others type + scalar" begin
+        @test _test_s1_others_scalar() == 0
     end
 end
