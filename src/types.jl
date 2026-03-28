@@ -550,7 +550,8 @@ Compiles to no-op when `S=0` or when T is a fixed-slot type.
 @inline function _maybe_record_others_bounds!(pool::AdaptiveArrayPool{S}, result::Array{T}) where {S, T}
     if S >= 1 && _fixed_slot_bit(T) == UInt16(0)
         v_ptr = UInt(ccall(:jl_array_ptr, Ptr{Cvoid}, (Any,), result))
-        v_end = v_ptr + UInt(length(result)) * UInt(sizeof(T))
+        _esz = isbitstype(T) ? sizeof(T) : sizeof(Ptr{Nothing})
+        v_end = v_ptr + UInt(length(result)) * UInt(_esz)
         push!(pool._others_ptr_bounds, v_ptr)
         push!(pool._others_ptr_bounds, v_end)
     end
