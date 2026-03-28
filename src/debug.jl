@@ -126,10 +126,12 @@ end
     bounds = pool._others_ptr_bounds
     if !isempty(bounds)
         # Fast path: pre-collected UInt bounds (zero-alloc).
-        # Only check bounds recorded AFTER the current scope's checkpoint (scope boundary).
+        # Only check bounds recorded AFTER the deepest active scope's checkpoint (scope boundary).
         # Bounds from outer scopes are still valid — returning them is not an escape.
+        # NOTE: ckpts[end] is the deepest active scope's entry because _validate_pool_return
+        # is always called inside the @with_pool block (before `finally` pops the checkpoint).
         ckpts = pool._others_ptr_bounds_checkpoints
-        boundary = @inbounds ckpts[length(ckpts)]  # bounds length saved at checkpoint for current_depth
+        boundary = @inbounds ckpts[length(ckpts)]  # bounds length saved at deepest active checkpoint
         @inbounds for i in (boundary + 1):2:length(bounds)
             v_ptr = bounds[i]
             v_end = bounds[i + 1]
@@ -141,6 +143,9 @@ end
     else
         # Fallback for S=0 or direct API calls without macro (bounds not recorded).
         # May allocate — acceptable since this path is rare.
+        # Uses sizeof(Ptr{Nothing}) unconditionally as conservative upper bound for element size.
+        # (Fast path records exact isbitstype sizes at acquire time; this fallback over-estimates
+        # for small isbits types like Float16 — safe since it only widens the checked range.)
         _psz = UInt(sizeof(Ptr{Nothing}))
         for tp in values(pool.others)
             boundary = _scope_boundary(tp, current_depth)
@@ -492,6 +497,9 @@ _check_wrapper_mutation!(::AbstractTypedPool, ::Int, ::Int) = nothing
 
 # Function barrier: zero-alloc length check for wrappers stored in Vector{Any}.
 # length() is an intrinsic that works on ::Any without boxing.
+# ASSUMPTION: On Julia 1.11+, length(::Array) computes prod(size(a)) which reflects
+# setfield!(:size, ...) mutations. If a future Julia version caches length separately
+# from :size, the stale-wrapper guard (_wrapper_prod_size(wrapper) == 0) may break.
 @noinline _wrapper_prod_size(wrapper)::Int = length(wrapper)
 
 # Julia 1.11+: TypedPool uses arr_wrappers (1:1 wrappers) and MemoryRef-based Array internals.

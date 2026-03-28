@@ -109,6 +109,68 @@ _test_leak(x) = x  # opaque to compile-time escape checker (only identity() is t
         rewind!(pool)
     end
 
+    @testset "acquire_view! others type escape (S=1, pre-collected bounds)" begin
+        # acquire_view! for non-fixed-slot types must record bounds for the backing
+        # vector so _check_others_pointer_overlap fast path detects escapes.
+        pool = AdaptiveArrayPool{1}()
+
+        # 1D SubArray — others type
+        checkpoint!(pool)
+        sv = acquire_view!(pool, UInt8, 20)
+        @test sv isa SubArray
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(sv, pool)
+        rewind!(pool)
+
+        # N-D ReshapedArray — others type
+        checkpoint!(pool)
+        sm = acquire_view!(pool, UInt8, 4, 5)
+        @test sm isa Base.ReshapedArray
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(sm, pool)
+        rewind!(pool)
+
+        # External view should still pass
+        checkpoint!(pool)
+        _ = acquire_view!(pool, UInt8, 10)  # populate bounds
+        ext = view(Vector{UInt8}(undef, 10), 1:5)
+        _validate_pool_return(ext, pool)  # should not throw
+        rewind!(pool)
+    end
+
+    @testset "acquire_view! fixed slot escape (S=1)" begin
+        # Fixed-slot types go through _check_tp_pointer_overlap, not bounds.
+        # Verify parity: acquire_view! for fixed-slot is also caught at S=1.
+        pool = AdaptiveArrayPool{1}()
+
+        checkpoint!(pool)
+        sv = acquire_view!(pool, Float64, 20)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(sv, pool)
+        rewind!(pool)
+
+        checkpoint!(pool)
+        sm = acquire_view!(pool, Float64, 4, 5)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(sm, pool)
+        rewind!(pool)
+    end
+
+    @testset "mixed acquire! + acquire_view! others escape (S=1)" begin
+        # Regression: mixed acquire! + acquire_view! for different others types
+        # must both be caught by pre-collected bounds fast path.
+        pool = AdaptiveArrayPool{1}()
+        checkpoint!(pool)
+
+        v_arr = acquire!(pool, UInt8, 10)       # others via acquire!
+        v_view = acquire_view!(pool, UInt16, 5)  # others via acquire_view!
+
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(v_arr, pool)
+        @test_throws PoolRuntimeEscapeError _validate_pool_return(v_view, pool)
+
+        # External arrays still pass
+        _validate_pool_return([1, 2, 3], pool)
+        _validate_pool_return(42, pool)
+
+        rewind!(pool)
+    end
+
     @testset "_validate_pool_return with all fixed slots" begin
         pool = AdaptiveArrayPool()
         checkpoint!(pool)

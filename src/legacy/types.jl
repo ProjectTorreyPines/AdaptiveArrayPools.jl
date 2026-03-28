@@ -595,3 +595,22 @@ Compiles to no-op when `S=0`.
     return nothing
 end
 @inline _maybe_record_borrow!(::AbstractArrayPool, ::AbstractTypedPool) = nothing
+
+"""
+    _maybe_record_others_bounds!(pool, result::Array{T})
+
+Record pointer bounds [ptr, end] for non-fixed-slot types at acquire time (S=1).
+Called in concrete type context (T known) — avoids Any-typed boxing at validate time.
+Compiles to no-op when `S=0` or when T is a fixed-slot type.
+"""
+@inline function _maybe_record_others_bounds!(pool::AdaptiveArrayPool{S}, result::Array{T}) where {S, T}
+    if S >= 1 && _fixed_slot_bit(T) == UInt16(0)
+        v_ptr = UInt(pointer(result))
+        _esz = isbitstype(T) ? sizeof(T) : sizeof(Ptr{Nothing})
+        v_end = v_ptr + UInt(length(result)) * UInt(_esz)
+        push!(pool._others_ptr_bounds, v_ptr)
+        push!(pool._others_ptr_bounds, v_end)
+    end
+    return nothing
+end
+@inline _maybe_record_others_bounds!(::AbstractArrayPool, ::Array) = nothing
