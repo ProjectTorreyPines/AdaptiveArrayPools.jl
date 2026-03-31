@@ -27,7 +27,7 @@ _test_leak(x) = x
         rewind!(pool)
 
         # Array wrapper invalidation requires setfield! (Julia 1.11+ only)
-        @static if VERSION >= v"1.11-"
+        @static if VERSION >= v"1.12-"
             @test size(v) == (0,)
             @test_throws BoundsError v[1]
         end
@@ -40,7 +40,7 @@ _test_leak(x) = x
         mat .= 1.0
         rewind!(pool)
 
-        @static if VERSION >= v"1.11-"
+        @static if VERSION >= v"1.12-"
             @test size(mat) == (0, 0)
             @test_throws BoundsError mat[1, 1]
         end
@@ -118,7 +118,7 @@ _test_leak(x) = x
         rewind!(pool)
     end
 
-    @static if VERSION >= v"1.11-"
+    @static if VERSION >= v"1.12-"
         @testset "Re-acquire after invalidation (setfield! path)" begin
             pool = _make_pool(true)
 
@@ -156,7 +156,7 @@ _test_leak(x) = x
         rewind!(pool)
 
         # Inner is invalidated (Array wrapper, 1.11+ only)
-        @static if VERSION >= v"1.11-"
+        @static if VERSION >= v"1.12-"
             @test size(v_inner) == (0,)
         end
 
@@ -167,7 +167,7 @@ _test_leak(x) = x
         rewind!(pool)
 
         # Now outer is also invalidated (Array wrapper, 1.11+ only)
-        @static if VERSION >= v"1.11-"
+        @static if VERSION >= v"1.12-"
             @test size(v_outer) == (0,)
         end
     end
@@ -207,7 +207,7 @@ _test_leak(x) = x
         tp = pool.others[UInt8]
         @test length(tp.vectors[1]) == 0
         # Array wrapper invalidation (1.11+ only)
-        @static if VERSION >= v"1.11-"
+        @static if VERSION >= v"1.12-"
             @test size(v) == (0,)
         end
     end
@@ -228,7 +228,7 @@ _test_leak(x) = x
         rewind!(pool)
 
         # Array wrapper invalidation (1.11+ only)
-        @static if VERSION >= v"1.11-"
+        @static if VERSION >= v"1.12-"
             @test size(vf) == (0,)
             @test size(vi) == (0,)
         end
@@ -250,7 +250,7 @@ _test_leak(x) = x
 
         @test result == 50.0
         # Array wrapper invalidation (1.11+ only)
-        @static if VERSION >= v"1.11-"
+        @static if VERSION >= v"1.12-"
             @test size(v) == (0,)
             @test_throws BoundsError v[1]
         end

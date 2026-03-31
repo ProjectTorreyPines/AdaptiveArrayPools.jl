@@ -20,7 +20,7 @@ export DisabledPool, DISABLED_CPU, pooling_enabled  # Disabled pool support
 # Note: Extensions add methods to _get_pool_for_backend(::Val{:backend}) directly
 
 # All includes grouped under a single version branch
-@static if VERSION >= v"1.11-"
+@static if VERSION >= v"1.12-"
     include("types.jl")
     include("utils.jl")
     include("acquire.jl")

@@ -14,9 +14,10 @@ module AdaptiveArrayPoolsMetalExt
 using AdaptiveArrayPools
 using Metal
 
-# GPU pooling requires Julia 1.11+ (setfield!-based Array, arr_wrappers cache).
+# GPU pooling requires Julia 1.12+ (setfield!-based Array, arr_wrappers cache).
+# On Julia 1.11, arraylen uses Memory.length (not prod(size)), breaking setfield! reuse.
 # On older Julia, the extension loads but provides no functionality.
-@static if VERSION >= v"1.11-"
+@static if VERSION >= v"1.12-"
 
     using AdaptiveArrayPools: AbstractTypedPool, AbstractArrayPool
     using Metal.GPUArrays
@@ -35,7 +36,7 @@ using Metal
     export METAL_FIXED_SLOT_FIELDS
 
 else
-    @warn "AdaptiveArrayPoolsMetalExt requires Julia 1.11+. GPU pooling is disabled." maxlog = 1
+    @warn "AdaptiveArrayPoolsMetalExt requires Julia 1.12+. GPU pooling is disabled." maxlog = 1
 end # @static if
 
 end # module

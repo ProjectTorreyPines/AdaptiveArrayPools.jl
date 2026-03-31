@@ -9,10 +9,10 @@
 
 using Test
 
-# GPU pooling requires Julia 1.11+
-@static if VERSION < v"1.11-"
-    @info "Metal extension tests skipped (requires Julia 1.11+)"
-    @testset "Metal (skipped — Julia < 1.11)" begin end
+# GPU pooling requires Julia 1.12+
+@static if VERSION < v"1.12-"
+    @info "Metal extension tests skipped (requires Julia 1.12+)"
+    @testset "Metal (skipped — Julia < 1.12)" begin end
 else
     # Check Metal availability (requires macOS + Apple Silicon)
     const METAL_AVAILABLE = try

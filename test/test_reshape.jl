@@ -211,7 +211,7 @@
     # Zero allocation (v1.11+ only)
     # ==========================================================================
 
-    @static if VERSION >= v"1.11-"
+    @static if VERSION >= v"1.12-"
         @testset "Zero allocation — cross-dim reshape" begin
             function _test_reshape_cross_dim()
                 pool = AdaptiveArrayPool()
@@ -374,7 +374,7 @@
     # Zero allocation — @with_pool function (v1.11+)
     # ==========================================================================
 
-    @static if VERSION >= v"1.11-"
+    @static if VERSION >= v"1.12-"
         @testset "Zero allocation — @with_pool function (acquire + reshape + zeros!)" begin
             ext = collect(1.0:24.0)
 
@@ -410,7 +410,7 @@
     # @maybe_with_pool — pooling vs no-pooling proves zero-alloc
     # ==========================================================================
 
-    @static if VERSION >= v"1.11-"
+    @static if VERSION >= v"1.12-"
         @testset "@maybe_with_pool — pooling vs no-pooling allocation" begin
             ext = collect(1.0:12.0)
 

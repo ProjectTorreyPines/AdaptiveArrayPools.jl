@@ -9,10 +9,10 @@
 
 using Test
 
-# GPU pooling requires Julia 1.11+
-@static if VERSION < v"1.11-"
-    @info "CUDA extension tests skipped (requires Julia 1.11+)"
-    @testset "CUDA (skipped — Julia < 1.11)" begin end
+# GPU pooling requires Julia 1.12+
+@static if VERSION < v"1.12-"
+    @info "CUDA extension tests skipped (requires Julia 1.12+)"
+    @testset "CUDA (skipped — Julia < 1.12)" begin end
 else
     # Check CUDA availability (separate from test execution)
     const CUDA_AVAILABLE = try

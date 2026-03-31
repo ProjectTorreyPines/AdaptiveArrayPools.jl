@@ -502,9 +502,10 @@ _check_wrapper_mutation!(::AbstractTypedPool, ::Int, ::Int) = nothing
 # from :size, the stale-wrapper guard (_wrapper_prod_size(wrapper) == 0) may break.
 @noinline _wrapper_prod_size(wrapper)::Int = length(wrapper)
 
-# Julia 1.11+: TypedPool uses arr_wrappers (1:1 wrappers) and MemoryRef-based Array internals.
-# Must not be defined on 1.10 where TypedPool has no arr_wrappers and Array has no :ref field.
-@static if VERSION >= v"1.11-"
+# Julia 1.12+: TypedPool uses arr_wrappers (1:1 wrappers) and MemoryRef-based Array internals.
+# Must not be defined on 1.11 or earlier where TypedPool has no arr_wrappers field,
+# and Julia 1.11's arraylen uses Memory.length (not prod(size)), breaking setfield!-based reuse.
+@static if VERSION >= v"1.12-"
 
     """
         _check_wrapper_mutation!(tp::TypedPool{T}, new_n, old_n)
@@ -594,4 +595,4 @@ _check_wrapper_mutation!(::AbstractTypedPool, ::Int, ::Int) = nothing
         return nothing
     end
 
-end # @static if VERSION >= v"1.11-"
+end # @static if VERSION >= v"1.12-"
