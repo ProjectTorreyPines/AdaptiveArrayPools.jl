@@ -552,6 +552,73 @@
         end
     end
 
+    @testset "similar! preserves view when input is a view" begin
+        pool = AdaptiveArrayPool()
+
+        @testset "1D view → similar! returns view" begin
+            checkpoint!(pool)
+            aa = acquire_view!(pool, Float64, 10)
+            @test aa isa SubArray
+            bb = similar!(pool, aa)
+            @test bb isa SubArray
+            @test size(bb) == (10,)
+            @test eltype(bb) == Float64
+            rewind!(pool)
+        end
+
+        @testset "2D view → similar! returns view" begin
+            checkpoint!(pool)
+            aa = acquire_view!(pool, Float64, 3, 4)
+            # 2D acquire_view! returns reshape(view(...), dims) which is not a plain Array
+            @test !(aa isa Array)
+            bb = similar!(pool, aa)
+            @test !(bb isa Array)
+            @test size(bb) == (3, 4)
+            @test eltype(bb) == Float64
+            rewind!(pool)
+        end
+
+        @testset "view with different type → similar! returns view" begin
+            checkpoint!(pool)
+            aa = acquire_view!(pool, Float64, 10)
+            bb = similar!(pool, aa, Float32)
+            @test bb isa SubArray
+            @test size(bb) == (10,)
+            @test eltype(bb) == Float32
+            rewind!(pool)
+        end
+
+        @testset "view with different dims → similar! returns view" begin
+            checkpoint!(pool)
+            aa = acquire_view!(pool, Float64, 10)
+            bb = similar!(pool, aa, 5, 3)
+            @test !(bb isa Array)  # multi-dim view is ReshapedArray wrapping SubArray
+            @test size(bb) == (5, 3)
+            @test eltype(bb) == Float64
+            rewind!(pool)
+        end
+
+        @testset "view with different type and dims → similar! returns view" begin
+            checkpoint!(pool)
+            aa = acquire_view!(pool, Float64, 10)
+            bb = similar!(pool, aa, Int32, 4, 2)
+            @test !(bb isa Array)  # multi-dim view is ReshapedArray wrapping SubArray
+            @test size(bb) == (4, 2)
+            @test eltype(bb) == Int32
+            rewind!(pool)
+        end
+
+        @testset "non-view Array → similar! still returns Array" begin
+            checkpoint!(pool)
+            aa = acquire!(pool, Float64, 10)
+            @test aa isa Array
+            bb = similar!(pool, aa)
+            @test bb isa Array
+            @test !(bb isa SubArray)
+            rewind!(pool)
+        end
+    end
+
     @testset "Integration: zeros!/ones!/similar! return Array in @with_pool" begin
         @testset "zeros! in macro" begin
             result = @with_pool pool begin

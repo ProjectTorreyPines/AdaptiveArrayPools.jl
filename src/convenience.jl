@@ -309,20 +309,38 @@ end
 end
 
 # Internal implementation (for macro transformation)
-@inline function _similar_impl!(pool::AbstractArrayPool, x::AbstractArray)
+# When input is a plain Array, return Array via _acquire_impl!.
+# When input is a view (SubArray / ReshapedArray from acquire_view!), preserve view semantics.
+@inline function _similar_impl!(pool::AbstractArrayPool, x::Array)
     return _acquire_impl!(pool, eltype(x), size(x))
 end
 
-@inline function _similar_impl!(pool::AbstractArrayPool, x::AbstractArray, ::Type{T}) where {T}
+@inline function _similar_impl!(pool::AbstractArrayPool, x::AbstractArray)
+    return _acquire_view_impl!(pool, eltype(x), size(x))
+end
+
+@inline function _similar_impl!(pool::AbstractArrayPool, x::Array, ::Type{T}) where {T}
     return _acquire_impl!(pool, T, size(x))
 end
 
-@inline function _similar_impl!(pool::AbstractArrayPool, x::AbstractArray, dims::Vararg{Int, N}) where {N}
+@inline function _similar_impl!(pool::AbstractArrayPool, x::AbstractArray, ::Type{T}) where {T}
+    return _acquire_view_impl!(pool, T, size(x))
+end
+
+@inline function _similar_impl!(pool::AbstractArrayPool, x::Array, dims::Vararg{Int, N}) where {N}
     return _acquire_impl!(pool, eltype(x), dims...)
 end
 
-@inline function _similar_impl!(pool::AbstractArrayPool, x::AbstractArray, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
+@inline function _similar_impl!(pool::AbstractArrayPool, x::AbstractArray, dims::Vararg{Int, N}) where {N}
+    return _acquire_view_impl!(pool, eltype(x), dims...)
+end
+
+@inline function _similar_impl!(pool::AbstractArrayPool, x::Array, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
     return _acquire_impl!(pool, T, dims...)
+end
+
+@inline function _similar_impl!(pool::AbstractArrayPool, x::AbstractArray, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
+    return _acquire_view_impl!(pool, T, dims...)
 end
 
 # ==============================================================================
