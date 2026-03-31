@@ -125,13 +125,13 @@ end
 end
 
 # ==============================================================================
-# reshape! — Zero-Allocation Reshape (setfield!-based, Julia 1.11+)
+# reshape! — Zero-Allocation Reshape (setfield!-based, Julia 1.12+)
 # ==============================================================================
 
 """
     _reshape_impl!(pool::AdaptiveArrayPool, A::Array{T,M}, dims::NTuple{N,Int}) -> Array{T,N}
 
-Zero-allocation reshape using `setfield!`-based wrapper reuse (Julia 1.11+).
+Zero-allocation reshape using `setfield!`-based wrapper reuse (Julia 1.12+).
 
 - **Same dimensionality (M == N)**: `setfield!(A, :size, dims)` — no pool interaction
 - **Different dimensionality (M ≠ N)**: Claims a pool slot via `_claim_slot!`,
@@ -186,10 +186,10 @@ Zero-allocation reshape using `setfield!`-based wrapper reuse (Julia 1.11+).
 end
 
 # ==============================================================================
-# Get N-D Array (setfield!-based Wrapper Reuse, Julia 1.11+)
+# Get N-D Array (setfield!-based Wrapper Reuse, Julia 1.12+)
 # ==============================================================================
 #
-# Julia 1.11+ changed Array to mutable struct {ref::MemoryRef{T}, size::NTuple{N,Int}},
+# Julia 1.12+ changed Array to mutable struct {ref::MemoryRef{T}, size::NTuple{N,Int}},
 # enabling in-place mutation via setfield!. This eliminates N-way cache eviction limits:
 # unlimited dimension patterns per slot, 0-alloc after warmup for any dims with same N.
 
@@ -324,7 +324,7 @@ end
 Internal implementation of acquire!. Called directly by macro-transformed code
 (no type touch recording). User code calls `acquire!` which adds recording.
 
-Returns raw `Array{T,N}` via cached wrapper reuse (setfield!-based on Julia 1.11+).
+Returns raw `Array{T,N}` via cached wrapper reuse (setfield!-based on Julia 1.12+).
 """
 @inline function _acquire_impl!(pool::AbstractArrayPool, ::Type{T}, n::Int) where {T}
     tp = get_typed_pool!(pool, T)
@@ -395,7 +395,7 @@ end
 Acquire a pooled array of type `T` with size `n` or dimensions `dims`.
 
 Returns:
-- **CPU**: `Array{T,N}` (zero-alloc via cached wrapper reuse on Julia 1.11+)
+- **CPU**: `Array{T,N}` (zero-alloc via cached wrapper reuse on Julia 1.12+)
 - **Bit** (`T === Bit`): `BitVector` / `BitArray{N}` (chunks-sharing, SIMD optimized)
 - **CUDA**: `CuArray{T,N}` (unified N-way cache)
 

@@ -1,8 +1,8 @@
 # ==============================================================================
-# BitArray Acquisition — Julia 1.11+ (setfield!-based Wrapper Reuse)
+# BitArray Acquisition — Julia 1.12+ (setfield!-based Wrapper Reuse)
 # ==============================================================================
 #
-# This file contains BitArray-specific pool operations for Julia 1.11+.
+# This file contains BitArray-specific pool operations for Julia 1.12+.
 # Uses setfield!-based wrapper reuse for unlimited dim patterns, 0-alloc.
 #
 # Key components:

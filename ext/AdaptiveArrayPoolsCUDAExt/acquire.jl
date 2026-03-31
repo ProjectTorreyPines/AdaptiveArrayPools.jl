@@ -1,7 +1,7 @@
 # ==============================================================================
 # CUDA-Specific Acquire Implementation (arr_wrappers + setfield!)
 # ==============================================================================
-# Mirrors CPU's Julia 1.11+ approach: cached CuArray{T,N} wrappers reused via
+# Mirrors CPU's Julia 1.12+ approach: cached CuArray{T,N} wrappers reused via
 # setfield!(:dims) for zero-allocation on cache hit.
 #
 # Key differences from CPU:

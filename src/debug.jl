@@ -497,7 +497,7 @@ _check_wrapper_mutation!(::AbstractTypedPool, ::Int, ::Int) = nothing
 
 # Function barrier: zero-alloc length check for wrappers stored in Vector{Any}.
 # length() is an intrinsic that works on ::Any without boxing.
-# ASSUMPTION: On Julia 1.11+, length(::Array) computes prod(size(a)) which reflects
+# ASSUMPTION: On Julia 1.12+, length(::Array) computes prod(size(a)) which reflects
 # setfield!(:size, ...) mutations. If a future Julia version caches length separately
 # from :size, the stale-wrapper guard (_wrapper_prod_size(wrapper) == 0) may break.
 @noinline _wrapper_prod_size(wrapper)::Int = length(wrapper)

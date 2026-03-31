@@ -1,7 +1,7 @@
 # ==============================================================================
-# State Management — Legacy (Julia ≤1.10)
+# State Management — Legacy (Julia ≤1.11)
 # ==============================================================================
-# Identical to v1.11+ state.jl except empty! clears legacy N-way cache fields
+# Identical to v1.12+ state.jl except empty! clears legacy N-way cache fields
 # (nd_arrays, nd_dims, nd_ptrs, nd_next_way) instead of nd_wrappers.
 
 # Zero-dims tuple for wrapper invalidation. Literal tuples for N ≤ 4 avoid
@@ -283,8 +283,8 @@ _invalidate_released_slots!(::AbstractTypedPool, ::Int) = nothing  # legacy 2-ar
         _poison_released_vectors!(tp, old_n_active)
     end
     # S=1: resize backing vectors to length 0 (invalidates SubArrays from acquire!)
-    # Note: Array wrapper invalidation (setfield! :size) requires Julia 1.11+.
-    # On legacy (1.10), only SubArray invalidation via resize! is available.
+    # Note: Array wrapper invalidation (setfield! :size) requires Julia 1.12+.
+    # On legacy (≤1.11), only SubArray invalidation via resize! is available.
     for i in (new_n + 1):old_n_active
         @inbounds resize!(tp.vectors[i], 0)
     end
