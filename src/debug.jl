@@ -491,7 +491,7 @@ end
 # Called from _invalidate_released_slots! BEFORE poison/invalidation zeroes everything.
 # Uses @warn (not throw) because throwing during rewind would skip cleanup of other pools.
 
-# No-op fallback for extension types (e.g. CuTypedPool) and legacy (1.10) TypedPool/BitTypedPool
+# No-op fallback for extension types (e.g. CuTypedPool) and legacy (≤1.11) TypedPool/BitTypedPool
 # (legacy structs lack arr_wrappers field — they use N-way nd_arrays cache instead)
 _check_wrapper_mutation!(::AbstractTypedPool, ::Int, ::Int) = nothing
 

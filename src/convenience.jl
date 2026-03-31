@@ -349,7 +349,7 @@ On Julia 1.12+:
 As with all pool-backed objects, the reshaped result must not escape the
 surrounding `@with_pool` scope.
 
-On Julia 1.10 and CUDA, falls back to `Base.reshape`.
+On Julia ≤1.11 and CUDA, falls back to `Base.reshape`.
 
 Throws `DimensionMismatch` if `prod(dims) != length(A)`.
 

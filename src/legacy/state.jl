@@ -2,7 +2,7 @@
 # State Management — Legacy (Julia ≤1.11)
 # ==============================================================================
 # Identical to v1.12+ state.jl except empty! clears legacy N-way cache fields
-# (nd_arrays, nd_dims, nd_ptrs, nd_next_way) instead of nd_wrappers.
+# (nd_arrays, nd_dims, nd_ptrs, nd_next_way) instead of arr_wrappers.
 
 # Zero-dims tuple for wrapper invalidation. Literal tuples for N ≤ 4 avoid
 # ntuple(_ -> 0, N) dynamic-dispatch allocation (runtime N → heterogeneous

@@ -189,8 +189,11 @@ end
 # Get N-D Array (setfield!-based Wrapper Reuse, Julia 1.12+)
 # ==============================================================================
 #
-# Julia 1.12+ changed Array to mutable struct {ref::MemoryRef{T}, size::NTuple{N,Int}},
-# enabling in-place mutation via setfield!. This eliminates N-way cache eviction limits:
+# Julia 1.11 changed Array to mutable struct {ref::MemoryRef{T}, size::NTuple{N,Int}},
+# enabling in-place mutation of :ref and :size via setfield!. However, Julia 1.11's
+# arraylen builtin derives length from Memory.length (not prod(size)), making setfield!
+# reuse unsound. Julia 1.12 fixed arraylen to use prod(size), so the setfield! path
+# is only safe from 1.12+. This eliminates N-way cache eviction limits:
 # unlimited dimension patterns per slot, 0-alloc after warmup for any dims with same N.
 
 """
