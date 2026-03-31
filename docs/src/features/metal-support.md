@@ -1,6 +1,6 @@
 # Metal Backend
 
-AdaptiveArrayPools provides native Apple Silicon GPU support through a package extension that loads automatically when [Metal.jl](https://github.com/JuliaGPU/Metal.jl) is available. Requires Julia 1.11+.
+AdaptiveArrayPools provides native Apple Silicon GPU support through a package extension that loads automatically when [Metal.jl](https://github.com/JuliaGPU/Metal.jl) is available. Requires Julia 1.12+.
 
 ## Quick Start
 
@@ -76,7 +76,7 @@ Other types use the fallback dictionary (`.others`).
 - **No Float64/ComplexF64**: Apple Silicon GPUs do not natively support 64-bit floating point
 - **No `@maybe_with_pool :metal`**: Runtime toggle not supported for Metal backend
 - **Single-device only**: Tested on single Apple GPU (multi-device untested)
-- **Julia 1.11+**: Required for `setfield!`-based Array internals used by GPU extensions
+- **Julia 1.12+**: Required for `setfield!`-based Array internals used by GPU extensions
 - **Task-local only**: Each Task gets its own Metal pool, same as CPU
 
 ## Example: Matrix Computation
@@ -124,6 +124,6 @@ pool_stats(:metal)
 | Array type | `CuArray` | `MtlArray` |
 | Float64 support | Yes | No |
 | ComplexF64 support | Yes | No |
-| Julia requirement | 1.11+ | 1.11+ |
+| Julia requirement | 1.12+ | 1.12+ |
 | Safety features | Full | Full |
 | Lazy mode | Yes | Yes |

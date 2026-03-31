@@ -13,8 +13,8 @@ A lightweight library that lets you write natural, allocation-style code while a
 
 **Supported backends:**
 - **CPU** — `Array`, works out of the box
-- **CUDA** — `CuArray`, loads automatically when [CUDA.jl](https://github.com/JuliaGPU/CUDA.jl) is available (Julia 1.11+)
-- **Metal** — `MtlArray`, loads automatically when [Metal.jl](https://github.com/JuliaGPU/Metal.jl) is available (Apple Silicon, Julia 1.11+)
+- **CUDA** — `CuArray`, loads automatically when [CUDA.jl](https://github.com/JuliaGPU/CUDA.jl) is available (Julia 1.12+)
+- **Metal** — `MtlArray`, loads automatically when [Metal.jl](https://github.com/JuliaGPU/Metal.jl) is available (Apple Silicon, Julia 1.12+)
 
 ## The Problem
 
@@ -96,7 +96,7 @@ Common initialization patterns have convenience functions:
 | `zeros!(pool, 10)` | `acquire!` + `fill!(0)` |
 | `ones!(pool, Float32, 3, 3)` | `acquire!` + `fill!(1)` |
 | `similar!(pool, A)` | `acquire!` matching `eltype(A)`, `size(A)` |
-| `reshape!(pool, A, 3, 4)` | Reshape sharing memory, zero-alloc (1.11+) |
+| `reshape!(pool, A, 3, 4)` | Reshape sharing memory, zero-alloc (1.12+) |
 
 All convenience functions return `Array` types, same as `acquire!`. See [API Reference](https://projecttorreypines.github.io/AdaptiveArrayPools.jl/stable/usage/api#convenience-functions).
 

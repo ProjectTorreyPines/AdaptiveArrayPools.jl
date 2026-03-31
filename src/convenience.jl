@@ -338,7 +338,7 @@ Reshape array `A` to dimensions `dims` using the pool's wrapper cache.
 The returned array shares memory with `A` — mutations are visible in both.
 The pool provides cached wrapper objects to reduce allocation on repeated calls.
 
-On Julia 1.11+:
+On Julia 1.12+:
 - If `ndims(A) == length(dims)` (same dimensionality), `reshape!` mutates `A`
   in-place by changing its size. This differs from `Base.reshape`, which always
   returns a new wrapper.
@@ -349,7 +349,7 @@ On Julia 1.11+:
 As with all pool-backed objects, the reshaped result must not escape the
 surrounding `@with_pool` scope.
 
-On Julia 1.10 and CUDA, falls back to `Base.reshape`.
+On Julia ≤1.11 and CUDA, falls back to `Base.reshape`.
 
 Throws `DimensionMismatch` if `prod(dims) != length(A)`.
 

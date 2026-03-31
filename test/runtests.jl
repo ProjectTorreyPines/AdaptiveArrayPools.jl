@@ -4,7 +4,7 @@ using AdaptiveArrayPools: get_typed_pool!
 import AdaptiveArrayPools: checkpoint!, rewind!
 
 # Version-specific helpers (always defined, even for ARGS path)
-@static if VERSION >= v"1.11-"
+@static if VERSION >= v"1.12-"
     _test_nd_cache_preserved(tp) = !isempty(tp.arr_wrappers)
 else
     _test_nd_cache_preserved(tp) = length(tp.nd_arrays) >= 1
@@ -18,7 +18,7 @@ if !isempty(ARGS)
     end
 else
     # Version-specific test file selection
-    @static if VERSION >= v"1.11-"
+    @static if VERSION >= v"1.12-"
         include("test_aqua.jl")
         include("test_basic.jl")
         include("test_state.jl")

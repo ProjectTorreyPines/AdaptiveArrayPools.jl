@@ -11,7 +11,7 @@
     CuTypedPool{T} <: AbstractTypedPool{T, CuVector{T}}
 
 GPU memory pool for element type `T`. Uses `arr_wrappers`-based CuArray reuse
-for zero-allocation acquire (same design as CPU TypedPool on Julia 1.11+).
+for zero-allocation acquire (same design as CPU TypedPool on Julia 1.12+).
 
 ## Fields
 - `vectors`: Backing `CuVector{T}` storage (one per slot)

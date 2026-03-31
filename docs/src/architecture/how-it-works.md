@@ -86,9 +86,9 @@ When you call `acquire!(pool, Float64, n)`, the compiler inlines directly to `po
 
 For `acquire!` (which returns native `Array` types), the caching strategy depends on the Julia version:
 
-### Julia 1.11+: `setfield!`-based Wrapper Reuse (Zero-Allocation)
+### Julia 1.12+: `setfield!`-based Wrapper Reuse (Zero-Allocation)
 
-Julia 1.11 changed `Array` from an opaque C struct to a mutable Julia struct with `ref::MemoryRef{T}` and `size::NTuple{N,Int}` fields. This enables in-place mutation of cached `Array` wrappers via `setfield!`:
+Julia 1.11 changed `Array` from an opaque C struct to a mutable Julia struct with `ref::MemoryRef{T}` and `size::NTuple{N,Int}` fields. However, Julia 1.11's `arraylen` builtin uses `Memory.length` instead of `prod(size)`, which breaks `setfield!(:ref)`-based wrapper reuse. This is fixed in Julia 1.12, where the `setfield!` path is safe:
 
 ```
 nd_wrappers[N][slot] → cached Array{T,N}
@@ -100,7 +100,7 @@ nd_wrappers[N][slot] → cached Array{T,N}
 **Result**: Unlimited dimension patterns per slot with **zero allocation** after warmup. No eviction, no round-robin, no `CACHE_WAYS` limit.
 
 ```julia
-# Pseudocode for Julia 1.11+ path
+# Pseudocode for Julia 1.12+ path
 function acquire!(pool, T, dims...)
     typed_pool = get_typed_pool!(pool, T)
     flat_view = get_view!(typed_pool, prod(dims))
@@ -121,24 +121,24 @@ function acquire!(pool, T, dims...)
 end
 ```
 
-### Julia 1.10 (Legacy): N-Way Set Associative Cache
+### Julia ≤1.11 (Legacy): N-Way Set Associative Cache
 
-On Julia 1.10, `Array` fields cannot be mutated, so the legacy path uses a 4-way set-associative cache with round-robin eviction:
+On Julia ≤1.11, the `setfield!` path cannot be used (pre-1.11 `Array` is an opaque C struct; 1.11 has the `arraylen` bug), so the legacy path uses a 4-way set-associative cache with round-robin eviction:
 
 - Cache hit (≤`CACHE_WAYS` dimension patterns per slot): **0 bytes**
 - Cache miss (>`CACHE_WAYS` patterns): **~80-144 bytes** per `unsafe_wrap` call
 
-See [Configuration](../features/configuration.md) for `CACHE_WAYS` tuning (Julia 1.10 / CUDA only).
+See [Configuration](../features/configuration.md) for `CACHE_WAYS` tuning (≤1.11 / CUDA only).
 
 ### CUDA: N-Way Cache
 
-The CUDA backend still uses the N-way set-associative cache (same as Julia 1.10 legacy), since `CuArray` does not support `setfield!`-based mutation.
+The CUDA backend still uses the N-way set-associative cache (same as the ≤1.11 legacy path), since `CuArray` does not support `setfield!`-based mutation.
 
 ## Array vs View Return Types
 
 Type stability is critical for performance. AdaptiveArrayPools provides two APIs:
 
-| API | 1D Return | N-D Return | Allocation (Julia 1.11+) | Allocation (Julia 1.10 / CUDA) |
+| API | 1D Return | N-D Return | Allocation (Julia 1.12+) | Allocation (≤1.11 / CUDA) |
 |-----|-----------|------------|--------------------------|-------------------------------|
 | `acquire!` | `Vector{T}` | `Array{T,N}` | 0 bytes (setfield! reuse) | 0 bytes (hit) / ~100 bytes (miss) |
 | `acquire_view!` | `SubArray{T,1}` | `ReshapedArray{T,N}` | Always 0 bytes | Always 0 bytes |
@@ -148,7 +148,7 @@ Type stability is critical for performance. AdaptiveArrayPools provides two APIs
 
 ### Why Two APIs?
 
-**`acquire!` (arrays, default)** — Returns concrete `Array{T,N}` types, which is the natural choice for most code. The N-D wrapper caching mechanism (see above) ensures zero allocation on Julia 1.11+ after warmup. Use this unless you have a specific reason to prefer views.
+**`acquire!` (arrays, default)** — Returns concrete `Array{T,N}` types, which is the natural choice for most code. The N-D wrapper caching mechanism (see above) ensures zero allocation on Julia 1.12+ after warmup. Use this unless you have a specific reason to prefer views.
 
 **`acquire_view!` (views)** — Returns `SubArray` / `ReshapedArray` view types. The compiler can eliminate view wrappers entirely through SROA (Scalar Replacement of Aggregates) and escape analysis, achieving true zero allocation on all platforms. Prefer this when view types are acceptable and you want guaranteed zero allocation regardless of Julia version.
 

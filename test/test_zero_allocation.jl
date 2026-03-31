@@ -542,7 +542,7 @@ end # Zero-allocation Patterns
     import AdaptiveArrayPools: _check_pointer_overlap, _lazy_checkpoint!, _lazy_rewind!,
         _validate_pool_return
 
-    # Per-iteration allocation tolerance (bytes). Julia 1.11 _check_wrapper_mutation!
+    # Per-iteration allocation tolerance (bytes). Julia 1.12 _check_wrapper_mutation!
     # ccall through Vector{Any} may allocate ~32 bytes/iter in Pkg.test() context.
     S1_ALLOC_PER_ITER = VERSION >= v"1.12-" ? 0 : 32
     S1_NITERS = 100

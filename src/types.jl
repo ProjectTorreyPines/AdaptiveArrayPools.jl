@@ -91,7 +91,7 @@ Internal structure managing pooled vectors for a specific element type `T`.
 ### Storage
 - `vectors`: Backing `Vector{T}` storage (actual memory allocation)
 
-### N-D Wrapper Cache (Julia 1.11+, setfield!-based reuse)
+### N-D Wrapper Cache (Julia 1.12+, setfield!-based reuse)
 - `arr_wrappers`: `Vector{Union{Nothing, Vector{Any}}}` — indexed by N (dimensionality),
   each entry is a per-slot cached `Array{T,N}` wrapper. Uses `setfield!(wrapper, :size, dims)`
   and `setfield!(wrapper, :ref, parent)` for zero-allocation reuse of unlimited dim patterns.
@@ -209,7 +209,7 @@ This design ensures users always get SIMD-optimized performance.
 
 ## Fields
 - `vectors`: Backing `BitVector` storage
-- `arr_wrappers`: `Vector{Union{Nothing, Vector{Any}}}` — setfield!-based cache (Julia 1.11+)
+- `arr_wrappers`: `Vector{Union{Nothing, Vector{Any}}}` — setfield!-based cache (Julia 1.12+)
 - `n_active`: Count of currently active arrays
 - `_checkpoint_*`: State management stacks (1-based sentinel pattern)
 

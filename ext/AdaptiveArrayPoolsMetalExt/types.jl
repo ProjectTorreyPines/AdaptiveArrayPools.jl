@@ -16,7 +16,7 @@ const METAL_STORAGE = Metal.PrivateStorage
 
 GPU memory pool for element type `T` with Metal storage mode `S`.
 Uses `arr_wrappers`-based MtlArray reuse for zero-allocation acquire
-(same design as CPU TypedPool on Julia 1.11+ and CUDA CuTypedPool).
+(same design as CPU TypedPool on Julia 1.12+ and CUDA CuTypedPool).
 
 ## Fields
 - `vectors`: Backing `MtlArray{T,1,S}` storage (one per slot)

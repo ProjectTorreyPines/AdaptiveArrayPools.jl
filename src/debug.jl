@@ -491,20 +491,21 @@ end
 # Called from _invalidate_released_slots! BEFORE poison/invalidation zeroes everything.
 # Uses @warn (not throw) because throwing during rewind would skip cleanup of other pools.
 
-# No-op fallback for extension types (e.g. CuTypedPool) and legacy (1.10) TypedPool/BitTypedPool
+# No-op fallback for extension types (e.g. CuTypedPool) and legacy (≤1.11) TypedPool/BitTypedPool
 # (legacy structs lack arr_wrappers field — they use N-way nd_arrays cache instead)
 _check_wrapper_mutation!(::AbstractTypedPool, ::Int, ::Int) = nothing
 
 # Function barrier: zero-alloc length check for wrappers stored in Vector{Any}.
 # length() is an intrinsic that works on ::Any without boxing.
-# ASSUMPTION: On Julia 1.11+, length(::Array) computes prod(size(a)) which reflects
+# ASSUMPTION: On Julia 1.12+, length(::Array) computes prod(size(a)) which reflects
 # setfield!(:size, ...) mutations. If a future Julia version caches length separately
 # from :size, the stale-wrapper guard (_wrapper_prod_size(wrapper) == 0) may break.
 @noinline _wrapper_prod_size(wrapper)::Int = length(wrapper)
 
-# Julia 1.11+: TypedPool uses arr_wrappers (1:1 wrappers) and MemoryRef-based Array internals.
-# Must not be defined on 1.10 where TypedPool has no arr_wrappers and Array has no :ref field.
-@static if VERSION >= v"1.11-"
+# Julia 1.12+: TypedPool uses arr_wrappers (1:1 wrappers) and MemoryRef-based Array internals.
+# Must not be defined on 1.11 or earlier where TypedPool has no arr_wrappers field,
+# and Julia 1.11's arraylen uses Memory.length (not prod(size)), breaking setfield!-based reuse.
+@static if VERSION >= v"1.12-"
 
     """
         _check_wrapper_mutation!(tp::TypedPool{T}, new_n, old_n)
@@ -594,4 +595,4 @@ _check_wrapper_mutation!(::AbstractTypedPool, ::Int, ::Int) = nothing
         return nothing
     end
 
-end # @static if VERSION >= v"1.11-"
+end # @static if VERSION >= v"1.12-"

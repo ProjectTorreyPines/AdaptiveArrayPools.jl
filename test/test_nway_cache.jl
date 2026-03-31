@@ -54,7 +54,7 @@ end
     end
 
     @testset "N-D acquire!: 5-way is zero-alloc (setfield! reuse)" begin
-        # On 1.11+, arr_wrappers + setfield! handles unlimited patterns → always 0 alloc
+        # On 1.12+, arr_wrappers + setfield! handles unlimited patterns → always 0 alloc
         pool = AdaptiveArrayPool()
 
         function test_nd_5way!(p)
@@ -78,7 +78,7 @@ end
     end
 
     @testset "N-D acquire!: 10+ patterns per slot is zero-alloc (Array)" begin
-        # Demonstrates removal of CACHE_WAYS limit via setfield! (Julia 1.11+)
+        # Demonstrates removal of CACHE_WAYS limit via setfield! (Julia 1.12+)
         pool = AdaptiveArrayPool()
 
         function test_nd_many_patterns!(p)
@@ -182,7 +182,7 @@ end
 end
 
 # ==============================================================================
-# Vector-Based N-D Wrapper Cache Tests (Julia 1.11+)
+# Vector-Based N-D Wrapper Cache Tests (Julia 1.12+)
 # ==============================================================================
 # These tests verify the Dict→Vector migration for arr_wrappers.
 

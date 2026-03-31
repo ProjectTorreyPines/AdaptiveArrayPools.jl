@@ -36,7 +36,7 @@ Default element type is `Float64` (CPU) or `Float32` (CUDA).
 | `trues!(pool, dims...)` | Bit-packed `BitVector` / `BitArray{N}` filled with `true`. |
 | `falses!(pool, dims...)` | Bit-packed `BitVector` / `BitArray{N}` filled with `false`. |
 | `similar!(pool, A)` | Array matching `eltype(A)` and `size(A)`. |
-| `reshape!(pool, A, dims...)` | Reshape `A` to `dims`, sharing memory. Zero-alloc on Julia 1.11+. |
+| `reshape!(pool, A, dims...)` | Reshape `A` to `dims`, sharing memory. Zero-alloc on Julia 1.12+. |
 
 ### Types
 
@@ -53,7 +53,7 @@ Default element type is `Float64` (CPU) or `Float32` (CUDA).
 | `STATIC_POOLING` | Compile-time constant to disable all pooling. (alias: `USE_POOLING`) |
 | `MAYBE_POOLING` | Runtime `Ref{Bool}` for `@maybe_with_pool`. (alias: `MAYBE_POOLING_ENABLED`) |
 | `RUNTIME_CHECK` | Compile-time `Int` constant (0=off, 1=on). Set via `runtime_check` preference. Restart required. |
-| `set_cache_ways!(n)` | Set N-way cache size (Julia 1.10 / CUDA only; no effect on Julia 1.11+ CPU). |
+| `set_cache_ways!(n)` | Set N-way cache size (≤1.11 / CUDA only; no effect on Julia 1.12+ CPU). |
 
 ---
 

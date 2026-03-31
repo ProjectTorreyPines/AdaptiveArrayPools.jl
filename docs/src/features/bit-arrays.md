@@ -79,14 +79,14 @@ Operations like `count()`, `sum()`, and bitwise broadcasting are **10x~100x fast
 
 ### N-D Caching & Zero Allocation
 
-The pool reuses `BitArray{N}` wrapper instances via `setfield!`-based in-place mutation (Julia 1.11+) or N-way cache (Julia 1.10 / CUDA):
+The pool reuses `BitArray{N}` wrapper instances via `setfield!`-based in-place mutation (Julia 1.12+) or N-way cache (≤1.11 / CUDA):
 
-| Scenario | Julia 1.11+ | Julia 1.10 / CUDA |
+| Scenario | Julia 1.12+ | ≤1.11 / CUDA |
 |----------|-------------|-------------------|
 | First call with new (slot, N) | ~944 bytes (new `BitArray{N}`) | ~944 bytes |
 | Subsequent call, any dims | **0 bytes** (setfield! reuse) | **0 bytes** (same ndims) / ~944 bytes (different ndims) |
 
-On Julia 1.11+, `BitArray` fields (`len`, `dims`, `chunks`) are mutated in-place via `setfield!`, achieving **zero allocation** on all repeated calls regardless of dimension pattern.
+On Julia 1.12+, `BitArray` fields (`len`, `dims`, `chunks`) are mutated in-place via `setfield!`, achieving **zero allocation** on all repeated calls regardless of dimension pattern.
 
 ```julia
 @with_pool pool begin

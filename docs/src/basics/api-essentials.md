@@ -69,7 +69,7 @@ Reshape an existing array using the pool's wrapper cache. The result shares memo
 end
 ```
 
-On Julia 1.11+, cross-dimensional reshapes are **zero-allocation** after warmup via `setfield!`-based wrapper reuse. On Julia 1.10, falls back to `Base.reshape`.
+On Julia 1.12+, cross-dimensional reshapes are **zero-allocation** after warmup via `setfield!`-based wrapper reuse. On Julia ≤1.11, falls back to `Base.reshape`.
 
 !!! warning "DimensionMismatch"
     `prod(dims)` must equal `length(A)`, otherwise a `DimensionMismatch` is thrown.
@@ -130,7 +130,7 @@ end
 | `zeros!(pool, [T,] dims...)` | `Array{T,N}` | 0 bytes | Zero-initialized |
 | `ones!(pool, [T,] dims...)` | `Array{T,N}` | 0 bytes | One-initialized |
 | `similar!(pool, A)` | `Array{T,N}` | 0 bytes | Match existing array |
-| `reshape!(pool, A, dims...)` | Reshaped array | 0 bytes (1.11+) | Reshape sharing memory |
+| `reshape!(pool, A, dims...)` | Reshaped array | 0 bytes (1.12+) | Reshape sharing memory |
 | `reset!(pool)` | `nothing` | - | Release all memory |
 | `pooling_enabled(pool)` | `Bool` | - | Check pool status |
 
