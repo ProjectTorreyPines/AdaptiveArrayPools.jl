@@ -80,7 +80,7 @@ Detects structural mutations that escaped compile-time analysis by comparing wra
 
 | Backend | Detection Method |
 |---------|-----------------|
-| CPU (1.11+) | `MemoryRef` identity + length divergence |
+| CPU (1.12+) | `MemoryRef` identity + length divergence |
 | CUDA | `DataRef` identity + length divergence |
 | Metal | `DataRef` identity + length divergence |
 

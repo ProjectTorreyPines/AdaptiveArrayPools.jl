@@ -87,12 +87,12 @@ MAYBE_POOLING[] = false  # Disable
 MAYBE_POOLING[] = true   # Enable (default)
 ```
 
-## Compile-time: CACHE_WAYS (Julia 1.10 / CUDA only)
+## Compile-time: CACHE_WAYS (≤1.11 / CUDA only)
 
-Configure the N-way cache size for `acquire!`. **On Julia 1.11+ CPU, this setting has no effect** — the `setfield!`-based wrapper reuse supports unlimited dimension patterns with zero allocation.
+Configure the N-way cache size for `acquire!`. **On Julia 1.12+ CPU, this setting has no effect** — the `setfield!`-based wrapper reuse supports unlimited dimension patterns with zero allocation.
 
 This setting is relevant for:
-- **Julia 1.10** (legacy N-way cache path)
+- **Julia ≤1.11** (legacy N-way cache path)
 - **CUDA backend** (N-way cache for `CuArray` wrappers)
 
 ```toml
@@ -109,7 +109,7 @@ set_cache_ways!(8)
 # Restart Julia for changes to take effect
 ```
 
-**When to increase**: If your CUDA code or Julia 1.10 code alternates between more than 4 dimension patterns per `acquire!` call, increase `cache_ways` to avoid cache eviction (~100 bytes header per miss).
+**When to increase**: If your CUDA code or Julia ≤1.11 code alternates between more than 4 dimension patterns per `acquire!` call, increase `cache_ways` to avoid cache eviction (~100 bytes header per miss).
 
 ## Summary
 
@@ -117,5 +117,5 @@ set_cache_ways!(8)
 |---------|-------|----------|----------|---------|
 | `use_pooling` | Compile-time | Yes | ⭐ Primary | All macros, `acquire!` behavior |
 | `runtime_check` | Compile-time | Yes | Safety | Poisoning, invalidation, escape detection |
-| `cache_ways` | Compile-time | Yes | Advanced | `acquire!` N-D caching (Julia 1.10 / CUDA only) |
+| `cache_ways` | Compile-time | Yes | Advanced | `acquire!` N-D caching (≤1.11 / CUDA only) |
 | `MAYBE_POOLING` | Runtime | No | Optional | `@maybe_with_pool` only |

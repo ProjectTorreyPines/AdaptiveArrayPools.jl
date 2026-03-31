@@ -72,7 +72,7 @@ Other types use the fallback dictionary (`.others`).
 
 ## Limitations
 
-- **Julia 1.11+**: Required for `setfield!`-based Array internals used by GPU extensions
+- **Julia 1.12+**: Required for `setfield!`-based Array internals used by GPU extensions
 - **No `@maybe_with_pool :cuda`**: Runtime toggle not supported for CUDA backend
 - **Task-local only**: Each Task gets its own CUDA pool, same as CPU
 - **Same device**: All arrays in a pool use the same CUDA device
