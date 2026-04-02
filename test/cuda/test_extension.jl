@@ -92,6 +92,21 @@ end
 end
 
 @testset "Task-Local Pool" begin
+    @testset "get_task_local_cuda_pool type stability" begin
+        # Fast path: pool already exists in task-local storage
+        pool = @inferred get_task_local_cuda_pool()
+        @test pool isa CuAdaptiveArrayPool{RUNTIME_CHECK}
+
+        # Slow path: fresh task creates a new pool
+        result = fetch(
+            Threads.@spawn begin
+                p = @inferred get_task_local_cuda_pool()
+                p isa CuAdaptiveArrayPool{RUNTIME_CHECK}
+            end
+        )
+        @test result == true
+    end
+
     @testset "get_task_local_cuda_pool" begin
         pool1 = get_task_local_cuda_pool()
         @test pool1 isa CuAdaptiveArrayPool
@@ -103,7 +118,7 @@ end
 
     @testset "get_task_local_cuda_pools" begin
         pools_dict = get_task_local_cuda_pools()
-        @test pools_dict isa Dict{Int, CuAdaptiveArrayPool}
+        @test pools_dict isa Dict{Int, CuAdaptiveArrayPool{RUNTIME_CHECK}}
         pool = get_task_local_cuda_pool()
         @test haskey(pools_dict, pool.device_id)
     end
@@ -114,7 +129,7 @@ end
             Threads.@spawn begin
                 # Call get_task_local_cuda_pools() FIRST (before get_task_local_cuda_pool)
                 pools = get_task_local_cuda_pools()
-                @test pools isa Dict{Int, CuAdaptiveArrayPool}
+                @test pools isa Dict{Int, CuAdaptiveArrayPool{RUNTIME_CHECK}}
                 @test isempty(pools)  # No pools created yet
                 true
             end

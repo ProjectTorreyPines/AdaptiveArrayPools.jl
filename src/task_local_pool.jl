@@ -75,7 +75,7 @@ const MAYBE_POOLING_ENABLED = MAYBE_POOLING
 const _POOL_KEY = :ADAPTIVE_ARRAY_POOL
 
 """
-    get_task_local_pool() -> AdaptiveArrayPool
+    get_task_local_pool() -> AdaptiveArrayPool{RUNTIME_CHECK}
 
 Retrieves (or creates) the `AdaptiveArrayPool` for the current Task.
 
@@ -98,7 +98,7 @@ type-asserts directly to `AdaptiveArrayPool{RUNTIME_CHECK}`.
         task_local_storage(_POOL_KEY, pool)
     end
 
-    return pool::AdaptiveArrayPool
+    return pool::AdaptiveArrayPool{RUNTIME_CHECK}
 end
 
 # ==============================================================================

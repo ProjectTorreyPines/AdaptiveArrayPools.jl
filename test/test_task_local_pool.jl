@@ -2,6 +2,21 @@
 
     _test_accumulator = Ref(0.0)
 
+    @testset "get_task_local_pool type stability" begin
+        # Fast path: pool already exists in task-local storage
+        pool = @inferred get_task_local_pool()
+        @test pool isa AdaptiveArrayPool{RUNTIME_CHECK}
+
+        # Slow path: fresh task creates a new pool
+        result = fetch(
+            Threads.@spawn begin
+                p = @inferred get_task_local_pool()
+                p isa AdaptiveArrayPool{RUNTIME_CHECK}
+            end
+        )
+        @test result == true
+    end
+
     @testset "@with_pool" begin
         # Define a function that takes pool as argument
         function global_test(n, pool)

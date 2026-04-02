@@ -18,14 +18,13 @@ a dictionary of pools (one per device) in task-local storage, ensuring that:
 - Switching devices (`CUDA.device!(n)`) gets the correct pool
 
 ## Implementation
-Uses `Dict{Int, CuAdaptiveArrayPool}` in task-local storage, keyed by device ID.
-Values are `CuAdaptiveArrayPool{S}` where S is determined by `RUNTIME_CHECK`.
+Uses `Dict{Int, CuAdaptiveArrayPool{RUNTIME_CHECK}}` in task-local storage, keyed by device ID.
 """
 @inline function AdaptiveArrayPools.get_task_local_cuda_pool()
     # 1. Get or create the pools dictionary
     pools = get(task_local_storage(), _CU_POOL_KEY, nothing)
     if pools === nothing
-        pools = Dict{Int, CuAdaptiveArrayPool}()
+        pools = Dict{Int, CuAdaptiveArrayPool{RUNTIME_CHECK}}()
         task_local_storage(_CU_POOL_KEY, pools)
     end
 
@@ -39,11 +38,11 @@ Values are `CuAdaptiveArrayPool{S}` where S is determined by `RUNTIME_CHECK`.
         pools[dev_id] = pool
     end
 
-    return pool::CuAdaptiveArrayPool
+    return pool::CuAdaptiveArrayPool{RUNTIME_CHECK}
 end
 
 """
-    get_task_local_cuda_pools() -> Dict{Int, CuAdaptiveArrayPool}
+    get_task_local_cuda_pools() -> Dict{Int, CuAdaptiveArrayPool{RUNTIME_CHECK}}
 
 Returns the dictionary of all CUDA pools for the current task (one per device).
 Useful for diagnostics or bulk operations across all devices.
@@ -51,7 +50,7 @@ Useful for diagnostics or bulk operations across all devices.
 @inline function AdaptiveArrayPools.get_task_local_cuda_pools()
     pools = get(task_local_storage(), _CU_POOL_KEY, nothing)
     if pools === nothing
-        pools = Dict{Int, CuAdaptiveArrayPool}()
+        pools = Dict{Int, CuAdaptiveArrayPool{RUNTIME_CHECK}}()
         task_local_storage(_CU_POOL_KEY, pools)
     end
     return pools

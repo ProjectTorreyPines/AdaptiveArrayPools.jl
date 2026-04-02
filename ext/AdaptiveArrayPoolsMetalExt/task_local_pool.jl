@@ -18,14 +18,13 @@ a dictionary of pools (one per device) in task-local storage, ensuring that:
 - Switching devices gets the correct pool
 
 ## Implementation
-Uses `Dict{UInt64, MetalAdaptiveArrayPool}` in task-local storage, keyed by device hash.
-Values are `MetalAdaptiveArrayPool{R,S}` where R is determined by `RUNTIME_CHECK`.
+Uses `Dict{UInt64, MetalAdaptiveArrayPool{RUNTIME_CHECK, METAL_STORAGE}}` in task-local storage, keyed by device hash.
 """
 @inline function AdaptiveArrayPools.get_task_local_metal_pool()
     # 1. Get or create the pools dictionary
     pools = get(task_local_storage(), _METAL_POOL_KEY, nothing)
     if pools === nothing
-        pools = Dict{UInt64, MetalAdaptiveArrayPool}()
+        pools = Dict{UInt64, MetalAdaptiveArrayPool{RUNTIME_CHECK, METAL_STORAGE}}()
         task_local_storage(_METAL_POOL_KEY, pools)
     end
 
@@ -40,11 +39,11 @@ Values are `MetalAdaptiveArrayPool{R,S}` where R is determined by `RUNTIME_CHECK
         pools[dev_key] = pool
     end
 
-    return pool::MetalAdaptiveArrayPool
+    return pool::MetalAdaptiveArrayPool{RUNTIME_CHECK, METAL_STORAGE}
 end
 
 """
-    get_task_local_metal_pools() -> Dict{UInt64, MetalAdaptiveArrayPool}
+    get_task_local_metal_pools() -> Dict{UInt64, MetalAdaptiveArrayPool{RUNTIME_CHECK, METAL_STORAGE}}
 
 Returns the dictionary of all Metal pools for the current task (one per device).
 Useful for diagnostics or bulk operations across all devices.
@@ -52,7 +51,7 @@ Useful for diagnostics or bulk operations across all devices.
 @inline function AdaptiveArrayPools.get_task_local_metal_pools()
     pools = get(task_local_storage(), _METAL_POOL_KEY, nothing)
     if pools === nothing
-        pools = Dict{UInt64, MetalAdaptiveArrayPool}()
+        pools = Dict{UInt64, MetalAdaptiveArrayPool{RUNTIME_CHECK, METAL_STORAGE}}()
         task_local_storage(_METAL_POOL_KEY, pools)
     end
     return pools
