@@ -25,7 +25,7 @@ Values are `CuAdaptiveArrayPool{S}` where S is determined by `RUNTIME_CHECK`.
     # 1. Get or create the pools dictionary
     pools = get(task_local_storage(), _CU_POOL_KEY, nothing)
     if pools === nothing
-        pools = Dict{Int, CuAdaptiveArrayPool}()
+        pools = Dict{Int, CuAdaptiveArrayPool{RUNTIME_CHECK}}()
         task_local_storage(_CU_POOL_KEY, pools)
     end
 
@@ -39,7 +39,7 @@ Values are `CuAdaptiveArrayPool{S}` where S is determined by `RUNTIME_CHECK`.
         pools[dev_id] = pool
     end
 
-    return pool::CuAdaptiveArrayPool
+    return pool::CuAdaptiveArrayPool{RUNTIME_CHECK}
 end
 
 """
@@ -51,7 +51,7 @@ Useful for diagnostics or bulk operations across all devices.
 @inline function AdaptiveArrayPools.get_task_local_cuda_pools()
     pools = get(task_local_storage(), _CU_POOL_KEY, nothing)
     if pools === nothing
-        pools = Dict{Int, CuAdaptiveArrayPool}()
+        pools = Dict{Int, CuAdaptiveArrayPool{RUNTIME_CHECK}}()
         task_local_storage(_CU_POOL_KEY, pools)
     end
     return pools

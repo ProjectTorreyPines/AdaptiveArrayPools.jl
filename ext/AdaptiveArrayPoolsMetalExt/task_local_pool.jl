@@ -25,7 +25,7 @@ Values are `MetalAdaptiveArrayPool{R,S}` where R is determined by `RUNTIME_CHECK
     # 1. Get or create the pools dictionary
     pools = get(task_local_storage(), _METAL_POOL_KEY, nothing)
     if pools === nothing
-        pools = Dict{UInt64, MetalAdaptiveArrayPool}()
+        pools = Dict{UInt64, MetalAdaptiveArrayPool{RUNTIME_CHECK, METAL_STORAGE}}()
         task_local_storage(_METAL_POOL_KEY, pools)
     end
 
@@ -40,7 +40,7 @@ Values are `MetalAdaptiveArrayPool{R,S}` where R is determined by `RUNTIME_CHECK
         pools[dev_key] = pool
     end
 
-    return pool::MetalAdaptiveArrayPool
+    return pool::MetalAdaptiveArrayPool{RUNTIME_CHECK, METAL_STORAGE}
 end
 
 """
@@ -52,7 +52,7 @@ Useful for diagnostics or bulk operations across all devices.
 @inline function AdaptiveArrayPools.get_task_local_metal_pools()
     pools = get(task_local_storage(), _METAL_POOL_KEY, nothing)
     if pools === nothing
-        pools = Dict{UInt64, MetalAdaptiveArrayPool}()
+        pools = Dict{UInt64, MetalAdaptiveArrayPool{RUNTIME_CHECK, METAL_STORAGE}}()
         task_local_storage(_METAL_POOL_KEY, pools)
     end
     return pools

@@ -98,7 +98,7 @@ type-asserts directly to `AdaptiveArrayPool{RUNTIME_CHECK}`.
         task_local_storage(_POOL_KEY, pool)
     end
 
-    return pool::AdaptiveArrayPool
+    return pool::AdaptiveArrayPool{RUNTIME_CHECK}
 end
 
 # ==============================================================================

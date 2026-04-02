@@ -37,6 +37,7 @@ else
         const MetalTypedPool = ext.MetalTypedPool
         const MetalAdaptiveArrayPool = ext.MetalAdaptiveArrayPool
         const METAL_FIXED_SLOT_FIELDS = ext.METAL_FIXED_SLOT_FIELDS
+        const METAL_STORAGE = ext.METAL_STORAGE
 
         # Include all Metal test files
         include("test_extension.jl")

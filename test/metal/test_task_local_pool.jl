@@ -2,6 +2,21 @@
 
 @testset "Metal Task-Local Pool" begin
 
+    @testset "get_task_local_metal_pool type stability" begin
+        # Fast path: pool already exists
+        pool = @inferred get_task_local_metal_pool()
+        @test pool isa MetalAdaptiveArrayPool{RUNTIME_CHECK, METAL_STORAGE}
+
+        # Slow path: fresh task
+        result = fetch(
+            Threads.@spawn begin
+                p = @inferred get_task_local_metal_pool()
+                p isa MetalAdaptiveArrayPool{RUNTIME_CHECK, METAL_STORAGE}
+            end
+        )
+        @test result == true
+    end
+
     @testset "get_task_local_metal_pool" begin
         pool1 = get_task_local_metal_pool()
         @test pool1 isa MetalAdaptiveArrayPool
@@ -13,7 +28,7 @@
 
     @testset "get_task_local_metal_pools" begin
         pools_dict = get_task_local_metal_pools()
-        @test pools_dict isa Dict{UInt64, MetalAdaptiveArrayPool}
+        @test pools_dict isa Dict{UInt64, MetalAdaptiveArrayPool{RUNTIME_CHECK, METAL_STORAGE}}
         pool = get_task_local_metal_pool()
         dev_key = objectid(Metal.device())
         @test haskey(pools_dict, dev_key)
@@ -23,7 +38,7 @@
         result = fetch(
             Threads.@spawn begin
                 pools = get_task_local_metal_pools()
-                @test pools isa Dict{UInt64, MetalAdaptiveArrayPool}
+                @test pools isa Dict{UInt64, MetalAdaptiveArrayPool{RUNTIME_CHECK, METAL_STORAGE}}
                 @test isempty(pools)
                 true
             end
