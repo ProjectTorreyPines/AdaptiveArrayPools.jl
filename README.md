@@ -45,14 +45,13 @@ The traditional fix—passing pre-allocated buffers—works for simple cases but
 Wrap your function with `@with_pool` and replace allocations with `acquire!` or convenience functions:
 
 ```julia
-using AdaptiveArrayPools, LinearAlgebra, Random
+using AdaptiveArrayPools, LinearAlgebra
 
 @with_pool pool function compute_pooled(n)
-    A = acquire!(pool, Float64, n, n)  # reuses memory from pool
-    B = similar!(pool, A)
-    C = similar!(pool, A)
+    A = rand!(pool, n, n)  # random array from the pool (no allocation)
+    B = rand!(pool, n, n)
+    C = similar!(pool, A)  # working buffer
 
-    rand!(A); rand!(B)
     mul!(C, A, B)
     return sum(C)
 end
