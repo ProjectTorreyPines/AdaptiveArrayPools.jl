@@ -76,3 +76,36 @@ AdaptiveArrayPools.default_eltype(::DisabledPool{:metal}) = Float32
 @inline AdaptiveArrayPools.acquire_view!(::DisabledPool{:metal}, ::Type{T}, dims::NTuple{N, Int}) where {T, N} = MtlArray{T, N}(undef, dims)
 @inline AdaptiveArrayPools.acquire_view!(::DisabledPool{:metal}, x::MtlArray) = Metal.similar(x)
 @inline AdaptiveArrayPools.acquire_view!(::DisabledPool{:metal}, x::AbstractArray) = MtlArray{eltype(x)}(undef, size(x))
+
+# ==============================================================================
+# rand! / randn! (Metal)
+# ==============================================================================
+# Live pool: the core `_rand_impl!`/`_randn_impl!` are inherited unchanged — they
+# call `Random.rand!`/`randn!` on the acquired MtlArray, which Metal.jl runs on the
+# GPU. Only the DisabledPool fallbacks and the collection-form rejection are needed.
+
+# --- rand!/randn! for DisabledPool{:metal} (GPU-native Metal RNG) ---
+@inline AdaptiveArrayPools.rand!(::DisabledPool{:metal}, ::Type{T}, dims::Vararg{Int, N}) where {T, N} = Metal.rand(T, dims...)
+@inline AdaptiveArrayPools.rand!(p::DisabledPool{:metal}, dims::Vararg{Int, N}) where {N} = Metal.rand(AdaptiveArrayPools.default_eltype(p), dims...)
+@inline AdaptiveArrayPools.rand!(::DisabledPool{:metal}, ::Type{T}, dims::NTuple{N, Int}) where {T, N} = Metal.rand(T, dims...)
+@inline AdaptiveArrayPools.rand!(p::DisabledPool{:metal}, dims::NTuple{N, Int}) where {N} = Metal.rand(AdaptiveArrayPools.default_eltype(p), dims...)
+
+@inline AdaptiveArrayPools.randn!(::DisabledPool{:metal}, ::Type{T}, dims::Vararg{Int, N}) where {T, N} = Metal.randn(T, dims...)
+@inline AdaptiveArrayPools.randn!(p::DisabledPool{:metal}, dims::Vararg{Int, N}) where {N} = Metal.randn(AdaptiveArrayPools.default_eltype(p), dims...)
+@inline AdaptiveArrayPools.randn!(::DisabledPool{:metal}, ::Type{T}, dims::NTuple{N, Int}) where {T, N} = Metal.randn(T, dims...)
+@inline AdaptiveArrayPools.randn!(p::DisabledPool{:metal}, dims::NTuple{N, Int}) where {N} = Metal.randn(AdaptiveArrayPools.default_eltype(p), dims...)
+
+# --- Collection/range sampling is CPU-only ---
+# GPU RNGs have no efficient arbitrary-collection sampler; `Random.rand!(gpuarray, S)`
+# scalar-indexes the device array (disallowed). Reject with a clear error for both the
+# live and disabled Metal pools. Overriding `_rand_impl!` covers both the @with_pool
+# macro path AND the direct public path (core `rand!(pool, S, …)` delegates to it).
+@noinline _metal_no_collection() = throw(
+    ArgumentError(
+        "rand!(pool, collection/range, dims) is CPU-only: Metal GPU pools have no " *
+            "arbitrary-collection sampler. Use rand!(pool, T, dims) for uniform GPU randoms."
+    )
+)
+const _MetalAnyPool = Union{MetalAdaptiveArrayPool, DisabledPool{:metal}}
+@inline AdaptiveArrayPools._rand_impl!(::_MetalAnyPool, ::AdaptiveArrayPools._SampleColl, ::Int, ::Vararg{Int, N}) where {N} = _metal_no_collection()
+@inline AdaptiveArrayPools._rand_impl!(::_MetalAnyPool, ::AdaptiveArrayPools._SampleColl, ::NTuple{N, Int}) where {N} = _metal_no_collection()

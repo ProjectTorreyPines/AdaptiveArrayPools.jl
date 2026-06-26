@@ -83,11 +83,12 @@ end
 
     @testset "Checkpoint auto-init for dynamic types" begin
         pool = CuAdaptiveArrayPool()
-        pool._current_depth = 2  # Simulate inside @with_pool scope
+        checkpoint!(pool)  # Properly enter depth 2 (also grows _touched_has_others)
 
         tp = get_typed_pool!(pool, UInt16)
         @test tp._checkpoint_n_active == [0, 0]
         @test tp._checkpoint_depths == [0, 2]
+        @test pool._touched_has_others == [false, true]   # depth-2 marked as "has dynamic types"
     end
 end
 

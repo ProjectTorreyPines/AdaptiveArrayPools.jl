@@ -255,6 +255,151 @@ end
 @inline _falses_impl!(pool::AbstractArrayPool, dims::NTuple{N, Int}) where {N} = _falses_impl!(pool, dims...)
 
 # ==============================================================================
+# rand! / randn! - Acquire random-initialized arrays from pool
+# ==============================================================================
+# These extend `Random.rand!` / `Random.randn!` with pool-constructor methods.
+# They are NOT type piracy: the pool type (`AbstractArrayPool`) is ours, and the
+# signatures are disjoint from Random's (which dispatch on `AbstractArray` first).
+#
+# Because `_acquire_impl!` returns a genuine `Array{T,N}` (not a view), filling it
+# with `Random.rand!(arr)` consumes the RNG stream identically to `rand(T, dims)`
+# — so seeding identically reproduces the same sequence.
+
+# Sampleable collection types for the `rand!(pool, S, dims...)` form. Disjoint
+# from `Int`/`Type` so it never collides with the dims/typed forms. The trailing
+# `d1::Int` (≥1 explicit dim) in the vararg method also prevents a bare Int-tuple
+# (used as dims, e.g. `rand!(pool, (8,9))`) from being mistaken for a collection.
+const _SampleColl = Union{AbstractArray, Tuple, AbstractSet, AbstractDict, AbstractString}
+
+"""
+    rand!(pool, dims...) -> Array
+    rand!(pool, T, dims...) -> Array
+    rand!(pool, S, dims...) -> Array
+    rand!(pool, dims::Tuple) / rand!(pool, T, dims::Tuple) / rand!(pool, S, dims::Tuple)
+
+Acquire a uniform random array from the pool.
+
+- `rand!(pool, [T,] dims...)`: floats are `U[0,1)`, integers full-range.
+  Default element type depends on backend (CPU: `Float64`, CUDA: `Float32`).
+- `rand!(pool, S, dims...)`: sample from a collection/range `S`
+  (e.g. `rand!(pool, 1:6, 10)` for dice). Element type is `eltype(S)`.
+
+Consumes the global RNG identically to `Random.rand!`, so seeding reproduces
+the same sequence. Use `Random.seed!` / pass values through `Random` for control.
+
+## Example
+```julia
+@with_pool pool begin
+    v = rand!(pool, 100)              # Vector{Float64}, U[0,1)
+    m = rand!(pool, Float32, 8, 8)    # Matrix{Float32}
+    d = rand!(pool, 1:6, 10)          # Vector{Int}, each ∈ 1:6
+end
+```
+
+See also: [`randn!`](@ref), [`zeros!`](@ref), [`acquire!`](@ref)
+"""
+@inline function rand!(pool::AbstractArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
+    _record_type_touch!(pool, T)
+    _set_pending_callsite!(pool, "<direct rand! call>")
+    return _rand_impl!(pool, T, dims...)
+end
+@inline function rand!(pool::AbstractArrayPool, dims::Vararg{Int, N}) where {N}
+    _record_type_touch!(pool, default_eltype(pool))
+    _set_pending_callsite!(pool, "<direct rand! call>")
+    return _rand_impl!(pool, default_eltype(pool), dims...)
+end
+@inline function rand!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
+    _record_type_touch!(pool, T)
+    _set_pending_callsite!(pool, "<direct rand! call>")
+    return _rand_impl!(pool, T, dims...)
+end
+@inline function rand!(pool::AbstractArrayPool, dims::NTuple{N, Int}) where {N}
+    _record_type_touch!(pool, default_eltype(pool))
+    _set_pending_callsite!(pool, "<direct rand! call>")
+    return _rand_impl!(pool, default_eltype(pool), dims...)
+end
+# Collection/range form: type touch is recorded inside `_rand_impl!` (the macro
+# cannot pre-register `eltype(S)`, so the impl is self-sufficient — see below).
+@inline function rand!(pool::AbstractArrayPool, S::_SampleColl, d1::Int, dims::Vararg{Int, N}) where {N}
+    _set_pending_callsite!(pool, "<direct rand! call>")
+    return _rand_impl!(pool, S, d1, dims...)
+end
+@inline function rand!(pool::AbstractArrayPool, S::_SampleColl, dims::NTuple{N, Int}) where {N}
+    _set_pending_callsite!(pool, "<direct rand! call>")
+    return _rand_impl!(pool, S, dims)
+end
+
+# Internal implementations (called directly by macro-transformed code).
+@inline function _rand_impl!(pool::AbstractArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
+    arr = _acquire_impl!(pool, T, dims...)
+    Random.rand!(arr)
+    return arr
+end
+@inline _rand_impl!(pool::AbstractArrayPool, dims::Vararg{Int, N}) where {N} = _rand_impl!(pool, default_eltype(pool), dims...)
+@inline _rand_impl!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N} = _rand_impl!(pool, T, dims...)
+@inline _rand_impl!(pool::AbstractArrayPool, dims::NTuple{N, Int}) where {N} = _rand_impl!(pool, default_eltype(pool), dims...)
+# Collection form self-records its eltype touch: the macro registers the wrong
+# (default) type for `rand!(pool, S, dims)` because `S` is not a syntactic type,
+# so this impl records `eltype(S)` itself to keep checkpoint/rewind correct.
+@inline function _rand_impl!(pool::AbstractArrayPool, S::_SampleColl, d1::Int, dims::Vararg{Int, N}) where {N}
+    T = eltype(S)
+    _record_type_touch!(pool, T)
+    arr = _acquire_impl!(pool, T, d1, dims...)
+    Random.rand!(arr, S)
+    return arr
+end
+@inline _rand_impl!(pool::AbstractArrayPool, S::_SampleColl, dims::NTuple{N, Int}) where {N} = _rand_impl!(pool, S, dims...)
+
+"""
+    randn!(pool, dims...) -> Array
+    randn!(pool, T, dims...) -> Array
+    randn!(pool, dims::Tuple) / randn!(pool, T, dims::Tuple)
+
+Acquire a standard-normal `N(0, 1)` random array from the pool. `T` must be a
+floating-point (or complex) type. Default element type depends on backend
+(CPU: `Float64`). Consumes the global RNG identically to `Random.randn!`.
+
+## Example
+```julia
+@with_pool pool begin
+    g = randn!(pool, 100)              # Vector{Float64}, N(0,1)
+    m = randn!(pool, Float32, 8, 8)    # Matrix{Float32}
+end
+```
+
+See also: [`rand!`](@ref), [`zeros!`](@ref), [`acquire!`](@ref)
+"""
+@inline function randn!(pool::AbstractArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
+    _record_type_touch!(pool, T)
+    _set_pending_callsite!(pool, "<direct randn! call>")
+    return _randn_impl!(pool, T, dims...)
+end
+@inline function randn!(pool::AbstractArrayPool, dims::Vararg{Int, N}) where {N}
+    _record_type_touch!(pool, default_eltype(pool))
+    _set_pending_callsite!(pool, "<direct randn! call>")
+    return _randn_impl!(pool, default_eltype(pool), dims...)
+end
+@inline function randn!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
+    _record_type_touch!(pool, T)
+    _set_pending_callsite!(pool, "<direct randn! call>")
+    return _randn_impl!(pool, T, dims...)
+end
+@inline function randn!(pool::AbstractArrayPool, dims::NTuple{N, Int}) where {N}
+    _record_type_touch!(pool, default_eltype(pool))
+    _set_pending_callsite!(pool, "<direct randn! call>")
+    return _randn_impl!(pool, default_eltype(pool), dims...)
+end
+
+@inline function _randn_impl!(pool::AbstractArrayPool, ::Type{T}, dims::Vararg{Int, N}) where {T, N}
+    arr = _acquire_impl!(pool, T, dims...)
+    Random.randn!(arr)
+    return arr
+end
+@inline _randn_impl!(pool::AbstractArrayPool, dims::Vararg{Int, N}) where {N} = _randn_impl!(pool, default_eltype(pool), dims...)
+@inline _randn_impl!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N} = _randn_impl!(pool, T, dims...)
+@inline _randn_impl!(pool::AbstractArrayPool, dims::NTuple{N, Int}) where {N} = _randn_impl!(pool, default_eltype(pool), dims...)
+
+# ==============================================================================
 # similar! - Acquire arrays with same type/size as template
 # ==============================================================================
 
@@ -458,6 +603,19 @@ end
 @inline trues!(::DisabledPool{:cpu}, dims::NTuple{N, Int}) where {N} = trues(dims...)
 @inline falses!(::DisabledPool{:cpu}, dims::Vararg{Int, N}) where {N} = falses(dims...)
 @inline falses!(::DisabledPool{:cpu}, dims::NTuple{N, Int}) where {N} = falses(dims...)
+
+# --- rand!/randn! for DisabledPool{:cpu} (allocating, plain Array) ---
+@inline rand!(::DisabledPool{:cpu}, ::Type{T}, dims::Vararg{Int, N}) where {T, N} = rand(T, dims...)
+@inline rand!(p::DisabledPool{:cpu}, dims::Vararg{Int, N}) where {N} = rand(default_eltype(p), dims...)
+@inline rand!(::DisabledPool{:cpu}, ::Type{T}, dims::NTuple{N, Int}) where {T, N} = rand(T, dims...)
+@inline rand!(p::DisabledPool{:cpu}, dims::NTuple{N, Int}) where {N} = rand(default_eltype(p), dims...)
+@inline rand!(::DisabledPool{:cpu}, S::_SampleColl, d1::Int, dims::Vararg{Int, N}) where {N} = rand(S, d1, dims...)
+@inline rand!(::DisabledPool{:cpu}, S::_SampleColl, dims::NTuple{N, Int}) where {N} = rand(S, dims)
+
+@inline randn!(::DisabledPool{:cpu}, ::Type{T}, dims::Vararg{Int, N}) where {T, N} = Random.randn(T, dims...)
+@inline randn!(p::DisabledPool{:cpu}, dims::Vararg{Int, N}) where {N} = Random.randn(default_eltype(p), dims...)
+@inline randn!(::DisabledPool{:cpu}, ::Type{T}, dims::NTuple{N, Int}) where {T, N} = Random.randn(T, dims...)
+@inline randn!(p::DisabledPool{:cpu}, dims::NTuple{N, Int}) where {N} = Random.randn(default_eltype(p), dims...)
 
 # --- similar! for DisabledPool{:cpu} ---
 @inline similar!(::DisabledPool{:cpu}, x::AbstractArray) = similar(x)

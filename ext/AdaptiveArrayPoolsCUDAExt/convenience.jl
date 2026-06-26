@@ -76,3 +76,36 @@ AdaptiveArrayPools.default_eltype(::DisabledPool{:cuda}) = Float32
 @inline AdaptiveArrayPools.acquire_view!(::DisabledPool{:cuda}, ::Type{T}, dims::NTuple{N, Int}) where {T, N} = CuArray{T, N}(undef, dims)
 @inline AdaptiveArrayPools.acquire_view!(::DisabledPool{:cuda}, x::CuArray) = CUDA.similar(x)
 @inline AdaptiveArrayPools.acquire_view!(::DisabledPool{:cuda}, x::AbstractArray) = CuArray{eltype(x)}(undef, size(x))
+
+# ==============================================================================
+# rand! / randn! (CUDA)
+# ==============================================================================
+# Live pool: the core `_rand_impl!`/`_randn_impl!` are inherited unchanged — they
+# call `Random.rand!`/`randn!` on the acquired CuArray, which CUDA.jl runs on the
+# GPU. Only the DisabledPool fallbacks and the collection-form rejection are needed.
+
+# --- rand!/randn! for DisabledPool{:cuda} (GPU-native CUDA RNG) ---
+@inline AdaptiveArrayPools.rand!(::DisabledPool{:cuda}, ::Type{T}, dims::Vararg{Int, N}) where {T, N} = CUDA.rand(T, dims...)
+@inline AdaptiveArrayPools.rand!(p::DisabledPool{:cuda}, dims::Vararg{Int, N}) where {N} = CUDA.rand(AdaptiveArrayPools.default_eltype(p), dims...)
+@inline AdaptiveArrayPools.rand!(::DisabledPool{:cuda}, ::Type{T}, dims::NTuple{N, Int}) where {T, N} = CUDA.rand(T, dims...)
+@inline AdaptiveArrayPools.rand!(p::DisabledPool{:cuda}, dims::NTuple{N, Int}) where {N} = CUDA.rand(AdaptiveArrayPools.default_eltype(p), dims...)
+
+@inline AdaptiveArrayPools.randn!(::DisabledPool{:cuda}, ::Type{T}, dims::Vararg{Int, N}) where {T, N} = CUDA.randn(T, dims...)
+@inline AdaptiveArrayPools.randn!(p::DisabledPool{:cuda}, dims::Vararg{Int, N}) where {N} = CUDA.randn(AdaptiveArrayPools.default_eltype(p), dims...)
+@inline AdaptiveArrayPools.randn!(::DisabledPool{:cuda}, ::Type{T}, dims::NTuple{N, Int}) where {T, N} = CUDA.randn(T, dims...)
+@inline AdaptiveArrayPools.randn!(p::DisabledPool{:cuda}, dims::NTuple{N, Int}) where {N} = CUDA.randn(AdaptiveArrayPools.default_eltype(p), dims...)
+
+# --- Collection/range sampling is CPU-only ---
+# GPU RNGs have no efficient arbitrary-collection sampler; `Random.rand!(gpuarray, S)`
+# scalar-indexes the device array (disallowed). Reject with a clear error for both the
+# live and disabled CUDA pools. Overriding `_rand_impl!` covers both the @with_pool
+# macro path AND the direct public path (core `rand!(pool, S, …)` delegates to it).
+@noinline _cuda_no_collection() = throw(
+    ArgumentError(
+        "rand!(pool, collection/range, dims) is CPU-only: CUDA GPU pools have no " *
+            "arbitrary-collection sampler. Use rand!(pool, T, dims) for uniform GPU randoms."
+    )
+)
+const _CudaAnyPool = Union{CuAdaptiveArrayPool, DisabledPool{:cuda}}
+@inline AdaptiveArrayPools._rand_impl!(::_CudaAnyPool, ::AdaptiveArrayPools._SampleColl, ::Int, ::Vararg{Int, N}) where {N} = _cuda_no_collection()
+@inline AdaptiveArrayPools._rand_impl!(::_CudaAnyPool, ::AdaptiveArrayPools._SampleColl, ::NTuple{N, Int}) where {N} = _cuda_no_collection()
