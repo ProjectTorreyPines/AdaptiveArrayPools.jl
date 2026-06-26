@@ -1,6 +1,6 @@
 # Design: `rand!` / `randn!` pool constructors
 
-**Status:** Approved design, pending implementation
+**Status:** Implemented (CPU + Metal + CUDA)
 **Branch:** `feature/rand-randn-pool-constructors`
 **Author:** Min-Gu Yoo
 
@@ -30,7 +30,7 @@ values, preserving the package's zero-allocation guarantee inside `@with_pool`.
 | Namespace | **`import Random: rand!, randn!` then `export rand!, randn!`** (re-export) | Makes `rand!` a true peer of `zeros!` — works with just `using AdaptiveArrayPools`. Re-exporting the *same binding* means **no conflict warning** if the user also does `using Random`. |
 | Distributions (v1) | **`rand!` (uniform) + `randn!` (normal)** | Covers the overwhelming majority of use. `randexp!` deferred (low demand, trivial to add later via same machinery). |
 | Collection/range form | **Include `rand!(pool, S, dims)`** (CPU-only) | This is the real "random integers in a range" case (`rand!(pool, 1:6, n)`). More useful than full-range `rand!(pool, Int, n)`. |
-| GPU parity | **Deferred to a follow-up PR** | Live GPU pools inherit the core impl via dispatch (see §7), so it is cheap, but Metal's `randn!`/`rand!` MPS coverage needs verification. Kept out of v1 to ship CPU cleanly. |
+| GPU parity | **Implemented (Metal + CUDA)** | Live GPU pools inherit the core impl via dispatch (see §7); each extension adds only `DisabledPool` fallbacks + a CPU-only-collection guard. Verified on Metal. |
 
 ## 3. Why this is "wide but shallow"
 

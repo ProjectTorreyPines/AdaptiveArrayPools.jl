@@ -618,4 +618,49 @@ using AdaptiveArrayPools: _extract_acquired_vars
         end
         @test ok
     end
+
+    # =========================================================================
+    # 19. Coverage of the remaining NTuple method forms (typed-NTuple randn!,
+    #     the _randn_impl! NTuple delegations via the macro size(x) path, and
+    #     the DisabledPool NTuple fallbacks).
+    # =========================================================================
+    @testset "NTuple method-form coverage" begin
+        pool = AdaptiveArrayPool()
+
+        # randn! public typed-NTuple form (direct)
+        g = randn!(pool, Float32, (3, 4))
+        @test g isa Matrix{Float32}
+        @test size(g) == (3, 4)
+
+        # _randn_impl! NTuple delegations are reached via the macro's size(x) transform
+        x1 = rand(7)
+        x2 = rand(3, 5)
+        @with_pool pool begin
+            a = randn!(pool, Float64, size(x2))   # _randn_impl!(pool, T, NTuple)
+            @test size(a) == (3, 5)
+            b = randn!(pool, size(x1))            # _randn_impl!(pool, NTuple) default
+            @test size(b) == (7,)
+            nothing
+        end
+
+        # DisabledPool NTuple fallbacks
+        @test rand!(DISABLED_CPU, (3, 4)) isa Matrix{Float64}          # rand! default NTuple
+        @test randn!(DISABLED_CPU, Float32, (3, 4)) isa Matrix{Float32} # randn! typed NTuple
+        @test randn!(DISABLED_CPU, (3, 4)) isa Matrix{Float64}          # randn! default NTuple
+    end
+
+    # =========================================================================
+    # 20. Qualified-name calls inside @with_pool exercise the macro's
+    #     `Module.rand!`/`Module.randn!` → `_impl!` transform branches.
+    # =========================================================================
+    @testset "qualified-name rand!/randn! in @with_pool" begin
+        result = @with_pool pool begin
+            v = AdaptiveArrayPools.rand!(pool, Float64, 10)
+            g = AdaptiveArrayPools.randn!(pool, 10)
+            @test v isa Vector{Float64}
+            @test g isa Vector{Float64}
+            length(v) + length(g)
+        end
+        @test result == 20
+    end
 end
