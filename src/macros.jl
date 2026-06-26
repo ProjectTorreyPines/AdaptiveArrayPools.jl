@@ -1185,8 +1185,12 @@ function _extract_acquire_types(expr, target_pool, types = Set{Any}())
                     # trues!/falses! (always uses Bit type)
                 elseif fn in (:trues!, :falses!) || fn_name in (:trues!, :falses!)
                     push!(types, :Bit)
-                    # zeros!/ones!
-                elseif fn in (:zeros!, :ones!) || fn_name in (:zeros!, :ones!)
+                    # zeros!/ones!/rand!/randn!
+                    # NOTE: for rand!(pool, S, dims) (collection/range form), the
+                    # third arg S is not a syntactic type, so the default_eltype
+                    # branch is taken here (a harmless over-registration). The real
+                    # eltype(S) is recorded at runtime inside `_rand_impl!`.
+                elseif fn in (:zeros!, :ones!, :rand!, :randn!) || fn_name in (:zeros!, :ones!, :rand!, :randn!)
                     if nargs >= 3
                         third_arg = expr.args[3]
                         # Check if third arg looks like a type (Symbol starting with uppercase or curly)
@@ -1494,6 +1498,8 @@ const _TRUES_IMPL_REF = GlobalRef(@__MODULE__, :_trues_impl!)
 const _FALSES_IMPL_REF = GlobalRef(@__MODULE__, :_falses_impl!)
 const _SIMILAR_IMPL_REF = GlobalRef(@__MODULE__, :_similar_impl!)
 const _RESHAPE_IMPL_REF = GlobalRef(@__MODULE__, :_reshape_impl!)
+const _RAND_IMPL_REF = GlobalRef(@__MODULE__, :_rand_impl!)
+const _RANDN_IMPL_REF = GlobalRef(@__MODULE__, :_randn_impl!)
 
 function _transform_acquire_calls(expr, pool_name)
     if expr isa Expr
@@ -1521,6 +1527,10 @@ function _transform_acquire_calls(expr, pool_name)
                     expr = Expr(:call, _SIMILAR_IMPL_REF, expr.args[2:end]...)
                 elseif fn == :reshape!
                     expr = Expr(:call, _RESHAPE_IMPL_REF, expr.args[2:end]...)
+                elseif fn == :rand!
+                    expr = Expr(:call, _RAND_IMPL_REF, expr.args[2:end]...)
+                elseif fn == :randn!
+                    expr = Expr(:call, _RANDN_IMPL_REF, expr.args[2:end]...)
                 elseif fn isa Expr && fn.head == :. && length(fn.args) >= 2
                     # Qualified name: AdaptiveArrayPools.acquire! etc.
                     qn = fn.args[end]
@@ -1540,6 +1550,10 @@ function _transform_acquire_calls(expr, pool_name)
                         expr = Expr(:call, _SIMILAR_IMPL_REF, expr.args[2:end]...)
                     elseif qn == QuoteNode(:reshape!)
                         expr = Expr(:call, _RESHAPE_IMPL_REF, expr.args[2:end]...)
+                    elseif qn == QuoteNode(:rand!)
+                        expr = Expr(:call, _RAND_IMPL_REF, expr.args[2:end]...)
+                    elseif qn == QuoteNode(:randn!)
+                        expr = Expr(:call, _RANDN_IMPL_REF, expr.args[2:end]...)
                     end
                 end
             end
@@ -1583,6 +1597,7 @@ const _IMPL_FUNC_NAMES = Set{Symbol}(
         :_acquire_impl!, :_acquire_view_impl!,
         :_zeros_impl!, :_ones_impl!, :_trues_impl!, :_falses_impl!,
         :_similar_impl!, :_reshape_impl!,
+        :_rand_impl!, :_randn_impl!,
     ]
 )
 
@@ -1942,6 +1957,7 @@ const _ALL_ACQUIRE_NAMES = Set{Symbol}(
         :acquire!, :acquire_view!, :acquire_array!,
         :zeros!, :ones!, :similar!, :reshape!,
         :trues!, :falses!,
+        :rand!, :randn!,
     ]
 )
 
@@ -1957,6 +1973,7 @@ const _ARRAY_ACQUIRE_NAMES = Set{Symbol}(
     [
         :acquire!, :acquire_array!,
         :zeros!, :ones!, :similar!, :reshape!,
+        :rand!, :randn!,
     ]
 )
 

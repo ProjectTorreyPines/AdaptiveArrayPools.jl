@@ -1,11 +1,17 @@
 module AdaptiveArrayPools
 
 using Printf
+import Random
+# Extend (and re-export) Random's rand!/randn! with pool-constructor methods.
+# Re-exporting the SAME binding means no conflict warning when a user also
+# does `using Random` (see `rand!`/`randn!` in convenience.jl).
+import Random: rand!, randn!
 
 # Public API
 export AdaptiveArrayPool, acquire!, pool_stats, get_task_local_pool
 export acquire_view!, acquire_array!  # Explicit naming variants
 export zeros!, ones!, trues!, falses!, similar!, reshape!, default_eltype  # Convenience functions
+export rand!, randn!  # Random-array convenience constructors (re-exported from Random)
 export Bit  # Sentinel type for BitArray (use with acquire!, trues!, falses!)
 export @with_pool, @maybe_with_pool, @safe_with_pool, @safe_maybe_with_pool
 export STATIC_POOLING, MAYBE_POOLING, RUNTIME_CHECK

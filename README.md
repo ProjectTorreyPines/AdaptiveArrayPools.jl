@@ -95,10 +95,12 @@ Common initialization patterns have convenience functions:
 |----------|---------------|
 | `zeros!(pool, 10)` | `acquire!` + `fill!(0)` |
 | `ones!(pool, Float32, 3, 3)` | `acquire!` + `fill!(1)` |
+| `rand!(pool, 10)` | `acquire!` + `Random.rand!` (uniform; `rand!(pool, 1:6, n)` samples a range/collection) |
+| `randn!(pool, 10)` | `acquire!` + `Random.randn!` (standard normal) |
 | `similar!(pool, A)` | `acquire!` matching `eltype(A)`, `size(A)` |
 | `reshape!(pool, A, 3, 4)` | Reshape sharing memory, zero-alloc (1.12+) |
 
-All convenience functions return `Array` types, same as `acquire!`. See [API Reference](https://projecttorreypines.github.io/AdaptiveArrayPools.jl/stable/usage/api#convenience-functions).
+All convenience functions return `Array` types, same as `acquire!`. `rand!`/`randn!` extend `Random.rand!`/`randn!`, so they consume the global RNG exactly like `rand`/`randn` (seed with `Random.seed!` for reproducibility). See [API Reference](https://projecttorreypines.github.io/AdaptiveArrayPools.jl/stable/usage/api#convenience-functions).
 
 ## Installation
 
