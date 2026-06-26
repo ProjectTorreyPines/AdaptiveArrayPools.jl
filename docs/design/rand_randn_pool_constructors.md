@@ -130,19 +130,26 @@ Mirror the `zeros!` disabled-pool methods (`convenience.jl:439-442`):
 - Escape of a pool-backed random array — `PoolEscapeError`, via the macro escape
   lists (§5.5.3), identical to `zeros!`.
 
-## 7. GPU note (out of scope for v1, documented for the follow-up)
+## 7. GPU (Metal + CUDA) — implemented
 
-`CuAdaptiveArrayPool{S} <: AbstractArrayPool`, and the CUDA extension does **not**
-override `_zeros_impl!` for live pools — it inherits the core impl, which works on
-GPU because CUDA.jl overloads `fill!` for `CuArray`. By the same mechanism, the
-core `_rand_impl! = Random.rand!(arr)` would inherit GPU support **if**
-`Random.rand!(::CuArray)` runs on-device. Therefore the GPU follow-up is mostly:
-- `DisabledPool{:cuda}` / `{:metal}` fallback methods (`rand!(::DisabledPool{:cuda}, …) = CUDA.rand(…)`), and
-- **verification** that `Random.rand!`/`randn!` on `CuArray`/`MtlArray` are GPU-native
-  (no scalar fallback under `allowscalar(false)`), with **Metal `randn!` coverage explicitly unconfirmed**.
+`CuAdaptiveArrayPool` / `MetalAdaptiveArrayPool <: AbstractArrayPool`, and the GPU
+extensions do **not** override `_rand_impl!`/`_randn_impl!` for live pools — they
+**inherit the core impl**, which works on GPU because `Random.rand!`/`randn!` are
+overloaded for `CuArray`/`MtlArray` and run on-device. **Verified on Metal**
+(Apple Silicon): `Random.rand!`/`randn!` on `MtlArray` are GPU-native for
+`Float32`/`Float16`/`Int32`. So the live GPU pool gets the typed/default forms for
+free, exactly like `zeros!`.
 
-The **collection form is intentionally CPU-only** — GPU RNGs have no efficient
-arbitrary-collection sampler and would scalar-fallback.
+GPU-specific code (per backend, in the extension):
+- `DisabledPool{:cuda}`/`{:metal}` fallbacks (`Metal.rand`/`Metal.randn`,
+  `CUDA.rand`/`CUDA.randn`).
+- **Collection-form rejection**: `rand!(pool, S, dims)` is **CPU-only** — GPU RNGs have
+  no arbitrary-collection sampler (`Random.rand!(gpuarray, 1:6)` scalar-indexes the
+  device array, which is disallowed). Overriding `_rand_impl!(::GPUPool, ::_SampleColl, …)`
+  raises a clear `ArgumentError` (covers the macro path and the direct path, live + disabled).
+
+Tests: `test/metal/test_random.jl` (run locally — **34 pass**) and
+`test/cuda/test_random.jl` (mirror, to run on a CUDA machine).
 
 ## 8. Testing (`test/test_convenience.jl`, mirroring the `zeros!` testsets)
 
@@ -166,7 +173,6 @@ arbitrary-collection sampler and would scalar-fallback.
 
 ## 10. Explicitly out of scope (YAGNI)
 
-- GPU parity (separate PR — see §7).
 - `randexp!` (trivial later add).
 - `rng`-argument forms (`rand!(pool, rng, dims)`) — would complicate macro type extraction.
 - `randperm!` / `randcycle!` / `shuffle!` (different semantics — permutation/in-place on a user array).
