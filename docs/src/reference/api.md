@@ -23,7 +23,9 @@
 | `rewind!(pool)` | Restores the pool to the last checkpoint, freeing all arrays acquired since then. |
 | `pool_stats(pool)` | Prints detailed statistics about pool usage. |
 | `get_task_local_pool()` | Returns the task-local pool instance. |
-| `empty!(pool)` | Clears all internal storage, releasing all memory. |
+| `reset!(pool)` | Resets active-slot counters to 0 but **keeps** all buffers for reuse. |
+| `trim!(pool; force_gc=false)` | Releases **inactive** retained buffers, keeping active arrays. Returns `(; slots_released, wrappers_released, estimated_bytes_released, gc_triggered)`. Reclaims on Julia 1.12+; defined no-op (zero summary + one-time warning) on older Julia. |
+| `empty!(pool)` | Clears all internal storage, releasing **all** memory. |
 
 ### Convenience Functions
 

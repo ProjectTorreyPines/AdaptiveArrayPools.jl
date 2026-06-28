@@ -94,17 +94,48 @@ This pattern works because pool arrays share underlying storage with the pool.
 
 ### `reset!(pool)`
 
-Releases all memory held by the pool. Useful for long-running processes:
+Resets all active-slot counters to zero but **keeps** every allocated buffer for
+reuse. Use it to recover a clean pool state (e.g. after code acquired without a
+matching `rewind!`) without paying reallocation costs:
 
 ```julia
-# After processing a large batch
-@with_pool pool begin
-    # ... large computation ...
-end
-
-# Optionally release memory if pool grew too large
+# Mark all slots inactive, but keep buffers warm for the next batch
 reset!(get_task_local_pool())
 ```
+
+### `trim!(pool; force_gc=false)`
+
+Releases the pool's references to **inactive** retained buffers (those already
+freed by `rewind!`/scope exit), while preserving the **active** arrays still in
+use. This is the operation for reclaiming memory after a rare large workload
+without discarding the warm, normal-sized buffers that keep the hot path
+allocation-free.
+
+```julia
+# After a scope rewinds, drop retained-but-unused buffers
+summary = trim!(get_task_local_pool())
+@show summary.slots_released summary.estimated_bytes_released
+
+# To release everything reusable, mark top-level slots inactive first:
+reset!(pool); trim!(pool)
+
+# force_gc=true additionally runs GC.gc() (no guarantee of immediate OS/VRAM return)
+trim!(pool; force_gc = true)
+```
+
+`estimated_bytes_released` is capacity-aware (it counts buffers even when runtime
+checks shrank them to length 0). It estimates detached storage; it is **not** a
+guarantee that RSS/VRAM dropped immediately — that depends on the GC.
+
+!!! note "Julia version"
+    Actual reclamation requires Julia 1.12+. On older Julia, `trim!` is a defined
+    no-op (returns a zero summary, warns once) so dependent packages stay portable
+    across the full supported Julia range.
+
+### `empty!(pool)`
+
+Drops **all** buffers (active and inactive) and resets the pool to its initial
+state. The most aggressive reclamation; invalidates any arrays still in use.
 
 ### `pooling_enabled(pool)`
 
@@ -131,7 +162,9 @@ end
 | `ones!(pool, [T,] dims...)` | `Array{T,N}` | 0 bytes | One-initialized |
 | `similar!(pool, A)` | `Array{T,N}` | 0 bytes | Match existing array |
 | `reshape!(pool, A, dims...)` | Reshaped array | 0 bytes (1.12+) | Reshape sharing memory |
-| `reset!(pool)` | `nothing` | - | Release all memory |
+| `reset!(pool)` | `pool` | - | Reset counters, keep buffers for reuse |
+| `trim!(pool; force_gc=false)` | summary | - | Release inactive buffers, keep active |
+| `empty!(pool)` | `pool` | - | Release all memory, reset state |
 | `pooling_enabled(pool)` | `Bool` | - | Check pool status |
 
 ## See Also
