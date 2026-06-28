@@ -62,9 +62,22 @@
 
         s = trim!(pool)
         @test s.slots_released == 1
-        # summarysize(CuArray) reports only the CPU-side handle; sizeof gives the
+        # summarysize(CuArray) reports only the CPU-side handle; maxsize gives the
         # real GPU bytes. This asserts the CUDA byte override is used.
         @test s.estimated_bytes_released >= 40_000
+    end
+
+    @testset "byte estimate is capacity-aware in safety mode (CUDA, S=1)" begin
+        pool = CuAdaptiveArrayPool{1}()   # S=1: safety invalidation on
+
+        checkpoint!(pool)
+        acquire!(pool, Float32, 10_000)   # 40_000 device bytes
+        rewind!(pool)                     # S=1: released slot dims → 0, maxsize preserved
+
+        @test length(pool.float32.vectors[1]) == 0   # logical length 0 (sizeof would be 0)...
+        s = trim!(pool)
+        @test s.slots_released == 1
+        @test s.estimated_bytes_released >= 40_000    # ...but maxsize (device capacity) is counted
     end
 
     @testset "wrapper truncation + per-type + force_gc (CUDA)" begin

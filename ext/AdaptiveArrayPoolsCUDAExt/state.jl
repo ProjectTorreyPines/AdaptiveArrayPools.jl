@@ -357,14 +357,15 @@ end
 # trim! for CuAdaptiveArrayPool (parity with CPU/Metal)
 # ==============================================================================
 
-# CUDA backing storage lives on the GPU. `sizeof(CuVector)` = length * sizeof(T)
-# = the real device buffer size, whereas `Base.summarysize` (the generic CPU
-# helper) only sees the small CPU-side handle. Override so the byte estimate is
-# correct. (CUDA inactive slots are not shrunk to length 0, so length == capacity.)
+# CUDA backing storage lives on the GPU. Use `maxsize` (allocated device-buffer
+# bytes), NOT `sizeof`: in runtime-check mode (S>=1), rewind shrinks a released
+# slot's logical dims to 0 via `_resize_to_fit!` while PRESERVING `maxsize`, so
+# `sizeof` (logical length) would report 0 for a buffer that still holds device
+# capacity. `Base.summarysize` only sees the small CPU-side handle.
 function AdaptiveArrayPools._inactive_storage_bytes(tp::CuTypedPool, first::Int, last::Int)
     total = 0
     for i in first:last
-        @inbounds total += sizeof(tp.vectors[i])
+        @inbounds total += getfield(tp.vectors[i], :maxsize)
     end
     return total
 end

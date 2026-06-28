@@ -105,11 +105,11 @@ reset!(get_task_local_pool())
 
 ### `trim!(pool; force_gc=false)`
 
-Releases the pool's references to **inactive** retained buffers (those already
-freed by `rewind!`/scope exit), while preserving the **active** arrays still in
-use. This is the operation for reclaiming memory after a rare large workload
-without discarding the warm, normal-sized buffers that keep the hot path
-allocation-free.
+Releases the pool's references to **all inactive** retained buffers (those
+already freed by `rewind!`/scope exit), while preserving the **active** arrays
+still in use. It does not selectively keep "warm" buffers — at top level, after a
+normal `rewind!` (where `n_active == 0`), every reusable buffer is released. The
+only guarantee is that arrays still active on the call stack are left untouched.
 
 ```julia
 # After a scope rewinds, drop retained-but-unused buffers

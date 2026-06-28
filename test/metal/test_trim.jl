@@ -62,9 +62,22 @@
 
         s = trim!(pool)
         @test s.slots_released == 1
-        # summarysize(MtlArray) reports only the ~80-byte CPU handle; sizeof gives
+        # summarysize(MtlArray) reports only the ~80-byte CPU handle; maxsize gives
         # the real 40_000 GPU bytes. This asserts the Metal byte override is used.
         @test s.estimated_bytes_released >= 40_000
+    end
+
+    @testset "byte estimate is capacity-aware in safety mode (Metal, R=1)" begin
+        pool = MetalAdaptiveArrayPool{1, METAL_STORAGE}()   # R=1: safety invalidation on
+
+        checkpoint!(pool)
+        acquire!(pool, Float32, 10_000)   # 40_000 device bytes
+        rewind!(pool)                     # R=1: released slot dims → 0, maxsize preserved
+
+        @test length(pool.float32.vectors[1]) == 0   # logical length 0 (sizeof would be 0)...
+        s = trim!(pool)
+        @test s.slots_released == 1
+        @test s.estimated_bytes_released >= 40_000    # ...but maxsize (device capacity) is counted
     end
 
     @testset "wrapper truncation + per-type + force_gc (Metal)" begin
