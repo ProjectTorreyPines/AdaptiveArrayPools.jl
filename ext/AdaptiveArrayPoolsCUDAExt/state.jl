@@ -352,3 +352,53 @@ function Base.empty!(pool::CuAdaptiveArrayPool)
 
     return pool
 end
+
+# ==============================================================================
+# trim! for CuAdaptiveArrayPool (parity with CPU/Metal)
+# ==============================================================================
+
+# CUDA backing storage lives on the GPU. `sizeof(CuVector)` = length * sizeof(T)
+# = the real device buffer size, whereas `Base.summarysize` (the generic CPU
+# helper) only sees the small CPU-side handle. Override so the byte estimate is
+# correct. (CUDA inactive slots are not shrunk to length 0, so length == capacity.)
+function AdaptiveArrayPools._inactive_storage_bytes(tp::CuTypedPool, first::Int, last::Int)
+    total = 0
+    for i in first:last
+        @inbounds total += sizeof(tp.vectors[i])
+    end
+    return total
+end
+
+function AdaptiveArrayPools.trim!(pool::CuAdaptiveArrayPool; force_gc::Bool = false)
+    slots = 0
+    wrappers = 0
+    bytes = 0
+    AdaptiveArrayPools.foreach_fixed_slot(pool) do tp
+        s = AdaptiveArrayPools._trim_inactive_typed_pool!(tp)
+        slots += s.slots_released
+        wrappers += s.wrappers_released
+        bytes += s.estimated_bytes_released
+    end
+    for tp in values(pool.others)
+        s = AdaptiveArrayPools._trim_inactive_typed_pool!(tp)
+        slots += s.slots_released
+        wrappers += s.wrappers_released
+        bytes += s.estimated_bytes_released
+    end
+    force_gc && GC.gc()
+    return (;
+        slots_released = slots, wrappers_released = wrappers,
+        estimated_bytes_released = bytes, gc_triggered = force_gc,
+    )
+end
+
+@inline function AdaptiveArrayPools.trim!(pool::CuAdaptiveArrayPool, ::Type{T}; force_gc::Bool = false) where {T}
+    s = AdaptiveArrayPools._trim_inactive_typed_pool!(AdaptiveArrayPools.get_typed_pool!(pool, T))
+    force_gc && GC.gc()
+    return (;
+        slots_released = s.slots_released,
+        wrappers_released = s.wrappers_released,
+        estimated_bytes_released = s.estimated_bytes_released,
+        gc_triggered = force_gc,
+    )
+end

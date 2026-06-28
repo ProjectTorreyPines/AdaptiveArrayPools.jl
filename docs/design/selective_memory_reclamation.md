@@ -1,8 +1,8 @@
 # Inactive Slot Trimming for AdaptiveArrayPools
 
 - **Date:** 2026-06-28
-- **Status:** Revised design — pending user review (not yet implemented)
-- **Scope:** New manual `trim!` API. CPU + Metal in first cut; CUDA deferred.
+- **Status:** Implemented (CPU + Metal validated on hardware; CUDA precompile-validated, GPU execution via CI).
+- **Scope:** New manual `trim!` API. CPU + Metal + CUDA (CUDA mirrors Metal).
 - **Author:** design session
 
 ---
@@ -257,8 +257,11 @@ Metal extension entry points:
 
 CUDA:
 
-- Deferred until CPU + Metal behavior is proven.
-- Expected to mirror Metal structurally.
+- Implemented as a structural mirror of Metal (`CuTypedPool` has the same field
+  layout; `_inactive_storage_bytes` overridden to use `sizeof` for GPU bytes).
+- Validated locally by extension precompilation (method dispatch resolves);
+  GPU execution covered by `test/cuda/test_trim.jl`, which runs on CI with a
+  functional CUDA device (skipped on non-CUDA machines).
 
 Legacy (Julia < 1.12):
 

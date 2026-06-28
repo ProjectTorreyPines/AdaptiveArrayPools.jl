@@ -49,5 +49,6 @@ else
         include("test_cuda_safety.jl")
         include("test_runtime_mutation.jl")
         include("test_scope_depth_validation.jl")
+        include("test_trim.jl")
     end
 end
