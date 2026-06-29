@@ -154,6 +154,13 @@ Requires the `auto_compact` compile-time Preference (`AUTO_COMPACT`) for the sco
 hook and pool auto-registration. With the Preference off this warns and the timer still
 runs but stays inert unless you `register_auto_compact!` pools manually.
 
+!!! note "What gets compacted, and when"
+    Auto-compaction targets the **task-local pool** (`get_task_local_pool()`) only — the
+    pool `@with_pool` uses and the one that auto-registers. A hand-made `AdaptiveArrayPool()`
+    is never registered and never auto-compacted; call `compact!` on it directly. The work
+    runs at `@with_pool` scope exits (`_current_depth == 1`), so an idle task with no
+    `@with_pool` activity won't compact until it next exits a scope.
+
 See also [`disable_auto_compact!`](@ref), [`auto_compact_enabled`](@ref).
 """
 function enable_auto_compact!(;
@@ -184,9 +191,15 @@ Whether the background auto-compact `Timer` is currently running.
 """
 auto_compact_enabled() = _AUTO_COMPACT_TIMER[] !== nothing
 
-# Auto-start when the Preference opts in. Dead-code-eliminated when `AUTO_COMPACT` is
-# off (the default), so package load starts no timer unless the user set the Preference.
+# Auto-start the background timer when AUTO_COMPACT is on — but NOT while generating
+# precompile output. A live Timer is an open libuv handle, so a precompile worker (e.g.
+# precompiling a CUDA/Metal extension, which loads this package and runs `__init__`)
+# would hang with "unfinished IO handles with timer events". `jl_generating_output()` is
+# nonzero exactly during precompile/sysimage output. Also close the timer at process exit.
 function __init__()
-    AUTO_COMPACT && enable_auto_compact!()
+    if AUTO_COMPACT && ccall(:jl_generating_output, Cint, ()) == 0
+        enable_auto_compact!()
+        atexit(disable_auto_compact!)
+    end
     return nothing
 end
