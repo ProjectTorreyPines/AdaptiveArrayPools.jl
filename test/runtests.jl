@@ -3,6 +3,10 @@ using AdaptiveArrayPools
 using AdaptiveArrayPools: get_typed_pool!
 import AdaptiveArrayPools: checkpoint!, rewind!
 
+# AUTO_COMPACT defaults on, so __init__ auto-starts the background timer. Stop it so the
+# suite is deterministic; testsets that exercise auto-compaction enable it explicitly.
+AdaptiveArrayPools.disable_auto_compact!()
+
 # Version-specific helpers (always defined, even for ARGS path)
 @static if VERSION >= v"1.12-"
     _test_nd_cache_preserved(tp) = !isempty(tp.arr_wrappers)
@@ -57,6 +61,7 @@ else
         include("test_state.jl")
         include("test_trim_legacy.jl")
         include("test_compact_legacy.jl")
+        include("test_auto_compact_legacy.jl")
         include("test_multidimensional.jl")
         include("test_macros.jl")
         include("test_task_local_pool.jl")

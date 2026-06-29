@@ -8,8 +8,9 @@
 # `_current_depth == 1` scope-exit safepoint, where nothing is borrowed.
 #
 # Tier 1 (compile-time): `AUTO_COMPACT` gates whether the scope-exit flag check is
-# emitted (macros.jl) and whether pools register (task_local_pool.jl). Default off
-# → zero hot-path cost. Tier 2 (runtime): `enable_auto_compact!` / `disable_auto_compact!`.
+# emitted (macros.jl) and whether pools register (task_local_pool.jl). Default ON
+# (~0.6 ns/exit); set the Preference false to compile it OUT (full DCE → zero cost).
+# Tier 2 (runtime): `enable_auto_compact!` / `disable_auto_compact!`.
 # ==============================================================================
 
 using Preferences: @load_preference
@@ -17,19 +18,21 @@ using Preferences: @load_preference
 """
     AUTO_COMPACT::Bool
 
-Compile-time master switch (Tier 1) for auto-compaction. When `false` (default), the
-scope-exit flag check is not emitted and pools are not registered — zero hot-path
-cost. Set in `LocalPreferences.toml` (then restart) to compile it in:
+Compile-time master switch (Tier 1) for auto-compaction. Default `true`: the scope-exit
+flag check is emitted (a ~0.6 ns inlined check per `@with_pool` exit), new task-local
+pools auto-register, and `__init__` auto-starts the background Timer. Set `false` in
+`LocalPreferences.toml` (then restart) to compile the feature OUT entirely — the hook is
+dead-code-eliminated, restoring zero hot-path cost:
 
 ```toml
 [AdaptiveArrayPools]
-auto_compact = true
+auto_compact = false
 ```
 
-When on, `enable_auto_compact!` / `disable_auto_compact!` control the background
-Timer at runtime (Tier 2).
+`enable_auto_compact!` / `disable_auto_compact!` control the background Timer at runtime
+(Tier 2).
 """
-const AUTO_COMPACT = @load_preference("auto_compact", false)::Bool
+const AUTO_COMPACT = @load_preference("auto_compact", true)::Bool
 
 # Registry of pools eligible for auto-compaction. `WeakRef` so a pool dies with its
 # task; dead refs are swap-removed on each sweep. All access under the lock below.
