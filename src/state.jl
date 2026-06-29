@@ -855,6 +855,17 @@ end
 Trim inactive slots for a single element type `T` only. See [`trim!`](@ref).
 """
 function trim!(pool::AdaptiveArrayPool, ::Type{T}; force_gc::Bool = false) where {T}
+    # Never create a pool for a type that was never used: get_typed_pool! would
+    # register a new fallback pool in `pool.others` on a miss — a surprising
+    # mutation/allocation for a reclamation call. Only proceed for fixed-slot
+    # types (always present) or fallback types already in the pool.
+    if !(T <: _FIXED_SLOT_TYPES) && !haskey(pool.others, T)
+        force_gc && GC.gc()
+        return (;
+            slots_released = 0, wrappers_released = 0,
+            estimated_bytes_released = 0, gc_triggered = force_gc,
+        )
+    end
     s = _trim_inactive_typed_pool!(get_typed_pool!(pool, T))
     force_gc && GC.gc()
     return (;

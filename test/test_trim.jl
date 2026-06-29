@@ -145,6 +145,14 @@ using AdaptiveArrayPools: get_typed_pool!, trim!, checkpoint!, rewind!
         pool = AdaptiveArrayPool{0}()
         @test trim!(pool; force_gc = true).gc_triggered == true
         @test trim!(pool; force_gc = false).gc_triggered == false
+
+        # per-type form: force_gc through the real-trim path
+        checkpoint!(pool)
+        acquire!(pool, Float64, 100)
+        rewind!(pool)
+        s = trim!(pool, Float64; force_gc = true)
+        @test s.slots_released == 1
+        @test s.gc_triggered == true
     end
 
     @testset "reset!(pool); trim!(pool) releases all retained buffers (regression)" begin
@@ -222,6 +230,37 @@ using AdaptiveArrayPools: get_typed_pool!, trim!, checkpoint!, rewind!
         @test length(pool.others[UInt8].vectors) == 0
         @test s.slots_released == 2
         @test s.estimated_bytes_released > 0
+    end
+
+    @testset "per-type trim! never creates a pool for an unused type" begin
+        pool = AdaptiveArrayPool{0}()
+
+        # Unused fallback type (UInt8 is not a fixed slot, never acquired):
+        # trim! must NOT register a pool in `others` while trying to reclaim.
+        @test !haskey(pool.others, UInt8)
+        n_before = length(pool.others)
+        s = trim!(pool, UInt8)
+        @test s == (;
+            slots_released = 0, wrappers_released = 0,
+            estimated_bytes_released = 0, gc_triggered = false,
+        )
+        @test length(pool.others) == n_before
+        @test !haskey(pool.others, UInt8)          # still not created
+
+        # force_gc is still honored on the no-op path.
+        @test trim!(pool, UInt8; force_gc = true).gc_triggered == true
+        @test !haskey(pool.others, UInt8)
+
+        # Fixed-slot type (always present) is a safe no-op too — no `others` growth.
+        @test trim!(pool, Float64).slots_released == 0
+        @test length(pool.others) == n_before
+
+        # An existing fallback type is still trimmed normally.
+        checkpoint!(pool)
+        acquire!(pool, UInt8, 100)
+        rewind!(pool)
+        @test haskey(pool.others, UInt8)
+        @test trim!(pool, UInt8).slots_released == 1
     end
 
 end

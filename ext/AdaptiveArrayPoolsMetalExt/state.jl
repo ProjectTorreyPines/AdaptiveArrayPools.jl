@@ -376,6 +376,16 @@ function AdaptiveArrayPools.trim!(pool::MetalAdaptiveArrayPool; force_gc::Bool =
 end
 
 @inline function AdaptiveArrayPools.trim!(pool::MetalAdaptiveArrayPool, ::Type{T}; force_gc::Bool = false) where {T}
+    # Never create a pool for a never-used type (see Copilot review, PR #44):
+    # get_typed_pool! would register a new fallback pool on a miss. Only proceed
+    # for fixed-slot types or fallback types already in the pool.
+    if !(T <: _METAL_FIXED_TYPES) && !haskey(pool.others, T)
+        force_gc && GC.gc()
+        return (;
+            slots_released = 0, wrappers_released = 0,
+            estimated_bytes_released = 0, gc_triggered = force_gc,
+        )
+    end
     s = AdaptiveArrayPools._trim_inactive_typed_pool!(AdaptiveArrayPools.get_typed_pool!(pool, T))
     force_gc && GC.gc()
     return (;

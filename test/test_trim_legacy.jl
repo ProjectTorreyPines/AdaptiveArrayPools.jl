@@ -22,4 +22,12 @@ using AdaptiveArrayPools: trim!, get_task_local_pool
 
     # Legacy no-op ignores force_gc (no reclamation to do).
     @test trim!(pool; force_gc = true).gc_triggered == false
+
+    # DisabledPool: zero-summary no-op on the legacy path too.
+    zd = trim!(DISABLED_CPU)
+    @test zd.slots_released == 0
+    @test zd.wrappers_released == 0
+    @test zd.estimated_bytes_released == 0
+    @test zd.gc_triggered == false
+    @test trim!(DISABLED_CPU, Float64).slots_released == 0
 end

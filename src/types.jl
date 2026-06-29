@@ -466,6 +466,11 @@ end
 @inline get_typed_pool!(p::AdaptiveArrayPool, ::Type{Bool}) = p.bool
 @inline get_typed_pool!(p::AdaptiveArrayPool, ::Type{Bit}) = p.bits
 
+# Fixed-slot element types (those with a dedicated struct field above). Used by
+# `trim!(pool, T)` to recognize types that always have a pool, without consulting
+# or creating the `others` fallback. Keep in sync with the methods above.
+const _FIXED_SLOT_TYPES = Union{Float64, Float32, Int64, Int32, ComplexF64, ComplexF32, Bool, Bit}
+
 # Slow Path: rare types via IdDict
 @inline function get_typed_pool!(p::AdaptiveArrayPool, ::Type{T}) where {T}
     tp = get(p.others, T, nothing)
