@@ -752,6 +752,7 @@ function _generate_block_inner(pool_name, expr, safe::Bool, source)
                 _result
             finally
                 $rewind_call
+                $(_auto_compact_hook(pool_name))
             end
         end
     else
@@ -783,6 +784,7 @@ function _generate_block_inner(pool_name, expr, safe::Bool, source)
                 $_validate_pool_return(_result, $(esc(pool_name)))
             end
             $rewind_call
+            $(_auto_compact_hook(pool_name))
             _result
         end
     end
@@ -830,6 +832,7 @@ function _generate_function_inner(pool_name, expr, safe::Bool, source)
                 _result
             finally
                 $rewind_call
+                $(_auto_compact_hook(pool_name))
             end
         end
     else
@@ -861,6 +864,7 @@ function _generate_function_inner(pool_name, expr, safe::Bool, source)
                 $_validate_pool_return(_result, $(esc(pool_name)))
             end
             $rewind_call
+            $(_auto_compact_hook(pool_name))
             _result
         end
     end
@@ -1587,6 +1591,15 @@ const _RUNTIME_CHECK_REF = GlobalRef(@__MODULE__, :_runtime_check)
 const _WARN_LEAKED_SCOPE_REF = GlobalRef(@__MODULE__, :_warn_leaked_scope)
 const _REWIND_REF = GlobalRef(@__MODULE__, :rewind!)
 const _LAZY_REWIND_REF = GlobalRef(@__MODULE__, :_lazy_rewind!)
+
+# Auto-compact scope-exit hook, generated after the normal rewind in every `@with_pool`
+# exit. Gated by the `AUTO_COMPACT` compile-time const (constant-folded → DCE'd to nothing
+# when off → zero cost). Dispatches through `_maybe_auto_compact!` so non-CPU (GPU) pools
+# safely no-op. Placed AFTER the rewind, so `_current_depth == 1` ⇒ the outermost scope
+# just closed (nothing borrowed → even active compaction is safe).
+const _AUTO_COMPACT_REF = GlobalRef(@__MODULE__, :AUTO_COMPACT)
+const _MAYBE_AUTO_COMPACT_REF = GlobalRef(@__MODULE__, :_maybe_auto_compact!)
+_auto_compact_hook(pool_name) = :($_AUTO_COMPACT_REF && $_MAYBE_AUTO_COMPACT_REF($(esc(pool_name))))
 const _TYPED_LAZY_REWIND_REF = GlobalRef(@__MODULE__, :_typed_lazy_rewind!)
 const _CAN_USE_TYPED_PATH_REF = GlobalRef(@__MODULE__, :_can_use_typed_path)
 const _TRACKED_MASK_REF = GlobalRef(@__MODULE__, :_tracked_mask_for_types)

@@ -147,3 +147,50 @@ end
         _clear_registry!()
     end
 end
+
+@testset "auto_compact — Phase 3: scope-exit hook + registration gate" begin
+
+    @testset "_maybe_auto_compact! fires only at _current_depth == 1" begin
+        pool = _inactive_bloated(1_000_000, 100)             # inactive bloat, depth back to 1
+        checkpoint!(pool)                                    # depth → 2
+        @atomic pool._compact_requested = true
+        AAP._maybe_auto_compact!(pool)                       # depth 2 ≠ 1 → must NOT act
+        @test (@atomic pool._compact_requested) == true      # flag preserved for the outer exit
+        @test _cap(pool.float64.vectors[1]) >= 1_000_000     # not compacted
+        rewind!(pool)                                        # depth → 1
+        AAP._maybe_auto_compact!(pool)                       # depth 1 → fires
+        @test (@atomic pool._compact_requested) == false     # reset
+        @test _cap(pool.float64.vectors[1]) == 150           # compacted
+    end
+
+    @testset "_maybe_auto_compact! is a no-op when the flag is clear" begin
+        pool = _inactive_bloated(1_000_000, 100)
+        @test (@atomic pool._compact_requested) == false
+        AAP._maybe_auto_compact!(pool)
+        @test _cap(pool.float64.vectors[1]) >= 1_000_000     # untouched (no request)
+    end
+
+    @testset "_maybe_auto_compact! no-ops on non-CPU pools (GPU fallback)" begin
+        @test AAP._maybe_auto_compact!(42) === nothing       # ::Any fallback, no throw
+        @test AAP._maybe_auto_compact!("not a pool") === nothing
+    end
+
+    @testset "macro wires the gated scope-exit hook into @with_pool" begin
+        s = string(
+            @macroexpand @with_pool pool begin
+                x = acquire!(pool, Float64, 4)
+                sum(x)
+            end
+        )
+        @test occursin("_maybe_auto_compact!", s)            # hook emitted…
+        @test occursin("AUTO_COMPACT", s)                    # …gated by the compile-time const
+    end
+
+    @testset "registration gate is off when AUTO_COMPACT is compiled out (default)" begin
+        if !AAP.AUTO_COMPACT
+            _clear_registry!()
+            fetch(Threads.@spawn get_task_local_pool())      # new task → creates a pool
+            @test _registry_len() == 0                       # not auto-registered (gate off)
+        end
+    end
+end

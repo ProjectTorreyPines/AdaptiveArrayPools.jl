@@ -94,6 +94,20 @@ function _run_auto_compact!(pool::AdaptiveArrayPool)
     return nothing
 end
 
+# Scope-exit hook body, generated into every `@with_pool` exit (gated by AUTO_COMPACT).
+# At the `_current_depth == 1` safepoint, run a flagged pool's compaction. `@inline` so
+# the common case (flag clear) is a cheap inlined atomic-read + compare; the cold
+# `_run_auto_compact!` stays a non-inlined call. The `::Any` fallback keeps the SHARED
+# `@with_pool` codegen safe for non-CPU (GPU) pools — they no-op here, and a future phase
+# adds their own methods.
+@inline _maybe_auto_compact!(::Any) = nothing
+@inline function _maybe_auto_compact!(pool::AdaptiveArrayPool)
+    if (@atomic pool._compact_requested) && pool._current_depth == 1
+        _run_auto_compact!(pool)
+    end
+    return nothing
+end
+
 # ── Timer lifecycle (Tier 2 runtime control) ─────────────────────────────────
 
 # Handle to the single global auto-compact Timer (`nothing` = stopped).
