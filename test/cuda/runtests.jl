@@ -50,5 +50,6 @@ else
         include("test_runtime_mutation.jl")
         include("test_scope_depth_validation.jl")
         include("test_trim.jl")
+        include("test_compact.jl")
     end
 end
