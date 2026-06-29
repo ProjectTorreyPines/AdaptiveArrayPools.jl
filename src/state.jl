@@ -904,7 +904,10 @@ function _maybe_compact_slot!(tp::TypedPool{T}, slot::Int, factor::Real, shrink_
     used == 0 && return 0
     cap = _slot_capacity(@inbounds tp.vectors[slot])
     cap >= factor * used || return 0
-    target = max(used, ceil(Int, shrink_to * used))
+    # Clamp the shrink goal to `[used, cap]`: never below the live size, and never
+    # above capacity (shrinking to ≥ cap is a no-op). Capping the Float before `ceil`
+    # also guards against an absurd `shrink_to` overflowing `Int` (InexactError).
+    target = max(used, ceil(Int, min(Float64(cap), shrink_to * used)))
     reclaim = (cap - target) * sizeof(T)
     reclaim >= min_bytes || return 0
     _compact_slot!(tp, slot, target, used)

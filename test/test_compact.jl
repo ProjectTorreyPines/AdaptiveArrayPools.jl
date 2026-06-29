@@ -389,4 +389,16 @@ const _ZERO_COMPACT = (; slots_compacted = 0, bytes_reclaimed = 0, gc_triggered 
         rewind!(pool)
     end
 
+    @testset "extreme kwargs never throw (shrink target clamped to capacity)" begin
+        pool = _inactive_bloated_pool(1_000_000, 100)
+        # shrink_to so large that ceil(Int, shrink_to*used) would overflow Int —
+        # must be a safe no-op (target clamped to capacity → reclaim 0 → skipped),
+        # not an InexactError.
+        s = compact!(pool; shrink_to = 1.0e300)
+        @test s.slots_compacted == 0
+        @test _cap(pool.float64.vectors[1]) >= 1_000_000   # untouched
+        # shrink_to larger than capacity/used ratio (but not overflowing) also no-ops.
+        @test compact!(pool; shrink_to = 1.0e6).slots_compacted == 0
+    end
+
 end

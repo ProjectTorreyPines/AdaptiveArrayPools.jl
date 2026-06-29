@@ -489,7 +489,7 @@ function AdaptiveArrayPools._maybe_compact_slot!(tp::CuTypedPool{T}, slot::Int, 
     used == 0 && return 0
     cap = AdaptiveArrayPools._slot_capacity(@inbounds tp.vectors[slot])
     cap >= factor * used || return 0
-    target = max(used, ceil(Int, shrink_to * used))
+    target = max(used, ceil(Int, min(Float64(cap), shrink_to * used)))   # clamp to [used, cap]
     reclaim = (cap - target) * _aligned_sizeof(T)
     reclaim >= min_bytes || return 0
     AdaptiveArrayPools._compact_slot!(tp, slot, target, used)
