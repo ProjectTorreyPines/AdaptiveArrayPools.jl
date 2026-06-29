@@ -4,12 +4,12 @@
 #
 # A single global Timer periodically *requests* compaction by setting each live
 # pool's `@atomic _compact_requested` flag (via a WeakRef registry). Each pool's
-# owner task *executes* the request — the full `compact!` — at its next
-# `_current_depth == 1` scope-exit safepoint, where nothing is borrowed.
+# owner task *executes* the request — the full `compact!` — at its next `@with_pool`
+# ENTRY (the `_current_depth == 1` safepoint), where nothing is borrowed.
 #
-# Tier 1 (compile-time): `AUTO_COMPACT` gates whether the scope-exit flag check is
+# Tier 1 (compile-time): `AUTO_COMPACT` gates whether the scope-entry flag check is
 # emitted (macros.jl) and whether pools register (task_local_pool.jl). Default ON
-# (~0.6 ns/exit); set the Preference false to compile it OUT (full DCE → zero cost).
+# (~0.6 ns/entry); set the Preference false to compile it OUT (full DCE → zero cost).
 # Tier 2 (runtime): `enable_auto_compact!` / `disable_auto_compact!`.
 # ==============================================================================
 
@@ -18,8 +18,8 @@ using Preferences: @load_preference
 """
     AUTO_COMPACT::Bool
 
-Compile-time master switch (Tier 1) for auto-compaction. Default `true`: the scope-exit
-flag check is emitted (a ~0.6 ns inlined check per `@with_pool` exit), new task-local
+Compile-time master switch (Tier 1) for auto-compaction. Default `true`: the scope-entry
+flag check is emitted (a ~0.6 ns inlined check per `@with_pool` entry), new task-local
 pools auto-register, and `__init__` auto-starts the background Timer. Set `false` in
 `LocalPreferences.toml` (then restart) to compile the feature OUT entirely — the hook is
 dead-code-eliminated, restoring zero hot-path cost:
@@ -56,7 +56,7 @@ Add `pool` to the auto-compact registry (under lock) so the background Timer's s
 will flag it. Called from the task-local-pool slow path when `AUTO_COMPACT` is on
 (one entry per task-local pool).
 """
-function register_auto_compact!(pool)
+function register_auto_compact!(pool::AdaptiveArrayPool)
     lock(() -> push!(_AUTO_COMPACT_REGISTRY, WeakRef(pool)), _AUTO_COMPACT_LOCK)
     return nothing
 end
@@ -74,7 +74,7 @@ function _auto_compact_sweep!(_timer)
                 pop!(_AUTO_COMPACT_REGISTRY)          # dead → swap-remove
             else
                 p = pool::AdaptiveArrayPool
-                @atomic p._compact_requested = true   # request compaction
+                @atomic :monotonic p._compact_requested = true   # request compaction
                 i += 1
             end
         end
@@ -82,30 +82,39 @@ function _auto_compact_sweep!(_timer)
     return nothing
 end
 
-# Owner-side execution: reset the flag BEFORE the work (so a concurrent sweep's
-# re-request is not lost), then run the full configured `compact!`. Called at the
-# `_current_depth == 1` safepoint by the macro hook (Phase 3) — the depth guard is the
-# caller's. Returns nothing; the summary is discarded (no allocation).
+# Owner-side execution: reset the flag BEFORE the work (so a concurrent sweep's re-request
+# is not lost), snapshot the config under the lock (it may be rewritten from another thread
+# by `enable_auto_compact!`), then run the full `compact!`. Wrapped in try/catch so a
+# background-maintenance failure (e.g. OOM allocating the new backing) is logged and the
+# cycle skipped — it must never surface as a user-visible error at the `@with_pool` boundary.
+# Returns nothing; the summary is discarded (no allocation).
 function _run_auto_compact!(pool::AdaptiveArrayPool)
-    @atomic pool._compact_requested = false
-    cfg = _AUTO_COMPACT_CONFIG
-    compact!(
-        pool;
-        factor = cfg.factor, shrink_to = cfg.shrink_to,
-        min_bytes = cfg.min_bytes, active = cfg.active,
-    )
+    @atomic :monotonic pool._compact_requested = false
+    factor, shrink_to, min_bytes, active = lock(_AUTO_COMPACT_LOCK) do
+        cfg = _AUTO_COMPACT_CONFIG
+        (cfg.factor, cfg.shrink_to, cfg.min_bytes, cfg.active)
+    end
+    try
+        compact!(pool; factor, shrink_to, min_bytes, active)
+    catch e
+        @warn "auto-compact failed; skipping this cycle" exception = (e, catch_backtrace()) maxlog = 3
+    end
     return nothing
 end
 
-# Scope-exit hook body, generated into every `@with_pool` exit (gated by AUTO_COMPACT).
-# At the `_current_depth == 1` safepoint, run a flagged pool's compaction. `@inline` so
-# the common case (flag clear) is a cheap inlined atomic-read + compare; the cold
-# `_run_auto_compact!` stays a non-inlined call. The `::Any` fallback keeps the SHARED
-# `@with_pool` codegen safe for non-CPU (GPU) pools — they no-op here, and a future phase
-# adds their own methods.
+# Scope-ENTRY hook body, generated before the checkpoint in every `@with_pool` (gated by
+# AUTO_COMPACT). At the `_current_depth == 1` safepoint (entering the outermost scope from
+# global), run a flagged pool's compaction. Servicing the request at entry handles EVERY
+# exit type of the previous scope — normal / early return / break / continue / exception —
+# with a single hook point, and never runs compaction inside a `finally` during unwind.
+# `@inline` so the common case (flag clear) is a cheap inlined monotonic read + compare; the
+# cold `_run_auto_compact!` stays a non-inlined call. The `::Any` fallback keeps the SHARED
+# `@with_pool` codegen safe for non-CPU (GPU) pools — they no-op here; a future phase adds
+# their own methods. `:monotonic` suffices: the flag is a one-way eventual-visibility signal
+# with no cross-field ordering invariant (cheaper than seq-cst on weak-ordered CPUs).
 @inline _maybe_auto_compact!(::Any) = nothing
 @inline function _maybe_auto_compact!(pool::AdaptiveArrayPool)
-    if (@atomic pool._compact_requested) && pool._current_depth == 1
+    if (@atomic :monotonic pool._compact_requested) && pool._current_depth == 1
         _run_auto_compact!(pool)
     end
     return nothing
@@ -127,13 +136,19 @@ function _safe_auto_compact_sweep!(timer)
     return nothing
 end
 
+# Lock-guarded timer lifecycle: the firing callback and concurrent enable!/disable! must not
+# interleave a read-modify-write on `_AUTO_COMPACT_TIMER` (→ a leaked or double-closed Timer).
 function _start_auto_compact_timer!(interval::Real)
-    _stop_auto_compact_timer!()                                   # replace any existing
-    _AUTO_COMPACT_TIMER[] = Timer(_safe_auto_compact_sweep!, interval; interval = interval)
+    lock(_AUTO_COMPACT_LOCK) do
+        _stop_auto_compact_timer_unlocked!()                      # replace any existing
+        _AUTO_COMPACT_TIMER[] = Timer(_safe_auto_compact_sweep!, interval; interval = interval)
+    end
     return nothing
 end
 
-function _stop_auto_compact_timer!()
+_stop_auto_compact_timer!() = (lock(_stop_auto_compact_timer_unlocked!, _AUTO_COMPACT_LOCK); nothing)
+
+function _stop_auto_compact_timer_unlocked!()
     t = _AUTO_COMPACT_TIMER[]
     if t !== nothing
         close(t)
@@ -148,18 +163,21 @@ end
 
 Start (or restart) the background auto-compact `Timer` with the given config. Every
 `interval` seconds it flags every registered pool; each pool then runs the full
-`compact!` at its next `_current_depth == 1` scope-exit safepoint.
+`compact!` at its next `@with_pool` **entry** (the `_current_depth == 1` safepoint).
 
-Requires the `auto_compact` compile-time Preference (`AUTO_COMPACT`) for the scope-exit
+Requires the `auto_compact` compile-time Preference (`AUTO_COMPACT`) for the scope-entry
 hook and pool auto-registration. With the Preference off this warns and the timer still
 runs but stays inert unless you `register_auto_compact!` pools manually.
 
-!!! note "What gets compacted, and when"
+!!! note "What gets compacted, when, and the zero-alloc trade-off"
     Auto-compaction targets the **task-local pool** (`get_task_local_pool()`) only — the
     pool `@with_pool` uses and the one that auto-registers. A hand-made `AdaptiveArrayPool()`
     is never registered and never auto-compacted; call `compact!` on it directly. The work
-    runs at `@with_pool` scope exits (`_current_depth == 1`), so an idle task with no
-    `@with_pool` activity won't compact until it next exits a scope.
+    runs at a `@with_pool` **entry** (`_current_depth == 1`), so an idle task with no
+    `@with_pool` activity won't compact until it next enters a scope. Because a compaction
+    allocates the new right-sized backing(s), a `@with_pool` that services a pending request
+    is **not** strictly zero-allocation; set `auto_compact = false` (Preference) for a
+    guaranteed-zero-alloc hot path.
 
 See also [`disable_auto_compact!`](@ref), [`auto_compact_enabled`](@ref).
 """
@@ -167,12 +185,14 @@ function enable_auto_compact!(;
         interval::Real = 30.0, factor::Real = 10, shrink_to::Real = 1.5,
         min_bytes::Int = 2^20, active::Bool = true,
     )
-    AUTO_COMPACT || @warn "enable_auto_compact!: the `auto_compact` Preference is off — the scope-exit hook is compiled out and pools won't auto-register. The timer runs but stays inert unless you register pools manually. Set the Preference and restart to activate."
-    cfg = _AUTO_COMPACT_CONFIG
-    cfg.factor = Float64(factor)
-    cfg.shrink_to = Float64(shrink_to)
-    cfg.min_bytes = min_bytes
-    cfg.active = active
+    AUTO_COMPACT || @warn "enable_auto_compact!: the `auto_compact` Preference is off — the scope-entry hook is compiled out and pools won't auto-register. The timer runs but stays inert unless you register pools manually. Set the Preference and restart to activate." maxlog = 1
+    lock(_AUTO_COMPACT_LOCK) do
+        cfg = _AUTO_COMPACT_CONFIG
+        cfg.factor = Float64(factor)
+        cfg.shrink_to = Float64(shrink_to)
+        cfg.min_bytes = min_bytes
+        cfg.active = active
+    end
     _start_auto_compact_timer!(interval)
     return nothing
 end

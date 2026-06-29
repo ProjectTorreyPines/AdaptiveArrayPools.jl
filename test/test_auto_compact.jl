@@ -9,7 +9,7 @@ import AdaptiveArrayPools as AAP
 #
 # ONE global Timer sweeps a Vector{WeakRef} registry, setting each live pool's
 # `@atomic _compact_requested` flag. Each pool's owner task runs the full compact!
-# at its next `_current_depth == 1` scope-exit safepoint (the macro hook).
+# at its next `@with_pool` entry (the `_current_depth == 1` safepoint; the macro hook).
 #
 # AUTO_COMPACT defaults to `true`, so __init__ auto-starts the timer and the
 # @with_pool hook is live. We stop that timer up front so each testset controls it
@@ -140,7 +140,7 @@ AAP.disable_auto_compact!()   # stop the __init__-started timer for deterministi
         _clear_registry!()
     end
 
-    # ── Scope-exit hook ──────────────────────────────────────────────────────
+    # ── Scope-entry hook ─────────────────────────────────────────────────────
     @testset "_maybe_auto_compact! fires only at _current_depth == 1" begin
         pool = _inactive_bloated(1_000_000, 100)
         checkpoint!(pool)                                    # depth → 2
@@ -166,7 +166,7 @@ AAP.disable_auto_compact!()   # stop the __init__-started timer for deterministi
         @test AAP._maybe_auto_compact!("not a pool") === nothing
     end
 
-    @testset "macro wires the gated scope-exit hook into @with_pool" begin
+    @testset "macro wires the gated scope-entry hook into @with_pool" begin
         s = string(
             @macroexpand @with_pool pool begin
                 x = acquire!(pool, Float64, 4)
@@ -216,7 +216,7 @@ AAP.disable_auto_compact!()   # stop the __init__-started timer for deterministi
         # the "enable! flags registered pools" test). This exercises the unique end-to-end
         # piece: the MACRO-emitted hook firing at a real @with_pool exit and running compact!.
         @atomic pool._compact_requested = true
-        @with_pool p begin                                   # scope exit at depth 1 → hook fires
+        @with_pool p begin                                   # scope ENTRY at depth 1 → hook fires
             acquire!(p, Float64, 4)
         end
 
@@ -224,6 +224,78 @@ AAP.disable_auto_compact!()   # stop the __init__-started timer for deterministi
         @test _cap(pool.float64.vectors[1]) < cap0           # auto-compacted, no manual compact!
         empty!(pool)
         _clear_registry!()
+    end
+
+    @testset "request is serviced for scopes that early return / break" begin
+        # The scope-ENTRY hook services a pending flag when the NEXT @with_pool is entered at
+        # depth 1, regardless of how the previous scope exited — so a scope that early-returns
+        # or breaks (which skip the normal exit path) still gets compacted at its entry.
+        pool = get_task_local_pool()
+        AAP.disable_auto_compact!()
+
+        empty!(pool)                                         # early RETURN
+        @with_pool p begin
+            x = acquire!(p, Float64, 1_000_000); x .= 0.0
+        end
+        @with_pool p begin
+            x = acquire!(p, Float64, 100); x .= 0.0
+        end
+        cap0 = _cap(pool.float64.vectors[1])
+        @atomic pool._compact_requested = true
+        ret() = @with_pool p begin
+            acquire!(p, Float64, 4)
+            return 42
+        end
+        @test ret() == 42
+        @test (@atomic pool._compact_requested) == false     # serviced at the next scope ENTRY
+        @test _cap(pool.float64.vectors[1]) < cap0
+
+        empty!(pool)                                         # early BREAK
+        @with_pool p begin
+            x = acquire!(p, Float64, 1_000_000); x .= 0.0
+        end
+        @with_pool p begin
+            x = acquire!(p, Float64, 100); x .= 0.0
+        end
+        cap1 = _cap(pool.float64.vectors[1])
+        @atomic pool._compact_requested = true
+        for _ in 1:3
+            @with_pool p begin
+                acquire!(p, Float64, 4)
+                break
+            end
+        end
+        @test (@atomic pool._compact_requested) == false     # serviced at the scope ENTRY
+        @test _cap(pool.float64.vectors[1]) < cap1
+        empty!(pool)
+    end
+
+    @testset "@safe_with_pool fires the hook during exception unwind (and preserves it)" begin
+        pool = get_task_local_pool()
+        AAP.disable_auto_compact!()
+        empty!(pool)
+        @with_pool p begin
+            x = acquire!(p, Float64, 1_000_000); x .= 0.0
+        end
+        @with_pool p begin
+            x = acquire!(p, Float64, 100); x .= 0.0
+        end
+        cap0 = _cap(pool.float64.vectors[1])
+        @atomic pool._compact_requested = true
+        threw = false
+        try
+            @safe_with_pool p begin
+                acquire!(p, Float64, 4)
+                error("boom")
+            end
+        catch e
+            threw = true
+            @test e isa ErrorException                       # original exception NOT masked
+        end
+        @test threw
+        @test (@atomic pool._compact_requested) == false     # hook fired at scope ENTRY (before the throw)
+        @test _cap(pool.float64.vectors[1]) < cap0
+        empty!(pool)
     end
 end
 
