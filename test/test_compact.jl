@@ -304,6 +304,47 @@ const _ZERO_COMPACT = (; slots_compacted = 0, bytes_reclaimed = 0, gc_triggered 
         @test _cap(pool.float64.vectors[1]) == 150
     end
 
+    @testset "active=true: per-slot copy decision (active data preserved, inactive shrinks)" begin
+        # The active-vs-inactive copy decision is PER SLOT (slot ≤ n_active ⇒ active).
+        # Build two Float64 slots BOTH bloated, then hold ONLY slot 1 active while slot
+        # 2 stays inactive. active=true must shrink BOTH, copy-preserve the held slot's
+        # live data, and the inactive slot must still re-acquire correctly afterward.
+        # (Inactive contents are dead — never asserted — so compaction may skip copying
+        #  them; this pins that the live/dead choice keys off n_active per slot.)
+        pool = AdaptiveArrayPool{0}()
+        checkpoint!(pool)                            # round 1: grow two slots to 1M
+        acquire!(pool, Float64, 1_000_000)
+        acquire!(pool, Float64, 1_000_000)
+        rewind!(pool)
+        checkpoint!(pool)                            # round 2: reuse both at 100 → bloated
+        acquire!(pool, Float64, 100)
+        acquire!(pool, Float64, 100)
+        rewind!(pool)
+        checkpoint!(pool)                            # round 3: hold ONLY slot 1 active
+        h1 = acquire!(pool, Float64, 100)
+        h1 .= 1.0:100.0
+        tp = pool.float64
+        @test tp.n_active == 1                       # slot 1 active, slot 2 inactive
+        @test _cap(tp.vectors[1]) >= 1_000_000
+        @test _cap(tp.vectors[2]) >= 1_000_000
+
+        s = compact!(pool; active = true)
+
+        @test s.slots_compacted == 2                 # BOTH slots shrink
+        @test _cap(tp.vectors[1]) == 150             # active slot 1 shrunk
+        @test _cap(tp.vectors[2]) == 150             # inactive slot 2 shrunk
+        @test h1 == collect(1.0:100.0)               # ACTIVE slot: live data preserved
+        rewind!(pool)
+
+        checkpoint!(pool)                            # compacted INACTIVE slot re-acquires OK
+        acquire!(pool, Float64, 120)                 # slot 1
+        r2 = acquire!(pool, Float64, 120)            # slot 2 (was inactive, compacted)
+        r2 .= 5.0
+        @test length(r2) == 120
+        @test all(r2 .== 5.0)
+        rewind!(pool)
+    end
+
     @testset "varargs compact!(pool, T...) compacts each listed type" begin
         pool = _inactive_bloated_pool(1_000_000, 100)            # Float64 inactive bloat
         checkpoint!(pool); ai = acquire!(pool, Int64, 1_000_000); ai .= 0; rewind!(pool)

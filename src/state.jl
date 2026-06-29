@@ -879,10 +879,16 @@ end
 # Shrink one slot's backing to capacity `target` in place: allocate a smaller
 # `Memory`, copy the live `used` elements, swap the backing `Vector`'s `:ref`/`:size`
 # (identity preserved → views follow), then re-sync the slot's cached wrappers.
-function _compact_slot!(tp::TypedPool{T}, slot::Int, target::Int, used::Int) where {T}
+# `copy_live`: copy the `used` live elements into the new backing. TRUE for ACTIVE
+# slots — their data is still held and must survive the shrink. FALSE for INACTIVE
+# slots: their contents are dead (the next `acquire!` returns uninitialized memory the
+# caller fills), so copying `used` elements is pure waste. Skipping it makes inactive
+# compaction allocation-only (no `memcpy`) — the only zero-copy shrink available, since
+# Julia's `Memory` cannot be shrunk in place (any real reclaim must allocate anew).
+function _compact_slot!(tp::TypedPool{T}, slot::Int, target::Int, used::Int, copy_live::Bool) where {T}
     v = @inbounds tp.vectors[slot]
     nv = Vector{T}(undef, target)
-    copyto!(nv, 1, v, 1, used)
+    copy_live && copyto!(nv, 1, v, 1, used)
     setfield!(v, :size, (target,))
     setfield!(v, :ref, getfield(nv, :ref))
     for wrappers in tp.arr_wrappers
@@ -910,7 +916,8 @@ function _maybe_compact_slot!(tp::TypedPool{T}, slot::Int, factor::Real, shrink_
     target = max(used, ceil(Int, min(Float64(cap), shrink_to * used)))
     reclaim = (cap - target) * sizeof(T)
     reclaim >= min_bytes || return 0
-    _compact_slot!(tp, slot, target, used)
+    # Copy live data only for ACTIVE slots (1:n_active); inactive slots hold dead data.
+    _compact_slot!(tp, slot, target, used, slot <= tp.n_active)
     return reclaim
 end
 
