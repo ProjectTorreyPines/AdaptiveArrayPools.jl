@@ -33,6 +33,7 @@ export DisabledPool, DISABLED_CPU, pooling_enabled  # Disabled pool support
     include("bitarray.jl")
     include("convenience.jl")
     include("state.jl")
+    include("auto_compact.jl")
     include("task_local_pool.jl")
     include("debug.jl")
     include("macros.jl")
