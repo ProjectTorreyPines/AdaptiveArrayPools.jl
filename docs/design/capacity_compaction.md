@@ -54,12 +54,17 @@ compacting active slots (Tier 2, §7).
 
 For a backing vector `v = tp.vectors[slot]`:
 
-- **used** = the largest **cached wrapper** size for the slot —
-  `max(length(w))` over `tp.arr_wrappers[N][slot]`. **Not** `length(v)`:
-  `_claim_slot!` only ever *grows* the backing (`if length(vec) < n; resize!`,
-  `acquire.jl:73`), so `length(v)` is the **high-water mark**, while the size
-  actually in use lives in the wrapper's `:size`. (Verified by TDD — re-acquiring a
-  slot at a small size leaves `length(v)` at the old large value.)
+- **used** = the slot's **current logical extent**, recorded per-slot in
+  `tp.slot_extents[slot]` by `_claim_slot!` (`_slot_used`). This is the size of the
+  most recent claim and covers **both** acquisition paths — `acquire!` (Array
+  wrapper) *and* `acquire_view!` (which returns an **uncached** `SubArray`/
+  `ReshapedArray`). **Not** `length(v)`: `_claim_slot!` only ever *grows* the backing
+  (`if length(vec) < n; resize!`, `acquire.jl:73`), so `length(v)` is the **high-water
+  mark**. An earlier design read `used` from the cached wrappers only; that
+  **under-counted a live view's extent** (views cache no wrapper) and let
+  `compact!(active=true)` shrink a backing below a held view → OOB. `slot_extents`
+  fixes this (and, being a `Vector{Int}`, makes `_slot_used` return a concrete `Int`,
+  keeping the gate arithmetic allocation-free). (Verified by TDD.)
 - **capacity** = allocated buffer length (`length(getfield(v, :ref).mem)` on 1.12;
   wrapped in `_slot_capacity`).
 

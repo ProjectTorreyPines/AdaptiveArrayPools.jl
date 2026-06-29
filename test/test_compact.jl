@@ -7,9 +7,11 @@ using AdaptiveArrayPools: checkpoint!, rewind!
 # Design: docs/design/capacity_compaction.md  |  Plan: docs/plans/PLAN_compact.md
 #
 # Model: a slot's backing Vector length is the HIGH-WATER mark (largest ever
-# acquired; _claim_slot! only grows). The CURRENT use is the wrapper's size. So a
-# slot is bloated when backing capacity ≫ current wrapper size. compact! shrinks the
-# backing to ~shrink_to×(wrapper size) in place and re-syncs wrappers.
+# acquired; _claim_slot! only grows). The CURRENT use is recorded per-slot in
+# `tp.slot_extents` by _claim_slot! — covering BOTH acquire! (Array) and acquire_view!
+# (uncached SubArray/ReshapedArray). So a slot is bloated when backing capacity ≫
+# slot_extents[slot]; compact! shrinks the backing to ~shrink_to×(that extent) in
+# place and re-syncs wrappers (held views follow via preserved Vector identity).
 # ==============================================================================
 
 # Allocated backing capacity (Memory length).
@@ -311,6 +313,53 @@ const _ZERO_COMPACT = (; slots_compacted = 0, bytes_reclaimed = 0, gc_triggered 
     @testset "DisabledPool varargs is a zero-summary no-op" begin
         @test compact!(DISABLED_CPU, Float64, Int64) == _ZERO_COMPACT
         @test compact!(DISABLED_CPU, Float64, Int64; active = true) == _ZERO_COMPACT
+    end
+
+    # ── Regression: active=true must not shrink below a live acquire_view! extent ──
+    # A slot can carry a SMALL cached Array wrapper (from a prior acquire!) AND a
+    # LARGER live view (from acquire_view!, which returns an uncached SubArray /
+    # ReshapedArray). `_slot_used` only scans the cached Array wrappers, so it
+    # under-reports the live extent and `compact!(active=true)` could shrink the
+    # backing below the view → out-of-bounds. Assertions are length-only (never index
+    # the view) so a buggy run reports a failure instead of segfaulting the runner.
+    @testset "active=true respects a live 1-D acquire_view! extent" begin
+        pool = AdaptiveArrayPool{0}()
+        # slot 1: small cached Array wrapper (100) over a large high-water backing (1M)
+        checkpoint!(pool); a = acquire!(pool, Float64, 1_000_000); a .= 0.0; rewind!(pool)
+        checkpoint!(pool); a2 = acquire!(pool, Float64, 100); a2 .= 0.0; rewind!(pool)
+        tp = pool.float64
+        @test length(tp.arr_wrappers[1][1]) == 100       # small cached wrapper
+        @test _cap(tp.vectors[1]) >= 1_000_000
+
+        checkpoint!(pool)
+        v = acquire_view!(pool, Float64, 1000)           # large uncached view on the slot
+        @test length(v) == 1000
+        @test tp.n_active == 1                           # slot 1 is ACTIVE
+
+        compact!(pool; active = true)
+
+        # SAFE INVARIANT: the backing must still cover the live view (no OOB).
+        @test _cap(tp.vectors[1]) >= length(v)
+        @test length(tp.vectors[1]) >= length(v)
+        rewind!(pool)
+    end
+
+    @testset "active=true respects a live N-D acquire_view! (ReshapedArray) extent" begin
+        pool = AdaptiveArrayPool{0}()
+        checkpoint!(pool); a = acquire!(pool, Float64, 1_000_000); a .= 0.0; rewind!(pool)
+        checkpoint!(pool); a2 = acquire!(pool, Float64, 100); a2 .= 0.0; rewind!(pool)
+        tp = pool.float64
+
+        checkpoint!(pool)
+        vw = acquire_view!(pool, Float64, 40, 25)        # ReshapedArray, extent 1000
+        @test length(vw) == 1000
+        @test tp.n_active == 1
+
+        compact!(pool; active = true)
+
+        @test _cap(tp.vectors[1]) >= length(vw)
+        @test length(tp.vectors[1]) >= length(vw)
+        rewind!(pool)
     end
 
 end

@@ -67,12 +67,14 @@ Returns the slot index. This is the shared primitive for all acquisition paths
     idx = tp.n_active
     if idx > length(tp.vectors)
         push!(tp.vectors, allocate_vector(tp, n))
+        push!(tp.slot_extents, n)        # parallel to `vectors`; records this slot's extent
         _check_pool_growth(tp, idx)
     else
         @inbounds vec = tp.vectors[idx]
         if length(vec) < n
             resize!(vec, n)
         end
+        @inbounds tp.slot_extents[idx] = n   # current logical extent (for compact!/_slot_used)
     end
     return idx
 end
@@ -89,7 +91,10 @@ the wrapper points to a different array's memory via `setfield!(:ref)`.
     idx = tp.n_active
     if idx > length(tp.vectors)
         push!(tp.vectors, Vector{T}(undef, 0))
+        push!(tp.slot_extents, 0)        # placeholder slot: backing points elsewhere (reshape!)
         _check_pool_growth(tp, idx)
+    else
+        @inbounds tp.slot_extents[idx] = 0
     end
     return idx
 end

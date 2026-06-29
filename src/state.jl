@@ -508,6 +508,7 @@ Restores sentinel values for 1-based sentinel pattern.
 function Base.empty!(tp::TypedPool)
     empty!(tp.vectors)
     empty!(tp.arr_wrappers)
+    empty!(tp.slot_extents)
     tp.n_active = 0
     # Restore sentinel values (1-based sentinel pattern)
     empty!(tp._checkpoint_n_active)
@@ -786,6 +787,14 @@ function _inactive_storage_bytes(tp::AbstractTypedPool, first::Int, last::Int)
     return total
 end
 
+# Truncate `tp.slot_extents` parallel to `tp.vectors` when trimming. `TypedPool` carries
+# the per-slot extent record; other pools (e.g. `BitTypedPool`) do not — no-op for them.
+_trim_slot_extents!(::AbstractTypedPool, ::Int) = nothing
+@inline function _trim_slot_extents!(tp::TypedPool, keep::Int)
+    length(tp.slot_extents) > keep && resize!(tp.slot_extents, keep)
+    return nothing
+end
+
 # Trim one typed pool: drop inactive backing-vector and wrapper references by
 # truncating `tp.vectors` and the wrapper caches to the active count. Returns the
 # raw `(slots, wrappers, bytes)` counts (bytes measured before truncation). The
@@ -800,6 +809,7 @@ function _trim_counts!(tp::AbstractTypedPool)::NTuple{3, Int}
     if released > 0
         bytes = _inactive_storage_bytes(tp, keep + 1, old_len)
         resize!(tp.vectors, keep)
+        _trim_slot_extents!(tp, keep)   # keep the extent record parallel to `vectors`
     end
     return (max(0, released), wrappers_released, bytes)
 end
@@ -844,8 +854,8 @@ end
 # ==============================================================================
 #
 # A slot's backing `Vector` length is the *high-water mark* (the largest size ever
-# acquired — `_claim_slot!` only grows it). The *current logical size* lives in the
-# cached wrapper(s) (`acquire!` sets `wrapper.size`). So a slot is "bloated" when its
+# acquired — `_claim_slot!` only grows it). The *current logical size* is recorded
+# per-slot in `tp.slot_extents` by `_claim_slot!`. So a slot is "bloated" when its
 # backing capacity is far larger than the size actually in use. `compact!` returns
 # that excess by swapping the backing's `Memory` for a right-sized one in place
 # (keeping the `Vector` object's identity, so views following `parent` stay valid)
@@ -854,18 +864,16 @@ end
 # Allocated backing capacity (Memory length) for a CPU backing vector.
 @inline _slot_capacity(v::Vector) = length(getfield(v, :ref).mem)
 
-# Largest currently-cached logical size for a slot = the size compaction must
-# preserve (every held wrapper indexes into `1:used`). 0 if the slot has no wrapper.
-function _slot_used(tp::AbstractTypedPool, slot::Int)
-    used = 0
-    for wrappers in tp.arr_wrappers
-        wrappers === nothing && continue
-        slot <= length(wrappers) || continue
-        w = @inbounds wrappers[slot]
-        w === nothing && continue
-        used = max(used, length(w))
-    end
-    return used
+# Current logical extent of a slot = the size compaction must preserve. This is the
+# size of the slot's most recent `_claim_slot!`, recorded in `tp.slot_extents` for
+# BOTH the `acquire!` (Array wrapper) and `acquire_view!` (uncached SubArray /
+# ReshapedArray) paths — so a live view's extent is never under-counted (the bug a
+# wrapper-only scan had: `acquire_view!` caches no wrapper). Returns `::Int` — a
+# concrete `Vector{Int}` read, keeping the gate arithmetic in `_maybe_compact_slot!`
+# allocation-free (a `length(::Any)` wrapper scan boxed it). 0 if unrecorded.
+@inline function _slot_used(tp::TypedPool, slot::Int)::Int
+    ext = tp.slot_extents
+    return slot <= length(ext) ? (@inbounds ext[slot]) : 0
 end
 
 # Shrink one slot's backing to capacity `target` in place: allocate a smaller
