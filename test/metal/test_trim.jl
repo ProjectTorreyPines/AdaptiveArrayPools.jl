@@ -119,4 +119,27 @@
         rewind!(pool)
     end
 
+    @testset "trim!(force_gc=true) actually frees Metal device memory" begin
+        # Regression guard for the wrapper double-copy bug: an extra copy() of the
+        # backing DataRef pinned the buffer refcount so it never reached 0, and
+        # device memory was never reclaimed (by trim! OR empty!). This asserts the
+        # device allocation actually drops.
+        pool = MetalAdaptiveArrayPool{0, METAL_STORAGE}()
+        dev = Metal.device()
+        GC.gc(true)
+        base = Int(dev.currentAllocatedSize)
+
+        checkpoint!(pool)
+        v = acquire!(pool, Float32, 16_777_216)   # 64 MiB
+        fill!(v, 1.0f0)
+        Metal.synchronize()
+        grown = Int(dev.currentAllocatedSize)
+        @test grown - base >= 64_000_000          # device memory grew by the allocation
+
+        rewind!(pool)
+        trim!(pool; force_gc = true)
+        GC.gc(true)
+        @test Int(dev.currentAllocatedSize) <= grown - 48_000_000   # and was reclaimed
+    end
+
 end

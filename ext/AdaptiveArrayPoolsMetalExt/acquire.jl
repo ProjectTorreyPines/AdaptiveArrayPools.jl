@@ -218,9 +218,12 @@ stores in `arr_wrappers[N][slot]` via `_store_arr_wrapper!` (reuses base module 
         end
     end
 
-    # Cache miss: create wrapper sharing vec's GPU memory
+    # Cache miss: create wrapper sharing vec's GPU memory.
+    # Pass the DataRef directly — the MtlArray constructor already copies/retains
+    # it. An explicit copy() here double-counts the buffer's refcount, so it never
+    # reaches 0 and trim!/empty! cannot free the GPU memory.
     mtl = MtlArray{T, N, S}(
-        copy(getfield(vec, :data)), dims;
+        getfield(vec, :data), dims;
         maxsize = getfield(vec, :maxsize),
         offset = getfield(vec, :offset),
     )
@@ -283,9 +286,11 @@ Zero-allocation reshape for MtlArray using `setfield!`-based wrapper reuse.
         end
     end
 
-    # Cache miss (first call per slot+N): create wrapper, cache forever
+    # Cache miss (first call per slot+N): create wrapper, cache forever.
+    # Pass the DataRef directly (no copy()) — the constructor copies/retains it;
+    # an explicit copy() double-counts the refcount and leaks the buffer.
     mtl = MtlArray{T, N, S}(
-        copy(getfield(A, :data)), dims;
+        getfield(A, :data), dims;
         maxsize = getfield(A, :maxsize),
         offset = getfield(A, :offset),
     )
