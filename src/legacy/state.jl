@@ -790,3 +790,54 @@ trim!(; force_gc::Bool = false) = trim!(get_task_local_pool(); force_gc = force_
 trim!(::DisabledPool; force_gc::Bool = false) = _ZERO_TRIM_SUMMARY
 trim!(::DisabledPool, ::Type{T}; force_gc::Bool = false) where {T} = _ZERO_TRIM_SUMMARY
 trim!(::DisabledPool, types::Type...; force_gc::Bool = false) = _ZERO_TRIM_SUMMARY
+
+# ==============================================================================
+# compact! — no-op on the legacy path (Julia < 1.12)
+# ==============================================================================
+#
+# Modern `compact!` shrinks over-allocated backing capacity in place via
+# `setfield!(:ref/:size)`, which only exists on Julia 1.12+. The legacy pool uses a
+# different N-way cache layout, so `compact!` is a defined-and-exported NO-OP here
+# (returns a zero summary, warns once) to keep the public API callable across the
+# full supported Julia range. Upgrade to Julia 1.12+ for actual capacity compaction.
+
+const _ZERO_COMPACT_SUMMARY = (;
+    slots_compacted = 0, bytes_reclaimed = 0, gc_triggered = false,
+)
+
+function compact!(
+        pool::AdaptiveArrayPool;
+        factor::Real = 10, shrink_to::Real = 1.5, min_bytes::Int = 2^20,
+        force_gc::Bool = false
+    )
+    @warn "compact! is a no-op on Julia < 1.12 (legacy pool architecture). " *
+        "Upgrade to Julia 1.12+ for capacity compaction." maxlog = 1
+    return _ZERO_COMPACT_SUMMARY
+end
+
+compact!(
+    pool::AdaptiveArrayPool, ::Type{T};
+    factor::Real = 10, shrink_to::Real = 1.5, min_bytes::Int = 2^20,
+    force_gc::Bool = false
+) where {T} =
+    compact!(pool; factor = factor, shrink_to = shrink_to, min_bytes = min_bytes, force_gc = force_gc)
+
+compact!(;
+    factor::Real = 10, shrink_to::Real = 1.5, min_bytes::Int = 2^20,
+    force_gc::Bool = false
+) =
+    compact!(
+    get_task_local_pool();
+    factor = factor, shrink_to = shrink_to, min_bytes = min_bytes, force_gc = force_gc
+)
+
+compact!(
+    ::DisabledPool;
+    factor::Real = 10, shrink_to::Real = 1.5, min_bytes::Int = 2^20,
+    force_gc::Bool = false
+) = _ZERO_COMPACT_SUMMARY
+compact!(
+    ::DisabledPool, ::Type{T};
+    factor::Real = 10, shrink_to::Real = 1.5, min_bytes::Int = 2^20,
+    force_gc::Bool = false
+) where {T} = _ZERO_COMPACT_SUMMARY

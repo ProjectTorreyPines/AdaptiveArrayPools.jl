@@ -29,6 +29,31 @@ function _bloated_pool(big::Int, small::Int)
     return pool, b
 end
 
+# Build slot 1 (Float64) bloated AND INACTIVE: grow backing to `big` (high-water),
+# rewind, re-acquire `small` (this sets the cached wrapper's size to `small`), then
+# rewind again so the slot is inactive (n_active == 0) while its backing capacity
+# stays at the `big` high-water mark. An inactive slot is only "bloated" when its
+# LAST logical size (the cached wrapper size) is far below its retained capacity —
+# `acquire(big) → rewind` alone leaves wrapper size == capacity (not bloated).
+function _inactive_bloated_pool(big::Int, small::Int)
+    pool = AdaptiveArrayPool{0}()
+    checkpoint!(pool)
+    a = acquire!(pool, Float64, big)
+    a .= 0.0
+    rewind!(pool)
+    checkpoint!(pool)
+    b = acquire!(pool, Float64, small)
+    b .= 0.0
+    rewind!(pool)
+    return pool
+end
+
+# Concrete public summary shape (mirror of the `trim!` summary test).
+const _COMPACT_SUMMARY = @NamedTuple{
+    slots_compacted::Int, bytes_reclaimed::Int, gc_triggered::Bool,
+}
+const _ZERO_COMPACT = (; slots_compacted = 0, bytes_reclaimed = 0, gc_triggered = false)
+
 @testset "compact!" begin
 
     @testset "primitive: in-place shrink + wrapper re-sync + view follow + GC" begin
@@ -89,6 +114,125 @@ end
         @test AdaptiveArrayPools._maybe_compact_slot!(tp2, 1, 10, 1.5, 2^20) == 0
         @test _cap(tp2.vectors[1]) == cap2           # untouched
         rewind!(pool2)
+    end
+
+    # ── Phase 2: public compact! — Tier 1 (inactive slots only) ────────────────
+
+    @testset "Tier 1: compact!(pool) reclaims inactive bloat" begin
+        pool = _inactive_bloated_pool(1_000_000, 100)
+        tp = pool.float64
+        @test tp.n_active == 0                       # slot 1 is inactive…
+        @test _cap(tp.vectors[1]) >= 1_000_000       # …but retains high-water capacity
+
+        s = compact!(pool)
+
+        @test s.slots_compacted == 1
+        @test s.bytes_reclaimed >= (1_000_000 - 150) * sizeof(Float64)
+        @test s.gc_triggered == false
+        @test _cap(tp.vectors[1]) == 150             # shrunk to ceil(1.5 * 100)
+    end
+
+    @testset "Tier 1 default leaves ACTIVE bloated slots untouched" begin
+        pool, b = _bloated_pool(1_000_000, 100)      # slot 1 is ACTIVE (b held)
+        tp = pool.float64
+        @test tp.n_active == 1
+        cap0 = _cap(tp.vectors[1])
+
+        s = compact!(pool)                           # default scans inactive only
+
+        @test s.slots_compacted == 0
+        @test s.bytes_reclaimed == 0
+        @test _cap(tp.vectors[1]) == cap0            # active slot untouched
+        @test length(b) == 100                       # held wrapper still valid
+        rewind!(pool)
+    end
+
+    @testset "per-type compact!(pool, T) targets only T; guard never creates a pool" begin
+        pool = _inactive_bloated_pool(1_000_000, 100)
+        # also build an inactive-bloated Int64 slot (Int64 is a fixed slot)
+        checkpoint!(pool); ai = acquire!(pool, Int64, 1_000_000); ai .= 0; rewind!(pool)
+        checkpoint!(pool); bi = acquire!(pool, Int64, 100); bi .= 0; rewind!(pool)
+
+        s = compact!(pool, Float64)                  # compact only Float64
+        @test s.slots_compacted == 1
+        @test _cap(pool.float64.vectors[1]) == 150
+        @test _cap(pool.int64.vectors[1]) >= 1_000_000   # Int64 untouched
+
+        # Guard: a never-used fallback type must NOT be registered in `others`.
+        @test !haskey(pool.others, UInt8)
+        n_before = length(pool.others)
+        s2 = compact!(pool, UInt8)
+        @test s2 == _ZERO_COMPACT
+        @test length(pool.others) == n_before
+        @test !haskey(pool.others, UInt8)            # still not created
+    end
+
+    @testset "compact! return value is type-stable (no Any-typed fields)" begin
+        # Mirrors the trim! stability test: the summary is a public return value, so
+        # its fields must infer concrete even though the full-pool form folds over
+        # fixed slots (@generated) AND the `others` Vector{Any} (dynamic dispatch).
+        pool = AdaptiveArrayPool{0}()
+        checkpoint!(pool)
+        acquire!(pool, Float64, 100)
+        acquire!(pool, Int64, 50)
+        acquire!(pool, UInt8, 10)                    # exercises the `others` path
+        rewind!(pool)
+
+        rt = only(Base.return_types(compact!, (typeof(pool),)))
+        @test isconcretetype(rt)
+        @test rt == _COMPACT_SUMMARY
+        @test only(Base.return_types(compact!, (typeof(pool), Type{Float64}))) == _COMPACT_SUMMARY
+
+        @test (@inferred compact!(pool)) isa _COMPACT_SUMMARY
+        @test (@inferred compact!(pool, Float64)) isa _COMPACT_SUMMARY
+    end
+
+    @testset "no-op when nothing is bloated; force_gc sets the flag" begin
+        pool = AdaptiveArrayPool{0}()
+        s = compact!(pool)
+        @test s == _ZERO_COMPACT
+        @test compact!(pool; force_gc = true).gc_triggered == true
+        @test compact!(pool; force_gc = false).gc_triggered == false
+    end
+
+    @testset "DisabledPool zero summary; compact!() uses the task-local pool" begin
+        s = compact!(DISABLED_CPU)
+        @test s == _ZERO_COMPACT
+        @test compact!(DISABLED_CPU, Float64) == _ZERO_COMPACT
+
+        # No-arg form routes to the task-local pool: on an empty one it returns the
+        # zero summary, and force_gc threads through the no-arg overload.
+        pool = get_task_local_pool()
+        empty!(pool)
+        @test compact!() == _ZERO_COMPACT
+        @test compact!(; force_gc = true).gc_triggered == true
+        empty!(pool)                                 # cleanup (task-local is shared)
+    end
+
+    @testset "self-heal: re-acquire after compacting an inactive slot works" begin
+        pool = _inactive_bloated_pool(1_000_000, 100)
+        s = compact!(pool)
+        @test s.slots_compacted == 1
+        @test _cap(pool.float64.vectors[1]) == 150
+
+        # Re-acquire the compacted slot within the shrunk capacity (reuse), then at a
+        # size that forces a regrow — both must yield correct, writable arrays whose
+        # writes land in the backing (wrapper :ref re-synced through the grow).
+        checkpoint!(pool)
+        a = acquire!(pool, Float64, 120)             # 120 <= 150: reuse shrunk buffer
+        a .= 3.0
+        @test length(a) == 120
+        @test all(a .== 3.0)
+        rewind!(pool)
+
+        checkpoint!(pool)
+        b = acquire!(pool, Float64, 5_000)           # 5000 > 150: backing must regrow
+        b .= 7.0
+        @test length(b) == 5_000
+        @test all(b .== 7.0)
+        b[1] = 9.0
+        @test pool.float64.vectors[1][1] == 9.0      # write lands in the regrown backing
+        rewind!(pool)
     end
 
 end
