@@ -808,7 +808,7 @@ const _ZERO_COMPACT_SUMMARY = (;
 function compact!(
         pool::AdaptiveArrayPool;
         factor::Real = 10, shrink_to::Real = 1.5, min_bytes::Int = 2^20,
-        active::Bool = false, force_gc::Bool = false
+        active::Bool = true, force_gc::Bool = false
     )
     @warn "compact! is a no-op on Julia < 1.12 (legacy pool architecture). " *
         "Upgrade to Julia 1.12+ for capacity compaction." maxlog = 1
@@ -818,20 +818,20 @@ end
 compact!(
     pool::AdaptiveArrayPool, ::Type{T};
     factor::Real = 10, shrink_to::Real = 1.5, min_bytes::Int = 2^20,
-    active::Bool = false, force_gc::Bool = false
+    active::Bool = true, force_gc::Bool = false
 ) where {T} =
     compact!(pool; factor = factor, shrink_to = shrink_to, min_bytes = min_bytes, active = active, force_gc = force_gc)
 
 compact!(
     pool::AdaptiveArrayPool, types::Type...;
     factor::Real = 10, shrink_to::Real = 1.5, min_bytes::Int = 2^20,
-    active::Bool = false, force_gc::Bool = false
+    active::Bool = true, force_gc::Bool = false
 ) =
     compact!(pool; factor = factor, shrink_to = shrink_to, min_bytes = min_bytes, active = active, force_gc = force_gc)
 
 compact!(;
     factor::Real = 10, shrink_to::Real = 1.5, min_bytes::Int = 2^20,
-    active::Bool = false, force_gc::Bool = false
+    active::Bool = true, force_gc::Bool = false
 ) =
     compact!(
     get_task_local_pool();
@@ -841,15 +841,15 @@ compact!(;
 compact!(
     ::DisabledPool;
     factor::Real = 10, shrink_to::Real = 1.5, min_bytes::Int = 2^20,
-    active::Bool = false, force_gc::Bool = false
+    active::Bool = true, force_gc::Bool = false
 ) = _ZERO_COMPACT_SUMMARY
 compact!(
     ::DisabledPool, ::Type{T};
     factor::Real = 10, shrink_to::Real = 1.5, min_bytes::Int = 2^20,
-    active::Bool = false, force_gc::Bool = false
+    active::Bool = true, force_gc::Bool = false
 ) where {T} = _ZERO_COMPACT_SUMMARY
 compact!(
     ::DisabledPool, types::Type...;
     factor::Real = 10, shrink_to::Real = 1.5, min_bytes::Int = 2^20,
-    active::Bool = false, force_gc::Bool = false
+    active::Bool = true, force_gc::Bool = false
 ) = _ZERO_COMPACT_SUMMARY

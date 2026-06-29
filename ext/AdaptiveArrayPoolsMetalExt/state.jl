@@ -479,7 +479,7 @@ end
 function AdaptiveArrayPools.compact!(
         pool::MetalAdaptiveArrayPool;
         factor::Real = 10, shrink_to::Real = 1.5, min_bytes::Int = 2^20,
-        active::Bool = false, force_gc::Bool = false,
+        active::Bool = true, force_gc::Bool = false,
     )
     # Mirror the Metal `trim!`: Ref accumulators keep the `foreach_fixed_slot`
     # closure box-free over the Metal-specific fixed-slot set, so the returned
@@ -499,7 +499,7 @@ end
 @inline function AdaptiveArrayPools.compact!(
         pool::MetalAdaptiveArrayPool, ::Type{T};
         factor::Real = 10, shrink_to::Real = 1.5, min_bytes::Int = 2^20,
-        active::Bool = false, force_gc::Bool = false,
+        active::Bool = true, force_gc::Bool = false,
     ) where {T}
     counts = AdaptiveArrayPools._compact_one_counts!(pool, T, factor, shrink_to, min_bytes, active)
     force_gc && GC.gc()
@@ -509,7 +509,7 @@ end
 @generated function AdaptiveArrayPools.compact!(
         pool::MetalAdaptiveArrayPool, types::Type...;
         factor::Real = 10, shrink_to::Real = 1.5, min_bytes::Int = 2^20,
-        active::Bool = false, force_gc::Bool = false,
+        active::Bool = true, force_gc::Bool = false,
     )
     n = length(types)
     syms = [Symbol(:c, i) for i in 1:n]

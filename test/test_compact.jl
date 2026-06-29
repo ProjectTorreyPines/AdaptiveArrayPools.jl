@@ -134,18 +134,45 @@ const _ZERO_COMPACT = (; slots_compacted = 0, bytes_reclaimed = 0, gc_triggered 
         @test _cap(tp.vectors[1]) == 150             # shrunk to ceil(1.5 * 100)
     end
 
-    @testset "Tier 1 default leaves ACTIVE bloated slots untouched" begin
-        pool, b = _bloated_pool(1_000_000, 100)      # slot 1 is ACTIVE (b held)
+    @testset "default (active=true) compacts active bloat; active=false opts out" begin
+        # compact!'s purpose is to reclaim from arrays still in use, so the default
+        # reaches active slots too. The factor gate (10×) keeps it from touching
+        # normally-sized arrays (covered by the next testset).
+        pool, b = _bloated_pool(1_000_000, 100)      # slot 1 ACTIVE (b held), cap 1M, used 100
+        b .= 1.0:100.0
         tp = pool.float64
         @test tp.n_active == 1
         cap0 = _cap(tp.vectors[1])
 
-        s = compact!(pool)                           # default scans inactive only
+        # active=false explicitly opts out → active slot untouched
+        s_off = compact!(pool; active = false)
+        @test s_off.slots_compacted == 0
+        @test _cap(tp.vectors[1]) == cap0
+
+        # default compacts the held active slot in place; held wrapper follows
+        s = compact!(pool)
+        @test s.slots_compacted == 1
+        @test _cap(tp.vectors[1]) == 150
+        @test b == collect(1.0:100.0)                # data intact + re-synced
+        b[1] = 99.0
+        @test tp.vectors[1][1] == 99.0               # writes into the new buffer
+        rewind!(pool)
+    end
+
+    @testset "default leaves a normally-sized active array alone (factor gate)" begin
+        # Safety net for the active=true default: a slot whose capacity ≈ its use
+        # (not 10× bloated) is never compacted, so live arrays are not churned.
+        pool = AdaptiveArrayPool{0}()
+        checkpoint!(pool)
+        a = acquire!(pool, Float64, 100)             # capacity ≈ use, NOT bloated
+        a .= 5.0
+        cap0 = _cap(pool.float64.vectors[1])
+
+        s = compact!(pool)                           # default active=true, but factor gate skips
 
         @test s.slots_compacted == 0
-        @test s.bytes_reclaimed == 0
-        @test _cap(tp.vectors[1]) == cap0            # active slot untouched
-        @test length(b) == 100                       # held wrapper still valid
+        @test _cap(pool.float64.vectors[1]) == cap0
+        @test a == fill(5.0, 100)                    # untouched, still valid
         rewind!(pool)
     end
 
