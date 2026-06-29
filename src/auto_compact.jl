@@ -93,3 +93,83 @@ function _run_auto_compact!(pool::AdaptiveArrayPool)
     )
     return nothing
 end
+
+# ── Timer lifecycle (Tier 2 runtime control) ─────────────────────────────────
+
+# Handle to the single global auto-compact Timer (`nothing` = stopped).
+const _AUTO_COMPACT_TIMER = Ref{Union{Nothing, Timer}}(nothing)
+
+# Timer callback: the sweep wrapped so a throw can't silently kill the Timer (an
+# uncaught error in a Julia Timer callback stops it permanently).
+function _safe_auto_compact_sweep!(timer)
+    try
+        _auto_compact_sweep!(timer)
+    catch e
+        @warn "auto-compact sweep failed (timer continues)" exception = (e, catch_backtrace()) maxlog = 3
+    end
+    return nothing
+end
+
+function _start_auto_compact_timer!(interval::Real)
+    _stop_auto_compact_timer!()                                   # replace any existing
+    _AUTO_COMPACT_TIMER[] = Timer(_safe_auto_compact_sweep!, interval; interval = interval)
+    return nothing
+end
+
+function _stop_auto_compact_timer!()
+    t = _AUTO_COMPACT_TIMER[]
+    if t !== nothing
+        close(t)
+        _AUTO_COMPACT_TIMER[] = nothing
+    end
+    return nothing
+end
+
+"""
+    enable_auto_compact!(; interval = 30.0, factor = 10, shrink_to = 1.5,
+                           min_bytes = 2^20, active = true)
+
+Start (or restart) the background auto-compact `Timer` with the given config. Every
+`interval` seconds it flags every registered pool; each pool then runs the full
+`compact!` at its next `_current_depth == 1` scope-exit safepoint.
+
+Requires the `auto_compact` compile-time Preference (`AUTO_COMPACT`) for the scope-exit
+hook and pool auto-registration. With the Preference off this warns and the timer still
+runs but stays inert unless you `register_auto_compact!` pools manually.
+
+See also [`disable_auto_compact!`](@ref), [`auto_compact_enabled`](@ref).
+"""
+function enable_auto_compact!(;
+        interval::Real = 30.0, factor::Real = 10, shrink_to::Real = 1.5,
+        min_bytes::Int = 2^20, active::Bool = true,
+    )
+    AUTO_COMPACT || @warn "enable_auto_compact!: the `auto_compact` Preference is off — the scope-exit hook is compiled out and pools won't auto-register. The timer runs but stays inert unless you register pools manually. Set the Preference and restart to activate."
+    cfg = _AUTO_COMPACT_CONFIG
+    cfg.factor = Float64(factor)
+    cfg.shrink_to = Float64(shrink_to)
+    cfg.min_bytes = min_bytes
+    cfg.active = active
+    _start_auto_compact_timer!(interval)
+    return nothing
+end
+
+"""
+    disable_auto_compact!()
+
+Stop the background auto-compact `Timer`. Idempotent.
+"""
+disable_auto_compact!() = _stop_auto_compact_timer!()
+
+"""
+    auto_compact_enabled() -> Bool
+
+Whether the background auto-compact `Timer` is currently running.
+"""
+auto_compact_enabled() = _AUTO_COMPACT_TIMER[] !== nothing
+
+# Auto-start when the Preference opts in. Dead-code-eliminated when `AUTO_COMPACT` is
+# off (the default), so package load starts no timer unless the user set the Preference.
+function __init__()
+    AUTO_COMPACT && enable_auto_compact!()
+    return nothing
+end

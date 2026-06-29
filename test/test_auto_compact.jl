@@ -74,3 +74,76 @@ _registry_len() = lock(() -> length(AAP._AUTO_COMPACT_REGISTRY), AAP._AUTO_COMPA
         @test AAP._AUTO_COMPACT_CONFIG.active == true
     end
 end
+
+@testset "auto_compact — Phase 2: timer lifecycle + enable/disable" begin
+    # In the default test build the `auto_compact` Preference is off, so
+    # `enable_auto_compact!` emits a guidance @warn — asserted via @test_logs (which
+    # also captures it, keeping output clean). The timer still starts, so the
+    # sweep→flag mechanism is exercisable against a manually-registered pool.
+
+    @testset "enable! sets config and starts a timer that flags registered pools" begin
+        _clear_registry!()
+        AAP.disable_auto_compact!()
+        pool = AdaptiveArrayPool{0}()
+        AAP.register_auto_compact!(pool)
+
+        @test_logs (:warn,) match_mode = :any AAP.enable_auto_compact!(
+            interval = 0.1, factor = 20, shrink_to = 2.0, min_bytes = 4096, active = false,
+        )
+        @test AAP.auto_compact_enabled() == true
+        @test AAP._AUTO_COMPACT_CONFIG.factor == 20.0
+        @test AAP._AUTO_COMPACT_CONFIG.shrink_to == 2.0
+        @test AAP._AUTO_COMPACT_CONFIG.min_bytes == 4096
+        @test AAP._AUTO_COMPACT_CONFIG.active == false
+
+        sleep(0.35)                                    # ~3 ticks @ 0.1s
+        @test (@atomic pool._compact_requested) == true
+
+        AAP.disable_auto_compact!()
+        @test AAP.auto_compact_enabled() == false
+        # restore config defaults for the other testsets
+        AAP._AUTO_COMPACT_CONFIG.factor = 10.0
+        AAP._AUTO_COMPACT_CONFIG.shrink_to = 1.5
+        AAP._AUTO_COMPACT_CONFIG.min_bytes = 2^20
+        AAP._AUTO_COMPACT_CONFIG.active = true
+        _clear_registry!()
+    end
+
+    @testset "disable! stops the timer and is idempotent" begin
+        _clear_registry!()
+        pool = AdaptiveArrayPool{0}()
+        AAP.register_auto_compact!(pool)
+        @test_logs (:warn,) match_mode = :any AAP.enable_auto_compact!(interval = 0.1)
+        AAP.disable_auto_compact!()
+        @test AAP.auto_compact_enabled() == false
+        @atomic pool._compact_requested = false
+        sleep(0.3)
+        @test (@atomic pool._compact_requested) == false    # no ticks after disable
+        AAP.disable_auto_compact!()                          # idempotent: must not throw
+        @test AAP.auto_compact_enabled() == false
+        _clear_registry!()
+    end
+
+    @testset "enable! replaces an existing timer (closes the old one)" begin
+        AAP.disable_auto_compact!()
+        @test_logs (:warn,) match_mode = :any AAP.enable_auto_compact!(interval = 0.1)
+        t1 = AAP._AUTO_COMPACT_TIMER[]
+        @test_logs (:warn,) match_mode = :any AAP.enable_auto_compact!(interval = 0.2)
+        t2 = AAP._AUTO_COMPACT_TIMER[]
+        @test t1 !== t2
+        @test !isopen(t1)                                    # old timer closed
+        @test isopen(t2)
+        AAP.disable_auto_compact!()
+    end
+
+    @testset "a throwing sweep is caught — the timer survives" begin
+        _clear_registry!()
+        bogus = Ref(42)                                      # heap object, NOT a pool
+        lock(() -> push!(AAP._AUTO_COMPACT_REGISTRY, WeakRef(bogus)), AAP._AUTO_COMPACT_LOCK)
+        # the `::AdaptiveArrayPool` assertion in the sweep throws on the bogus entry;
+        # the _safe wrapper must swallow it so the Timer would keep running.
+        @test (AAP._safe_auto_compact_sweep!(nothing); true)
+        @test bogus[] == 42                                  # keep `bogus` alive past the sweep
+        _clear_registry!()
+    end
+end
