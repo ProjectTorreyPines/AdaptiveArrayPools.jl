@@ -386,7 +386,9 @@ function AdaptiveArrayPools.trim!(pool::CuAdaptiveArrayPool; force_gc::Bool = fa
         wrappers += s.wrappers_released
         bytes += s.estimated_bytes_released
     end
-    force_gc && GC.gc()
+    # force_gc on CUDA also returns CUDA.jl's pooled blocks to the driver
+    # (CUDA.reclaim()) so freed VRAM is actually released, not just GC-eligible.
+    force_gc && (GC.gc(); CUDA.reclaim())
     return (;
         slots_released = slots, wrappers_released = wrappers,
         estimated_bytes_released = bytes, gc_triggered = force_gc,
@@ -395,7 +397,9 @@ end
 
 @inline function AdaptiveArrayPools.trim!(pool::CuAdaptiveArrayPool, ::Type{T}; force_gc::Bool = false) where {T}
     s = AdaptiveArrayPools._trim_inactive_typed_pool!(AdaptiveArrayPools.get_typed_pool!(pool, T))
-    force_gc && GC.gc()
+    # force_gc on CUDA also returns CUDA.jl's pooled blocks to the driver
+    # (CUDA.reclaim()) so freed VRAM is actually released, not just GC-eligible.
+    force_gc && (GC.gc(); CUDA.reclaim())
     return (;
         slots_released = s.slots_released,
         wrappers_released = s.wrappers_released,

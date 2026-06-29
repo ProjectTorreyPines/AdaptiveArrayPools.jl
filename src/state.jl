@@ -812,9 +812,11 @@ leaves `n_active`, checkpoint stacks, and depth state unchanged.
 
 Returns `(; slots_released, wrappers_released, estimated_bytes_released, gc_triggered)`.
 
-`force_gc=true` calls `GC.gc()` after detaching references. This still does not
-guarantee immediate OS/VRAM return; it only asks Julia to collect now that the
-pool no longer holds the buffers.
+`force_gc=true` runs `GC.gc()` after detaching references, and on backends with a
+caching device allocator it also returns the pooled memory to the driver (CUDA:
+`CUDA.reclaim()`; Metal/CPU have no further reclaim step). Even so, immediate
+OS/VRAM return is not guaranteed — it only asks the runtime to collect now that
+the pool no longer holds the buffers.
 
 !!! note "Julia version"
     Actual reclamation requires Julia 1.12+. On older Julia (the legacy pool
