@@ -23,6 +23,7 @@ else
         include("test_basic.jl")
         include("test_state.jl")
         include("test_trim.jl")
+        include("test_compact.jl")
         include("test_multidimensional.jl")
         include("test_macros.jl")
         include("test_task_local_pool.jl")

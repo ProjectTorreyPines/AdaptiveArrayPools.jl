@@ -839,6 +839,70 @@ function _trim_others_counts!(others)::NTuple{3, Int}
     return (slots, wrappers, bytes)
 end
 
+# ==============================================================================
+# State Management - compact! primitive (in-place capacity compaction)
+# ==============================================================================
+#
+# A slot's backing `Vector` length is the *high-water mark* (the largest size ever
+# acquired — `_claim_slot!` only grows it). The *current logical size* lives in the
+# cached wrapper(s) (`acquire!` sets `wrapper.size`). So a slot is "bloated" when its
+# backing capacity is far larger than the size actually in use. `compact!` returns
+# that excess by swapping the backing's `Memory` for a right-sized one in place
+# (keeping the `Vector` object's identity, so views following `parent` stay valid)
+# and re-syncing the cached wrappers' `:ref`.
+
+# Allocated backing capacity (Memory length) for a CPU backing vector.
+@inline _slot_capacity(v::Vector) = length(getfield(v, :ref).mem)
+
+# Largest currently-cached logical size for a slot = the size compaction must
+# preserve (every held wrapper indexes into `1:used`). 0 if the slot has no wrapper.
+function _slot_used(tp::AbstractTypedPool, slot::Int)
+    used = 0
+    for wrappers in tp.arr_wrappers
+        wrappers === nothing && continue
+        slot <= length(wrappers) || continue
+        w = @inbounds wrappers[slot]
+        w === nothing && continue
+        used = max(used, length(w))
+    end
+    return used
+end
+
+# Shrink one slot's backing to capacity `target` in place: allocate a smaller
+# `Memory`, copy the live `used` elements, swap the backing `Vector`'s `:ref`/`:size`
+# (identity preserved → views follow), then re-sync the slot's cached wrappers.
+function _compact_slot!(tp::TypedPool{T}, slot::Int, target::Int, used::Int) where {T}
+    v = @inbounds tp.vectors[slot]
+    nv = Vector{T}(undef, target)
+    copyto!(nv, 1, v, 1, used)
+    setfield!(v, :size, (target,))
+    setfield!(v, :ref, getfield(nv, :ref))
+    for wrappers in tp.arr_wrappers
+        wrappers === nothing && continue
+        slot <= length(wrappers) || continue
+        w = @inbounds wrappers[slot]
+        w === nothing && continue
+        setfield!(w, :ref, getfield(v, :ref))   # :size unchanged
+    end
+    return nothing
+end
+
+# Gate + compact one slot. Compacts iff backing capacity is `≥ factor × used` AND
+# the reclaim is `≥ min_bytes`. Returns bytes reclaimed (0 if skipped). The generic
+# fallback (e.g. `BitTypedPool`, whose backing is not a `Vector`) is a no-op.
+_maybe_compact_slot!(::AbstractTypedPool, ::Int, ::Real, ::Real, ::Int) = 0
+function _maybe_compact_slot!(tp::TypedPool{T}, slot::Int, factor::Real, shrink_to::Real, min_bytes::Int) where {T}
+    used = _slot_used(tp, slot)
+    used == 0 && return 0
+    cap = _slot_capacity(@inbounds tp.vectors[slot])
+    cap >= factor * used || return 0
+    target = max(used, ceil(Int, shrink_to * used))
+    reclaim = (cap - target) * sizeof(T)
+    reclaim >= min_bytes || return 0
+    _compact_slot!(tp, slot, target, used)
+    return reclaim
+end
+
 """
     trim!(pool::AdaptiveArrayPool; force_gc::Bool = false)
 
