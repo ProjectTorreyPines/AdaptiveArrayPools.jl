@@ -16,8 +16,9 @@ using AdaptiveArrayPools: trim!, get_task_local_pool
     @test s.estimated_bytes_released == 0
     @test s.gc_triggered == false
 
-    # Same zero-summary shape for the other entry points.
+    # Same zero-summary shape for the other entry points (single-type, varargs, no-arg).
     @test trim!(pool, Float64).slots_released == 0
+    @test trim!(pool, Float64, Int64).slots_released == 0
     @test trim!().slots_released == 0
 
     # Legacy no-op ignores force_gc (no reclamation to do).
@@ -30,4 +31,5 @@ using AdaptiveArrayPools: trim!, get_task_local_pool
     @test zd.estimated_bytes_released == 0
     @test zd.gc_triggered == false
     @test trim!(DISABLED_CPU, Float64).slots_released == 0
+    @test trim!(DISABLED_CPU, Float64, Int64).slots_released == 0
 end

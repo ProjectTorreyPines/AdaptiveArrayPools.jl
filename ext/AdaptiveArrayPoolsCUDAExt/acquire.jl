@@ -96,6 +96,7 @@ CUDA.jl's resize! unnecessarily (especially after safety invalidation sets dims=
     idx = tp.n_active
     if idx > length(tp.vectors)
         push!(tp.vectors, allocate_vector(tp, total_len))
+        push!(tp.slot_extents, total_len)        # parallel to `vectors` (for compact!/_slot_used)
         _check_pool_growth(tp, idx)
     else
         # _resize_to_fit! handles all cases:
@@ -103,6 +104,7 @@ CUDA.jl's resize! unnecessarily (especially after safety invalidation sets dims=
         # - n != length: setfield!(:dims) — restores length after safety invalidation
         # - n == length: no-op (hot path)
         _resize_to_fit!(@inbounds(tp.vectors[idx]), total_len)
+        @inbounds tp.slot_extents[idx] = total_len   # current logical extent
     end
     return idx
 end
@@ -119,7 +121,10 @@ the wrapper points to a different array's memory via `setfield!(:data)`.
     idx = tp.n_active
     if idx > length(tp.vectors)
         push!(tp.vectors, CuVector{T}(undef, 0))
+        push!(tp.slot_extents, 0)        # placeholder slot: wrapper points elsewhere (reshape!)
         _check_pool_growth(tp, idx)
+    else
+        @inbounds tp.slot_extents[idx] = 0
     end
     return idx
 end

@@ -317,6 +317,7 @@ CUDA.reclaim()
 function Base.empty!(tp::CuTypedPool)
     empty!(tp.vectors)
     empty!(tp.arr_wrappers)
+    empty!(tp.slot_extents)
     tp.n_active = 0
     # Restore sentinel values
     empty!(tp._checkpoint_n_active)
@@ -427,5 +428,124 @@ end
         counts = $counts_expr
         force_gc && (GC.gc(); CUDA.reclaim())
         return AdaptiveArrayPools._trim_summary(counts, force_gc)
+    end
+end
+
+# ==============================================================================
+# compact! for CuAdaptiveArrayPool (parity with CPU / Metal)
+# ==============================================================================
+#
+# Shrinks an over-allocated device buffer in place. Like Metal (and unlike CPU),
+# CUDA has no uncached views — acquire_view! == acquire! → cached CuArray wrapper —
+# so a slot's live references are exactly its cached wrappers; compaction swaps the
+# backing buffer's DataRef and re-syncs those wrappers via the same refcount helper
+# used on grow (`_update_cuda_wrapper_data!`). `slot_extents` (set in
+# `_cuda_claim_slot!`) gives the live extent, matching the CPU `_slot_used` model.
+# Device capacity uses `_aligned_sizeof(T)` (CUDA buffer alignment), like `_resize_to_fit!`.
+
+# Device capacity (elements) of a CUDA backing buffer.
+@inline AdaptiveArrayPools._slot_capacity(v::CuVector{T}) where {T} =
+    Int(getfield(v, :maxsize) ÷ _aligned_sizeof(T))
+
+# Current logical extent of a slot (records both acquire!/acquire_view! since CUDA
+# routes both through `_cuda_claim_slot!`). `::Int` keeps the gate allocation-free.
+@inline function AdaptiveArrayPools._slot_used(tp::CuTypedPool, slot::Int)::Int
+    ext = tp.slot_extents
+    return slot <= length(ext) ? (@inbounds ext[slot]) : 0
+end
+
+# Keep `slot_extents` parallel to `vectors` when `trim!` truncates a CUDA pool.
+@inline function AdaptiveArrayPools._trim_slot_extents!(tp::CuTypedPool, keep::Int)
+    length(tp.slot_extents) > keep && resize!(tp.slot_extents, keep)
+    return nothing
+end
+
+# Shrink one slot's device buffer to capacity `target` in place: allocate a smaller
+# CuVector, copy the live `used` elements, swap the backing's DataRef (keeping the
+# backing object's identity), re-sync cached wrappers, and drop the temporary's own
+# reference. All buffer ownership goes through `_update_cuda_wrapper_data!`
+# (unsafe_free! old + copy/retain new), so the old device buffer's refcount reaches
+# zero and CUDA frees it.
+function AdaptiveArrayPools._compact_slot!(tp::CuTypedPool{T}, slot::Int, target::Int, used::Int) where {T}
+    v = @inbounds tp.vectors[slot]
+    nv = CuVector{T}(undef, target)
+    used > 0 && copyto!(nv, 1, v, 1, used)
+    _update_cuda_wrapper_data!(v, nv)           # backing takes nv's buffer (refcounted)
+    setfield!(v, :dims, (target,))
+    for wrappers in tp.arr_wrappers
+        wrappers === nothing && continue
+        slot <= length(wrappers) || continue
+        w = @inbounds wrappers[slot]
+        w === nothing && continue
+        _update_cuda_wrapper_data!(w, v)        # held wrapper re-points to new buffer (dims kept)
+    end
+    unsafe_free!(getfield(nv, :data))           # drop the temporary's own reference
+    return nothing
+end
+
+# Gate + compact one CUDA slot. Returns reclaimed device bytes (0 if skipped).
+function AdaptiveArrayPools._maybe_compact_slot!(tp::CuTypedPool{T}, slot::Int, factor::Real, shrink_to::Real, min_bytes::Int) where {T}
+    used = AdaptiveArrayPools._slot_used(tp, slot)
+    used == 0 && return 0
+    cap = AdaptiveArrayPools._slot_capacity(@inbounds tp.vectors[slot])
+    cap >= factor * used || return 0
+    target = max(used, ceil(Int, min(Float64(cap), shrink_to * used)))   # clamp to [used, cap]
+    reclaim = (cap - target) * _aligned_sizeof(T)
+    reclaim >= min_bytes || return 0
+    AdaptiveArrayPools._compact_slot!(tp, slot, target, used)
+    return reclaim
+end
+
+# Guard + compact for one element type on CUDA (mirrors `_trim_one_counts!`): never
+# creates a pool for a never-used fallback type.
+@inline function AdaptiveArrayPools._compact_one_counts!(pool::CuAdaptiveArrayPool, ::Type{T}, factor::Real, shrink_to::Real, min_bytes::Int, active::Bool)::NTuple{2, Int} where {T}
+    (!(T <: _CUDA_FIXED_TYPES) && !haskey(pool.others, T)) && return (0, 0)
+    return AdaptiveArrayPools._compact_counts!(AdaptiveArrayPools.get_typed_pool!(pool, T), factor, shrink_to, min_bytes, active)
+end
+
+function AdaptiveArrayPools.compact!(
+        pool::CuAdaptiveArrayPool;
+        factor::Real = 10, shrink_to::Real = 1.5, min_bytes::Int = 2^20,
+        active::Bool = true, force_gc::Bool = false,
+    )
+    # Mirror the CUDA `trim!`: Ref accumulators keep the `foreach_fixed_slot` closure
+    # box-free over the CUDA fixed-slot set, so the returned summary stays concrete.
+    slots = Ref(0)
+    bytes = Ref(0)
+    AdaptiveArrayPools.foreach_fixed_slot(pool) do tp
+        c = AdaptiveArrayPools._compact_counts!(tp, factor, shrink_to, min_bytes, active)
+        slots[] += c[1]
+        bytes[] += c[2]
+    end
+    oc = AdaptiveArrayPools._compact_others_counts!(values(pool.others), factor, shrink_to, min_bytes, active)
+    force_gc && (GC.gc(); CUDA.reclaim())
+    return AdaptiveArrayPools._compact_summary((slots[] + oc[1], bytes[] + oc[2]), force_gc)
+end
+
+@inline function AdaptiveArrayPools.compact!(
+        pool::CuAdaptiveArrayPool, ::Type{T};
+        factor::Real = 10, shrink_to::Real = 1.5, min_bytes::Int = 2^20,
+        active::Bool = true, force_gc::Bool = false,
+    ) where {T}
+    counts = AdaptiveArrayPools._compact_one_counts!(pool, T, factor, shrink_to, min_bytes, active)
+    force_gc && (GC.gc(); CUDA.reclaim())
+    return AdaptiveArrayPools._compact_summary(counts, force_gc)
+end
+
+@generated function AdaptiveArrayPools.compact!(
+        pool::CuAdaptiveArrayPool, types::Type...;
+        factor::Real = 10, shrink_to::Real = 1.5, min_bytes::Int = 2^20,
+        active::Bool = true, force_gc::Bool = false,
+    )
+    n = length(types)
+    syms = [Symbol(:c, i) for i in 1:n]
+    assigns = [:($(syms[i]) = AdaptiveArrayPools._compact_one_counts!(pool, types[$i], factor, shrink_to, min_bytes, active)) for i in 1:n]
+    counts_expr = n == 0 ? :((0, 0)) :
+        Expr(:tuple, (Expr(:call, :+, (:($(s)[$j]) for s in syms)...) for j in 1:2)...)
+    return quote
+        $(assigns...)
+        counts = $counts_expr
+        force_gc && (GC.gc(); CUDA.reclaim())
+        return AdaptiveArrayPools._compact_summary(counts, force_gc)
     end
 end

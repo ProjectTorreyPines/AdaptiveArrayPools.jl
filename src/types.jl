@@ -113,6 +113,14 @@ mutable struct TypedPool{T} <: AbstractTypedPool{T, Vector{T}}
     # --- N-D Wrapper Cache (setfield!-based reuse) ---
     arr_wrappers::Vector{Union{Nothing, Vector{Any}}}  # index=N (dimensionality), value=per-slot Array{T,N}
 
+    # --- Per-slot current logical extent (parallel to `vectors`) ---
+    # The size of each slot's most recent `_claim_slot!`, recording the live extent
+    # for BOTH the `acquire!` (Array) and `acquire_view!` (uncached SubArray/Reshaped)
+    # paths. `compact!` reads this (`_slot_used`) to know how much of an over-allocated
+    # backing buffer is actually in use — the backing `Vector`'s own length is a
+    # capacity high-water mark, not the current extent.
+    slot_extents::Vector{Int}
+
     # --- State Management (1-based sentinel pattern) ---
     n_active::Int
     _checkpoint_n_active::Vector{Int}   # Saved n_active at each checkpoint
@@ -124,6 +132,8 @@ TypedPool{T}() where {T} = TypedPool{T}(
     Vector{T}[],
     # N-D Wrapper Cache
     Union{Nothing, Vector{Any}}[],
+    # Per-slot current logical extent (parallel to `vectors`)
+    Int[],
     # State Management (1-based sentinel pattern: guaranteed non-empty)
     0,          # n_active
     [0],        # _checkpoint_n_active: sentinel (n_active=0 at depth=0)

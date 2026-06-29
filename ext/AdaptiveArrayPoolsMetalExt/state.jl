@@ -299,6 +299,7 @@ Actual VRAM release depends on GC + Metal.jl's memory pool.
 function Base.empty!(tp::MetalTypedPool)
     empty!(tp.vectors)
     empty!(tp.arr_wrappers)
+    empty!(tp.slot_extents)
     tp.n_active = 0
     # Restore sentinel values
     empty!(tp._checkpoint_n_active)
@@ -401,5 +402,124 @@ end
         counts = $counts_expr
         force_gc && GC.gc()
         return AdaptiveArrayPools._trim_summary(counts, force_gc)
+    end
+end
+
+# ==============================================================================
+# compact! for MetalAdaptiveArrayPool (parity with CPU)
+# ==============================================================================
+#
+# Shrinks an over-allocated device buffer in place. Unlike CPU, Metal has no
+# uncached views (`acquire_view!` == `acquire!` → cached `MtlArray` wrapper), so a
+# slot's live references are exactly its cached wrappers; compaction swaps the
+# backing buffer's `DataRef` and re-syncs those wrappers via the same refcount
+# helper used on grow (`_update_metal_wrapper_data!`). `slot_extents` (set in
+# `_metal_claim_slot!`) gives the live extent, matching the CPU `_slot_used` model.
+
+# Device capacity (elements) of a Metal backing buffer.
+@inline AdaptiveArrayPools._slot_capacity(v::MtlArray{T}) where {T} =
+    Int(getfield(v, :maxsize) ÷ sizeof(T))
+
+# Current logical extent of a slot (records both acquire!/acquire_view! since Metal
+# routes both through `_metal_claim_slot!`). `::Int` keeps the gate allocation-free.
+@inline function AdaptiveArrayPools._slot_used(tp::MetalTypedPool, slot::Int)::Int
+    ext = tp.slot_extents
+    return slot <= length(ext) ? (@inbounds ext[slot]) : 0
+end
+
+# Keep `slot_extents` parallel to `vectors` when `trim!` truncates a Metal pool.
+@inline function AdaptiveArrayPools._trim_slot_extents!(tp::MetalTypedPool, keep::Int)
+    length(tp.slot_extents) > keep && resize!(tp.slot_extents, keep)
+    return nothing
+end
+
+# Shrink one slot's device buffer to capacity `target` in place: allocate a smaller
+# MtlArray, copy the live `used` elements, swap the backing's `DataRef` (keeping the
+# backing object's identity), re-sync cached wrappers, and drop the temporary's own
+# reference. All buffer ownership goes through `_update_metal_wrapper_data!`
+# (unsafe_free! old + copy/retain new), so the old device buffer's refcount reaches
+# zero and Metal frees it.
+function AdaptiveArrayPools._compact_slot!(tp::MetalTypedPool{T, S}, slot::Int, target::Int, used::Int) where {T, S}
+    v = @inbounds tp.vectors[slot]
+    nv = MtlArray{T, 1, S}(undef, target)
+    used > 0 && copyto!(nv, 1, v, 1, used)
+    _update_metal_wrapper_data!(v, nv)          # backing takes nv's buffer (refcounted)
+    setfield!(v, :dims, (target,))
+    for wrappers in tp.arr_wrappers
+        wrappers === nothing && continue
+        slot <= length(wrappers) || continue
+        w = @inbounds wrappers[slot]
+        w === nothing && continue
+        _update_metal_wrapper_data!(w, v)       # held wrapper re-points to new buffer (dims kept)
+    end
+    unsafe_free!(getfield(nv, :data))           # drop the temporary's own reference
+    return nothing
+end
+
+# Gate + compact one Metal slot. Returns reclaimed device bytes (0 if skipped).
+function AdaptiveArrayPools._maybe_compact_slot!(tp::MetalTypedPool{T, S}, slot::Int, factor::Real, shrink_to::Real, min_bytes::Int) where {T, S}
+    used = AdaptiveArrayPools._slot_used(tp, slot)
+    used == 0 && return 0
+    cap = AdaptiveArrayPools._slot_capacity(@inbounds tp.vectors[slot])
+    cap >= factor * used || return 0
+    target = max(used, ceil(Int, min(Float64(cap), shrink_to * used)))   # clamp to [used, cap]
+    reclaim = (cap - target) * sizeof(T)
+    reclaim >= min_bytes || return 0
+    AdaptiveArrayPools._compact_slot!(tp, slot, target, used)
+    return reclaim
+end
+
+# Guard + compact for one element type on Metal (mirrors `_trim_one_counts!`): never
+# creates a pool for a never-used fallback type.
+@inline function AdaptiveArrayPools._compact_one_counts!(pool::MetalAdaptiveArrayPool, ::Type{T}, factor::Real, shrink_to::Real, min_bytes::Int, active::Bool)::NTuple{2, Int} where {T}
+    (!(T <: _METAL_FIXED_TYPES) && !haskey(pool.others, T)) && return (0, 0)
+    return AdaptiveArrayPools._compact_counts!(AdaptiveArrayPools.get_typed_pool!(pool, T), factor, shrink_to, min_bytes, active)
+end
+
+function AdaptiveArrayPools.compact!(
+        pool::MetalAdaptiveArrayPool;
+        factor::Real = 10, shrink_to::Real = 1.5, min_bytes::Int = 2^20,
+        active::Bool = true, force_gc::Bool = false,
+    )
+    # Mirror the Metal `trim!`: Ref accumulators keep the `foreach_fixed_slot`
+    # closure box-free over the Metal-specific fixed-slot set, so the returned
+    # summary stays a concrete NamedTuple.
+    slots = Ref(0)
+    bytes = Ref(0)
+    AdaptiveArrayPools.foreach_fixed_slot(pool) do tp
+        c = AdaptiveArrayPools._compact_counts!(tp, factor, shrink_to, min_bytes, active)
+        slots[] += c[1]
+        bytes[] += c[2]
+    end
+    oc = AdaptiveArrayPools._compact_others_counts!(values(pool.others), factor, shrink_to, min_bytes, active)
+    force_gc && GC.gc()
+    return AdaptiveArrayPools._compact_summary((slots[] + oc[1], bytes[] + oc[2]), force_gc)
+end
+
+@inline function AdaptiveArrayPools.compact!(
+        pool::MetalAdaptiveArrayPool, ::Type{T};
+        factor::Real = 10, shrink_to::Real = 1.5, min_bytes::Int = 2^20,
+        active::Bool = true, force_gc::Bool = false,
+    ) where {T}
+    counts = AdaptiveArrayPools._compact_one_counts!(pool, T, factor, shrink_to, min_bytes, active)
+    force_gc && GC.gc()
+    return AdaptiveArrayPools._compact_summary(counts, force_gc)
+end
+
+@generated function AdaptiveArrayPools.compact!(
+        pool::MetalAdaptiveArrayPool, types::Type...;
+        factor::Real = 10, shrink_to::Real = 1.5, min_bytes::Int = 2^20,
+        active::Bool = true, force_gc::Bool = false,
+    )
+    n = length(types)
+    syms = [Symbol(:c, i) for i in 1:n]
+    assigns = [:($(syms[i]) = AdaptiveArrayPools._compact_one_counts!(pool, types[$i], factor, shrink_to, min_bytes, active)) for i in 1:n]
+    counts_expr = n == 0 ? :((0, 0)) :
+        Expr(:tuple, (Expr(:call, :+, (:($(s)[$j]) for s in syms)...) for j in 1:2)...)
+    return quote
+        $(assigns...)
+        counts = $counts_expr
+        force_gc && GC.gc()
+        return AdaptiveArrayPools._compact_summary(counts, force_gc)
     end
 end

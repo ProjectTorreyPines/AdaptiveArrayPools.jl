@@ -36,6 +36,11 @@ mutable struct CuTypedPool{T} <: AbstractTypedPool{T, CuVector{T}}
     # --- N-D Wrapper Cache (setfield!-based reuse, matches CPU TypedPool) ---
     arr_wrappers::Vector{Union{Nothing, Vector{Any}}}  # index=N (dimensionality), value=per-slot CuArray{T,N}
 
+    # --- Per-slot current logical extent (parallel to `vectors`, matches CPU TypedPool) ---
+    # Size of each slot's most recent `_cuda_claim_slot!`; `compact!` reads it
+    # (`_slot_used`) to know how much of an over-allocated device buffer is in use.
+    slot_extents::Vector{Int}
+
     # --- State Management (1-based sentinel pattern) ---
     n_active::Int
     _checkpoint_n_active::Vector{Int}
@@ -46,6 +51,7 @@ function CuTypedPool{T}() where {T}
     return CuTypedPool{T}(
         CuVector{T}[],                   # vectors
         Union{Nothing, Vector{Any}}[],   # arr_wrappers (indexed by N)
+        Int[],                           # slot_extents (parallel to vectors)
         0, [0], [0]                      # State (1-based sentinel)
     )
 end
