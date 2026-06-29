@@ -27,6 +27,10 @@ end
 @inline AdaptiveArrayPools.get_typed_pool!(p::MetalAdaptiveArrayPool, ::Type{ComplexF32}) = p.complexf32
 @inline AdaptiveArrayPools.get_typed_pool!(p::MetalAdaptiveArrayPool, ::Type{Bool}) = p.bool
 
+# Fixed-slot element types (dedicated struct fields above). Used by trim!(pool, T)
+# to recognize always-present types without creating an `others` entry.
+const _METAL_FIXED_TYPES = Union{Float32, Float16, Int32, Int64, ComplexF32, Bool}
+
 # Slow path: rare types via IdDict (with checkpoint correction!)
 # Explicitly reject Float64 and ComplexF64 (unsupported by Metal hardware).
 @inline function AdaptiveArrayPools.get_typed_pool!(p::MetalAdaptiveArrayPool, ::Type{T}) where {T}

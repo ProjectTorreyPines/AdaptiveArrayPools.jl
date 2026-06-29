@@ -27,6 +27,10 @@ using AdaptiveArrayPools: allocate_vector, get_typed_pool!
 @inline AdaptiveArrayPools.get_typed_pool!(p::CuAdaptiveArrayPool, ::Type{ComplexF64}) = p.complexf64
 @inline AdaptiveArrayPools.get_typed_pool!(p::CuAdaptiveArrayPool, ::Type{Bool}) = p.bool
 
+# Fixed-slot element types (dedicated struct fields above). Used by trim!(pool, T)
+# to recognize always-present types without creating an `others` entry.
+const _CUDA_FIXED_TYPES = Union{Float32, Float64, Float16, Int32, Int64, ComplexF32, ComplexF64, Bool}
+
 # Slow path: rare types via IdDict (with checkpoint correction!)
 @inline function AdaptiveArrayPools.get_typed_pool!(p::CuAdaptiveArrayPool, ::Type{T}) where {T}
     return get!(p.others, T) do

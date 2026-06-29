@@ -729,6 +729,201 @@ in `touched_mask` is also set in `tracked_mask`.
 end
 
 # ==============================================================================
+# State Management - trim! (manual inactive-slot trimming)
+# ==============================================================================
+#
+# trim! drops the pool's strong references to INACTIVE retained slots
+# (indices n_active+1 : end of each typed pool) while preserving ACTIVE slots
+# (1 : n_active). This releases backing buffers (and cached wrappers) so they
+# become GC-eligible once no user code still references them. It does NOT promise
+# immediate OS/VRAM return.
+#
+# trim! is a manual operation. It adds no code to the hot acquire path or the
+# automatic rewind path.
+
+# Build the public summary NamedTuple from raw `(slots, wrappers, bytes)` counts
+# and the gc flag. Single definition point for the `trim!` return shape — every
+# overload (CPU/GPU/per-type/zero) funnels through here, so they all return the
+# identical concrete `@NamedTuple{...::Int, ..., gc_triggered::Bool}`.
+@inline _trim_summary(c::NTuple{3, Int}, gc::Bool) = (;
+    slots_released = c[1], wrappers_released = c[2],
+    estimated_bytes_released = c[3], gc_triggered = gc,
+)
+
+# Zero summary: returned by no-op trims (DisabledPool, nothing to release).
+const _ZERO_TRIM_SUMMARY = _trim_summary((0, 0, 0), false)
+
+# Drop cached N-D wrappers for inactive slots. A cached Array/BitArray holds a
+# `:ref` into its slot's backing buffer, so leaving inactive wrappers in place
+# would pin the very buffers we just detached. Each per-slot wrapper vector
+# (indexed by dimensionality N) is truncated to `keep`. Returns the count of
+# non-nothing wrapper objects dropped.
+function _trim_inactive_wrappers!(tp::AbstractTypedPool, keep::Int)
+    released = 0
+    for wrappers in tp.arr_wrappers
+        wrappers === nothing && continue
+        old_len = length(wrappers)
+        old_len <= keep && continue
+        for i in (keep + 1):old_len
+            @inbounds wrappers[i] === nothing || (released += 1)
+        end
+        resize!(wrappers, keep)
+    end
+    return released
+end
+
+# Estimate the storage held by inactive backing vectors in slots `first:last`.
+# Uses `Base.summarysize`, which is capacity-aware: it sizes the backing `Memory`,
+# so it still reports the retained capacity for vectors that `rewind!`/`reset!`
+# shrank to logical length 0 in runtime-check mode (S >= 1). This is an estimate,
+# not a guarantee that RSS dropped. Dispatch point: extensions (e.g. Metal) may
+# override for backend-appropriate (GPU) storage sizes.
+function _inactive_storage_bytes(tp::AbstractTypedPool, first::Int, last::Int)
+    total = 0
+    for i in first:last
+        @inbounds total += Base.summarysize(tp.vectors[i])
+    end
+    return total
+end
+
+# Trim one typed pool: drop inactive backing-vector and wrapper references by
+# truncating `tp.vectors` and the wrapper caches to the active count. Returns the
+# raw `(slots, wrappers, bytes)` counts (bytes measured before truncation). The
+# `::NTuple{3, Int}` return type keeps callers concrete even when this is reached
+# through dynamic dispatch over the `others` `Vector{Any}`.
+function _trim_counts!(tp::AbstractTypedPool)::NTuple{3, Int}
+    keep = tp.n_active
+    old_len = length(tp.vectors)
+    released = old_len - keep
+    wrappers_released = _trim_inactive_wrappers!(tp, keep)
+    bytes = 0
+    if released > 0
+        bytes = _inactive_storage_bytes(tp, keep + 1, old_len)
+        resize!(tp.vectors, keep)
+    end
+    return (max(0, released), wrappers_released, bytes)
+end
+
+# Sum `_trim_counts!` over every fixed slot, unrolled at compile time. A plain
+# `foreach_fixed_slot(pool) do tp ... end` closure would box the accumulators
+# (Core.Box) and widen the summary to `Any`; this unrolled fold stays concrete
+# (`NTuple{3, Int}`) and allocation-free.
+@generated function _trim_fixed_counts!(pool::AdaptiveArrayPool)
+    syms = [Symbol(:c, i) for i in 1:length(FIXED_SLOT_FIELDS)]
+    assigns = [
+        :($(syms[i]) = _trim_counts!(getfield(pool, $(QuoteNode(f)))))
+            for (i, f) in enumerate(FIXED_SLOT_FIELDS)
+    ]
+    sums = [Expr(:call, :+, [:($(s)[$j]) for s in syms]...) for j in 1:3]
+    return quote
+        Base.@_inline_meta
+        $(assigns...)
+        ($(sums...),)
+    end
+end
+
+# Sum `_trim_counts!` over the `others` (non-fixed-slot) typed pools. A plain loop
+# (no closure) avoids boxing; the `::NTuple{3, Int}` assertion keeps the running
+# total concrete despite dynamic dispatch over the `Any`-typed iterable. Shared by
+# the CPU (`_others_values`) and GPU (`values(pool.others)`) backends.
+function _trim_others_counts!(others)::NTuple{3, Int}
+    slots = 0
+    wrappers = 0
+    bytes = 0
+    for tp in others
+        c = _trim_counts!(tp)::NTuple{3, Int}
+        slots += c[1]
+        wrappers += c[2]
+        bytes += c[3]
+    end
+    return (slots, wrappers, bytes)
+end
+
+"""
+    trim!(pool::AdaptiveArrayPool; force_gc::Bool = false)
+
+Release the pool's references to **inactive retained slots** (those already
+released by `rewind!`/scope exit), keeping all **active** slots intact.
+
+Unlike `reset!` (keeps all buffers) and `empty!` (drops all buffers and resets
+state), `trim!` drops only the inactive backing buffers and cached wrappers and
+leaves `n_active`, checkpoint stacks, and depth state unchanged.
+
+Returns `(; slots_released, wrappers_released, estimated_bytes_released, gc_triggered)`.
+
+`force_gc=true` runs `GC.gc()` after detaching references, and on backends with a
+caching device allocator it also returns the pooled memory to the driver (CUDA:
+`CUDA.reclaim()`; Metal/CPU have no further reclaim step). Even so, immediate
+OS/VRAM return is not guaranteed — it only asks the runtime to collect now that
+the pool no longer holds the buffers.
+
+!!! note "Julia version"
+    Actual reclamation requires Julia 1.12+. On older Julia (the legacy pool
+    architecture) `trim!` is a defined no-op: it returns a zero summary and warns
+    once. It remains callable so dependent packages compile across the full
+    supported Julia range.
+
+See also: [`reset!`](@ref), [`empty!`](@ref).
+"""
+function trim!(pool::AdaptiveArrayPool; force_gc::Bool = false)
+    counts = _trim_fixed_counts!(pool) .+ _trim_others_counts!(pool._others_values)
+    force_gc && GC.gc()
+    return _trim_summary(counts, force_gc)
+end
+
+# Guard + trim for one element type, returning raw `(slots, wrappers, bytes)`.
+# Shared by the single-type and varargs `trim!` forms. Never *creates* a pool: a
+# never-used fallback type is skipped, because `get_typed_pool!` would register a
+# new fallback pool in `pool.others` on a miss — a surprising mutation/allocation
+# for a reclamation call. Fixed-slot types are always present; fallback types are
+# trimmed only if already in the pool. The `::NTuple{3, Int}` return keeps the
+# varargs fold type-stable even when the type is not a compile-time constant.
+function _trim_one_counts!(pool::AdaptiveArrayPool, ::Type{T})::NTuple{3, Int} where {T}
+    (!(T <: _FIXED_SLOT_TYPES) && !haskey(pool.others, T)) && return (0, 0, 0)
+    return _trim_counts!(get_typed_pool!(pool, T))
+end
+
+"""
+    trim!(pool::AdaptiveArrayPool, ::Type{T}; force_gc::Bool = false)
+
+Trim inactive slots for a single element type `T` only. See [`trim!`](@ref).
+"""
+function trim!(pool::AdaptiveArrayPool, ::Type{T}; force_gc::Bool = false) where {T}
+    counts = _trim_one_counts!(pool, T)
+    force_gc && GC.gc()
+    return _trim_summary(counts, force_gc)
+end
+
+"""
+    trim!(pool::AdaptiveArrayPool, types::Type...; force_gc::Bool = false)
+
+Trim inactive slots for several element types at once, running `GC.gc()` (when
+`force_gc=true`) a single time after all listed types are detached. Returns one
+combined summary. Uses `@generated` for zero-overhead compile-time unrolling,
+mirroring [`reset!`](@ref). See [`trim!`](@ref).
+"""
+@generated function trim!(pool::AdaptiveArrayPool, types::Type...; force_gc::Bool = false)
+    n = length(types)
+    syms = [Symbol(:c, i) for i in 1:n]
+    assigns = [:($(syms[i]) = _trim_one_counts!(pool, types[$i])) for i in 1:n]
+    counts_expr = n == 0 ? :((0, 0, 0)) :
+        Expr(:tuple, (Expr(:call, :+, (:($(s)[$j]) for s in syms)...) for j in 1:3)...)
+    return quote
+        $(assigns...)
+        counts = $counts_expr
+        force_gc && GC.gc()
+        return _trim_summary(counts, force_gc)
+    end
+end
+
+"""
+    trim!(; force_gc::Bool = false)
+
+Trim inactive slots of the current task-local pool (`get_task_local_pool()`).
+"""
+trim!(; force_gc::Bool = false) = trim!(get_task_local_pool(); force_gc = force_gc)
+
+# ==============================================================================
 # DisabledPool State Management (no-ops)
 # ==============================================================================
 # DisabledPool doesn't track state, so all operations are no-ops.
@@ -746,3 +941,7 @@ reset!(::DisabledPool, ::Type) = nothing
 reset!(::DisabledPool, types::Type...) = nothing
 
 Base.empty!(::DisabledPool) = nothing
+
+trim!(::DisabledPool; force_gc::Bool = false) = _ZERO_TRIM_SUMMARY
+trim!(::DisabledPool, ::Type{T}; force_gc::Bool = false) where {T} = _ZERO_TRIM_SUMMARY
+trim!(::DisabledPool, types::Type...; force_gc::Bool = false) = _ZERO_TRIM_SUMMARY

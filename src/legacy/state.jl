@@ -753,3 +753,40 @@ reset!(::DisabledPool, ::Type) = nothing
 reset!(::DisabledPool, types::Type...) = nothing
 
 Base.empty!(::DisabledPool) = nothing
+
+# ==============================================================================
+# trim! — no-op on the legacy path (Julia < 1.12)
+# ==============================================================================
+#
+# Modern `trim!` reclaims inactive slots via the `arr_wrappers` setfield! cache,
+# which only exists on Julia 1.12+. The legacy pool uses an N-way set-associative
+# cache (`nd_arrays`/`nd_dims`/…) with a different layout, so `trim!` is provided
+# here as a defined-and-exported NO-OP (returns a zero summary, warns once).
+#
+# This keeps the public API callable across the full `[compat] julia` range, so
+# dependent packages can `import`/call `trim!` on any supported Julia version
+# without load-time or runtime `UndefVarError`. Upgrade to Julia 1.12+ for actual
+# inactive-slot reclamation.
+
+const _ZERO_TRIM_SUMMARY = (;
+    slots_released = 0, wrappers_released = 0,
+    estimated_bytes_released = 0, gc_triggered = false,
+)
+
+function trim!(pool::AdaptiveArrayPool; force_gc::Bool = false)
+    @warn "trim! is a no-op on Julia < 1.12 (legacy pool architecture). " *
+        "Upgrade to Julia 1.12+ for inactive-slot reclamation." maxlog = 1
+    return _ZERO_TRIM_SUMMARY
+end
+
+trim!(pool::AdaptiveArrayPool, ::Type{T}; force_gc::Bool = false) where {T} =
+    trim!(pool; force_gc = force_gc)
+
+trim!(pool::AdaptiveArrayPool, types::Type...; force_gc::Bool = false) =
+    trim!(pool; force_gc = force_gc)
+
+trim!(; force_gc::Bool = false) = trim!(get_task_local_pool(); force_gc = force_gc)
+
+trim!(::DisabledPool; force_gc::Bool = false) = _ZERO_TRIM_SUMMARY
+trim!(::DisabledPool, ::Type{T}; force_gc::Bool = false) where {T} = _ZERO_TRIM_SUMMARY
+trim!(::DisabledPool, types::Type...; force_gc::Bool = false) = _ZERO_TRIM_SUMMARY
