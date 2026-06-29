@@ -119,4 +119,35 @@
         rewind!(pool)
     end
 
+    @testset "varargs trim!(pool, T1, T2, ...) trims only listed types (CUDA)" begin
+        # Parity with checkpoint!/rewind!, which also expose a Type... form on CUDA.
+        pool = CuAdaptiveArrayPool{0}()
+        checkpoint!(pool)
+        acquire!(pool, Float32, 100)
+        acquire!(pool, Int32, 50)
+        acquire!(pool, Float64, 25)     # Float64 is a CUDA fixed slot too
+        rewind!(pool)
+
+        s = trim!(pool, Float32, Int32)         # trim two; leave Float64
+
+        @test length(pool.float32.vectors) == 0
+        @test length(pool.int32.vectors) == 0
+        @test length(pool.float64.vectors) == 1     # untouched
+        @test s.slots_released == 2
+        @test s.gc_triggered == false
+
+        # force_gc honored once across all listed types (+ CUDA.reclaim)
+        pool2 = CuAdaptiveArrayPool{0}()
+        checkpoint!(pool2)
+        acquire!(pool2, Float32, 10)
+        acquire!(pool2, Int32, 10)
+        rewind!(pool2)
+        @test trim!(pool2, Float32, Int32; force_gc = true).gc_triggered == true
+
+        # A never-used fallback type in the list is skipped, never created.
+        pool3 = CuAdaptiveArrayPool{0}()
+        @test trim!(pool3, Float32, UInt16).slots_released == 0
+        @test !haskey(pool3.others, UInt16)
+    end
+
 end

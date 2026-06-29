@@ -142,4 +142,35 @@
         @test Int(dev.currentAllocatedSize) <= grown - 48_000_000   # and was reclaimed
     end
 
+    @testset "varargs trim!(pool, T1, T2, ...) trims only listed types (Metal)" begin
+        # Parity with checkpoint!/rewind!, which also expose a Type... form on Metal.
+        pool = MetalAdaptiveArrayPool{0, METAL_STORAGE}()
+        checkpoint!(pool)
+        acquire!(pool, Float32, 100)
+        acquire!(pool, Int32, 50)
+        acquire!(pool, Int64, 25)       # Int64 is a Metal fixed slot too
+        rewind!(pool)
+
+        s = trim!(pool, Float32, Int32)         # trim two; leave Int64
+
+        @test length(pool.float32.vectors) == 0
+        @test length(pool.int32.vectors) == 0
+        @test length(pool.int64.vectors) == 1       # untouched
+        @test s.slots_released == 2
+        @test s.gc_triggered == false
+
+        # force_gc honored once across all listed types
+        pool2 = MetalAdaptiveArrayPool{0, METAL_STORAGE}()
+        checkpoint!(pool2)
+        acquire!(pool2, Float32, 10)
+        acquire!(pool2, Int32, 10)
+        rewind!(pool2)
+        @test trim!(pool2, Float32, Int32; force_gc = true).gc_triggered == true
+
+        # A never-used fallback type in the list is skipped, never created.
+        pool3 = MetalAdaptiveArrayPool{0, METAL_STORAGE}()
+        @test trim!(pool3, Float32, UInt16).slots_released == 0
+        @test !haskey(pool3.others, UInt16)
+    end
+
 end

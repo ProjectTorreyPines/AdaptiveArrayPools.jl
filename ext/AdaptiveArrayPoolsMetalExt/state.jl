@@ -353,45 +353,53 @@ function AdaptiveArrayPools._inactive_storage_bytes(tp::MetalTypedPool, first::I
 end
 
 function AdaptiveArrayPools.trim!(pool::MetalAdaptiveArrayPool; force_gc::Bool = false)
-    slots = 0
-    wrappers = 0
-    bytes = 0
+    # Mirror the CPU type-stable accumulation, but reuse the Metal-specific
+    # `foreach_fixed_slot` (different fixed-slot field set). `Ref` accumulators keep
+    # the closure box-free, so the returned summary stays a concrete NamedTuple.
+    slots = Ref(0)
+    wrappers = Ref(0)
+    bytes = Ref(0)
     AdaptiveArrayPools.foreach_fixed_slot(pool) do tp
-        s = AdaptiveArrayPools._trim_inactive_typed_pool!(tp)
-        slots += s.slots_released
-        wrappers += s.wrappers_released
-        bytes += s.estimated_bytes_released
+        c = AdaptiveArrayPools._trim_counts!(tp)
+        slots[] += c[1]
+        wrappers[] += c[2]
+        bytes[] += c[3]
     end
-    for tp in values(pool.others)
-        s = AdaptiveArrayPools._trim_inactive_typed_pool!(tp)
-        slots += s.slots_released
-        wrappers += s.wrappers_released
-        bytes += s.estimated_bytes_released
-    end
+    oc = AdaptiveArrayPools._trim_others_counts!(values(pool.others))
     force_gc && GC.gc()
-    return (;
-        slots_released = slots, wrappers_released = wrappers,
-        estimated_bytes_released = bytes, gc_triggered = force_gc,
+    return AdaptiveArrayPools._trim_summary(
+        (slots[] + oc[1], wrappers[] + oc[2], bytes[] + oc[3]), force_gc,
     )
 end
 
+# Guard + trim for one element type on Metal. Mirrors the CPU `_trim_one_counts!`
+# but uses the Metal fixed-type set; shared by the single-type and varargs forms.
+# Never creates a pool for a never-used fallback type (get_typed_pool! would
+# register a new fallback pool on a miss).
+@inline function AdaptiveArrayPools._trim_one_counts!(pool::MetalAdaptiveArrayPool, ::Type{T})::NTuple{3, Int} where {T}
+    (!(T <: _METAL_FIXED_TYPES) && !haskey(pool.others, T)) && return (0, 0, 0)
+    return AdaptiveArrayPools._trim_counts!(AdaptiveArrayPools.get_typed_pool!(pool, T))
+end
+
 @inline function AdaptiveArrayPools.trim!(pool::MetalAdaptiveArrayPool, ::Type{T}; force_gc::Bool = false) where {T}
-    # Never create a pool for a never-used type (see Copilot review, PR #44):
-    # get_typed_pool! would register a new fallback pool on a miss. Only proceed
-    # for fixed-slot types or fallback types already in the pool.
-    if !(T <: _METAL_FIXED_TYPES) && !haskey(pool.others, T)
-        force_gc && GC.gc()
-        return (;
-            slots_released = 0, wrappers_released = 0,
-            estimated_bytes_released = 0, gc_triggered = force_gc,
-        )
-    end
-    s = AdaptiveArrayPools._trim_inactive_typed_pool!(AdaptiveArrayPools.get_typed_pool!(pool, T))
+    counts = AdaptiveArrayPools._trim_one_counts!(pool, T)
     force_gc && GC.gc()
-    return (;
-        slots_released = s.slots_released,
-        wrappers_released = s.wrappers_released,
-        estimated_bytes_released = s.estimated_bytes_released,
-        gc_triggered = force_gc,
-    )
+    return AdaptiveArrayPools._trim_summary(counts, force_gc)
+end
+
+# Varargs form — parity with `checkpoint!`/`rewind!`, which also expose a `Type...`
+# overload on Metal. Unrolled at compile time; one GC.gc() after all listed types
+# are detached. Stays type-stable via `_trim_one_counts!`'s return annotation.
+@generated function AdaptiveArrayPools.trim!(pool::MetalAdaptiveArrayPool, types::Type...; force_gc::Bool = false)
+    n = length(types)
+    syms = [Symbol(:c, i) for i in 1:n]
+    assigns = [:($(syms[i]) = AdaptiveArrayPools._trim_one_counts!(pool, types[$i])) for i in 1:n]
+    counts_expr = n == 0 ? :((0, 0, 0)) :
+        Expr(:tuple, (Expr(:call, :+, (:($(s)[$j]) for s in syms)...) for j in 1:3)...)
+    return quote
+        $(assigns...)
+        counts = $counts_expr
+        force_gc && GC.gc()
+        return AdaptiveArrayPools._trim_summary(counts, force_gc)
+    end
 end

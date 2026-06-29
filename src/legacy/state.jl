@@ -782,7 +782,11 @@ end
 trim!(pool::AdaptiveArrayPool, ::Type{T}; force_gc::Bool = false) where {T} =
     trim!(pool; force_gc = force_gc)
 
+trim!(pool::AdaptiveArrayPool, types::Type...; force_gc::Bool = false) =
+    trim!(pool; force_gc = force_gc)
+
 trim!(; force_gc::Bool = false) = trim!(get_task_local_pool(); force_gc = force_gc)
 
 trim!(::DisabledPool; force_gc::Bool = false) = _ZERO_TRIM_SUMMARY
 trim!(::DisabledPool, ::Type{T}; force_gc::Bool = false) where {T} = _ZERO_TRIM_SUMMARY
+trim!(::DisabledPool, types::Type...; force_gc::Bool = false) = _ZERO_TRIM_SUMMARY

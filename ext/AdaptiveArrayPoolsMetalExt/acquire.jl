@@ -195,8 +195,10 @@ Get an N-dimensional `MtlArray` from the pool with `setfield!`-based wrapper reu
 3. If different (rare: only after grow beyond capacity), update `:data` via refcount management
 
 ## Cache Miss (first call per (slot, N))
-Creates MtlArray wrapper sharing backing vector's GPU memory via `copy(vec.data)`,
-stores in `arr_wrappers[N][slot]` via `_store_arr_wrapper!` (reuses base module helper).
+Creates an MtlArray wrapper sharing the backing vector's GPU memory — the `DataRef`
+is passed directly (the constructor retains it; an extra `copy()` would double-count
+the refcount and pin the buffer). Stores it in `arr_wrappers[N][slot]` via
+`_store_arr_wrapper!` (reuses base module helper).
 """
 @inline function AdaptiveArrayPools.get_array!(tp::MetalTypedPool{T, S}, dims::NTuple{N, Int}) where {T, S, N}
     total_len = safe_prod(dims)

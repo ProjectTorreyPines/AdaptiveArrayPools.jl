@@ -263,4 +263,157 @@ using AdaptiveArrayPools: get_typed_pool!, trim!, checkpoint!, rewind!
         @test trim!(pool, UInt8).slots_released == 1
     end
 
+    @testset "trim! return value is type-stable (no Any-typed fields)" begin
+        # The summary is a public return value: if its count fields infer as `Any`,
+        # every caller that reads `summary.slots_released` inherits a dynamic
+        # dispatch. The no-arg full-pool form must stay fully concrete even though
+        # it folds over fixed slots (closure) and the `others` Vector{Any} (dynamic
+        # dispatch) — exactly the two inference hazards.
+        pool = AdaptiveArrayPool{0}()
+        checkpoint!(pool)
+        acquire!(pool, Float64, 100)
+        acquire!(pool, Int64, 50)
+        acquire!(pool, UInt8, 10)        # exercises the `others` (Vector{Any}) path
+        rewind!(pool)
+
+        Summary = @NamedTuple{
+            slots_released::Int, wrappers_released::Int,
+            estimated_bytes_released::Int, gc_triggered::Bool,
+        }
+
+        rt = only(Base.return_types(trim!, (typeof(pool),)))
+        @test isconcretetype(rt)
+        @test rt == Summary
+        @test only(Base.return_types(trim!, (typeof(pool), Type{Float64}))) == Summary
+        @test only(Base.return_types(trim!, (typeof(pool), Type{UInt8}))) == Summary
+
+        # Runtime inference guards: throw if a callsite isn't inferrable-concrete.
+        # Cover all three positional forms — single-type and varargs route through
+        # `_trim_one_counts!`/`get_typed_pool!`, the forms most prone to widening.
+        @test (@inferred trim!(pool)) isa Summary
+        @test (@inferred trim!(pool, Float64)) isa Summary
+        @test (@inferred trim!(pool, Float64, Int64)) isa Summary
+    end
+
+    @testset "varargs trim!(pool, T1, T2, ...) trims only the listed types" begin
+        # Mirrors reset!/checkpoint!/rewind!, which all expose a Type... form.
+        pool = AdaptiveArrayPool{0}()
+        checkpoint!(pool)
+        acquire!(pool, Float64, 100)
+        acquire!(pool, Int64, 50)
+        acquire!(pool, Float32, 25)
+        rewind!(pool)
+
+        s = trim!(pool, Float64, Int64)            # trim two; leave Float32
+
+        @test length(pool.float64.vectors) == 0
+        @test length(pool.int64.vectors) == 0
+        @test length(pool.float32.vectors) == 1    # untouched
+        @test s.slots_released == 2                 # 1 + 1
+        @test s.wrappers_released == 2              # 1-D acquires cache a wrapper too (N=1)
+        @test s.estimated_bytes_released >= (100 + 50) * sizeof(Float64)  # full summary shape
+        @test s.gc_triggered == false
+
+        # force_gc honored once across all listed types
+        pool2 = AdaptiveArrayPool{0}()
+        checkpoint!(pool2)
+        acquire!(pool2, Float64, 10)
+        acquire!(pool2, Int64, 10)
+        rewind!(pool2)
+        s2 = trim!(pool2, Float64, Int64; force_gc = true)
+        @test s2.slots_released == 2
+        @test s2.gc_triggered == true
+
+        # Return stays type-stable (concrete summary), like every other form.
+        Summary = @NamedTuple{
+            slots_released::Int, wrappers_released::Int,
+            estimated_bytes_released::Int, gc_triggered::Bool,
+        }
+        @test only(Base.return_types(trim!, (typeof(pool), Type{Float64}, Type{Int64}))) == Summary
+
+        # DisabledPool varargs is a zero-summary no-op.
+        @test trim!(DISABLED_CPU, Float64, Int64).slots_released == 0
+
+        # A never-used fallback type in the list is skipped, never created.
+        pool3 = AdaptiveArrayPool{0}()
+        @test !haskey(pool3.others, UInt16)
+        s3 = trim!(pool3, Float64, UInt16)
+        @test s3.slots_released == 0
+        @test !haskey(pool3.others, UInt16)
+    end
+
+    @testset "N-D wrapper cache rebuilds correctly after trim!" begin
+        # trim! drops cached N-D wrappers (each pins its backing buffer via :ref).
+        # The teardown is tested elsewhere; this pins the REBUILD side: a re-acquire
+        # of an N-D array after trim must allocate fresh and return a correct,
+        # writable array (the wrapper cache was truncated and must regrow).
+        pool = AdaptiveArrayPool{0}()
+        checkpoint!(pool)
+        a = acquire!(pool, Float64, 4, 5)   # 2-D wrapper cached at arr_wrappers[2][1]
+        a .= 7.0
+        rewind!(pool)
+
+        trim!(pool)
+        @test length(pool.float64.vectors) == 0
+        for w in pool.float64.arr_wrappers
+            w === nothing && continue
+            @test length(w) <= pool.float64.n_active   # caches truncated
+        end
+
+        checkpoint!(pool)
+        b = acquire!(pool, Float64, 3, 6)   # re-acquire a DIFFERENT 2-D shape
+        @test size(b) == (3, 6)
+        @test ndims(b) == 2
+        b .= 2.5
+        @test all(b .== 2.5)
+        b[1, 1] = 9.0                       # writable view into a fresh buffer
+        @test b[1, 1] == 9.0
+        @test pool.float64.vectors[1][1] == 9.0
+        rewind!(pool)
+    end
+
+    @testset "trim! mid-scope leaves the active scope and a later rewind! consistent" begin
+        # trim! only drops inactive slots and must leave n_active + checkpoint
+        # stacks untouched, so trimming WHILE a scope is open does not corrupt the
+        # later rewind! of that scope.
+        pool = AdaptiveArrayPool{0}()
+
+        checkpoint!(pool)                   # outer scope
+        a = acquire!(pool, Float64, 10)     # active in outer
+        a .= 1.0
+
+        checkpoint!(pool)                   # inner scope
+        acquire!(pool, Float64, 5)
+        acquire!(pool, Float64, 7)
+        rewind!(pool)                       # slots 2,3 become inactive, retained
+        @test pool.float64.n_active == 1
+        @test length(pool.float64.vectors) == 3
+
+        # Capture the checkpoint/depth state: trim! must touch ONLY tp.vectors and
+        # tp.arr_wrappers — never n_active, the checkpoint stacks, or pool depth.
+        depth_before = pool._current_depth
+        cpdepths_before = copy(pool.float64._checkpoint_depths)
+        cpn_active_before = copy(pool.float64._checkpoint_n_active)
+
+        s = trim!(pool)                     # trim while the outer scope is still open
+        @test s.slots_released == 2
+        @test pool.float64.n_active == 1            # active count untouched
+        @test length(pool.float64.vectors) == 1     # inactive dropped
+        @test pool._current_depth == depth_before                       # depth intact
+        @test pool.float64._checkpoint_depths == cpdepths_before        # checkpoint stack intact
+        @test pool.float64._checkpoint_n_active == cpn_active_before
+        @test a == fill(1.0, 10)                     # active data intact...
+        a[2] = 4.0                                   # ...and still writable
+        @test pool.float64.vectors[1][2] == 4.0
+
+        rewind!(pool)                       # exit outer scope cleanly
+        @test pool.float64.n_active == 0
+
+        # Re-acquire after the trimmed-then-rewound cycle still works.
+        checkpoint!(pool)
+        c = acquire!(pool, Float64, 3)
+        @test length(c) == 3
+        rewind!(pool)
+    end
+
 end
