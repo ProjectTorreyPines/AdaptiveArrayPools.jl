@@ -235,4 +235,82 @@ const _ZERO_COMPACT = (; slots_compacted = 0, bytes_reclaimed = 0, gc_triggered 
         rewind!(pool)
     end
 
+    # ── Phase 3: Tier 2 (active=true opt-in) + Type... varargs ─────────────────
+
+    @testset "Tier 2: active=true compacts a slot the user is still holding" begin
+        pool, b = _bloated_pool(1_000_000, 100)      # slot 1 is ACTIVE (b held), cap 1M
+        b .= 1.0:100.0
+        tp = pool.float64
+        @test tp.n_active == 1
+        @test _cap(tp.vectors[1]) >= 1_000_000
+
+        vw = view(b, 1:50)                           # view INTO the held active wrapper
+
+        # active=false (default) must leave the active slot alone.
+        s0 = compact!(pool; active = false)
+        @test s0.slots_compacted == 0
+        @test _cap(tp.vectors[1]) >= 1_000_000
+
+        # active=true shrinks the held slot in place.
+        s = compact!(pool; active = true)
+        @test s.slots_compacted == 1
+        @test s.bytes_reclaimed >= (1_000_000 - 150) * sizeof(Float64)
+        @test _cap(tp.vectors[1]) == 150             # ceil(1.5 * 100)
+
+        # The user's held wrapper survives: data intact, re-synced, still writable.
+        @test b == collect(1.0:100.0)
+        b[1] = 99.0
+        @test tp.vectors[1][1] == 99.0               # write lands in the new buffer
+        @test collect(vw)[2] == 2.0                  # view of the held wrapper follows
+        vw[1] = -1.0
+        @test b[1] == -1.0                           # view write reaches the wrapper
+        rewind!(pool)
+    end
+
+    @testset "active=true also still compacts inactive slots (scan = 1:end)" begin
+        # active=true is "compact everything"; inactive bloat is included too.
+        pool = _inactive_bloated_pool(1_000_000, 100)
+        s = compact!(pool; active = true)
+        @test s.slots_compacted == 1
+        @test _cap(pool.float64.vectors[1]) == 150
+    end
+
+    @testset "varargs compact!(pool, T...) compacts each listed type" begin
+        pool = _inactive_bloated_pool(1_000_000, 100)            # Float64 inactive bloat
+        checkpoint!(pool); ai = acquire!(pool, Int64, 1_000_000); ai .= 0; rewind!(pool)
+        checkpoint!(pool); bi = acquire!(pool, Int64, 100); bi .= 0; rewind!(pool)
+
+        s = compact!(pool, Float64, Int64)
+        @test s.slots_compacted == 2
+        @test _cap(pool.float64.vectors[1]) == 150
+        @test _cap(pool.int64.vectors[1]) == 150
+
+        # Type-stable: the varargs form returns the same concrete summary.
+        @test only(Base.return_types(compact!, (typeof(pool), Type{Float64}, Type{Int64}))) ==
+            _COMPACT_SUMMARY
+        @test (@inferred compact!(pool, Float64, Int64)) isa _COMPACT_SUMMARY  # 2nd call: no-op
+
+        # A never-used fallback type in the list is skipped, never created.
+        pool2 = AdaptiveArrayPool{0}()
+        @test !haskey(pool2.others, UInt16)
+        s2 = compact!(pool2, Float64, UInt16)
+        @test s2.slots_compacted == 0
+        @test !haskey(pool2.others, UInt16)
+    end
+
+    @testset "varargs honors active=true and force_gc" begin
+        pool, b = _bloated_pool(1_000_000, 100)                 # active Float64 bloat
+        b .= 0.0
+        s = compact!(pool, Float64; active = true, force_gc = true)
+        @test s.slots_compacted == 1
+        @test s.gc_triggered == true
+        @test _cap(pool.float64.vectors[1]) == 150
+        rewind!(pool)
+    end
+
+    @testset "DisabledPool varargs is a zero-summary no-op" begin
+        @test compact!(DISABLED_CPU, Float64, Int64) == _ZERO_COMPACT
+        @test compact!(DISABLED_CPU, Float64, Int64; active = true) == _ZERO_COMPACT
+    end
+
 end

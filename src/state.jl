@@ -914,14 +914,20 @@ end
 # Zero summary: returned by no-op compactions (DisabledPool, nothing bloated).
 const _ZERO_COMPACT_SUMMARY = _compact_summary((0, 0), false)
 
-# Compact the INACTIVE slots (`n_active+1 : end`) of one typed pool, gating each via
-# `_maybe_compact_slot!`. Returns the raw `(slots_compacted, bytes_reclaimed)` counts.
-# The `::NTuple{2, Int}` return keeps callers concrete even through the `others`
-# dynamic dispatch. (Tier 1: active slots, `1 : n_active`, are left untouched.)
-function _compact_counts!(tp::AbstractTypedPool, factor::Real, shrink_to::Real, min_bytes::Int)::NTuple{2, Int}
+# Compact one typed pool's slots, gating each via `_maybe_compact_slot!`. Returns the
+# raw `(slots_compacted, bytes_reclaimed)` counts; the `::NTuple{2, Int}` return keeps
+# callers concrete even through the `others` dynamic dispatch.
+#
+# `active=false` (Tier 1, default): scan only INACTIVE slots (`n_active+1 : end`).
+# `active=true`  (Tier 2): scan ALL slots (`1 : end`), so even slots the user is still
+# holding are compacted. This is safe because `_compact_slot!` re-syncs every cached
+# wrapper's `:ref` (and the backing keeps its `Vector` identity, so views follow), and
+# `_maybe_compact_slot!`'s `target ≥ used` guarantee never drops the live elements.
+function _compact_counts!(tp::AbstractTypedPool, factor::Real, shrink_to::Real, min_bytes::Int, active::Bool)::NTuple{2, Int}
     slots = 0
     bytes = 0
-    for slot in (tp.n_active + 1):length(tp.vectors)
+    start = active ? 1 : (tp.n_active + 1)
+    for slot in start:length(tp.vectors)
         r = _maybe_compact_slot!(tp, slot, factor, shrink_to, min_bytes)
         if r > 0
             slots += 1
@@ -934,10 +940,10 @@ end
 # Sum `_compact_counts!` over every fixed slot, unrolled at compile time — same
 # anti-boxing rationale as `_trim_fixed_counts!`: a closure fold would box the
 # accumulators (Core.Box) and widen the summary to `Any`; this stays `NTuple{2, Int}`.
-@generated function _compact_fixed_counts!(pool::AdaptiveArrayPool, factor::Real, shrink_to::Real, min_bytes::Int)
+@generated function _compact_fixed_counts!(pool::AdaptiveArrayPool, factor::Real, shrink_to::Real, min_bytes::Int, active::Bool)
     syms = [Symbol(:c, i) for i in 1:length(FIXED_SLOT_FIELDS)]
     assigns = [
-        :($(syms[i]) = _compact_counts!(getfield(pool, $(QuoteNode(f))), factor, shrink_to, min_bytes))
+        :($(syms[i]) = _compact_counts!(getfield(pool, $(QuoteNode(f))), factor, shrink_to, min_bytes, active))
             for (i, f) in enumerate(FIXED_SLOT_FIELDS)
     ]
     sums = [Expr(:call, :+, [:($(s)[$j]) for s in syms]...) for j in 1:2]
@@ -951,11 +957,11 @@ end
 # Sum `_compact_counts!` over the `others` (non-fixed-slot) typed pools. A plain loop
 # (no closure) avoids boxing; the `::NTuple{2, Int}` assertion keeps the running total
 # concrete despite dynamic dispatch over the `Any`-typed iterable.
-function _compact_others_counts!(others, factor::Real, shrink_to::Real, min_bytes::Int)::NTuple{2, Int}
+function _compact_others_counts!(others, factor::Real, shrink_to::Real, min_bytes::Int, active::Bool)::NTuple{2, Int}
     slots = 0
     bytes = 0
     for tp in others
-        c = _compact_counts!(tp, factor, shrink_to, min_bytes)::NTuple{2, Int}
+        c = _compact_counts!(tp, factor, shrink_to, min_bytes, active)::NTuple{2, Int}
         slots += c[1]
         bytes += c[2]
     end
@@ -965,26 +971,34 @@ end
 # Guard + compact for one element type, returning raw `(slots, bytes)`. Like
 # `_trim_one_counts!`, never *creates* a pool: a never-used fallback type is skipped
 # so a reclamation call does not surprise-register a fallback pool in `pool.others`.
-function _compact_one_counts!(pool::AdaptiveArrayPool, ::Type{T}, factor::Real, shrink_to::Real, min_bytes::Int)::NTuple{2, Int} where {T}
+function _compact_one_counts!(pool::AdaptiveArrayPool, ::Type{T}, factor::Real, shrink_to::Real, min_bytes::Int, active::Bool)::NTuple{2, Int} where {T}
     (!(T <: _FIXED_SLOT_TYPES) && !haskey(pool.others, T)) && return (0, 0)
-    return _compact_counts!(get_typed_pool!(pool, T), factor, shrink_to, min_bytes)
+    return _compact_counts!(get_typed_pool!(pool, T), factor, shrink_to, min_bytes, active)
 end
 
 """
     compact!(pool::AdaptiveArrayPool;
              factor::Real = 10, shrink_to::Real = 1.5, min_bytes::Int = 2^20,
-             force_gc::Bool = false)
+             active::Bool = false, force_gc::Bool = false)
 
-Shrink the **over-allocated capacity** of inactive backing buffers in place. A slot's
-backing length is the high-water mark (the largest size ever acquired); its current
-logical size lives in the cached wrapper. A slot is *bloated* when its retained
-capacity is `≥ factor ×` that logical size; `compact!` swaps such a backing's `Memory`
-for one of size `ceil(shrink_to × used)` (keeping the `Vector`'s identity so views
-following `parent` stay valid) and re-syncs the cached wrappers.
+Shrink the **over-allocated capacity** of backing buffers in place. A slot's backing
+length is the high-water mark (the largest size ever acquired); its current logical
+size lives in the cached wrapper. A slot is *bloated* when its retained capacity is
+`≥ factor ×` that logical size; `compact!` swaps such a backing's `Memory` for one of
+size `ceil(shrink_to × used)` (keeping the `Vector`'s identity so views following
+`parent` stay valid) and re-syncs the cached wrappers' `:ref`.
 
 Orthogonal to [`trim!`](@ref): `trim!` drops whole inactive *slots*, `compact!` shrinks
-the *capacity* of retained ones. This Tier 1 form touches only **inactive** slots
-(`n_active+1 : end`); active slots are left intact.
+the *capacity* of retained ones.
+
+- **`active=false`** (default, Tier 1): touch only **inactive** slots (`n_active+1 : end`),
+  i.e. buffers no live array references. Always safe.
+- **`active=true`** (Tier 2): also compact **active** slots — buffers the caller is still
+  holding. This is `compact!`'s reason for existing over `trim!`: it reclaims peak
+  capacity from arrays still in use. The held wrapper and any `view` of it follow the
+  in-place swap (wrapper `:ref` re-synced; backing identity preserved), and the
+  `target ≥ used` guarantee never drops live elements. Only call it at a synchronous
+  point where no other task is mid-access to this pool's arrays.
 
 A slot is compacted only if both gates pass: `capacity ≥ factor × used` **and** the
 reclaim `(capacity − target) × sizeof(T) ≥ min_bytes` (default 1 MiB), so tiny buffers
@@ -1002,10 +1016,10 @@ See also: [`trim!`](@ref), [`reset!`](@ref), [`empty!`](@ref).
 function compact!(
         pool::AdaptiveArrayPool;
         factor::Real = 10, shrink_to::Real = 1.5, min_bytes::Int = 2^20,
-        force_gc::Bool = false
+        active::Bool = false, force_gc::Bool = false
     )
-    counts = _compact_fixed_counts!(pool, factor, shrink_to, min_bytes) .+
-        _compact_others_counts!(pool._others_values, factor, shrink_to, min_bytes)
+    counts = _compact_fixed_counts!(pool, factor, shrink_to, min_bytes, active) .+
+        _compact_others_counts!(pool._others_values, factor, shrink_to, min_bytes, active)
     force_gc && GC.gc()
     return _compact_summary(counts, force_gc)
 end
@@ -1013,29 +1027,55 @@ end
 """
     compact!(pool::AdaptiveArrayPool, ::Type{T}; kwargs...)
 
-Compact inactive slots for a single element type `T` only. See [`compact!`](@ref).
+Compact slots for a single element type `T` only. See [`compact!`](@ref).
 """
 function compact!(
         pool::AdaptiveArrayPool, ::Type{T};
         factor::Real = 10, shrink_to::Real = 1.5, min_bytes::Int = 2^20,
-        force_gc::Bool = false
+        active::Bool = false, force_gc::Bool = false
     ) where {T}
-    counts = _compact_one_counts!(pool, T, factor, shrink_to, min_bytes)
+    counts = _compact_one_counts!(pool, T, factor, shrink_to, min_bytes, active)
     force_gc && GC.gc()
     return _compact_summary(counts, force_gc)
 end
 
 """
+    compact!(pool::AdaptiveArrayPool, types::Type...; kwargs...)
+
+Compact slots for several element types at once, running `GC.gc()` (when `force_gc=true`)
+a single time after all listed types are compacted. Returns one combined summary. Uses
+`@generated` for zero-overhead compile-time unrolling, mirroring [`trim!`](@ref).
+See [`compact!`](@ref).
+"""
+@generated function compact!(
+        pool::AdaptiveArrayPool, types::Type...;
+        factor::Real = 10, shrink_to::Real = 1.5, min_bytes::Int = 2^20,
+        active::Bool = false, force_gc::Bool = false
+    )
+    n = length(types)
+    syms = [Symbol(:c, i) for i in 1:n]
+    assigns = [:($(syms[i]) = _compact_one_counts!(pool, types[$i], factor, shrink_to, min_bytes, active)) for i in 1:n]
+    counts_expr = n == 0 ? :((0, 0)) :
+        Expr(:tuple, (Expr(:call, :+, (:($(s)[$j]) for s in syms)...) for j in 1:2)...)
+    return quote
+        $(assigns...)
+        counts = $counts_expr
+        force_gc && GC.gc()
+        return _compact_summary(counts, force_gc)
+    end
+end
+
+"""
     compact!(; kwargs...)
 
-Compact inactive slots of the current task-local pool (`get_task_local_pool()`).
+Compact slots of the current task-local pool (`get_task_local_pool()`).
 """
 compact!(;
     factor::Real = 10, shrink_to::Real = 1.5, min_bytes::Int = 2^20,
-    force_gc::Bool = false,
+    active::Bool = false, force_gc::Bool = false,
 ) = compact!(
     get_task_local_pool();
-    factor = factor, shrink_to = shrink_to, min_bytes = min_bytes, force_gc = force_gc
+    factor = factor, shrink_to = shrink_to, min_bytes = min_bytes, active = active, force_gc = force_gc
 )
 
 """
@@ -1148,10 +1188,15 @@ trim!(::DisabledPool, types::Type...; force_gc::Bool = false) = _ZERO_TRIM_SUMMA
 compact!(
     ::DisabledPool;
     factor::Real = 10, shrink_to::Real = 1.5, min_bytes::Int = 2^20,
-    force_gc::Bool = false
+    active::Bool = false, force_gc::Bool = false
 ) = _ZERO_COMPACT_SUMMARY
 compact!(
     ::DisabledPool, ::Type{T};
     factor::Real = 10, shrink_to::Real = 1.5, min_bytes::Int = 2^20,
-    force_gc::Bool = false
+    active::Bool = false, force_gc::Bool = false
 ) where {T} = _ZERO_COMPACT_SUMMARY
+compact!(
+    ::DisabledPool, types::Type...;
+    factor::Real = 10, shrink_to::Real = 1.5, min_bytes::Int = 2^20,
+    active::Bool = false, force_gc::Bool = false
+) = _ZERO_COMPACT_SUMMARY
