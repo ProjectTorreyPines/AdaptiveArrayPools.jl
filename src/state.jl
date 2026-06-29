@@ -929,11 +929,11 @@ const _ZERO_COMPACT_SUMMARY = _compact_summary((0, 0), false)
 # raw `(slots_compacted, bytes_reclaimed)` counts; the `::NTuple{2, Int}` return keeps
 # callers concrete even through the `others` dynamic dispatch.
 #
-# `active=false` (Tier 1, default): scan only INACTIVE slots (`n_active+1 : end`).
-# `active=true`  (Tier 2): scan ALL slots (`1 : end`), so even slots the user is still
+# `active=true` (default): scan ALL slots (`1 : end`), so even slots the user is still
 # holding are compacted. This is safe because `_compact_slot!` re-syncs every cached
 # wrapper's `:ref` (and the backing keeps its `Vector` identity, so views follow), and
 # `_maybe_compact_slot!`'s `target ≥ used` guarantee never drops the live elements.
+# `active=false`: scan only INACTIVE slots (`n_active+1 : end`), the opt-out.
 function _compact_counts!(tp::AbstractTypedPool, factor::Real, shrink_to::Real, min_bytes::Int, active::Bool)::NTuple{2, Int}
     slots = 0
     bytes = 0
@@ -994,7 +994,8 @@ end
 
 Shrink the **over-allocated capacity** of backing buffers in place. A slot's backing
 length is the high-water mark (the largest size ever acquired); its current logical
-size lives in the cached wrapper. A slot is *bloated* when its retained capacity is
+size is recorded per-slot in `slot_extents` (set by the shared claim path, so it covers
+both `acquire!` and `acquire_view!`). A slot is *bloated* when its retained capacity is
 `≥ factor ×` that logical size; `compact!` swaps such a backing's `Memory` for one of
 size `ceil(shrink_to × used)` (keeping the `Vector`'s identity so views following
 `parent` stay valid) and re-syncs the cached wrappers' `:ref`.

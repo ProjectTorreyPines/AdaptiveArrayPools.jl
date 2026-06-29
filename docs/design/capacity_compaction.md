@@ -1,11 +1,10 @@
 # Capacity Compaction for AdaptiveArrayPools (`compact!`)
 
 - **Date:** 2026-06-28
-- **Status:** Proposed (design only — not yet implemented). Targets a separate PR
-  on top of the `trim!` work.
-- **Scope:** New manual `compact!` API that shrinks over-allocated backing
-  buffers in place. CPU first, then Metal + CUDA parity, then an optional
-  Timer-driven auto mode.
+- **Status:** Implemented (CPU + Metal + CUDA), Julia 1.12+. Shipped on top of the
+  `trim!` work. The Timer-driven auto mode (§9) remains future work.
+- **Scope:** Manual `compact!` API that shrinks over-allocated backing buffers in
+  place. CPU + Metal + CUDA parity; an optional Timer-driven auto mode is deferred.
 - **Author:** design session
 
 ---
@@ -82,7 +81,7 @@ capacity ≥ factor × used                      # ratio gate: "≥10× bloated"
 The absolute byte gate prevents pointless reallocation of small buffers (e.g. a
 1000-capacity / 50-used buffer is 20× bloated but only reclaims ~7.6 KB).
 
-## 4. Proposed API
+## 4. API (as implemented)
 
 Mirror `trim!`'s surface for consistency:
 
@@ -91,7 +90,7 @@ compact!(pool::AdaptiveArrayPool;
          factor::Real    = 10,      # shrink only if capacity ≥ factor × used
          shrink_to::Real = 1.5,     # new capacity = ceil(shrink_to × used)
          min_bytes::Int  = 2^20,    # …and only if ≥ this many bytes are reclaimed
-         active::Bool    = false,   # Tier 2 opt-in: also compact ACTIVE slots (§7)
+         active::Bool    = true,    # default: also compact ACTIVE slots (§7); false = inactive-only
          force_gc::Bool  = false)
 compact!(pool::AdaptiveArrayPool, ::Type{T}; kwargs...)        # single type
 compact!(pool::AdaptiveArrayPool, types::Type...; kwargs...)   # varargs (mirrors trim!)
