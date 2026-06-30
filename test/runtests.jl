@@ -30,6 +30,7 @@ else
         include("test_compact.jl")
         include("test_auto_manage.jl")
         include("test_auto_trim.jl")
+        include("test_auto_integration.jl")
         include("test_multidimensional.jl")
         include("test_macros.jl")
         include("test_task_local_pool.jl")
