@@ -92,6 +92,23 @@ AAP.disable_auto_manage!()   # stop the __init__-started timer for deterministic
         @test AAP._AUTO_MANAGE_CONFIG.compact_min_bytes == 2^20
     end
 
+    @testset "kwarg defaults come from the `auto_manage_*` Preferences (built-in fallbacks)" begin
+        # No `auto_manage_*` keys are set in the test env, so the Preference-loaded defaults are
+        # the built-in fallbacks. `enable_auto_manage!()` with no args must apply exactly these.
+        @test AAP._DEFAULT_COMPACT_INTERVAL == 30.0
+        @test AAP._DEFAULT_TRIM_INTERVAL == 120.0
+        @test AAP._DEFAULT_COMPACT_BLOAT_FACTOR == 10.0
+        @test AAP._DEFAULT_COMPACT_TARGET_RATIO == 1.5
+        @test AAP._DEFAULT_COMPACT_MIN_BYTES == 2^20
+        AAP.disable_auto_manage!()
+        AAP._AUTO_MANAGE_CONFIG.compact_bloat_factor = -1.0   # perturb, then…
+        AAP.enable_auto_manage!()                             # …no-arg call restores the defaults
+        @test AAP._AUTO_MANAGE_CONFIG.compact_bloat_factor == 10.0
+        @test AAP._AUTO_MANAGE_CONFIG.compact_target_ratio == 1.5
+        @test AAP._AUTO_MANAGE_CONFIG.compact_min_bytes == 2^20
+        AAP.disable_auto_manage!()
+    end
+
     # ── Timer lifecycle (enable/disable). AUTO_MANAGE is on → enable does NOT warn ─
     @testset "enable! sets config and starts a timer that flags registered pools" begin
         _clear_registry!()
