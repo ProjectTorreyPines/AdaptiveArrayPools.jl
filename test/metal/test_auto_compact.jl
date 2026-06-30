@@ -14,25 +14,25 @@
 
 import AdaptiveArrayPools as AAP
 
-# Device capacity (elements) of a Metal backing buffer.
-_mcap(v) = Int(getfield(v, :maxsize) ÷ sizeof(eltype(v)))
-# CPU backing capacity (Memory length) — for the coexistence test.
-_cpucap(v) = length(getfield(v, :ref).mem)
-
-_clear_registry!() = lock(() -> empty!(AAP._AUTO_COMPACT_REGISTRY), AAP._AUTO_COMPACT_LOCK)
-_registry_len() = lock(() -> length(AAP._AUTO_COMPACT_REGISTRY), AAP._AUTO_COMPACT_LOCK)
-
-# An inactive, bloated Float32 Metal slot (cap = `big` high-water, last extent = `small`).
-function _metal_inactive_bloated(big::Int, small::Int)
-    pool = MetalAdaptiveArrayPool{0, METAL_STORAGE}()
-    checkpoint!(pool); a = acquire!(pool, Float32, big); fill!(a, 0.0f0); rewind!(pool)
-    checkpoint!(pool); b = acquire!(pool, Float32, small); fill!(b, 0.0f0); rewind!(pool)
-    return pool
-end
-
 AAP.disable_auto_compact!()   # stop the __init__-started timer for deterministic tests
 
 @testset "Metal auto_compact" begin
+
+    # Helpers are scoped INSIDE this testset (a local scope) so they don't define top-level
+    # methods in `Main` that collide with the identically-named helpers in the CPU/CUDA
+    # auto-compact test files when the full suite loads several backends' files together
+    # (otherwise: "WARNING: Method definition _clear_registry!() ... overwritten").
+    _mcap(v) = Int(getfield(v, :maxsize) ÷ sizeof(eltype(v)))     # Metal device capacity (elements)
+    _cpucap(v) = length(getfield(v, :ref).mem)                   # CPU backing capacity (coexistence test)
+    _clear_registry!() = lock(() -> empty!(AAP._AUTO_COMPACT_REGISTRY), AAP._AUTO_COMPACT_LOCK)
+    _registry_len() = lock(() -> length(AAP._AUTO_COMPACT_REGISTRY), AAP._AUTO_COMPACT_LOCK)
+    # An inactive, bloated Float32 Metal slot (cap = `big` high-water, last extent = `small`).
+    function _metal_inactive_bloated(big::Int, small::Int)
+        pool = MetalAdaptiveArrayPool{0, METAL_STORAGE}()
+        checkpoint!(pool); a = acquire!(pool, Float32, big); fill!(a, 0.0f0); rewind!(pool)
+        checkpoint!(pool); b = acquire!(pool, Float32, small); fill!(b, 0.0f0); rewind!(pool)
+        return pool
+    end
 
     # ── Data layer: flag field + registry + run ──────────────────────────────
     @testset "Metal pool carries an atomic _compact_requested flag (default false)" begin
