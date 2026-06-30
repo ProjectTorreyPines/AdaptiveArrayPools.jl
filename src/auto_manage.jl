@@ -39,15 +39,21 @@ const AUTO_MANAGE = @load_preference("auto_manage", true)::Bool
 const _AUTO_MANAGE_REGISTRY = WeakRef[]
 const _AUTO_MANAGE_LOCK = ReentrantLock()
 
-# Mutable global config, set by `enable_auto_manage!`, read by `_run_auto_manage!`.
-# Mirrors the `compact!` knobs; `factor`/`shrink_to` are `Float64` for stable storage.
+# Mutable global config, set by `enable_auto_manage!`, read by the sweep / `_run_auto_manage!`.
+# Mirrors the `compact!` knobs (`factor`/`shrink_to` `Float64` for stable storage), plus the
+# auto-trim cadence `trim_every_ticks` (auto-trim fires every N sweep ticks; 0 = never trim).
 mutable struct _AutoManageConfig
     factor::Float64
     shrink_to::Float64
     min_bytes::Int
     active::Bool
+    trim_every_ticks::Int
 end
-const _AUTO_MANAGE_CONFIG = _AutoManageConfig(10.0, 1.5, 2^20, true)
+const _AUTO_MANAGE_CONFIG = _AutoManageConfig(10.0, 1.5, 2^20, true, 0)
+
+# Sweep tick counter driving the auto-trim cadence. Owned by the single Timer thread
+# (incremented/reset only inside the sweep), so a plain `Ref` is sufficient.
+const _AUTO_MANAGE_TICK = Ref{Int}(0)
 
 """
     register_auto_manage!(pool)
@@ -74,6 +80,17 @@ end
 # wraps it in try/catch (Phase 2) — a throwing callback silently kills a Julia Timer.
 function _auto_manage_sweep!(_timer)
     lock(_AUTO_MANAGE_LOCK) do
+        # Auto-trim cadence: fire every `trim_every_ticks` sweeps (0 = never). Computed
+        # under the same lock that guards the config so a concurrent `enable!` can't tear it.
+        trim_every = _AUTO_MANAGE_CONFIG.trim_every_ticks
+        do_trim = false
+        if trim_every > 0
+            _AUTO_MANAGE_TICK[] += 1
+            if _AUTO_MANAGE_TICK[] >= trim_every
+                _AUTO_MANAGE_TICK[] = 0
+                do_trim = true
+            end
+        end
         i = 1
         while i <= length(_AUTO_MANAGE_REGISTRY)
             pool = _AUTO_MANAGE_REGISTRY[i].value
@@ -82,7 +99,11 @@ function _auto_manage_sweep!(_timer)
                 pop!(_AUTO_MANAGE_REGISTRY)          # dead → swap-remove
             else
                 p = pool::AbstractArrayPool          # CPU or any GPU backend pool
-                @atomic :monotonic p._compact_requested = true   # request compaction
+                @atomic :monotonic p._compact_requested = true   # request compaction (every tick)
+                # request auto-trim (every `trim_every` ticks); guard backends without the flag
+                if do_trim && hasfield(typeof(p), :_trim_requested)
+                    @atomic :monotonic p._trim_requested = true
+                end
                 i += 1
             end
         end
@@ -98,16 +119,46 @@ end
 # Returns nothing; the summary is discarded (no allocation). Shared across backends:
 # `compact!` takes the same factor/shrink_to/min_bytes/active kwargs for every
 # `AbstractArrayPool`, so one implementation drives CPU and GPU pools alike.
-function _run_auto_manage!(pool::AbstractArrayPool)
-    @atomic :monotonic pool._compact_requested = false
-    factor, shrink_to, min_bytes, active = lock(_AUTO_MANAGE_LOCK) do
-        cfg = _AUTO_MANAGE_CONFIG
-        (cfg.factor, cfg.shrink_to, cfg.min_bytes, cfg.active)
+# Auto-trim one pool: drop each type's cold slot tail down to its recent working-set peak
+# (`_ac_peak_n_active`), then reset that peak for the next observation period. Generic over
+# `foreach_fixed_slot` + `others`, so it serves every backend once its typed pools carry the
+# field. Drops references only (no buffer swap), so `RUNTIME_CHECK` poison on a dropped slot
+# survives for any escaped view.
+function _auto_trim!(pool::AbstractArrayPool)
+    foreach_fixed_slot(pool) do tp
+        _trim_to!(tp, tp._ac_peak_n_active)
+        tp._ac_peak_n_active = 0
     end
-    try
-        compact!(pool; factor, shrink_to, min_bytes, active)
-    catch e
-        @warn "auto-manage failed; skipping this cycle" exception = (e, catch_backtrace()) maxlog = 3
+    for tp in values(pool.others)
+        _trim_to!(tp, tp._ac_peak_n_active)
+        tp._ac_peak_n_active = 0
+    end
+    return nothing
+end
+
+function _run_auto_manage!(pool::AbstractArrayPool)
+    # Auto-trim first (when flagged): reclaim the cold tail before compacting the kept slots.
+    # The `hasfield` guard const-folds per concrete type → a backend without the flag no-ops.
+    # Each action resets its flag BEFORE the work so a concurrent sweep's re-request is kept.
+    if hasfield(typeof(pool), :_trim_requested) && (@atomic :monotonic pool._trim_requested)
+        @atomic :monotonic pool._trim_requested = false
+        try
+            _auto_trim!(pool)
+        catch e
+            @warn "auto-trim failed; skipping this cycle" exception = (e, catch_backtrace()) maxlog = 3
+        end
+    end
+    if (@atomic :monotonic pool._compact_requested)
+        @atomic :monotonic pool._compact_requested = false
+        factor, shrink_to, min_bytes, active = lock(_AUTO_MANAGE_LOCK) do
+            cfg = _AUTO_MANAGE_CONFIG
+            (cfg.factor, cfg.shrink_to, cfg.min_bytes, cfg.active)
+        end
+        try
+            compact!(pool; factor, shrink_to, min_bytes, active)
+        catch e
+            @warn "auto-manage failed; skipping this cycle" exception = (e, catch_backtrace()) maxlog = 3
+        end
     end
     return nothing
 end
@@ -199,15 +250,19 @@ See also [`disable_auto_manage!`](@ref), [`auto_manage_enabled`](@ref).
 """
 function enable_auto_manage!(;
         interval::Real = 30.0, factor::Real = 10, shrink_to::Real = 1.5,
-        min_bytes::Int = 2^20, active::Bool = true,
+        min_bytes::Int = 2^20, active::Bool = true, trim_interval::Real = 120.0,
     )
-    AUTO_MANAGE || @warn "enable_auto_manage!: the `auto_manage` Preference is off — the `@with_pool` hook is compiled out, so the timer's flags are never serviced and no automatic compaction happens (registering pools does not change this). Set the Preference and restart to activate, or call `compact!` manually." maxlog = 1
+    AUTO_MANAGE || @warn "enable_auto_manage!: the `auto_manage` Preference is off — the `@with_pool` hook is compiled out, so the timer's flags are never serviced and no automatic management happens (registering pools does not change this). Set the Preference and restart to activate, or call `compact!`/`trim!` manually." maxlog = 1
+    # auto-trim cadence in sweep ticks; non-finite `trim_interval` (e.g. Inf) disables auto-trim.
+    trim_every = isfinite(trim_interval) ? max(1, round(Int, trim_interval / interval)) : 0
     lock(_AUTO_MANAGE_LOCK) do
         cfg = _AUTO_MANAGE_CONFIG
         cfg.factor = Float64(factor)
         cfg.shrink_to = Float64(shrink_to)
         cfg.min_bytes = min_bytes
         cfg.active = active
+        cfg.trim_every_ticks = trim_every
+        _AUTO_MANAGE_TICK[] = 0           # restart the trim cadence from this enable!
     end
     _start_auto_manage_timer!(interval)
     return nothing
