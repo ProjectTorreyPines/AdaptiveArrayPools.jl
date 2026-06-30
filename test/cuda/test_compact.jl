@@ -119,4 +119,22 @@
         rewind!(pool)
     end
 
+    @testset "RUNTIME_CHECK=1: compact! leaves poisoned inactive slots untouched" begin
+        # Parity with CPU: under S=1, releasing a slot poisons it AND shrinks its logical
+        # length to 0 (device buffer retained) so an escaped view reads NaN/typemax. compact!
+        # must NOT swap fresh device storage into such a slot — that would undo the poison.
+        pool = CuAdaptiveArrayPool{1}()
+        checkpoint!(pool); a = acquire!(pool, Float32, 1_000_000); fill!(a, 0.0f0); rewind!(pool)
+        checkpoint!(pool); b = acquire!(pool, Float32, 100); fill!(b, 0.0f0); rewind!(pool)
+        tp = pool.float32
+        @test tp.n_active == 0
+        @test length(tp.vectors[1]) == 0             # invalidated: logical length 0
+        cap0 = _ccap(tp.vectors[1])                   # retained device capacity (~1M)
+        @test cap0 >= 1_000_000
+
+        @test compact!(pool).slots_compacted == 0    # poisoned slot skipped
+        @test _ccap(tp.vectors[1]) == cap0            # device capacity (and poison) preserved
+        @test compact!(pool; active = false).slots_compacted == 0
+    end
+
 end

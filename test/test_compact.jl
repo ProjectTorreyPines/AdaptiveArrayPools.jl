@@ -442,4 +442,31 @@ const _ZERO_COMPACT = (; slots_compacted = 0, bytes_reclaimed = 0, gc_triggered 
         @test compact!(pool; shrink_to = 1.0e6).slots_compacted == 0
     end
 
+    @testset "RUNTIME_CHECK=1: compact! leaves poisoned inactive slots untouched" begin
+        # Under S=1, releasing a slot poisons it (NaN/typemax) AND shrinks its backing to
+        # logical length 0, so an escaped acquire_view! view reads poison instead of live
+        # data. compact! must NOT swap fresh storage into such a slot — that would undo the
+        # poison and let the escaped view read plausible memory. The slot stays untouched
+        # (retained capacity + poison preserved) until it is re-acquired.
+        pool = AdaptiveArrayPool{1}()
+        checkpoint!(pool); a = acquire!(pool, Float64, 1_000_000); a .= 0.0; rewind!(pool)
+        checkpoint!(pool); b = acquire!(pool, Float64, 100); b .= 0.0; rewind!(pool)
+        tp = pool.float64
+        @test tp.n_active == 0
+        @test length(tp.vectors[1]) == 0             # invalidated: logical length 0
+        cap0 = _cap(tp.vectors[1])                    # retained Memory capacity (~1M)
+        @test cap0 >= 1_000_000
+
+        s = compact!(pool)                            # default active=true; all slots inactive here
+        @test s.slots_compacted == 0                  # poisoned slot skipped (no escape-detection undo)
+        @test _cap(tp.vectors[1]) == cap0             # capacity (and poison) preserved
+
+        @test compact!(pool; active = false).slots_compacted == 0   # explicit inactive scan: also skipped
+
+        # Re-acquiring clears the length-0 marker; the slot then compacts normally.
+        checkpoint!(pool); c = acquire!(pool, Float64, 100); c .= 0.0; rewind!(pool)
+        @test length(tp.vectors[1]) == 0             # re-released → invalidated again
+        @test compact!(pool).slots_compacted == 0    # still skipped while poisoned
+    end
+
 end

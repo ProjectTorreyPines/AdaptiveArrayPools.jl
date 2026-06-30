@@ -908,6 +908,13 @@ _maybe_compact_slot!(::AbstractTypedPool, ::Int, ::Real, ::Real, ::Int) = 0
 function _maybe_compact_slot!(tp::TypedPool{T}, slot::Int, factor::Real, shrink_to::Real, min_bytes::Int) where {T}
     used = _slot_used(tp, slot)
     used == 0 && return 0
+    # RUNTIME_CHECK (S=1) invalidation poisons a released slot AND shrinks its backing to
+    # logical length 0 (keeping the retained Memory) so an escaped `acquire_view!` reads
+    # NaN/typemax. Such a slot still looks bloated (large capacity, nonzero recorded extent),
+    # but compacting it would swap in fresh storage and UNDO the poison. Skip it — it compacts
+    # normally once re-acquired. `length == 0 && used > 0` ⟺ poisoned (the two are set together;
+    # an un-checked slot keeps its logical length, so it is never length-0 with `used > 0`).
+    @inbounds(length(tp.vectors[slot])) == 0 && return 0
     cap = _slot_capacity(@inbounds tp.vectors[slot])
     cap >= factor * used || return 0
     # Clamp the shrink goal to `[used, cap]`: never below the live size, and never

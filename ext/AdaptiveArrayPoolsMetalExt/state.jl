@@ -465,6 +465,11 @@ end
 function AdaptiveArrayPools._maybe_compact_slot!(tp::MetalTypedPool{T, S}, slot::Int, factor::Real, shrink_to::Real, min_bytes::Int) where {T, S}
     used = AdaptiveArrayPools._slot_used(tp, slot)
     used == 0 && return 0
+    # RUNTIME_CHECK (R=1) invalidation poisons a released slot AND shrinks its logical length
+    # to 0 (device buffer retained) so an escaped view reads NaN/typemax. Compacting it would
+    # swap in fresh device storage and UNDO the poison — skip it (compacts once re-acquired).
+    # Parity with CPU `_maybe_compact_slot!`; `length == 0 && used > 0` ⟺ poisoned.
+    @inbounds(length(tp.vectors[slot])) == 0 && return 0
     cap = AdaptiveArrayPools._slot_capacity(@inbounds tp.vectors[slot])
     cap >= factor * used || return 0
     target = max(used, ceil(Int, min(Float64(cap), shrink_to * used)))   # clamp to [used, cap]
