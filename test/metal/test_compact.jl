@@ -81,4 +81,45 @@
         @test compact!(ext.DISABLED_METAL, Float32, Int32) == ZERO
     end
 
+    @testset "active=true: per-slot copy decision (active preserved, inactive shrinks)" begin
+        # Parity with CPU `_compact_slot!`'s `copy_live`: the active-vs-inactive copy
+        # decision is PER SLOT (slot ≤ n_active ⇒ active ⇒ copy live data; else inactive ⇒
+        # SKIP the GPU→GPU copy of dead data). Build two bloated slots, hold ONLY slot 1,
+        # compact both: both shrink, slot 1's held data survives, and slot 2 (inactive,
+        # copy skipped) still re-acquires correctly. (Inactive contents are dead → never
+        # asserted — the point is correctness despite the skipped copy.)
+        pool = MetalAdaptiveArrayPool{0, METAL_STORAGE}()
+        checkpoint!(pool)                               # round 1: grow two slots to 1M
+        acquire!(pool, Float32, 1_000_000)
+        acquire!(pool, Float32, 1_000_000)
+        rewind!(pool)
+        checkpoint!(pool)                               # round 2: reuse both at 100 → bloated
+        acquire!(pool, Float32, 100)
+        acquire!(pool, Float32, 100)
+        rewind!(pool)
+        checkpoint!(pool)                               # round 3: hold ONLY slot 1 active
+        h1 = acquire!(pool, Float32, 100)
+        copyto!(h1, Float32.(1:100))
+        tp = pool.float32
+        @test tp.n_active == 1                          # slot 1 active, slot 2 inactive
+        @test _mcap(tp.vectors[1]) >= 1_000_000
+        @test _mcap(tp.vectors[2]) >= 1_000_000
+
+        s = compact!(pool; active = true)
+
+        @test s.slots_compacted == 2                    # BOTH slots shrink
+        @test _mcap(tp.vectors[1]) < 1000               # active slot 1 shrunk
+        @test _mcap(tp.vectors[2]) < 1000               # inactive slot 2 shrunk
+        @test Array(h1) == Float32.(1:100)              # ACTIVE slot: live data preserved (copy_live)
+        rewind!(pool)
+
+        checkpoint!(pool)                               # compacted INACTIVE slot re-acquires OK
+        acquire!(pool, Float32, 120)                    # slot 1
+        r2 = acquire!(pool, Float32, 120)               # slot 2 (was inactive, copy-skipped)
+        copyto!(r2, fill(5.0f0, 120))
+        @test length(r2) == 120
+        @test Array(r2) == fill(5.0f0, 120)             # usable despite the skipped copy
+        rewind!(pool)
+    end
+
 end
