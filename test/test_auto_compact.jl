@@ -1,5 +1,5 @@
 using Test
-using Logging: with_logger, NullLogger
+using Base.CoreLogging: with_logger, NullLogger   # from Base — no `Logging` dep needed
 using AdaptiveArrayPools
 using AdaptiveArrayPools: checkpoint!, rewind!
 import AdaptiveArrayPools as AAP
@@ -58,6 +58,20 @@ AAP.disable_auto_compact!()   # stop the __init__-started timer for deterministi
         @test (@atomic p1._compact_requested) == true
         @test (@atomic p2._compact_requested) == true
         @test _registry_len() == 2                   # dead WeakRef pruned
+        _clear_registry!()
+    end
+
+    @testset "register_auto_compact! skips flagless pools (no sweep poison)" begin
+        # A pool without the `_compact_requested` flag (DisabledPool) must NOT be registered:
+        # otherwise the sweep would throw on it and starve every later pool in the registry.
+        _clear_registry!()
+        AAP.register_auto_compact!(DISABLED_CPU)     # DisabledPool: no @atomic flag
+        @test _registry_len() == 0                   # silently skipped, not registered
+        # And a real pool registered alongside is still swept normally (no poison).
+        p = AdaptiveArrayPool{0}()
+        AAP.register_auto_compact!(p)
+        AAP._auto_compact_sweep!(nothing)
+        @test (@atomic p._compact_requested) == true
         _clear_registry!()
     end
 

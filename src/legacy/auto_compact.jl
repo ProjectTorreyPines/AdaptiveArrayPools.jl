@@ -4,18 +4,18 @@
 # The modern src/auto_compact.jl is NOT included on the legacy path, but the SHARED
 # macros.jl and task_local_pool.jl reference AUTO_COMPACT / _maybe_auto_compact! /
 # register_auto_compact!. Define them here as no-ops so the shared code compiles and the
-# generated @with_pool scope-exit hook DCEs away (AUTO_COMPACT === false). The public
+# generated @with_pool scope-entry hook DCEs away (AUTO_COMPACT === false). The public
 # enable/disable/enabled API stays callable across the whole supported Julia range.
 # Upgrade to Julia 1.12+ for actual background auto-compaction.
 # ==============================================================================
 
-# Compile-time OFF: constant-folds the shared @with_pool scope-exit hook to nothing.
+# Compile-time OFF: constant-folds the shared @with_pool scope-entry hook to nothing.
 const AUTO_COMPACT = false
 
 # Referenced (and DCE'd) by get_task_local_pool's `AUTO_COMPACT && register_auto_compact!`.
 register_auto_compact!(pool) = nothing
 
-# Referenced (and DCE'd) by the @with_pool scope-exit hook.
+# Referenced (and DCE'd) by the @with_pool scope-entry hook.
 @inline _maybe_auto_compact!(::Any) = nothing
 
 """

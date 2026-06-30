@@ -4,7 +4,7 @@ using AdaptiveArrayPools: get_task_local_pool
 
 # Legacy path (Julia < 1.12): the auto-compact API is defined but a NO-OP (the legacy
 # pool architecture has no capacity compaction). `const AUTO_COMPACT = false` makes the
-# shared @with_pool scope-exit hook DCE away, and the public enable/disable/enabled API
+# shared @with_pool scope-entry hook DCE away, and the public enable/disable/enabled API
 # stays callable across the supported Julia range. Mirrors test_compact_legacy.jl.
 
 @testset "auto-compact (legacy no-op, Julia < 1.12)" begin

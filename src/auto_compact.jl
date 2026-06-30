@@ -54,11 +54,17 @@ const _AUTO_COMPACT_CONFIG = _AutoCompactConfig(10.0, 1.5, 2^20, true)
 
 Add `pool` to the auto-compact registry (under lock) so the background Timer's sweep
 will flag it. Called from the task-local-pool slow path when `AUTO_COMPACT` is on
-(one entry per task-local pool). Accepts any `AbstractArrayPool` so the same registry
-serves every backend (CPU `AdaptiveArrayPool`, GPU `MetalAdaptiveArrayPool`, …); each
-carries its own `@atomic _compact_requested` flag and services it at its own scope entry.
+(one entry per task-local pool). The same registry serves every backend (CPU
+`AdaptiveArrayPool`, GPU `MetalAdaptiveArrayPool`/`CuAdaptiveArrayPool`); each carries
+its own `@atomic _compact_requested` flag and services it at its own scope entry.
+
+A pool *without* that flag (e.g. `DisabledPool`, or a foreign `AbstractArrayPool`
+subtype) is silently skipped: registering one would make the sweep throw on its missing
+`_compact_requested` and abort the cycle, starving every pool after it in the registry.
 """
 function register_auto_compact!(pool::AbstractArrayPool)
+    # Only pools carrying the cross-thread flag can be swept (const-folds per concrete type).
+    hasfield(typeof(pool), :_compact_requested) || return nothing
     lock(() -> push!(_AUTO_COMPACT_REGISTRY, WeakRef(pool)), _AUTO_COMPACT_LOCK)
     return nothing
 end
@@ -172,13 +178,17 @@ Start (or restart) the background auto-compact `Timer` with the given config. Ev
 `compact!` at its next `@with_pool` **entry** (the `_current_depth == 1` safepoint).
 
 Requires the `auto_compact` compile-time Preference (`AUTO_COMPACT`) for the scope-entry
-hook and pool auto-registration. With the Preference off this warns and the timer still
-runs but stays inert unless you `register_auto_compact!` pools manually.
+hook and pool auto-registration. With the Preference **off**, the `@with_pool` hook is
+compiled out, so even though this warns-then-starts the timer (and the timer keeps setting
+flags), nothing ever *services* those flags — no automatic compaction happens, and
+registering pools manually does not change that. Set the Preference and restart, or call
+`compact!` yourself.
 
 !!! note "What gets compacted, when, and the zero-alloc trade-off"
-    Auto-compaction targets the **task-local pool** (`get_task_local_pool()`) only — the
-    pool `@with_pool` uses and the one that auto-registers. A hand-made `AdaptiveArrayPool()`
-    is never registered and never auto-compacted; call `compact!` on it directly. The work
+    Auto-compaction targets the **task-local pool** (`get_task_local_pool()`) — the pool
+    `@with_pool` uses and the only one that auto-registers. A hand-made `AdaptiveArrayPool()`
+    is **not** auto-registered (so not auto-compacted); `register_auto_compact!` it explicitly
+    to include it in the sweep, or just call `compact!` on it directly. The work
     runs at a `@with_pool` **entry** (`_current_depth == 1`), so an idle task with no
     `@with_pool` activity won't compact until it next enters a scope. Because a compaction
     allocates the new right-sized backing(s), a `@with_pool` that services a pending request
@@ -191,7 +201,7 @@ function enable_auto_compact!(;
         interval::Real = 30.0, factor::Real = 10, shrink_to::Real = 1.5,
         min_bytes::Int = 2^20, active::Bool = true,
     )
-    AUTO_COMPACT || @warn "enable_auto_compact!: the `auto_compact` Preference is off — the scope-entry hook is compiled out and pools won't auto-register. The timer runs but stays inert unless you register pools manually. Set the Preference and restart to activate." maxlog = 1
+    AUTO_COMPACT || @warn "enable_auto_compact!: the `auto_compact` Preference is off — the `@with_pool` hook is compiled out, so the timer's flags are never serviced and no automatic compaction happens (registering pools does not change this). Set the Preference and restart to activate, or call `compact!` manually." maxlog = 1
     lock(_AUTO_COMPACT_LOCK) do
         cfg = _AUTO_COMPACT_CONFIG
         cfg.factor = Float64(factor)
