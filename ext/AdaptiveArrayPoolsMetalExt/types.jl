@@ -144,7 +144,7 @@ function MetalAdaptiveArrayPool{R, S}() where {R, S}
         "",             # _pending_callsite
         "",             # _pending_return_site
         nothing,        # _borrow_log: lazily created when R >= 1
-        false,          # _compact_requested: no pending auto-compact request
+        false,          # _compact_requested: no pending auto-manage request
     )
 end
 

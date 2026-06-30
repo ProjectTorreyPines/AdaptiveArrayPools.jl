@@ -386,7 +386,7 @@ mutable struct AdaptiveArrayPool{S} <: AbstractArrayPool
 
     # Auto-compact request flag: set by the background Timer sweep (a different
     # thread), read + reset by the owner task at the `_current_depth == 1` safepoint.
-    # Atomic for the cross-thread handoff; ignored when auto-compact is disabled.
+    # Atomic for the cross-thread handoff; ignored when auto-manage is disabled.
     @atomic _compact_requested::Bool
 end
 
@@ -410,7 +410,7 @@ function AdaptiveArrayPool{S}() where {S}
         "",             # _pending_callsite: no pending
         "",             # _pending_return_site: no pending
         nothing,        # _borrow_log: lazily created at S=1
-        false,          # _compact_requested: no pending auto-compact request
+        false,          # _compact_requested: no pending auto-manage request
     )
 end
 

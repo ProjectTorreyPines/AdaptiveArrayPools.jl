@@ -51,6 +51,6 @@ else
         include("test_scope_depth_validation.jl")
         include("test_trim.jl")
         include("test_compact.jl")
-        include("test_auto_compact.jl")
+        include("test_auto_manage.jl")
     end
 end

@@ -1,6 +1,6 @@
 # CUDA Auto-Compact Tests
 # ========================
-# Parity with the CPU suite (test/test_auto_compact.jl) and the Metal mirror, for CUDA.
+# Parity with the CPU suite (test/test_auto_manage.jl) and the Metal mirror, for CUDA.
 #
 # The single global Timer lives in the BASE module and runs on a CPU thread. It sweeps
 # the shared `Vector{WeakRef}` registry and sets each live pool's `@atomic _compact_requested`
@@ -9,23 +9,23 @@
 # pool at `@with_pool :cuda`. The two are independent — one sweep flags both, and each
 # services (and clears) only its own flag at its own boundary.
 #
-# AUTO_COMPACT defaults on, so `__init__` auto-starts the timer; we stop it up front so each
+# AUTO_MANAGE defaults on, so `__init__` auto-starts the timer; we stop it up front so each
 # testset is deterministic. Uses Float32 (GPU's primary type).
 
 import AdaptiveArrayPools as AAP
 
-AAP.disable_auto_compact!()   # stop the __init__-started timer for deterministic tests
+AAP.disable_auto_manage!()   # stop the __init__-started timer for deterministic tests
 
-@testset "CUDA auto_compact" begin
+@testset "CUDA auto_manage" begin
 
     # Helpers are scoped INSIDE this testset (a local scope) so they don't define top-level
     # methods in `Main` that collide with the identically-named helpers in the CPU/Metal
-    # auto-compact test files when the full suite loads several backends' files together
+    # auto-manage test files when the full suite loads several backends' files together
     # (otherwise: "WARNING: Method definition _clear_registry!() ... overwritten").
     _ccap(v) = Int(getfield(v, :maxsize) ÷ sizeof(eltype(v)))     # CUDA device capacity (elements)
     _cpucap(v) = length(getfield(v, :ref).mem)                   # CPU backing capacity (coexistence test)
-    _clear_registry!() = lock(() -> empty!(AAP._AUTO_COMPACT_REGISTRY), AAP._AUTO_COMPACT_LOCK)
-    _registry_len() = lock(() -> length(AAP._AUTO_COMPACT_REGISTRY), AAP._AUTO_COMPACT_LOCK)
+    _clear_registry!() = lock(() -> empty!(AAP._AUTO_MANAGE_REGISTRY), AAP._AUTO_MANAGE_LOCK)
+    _registry_len() = lock(() -> length(AAP._AUTO_MANAGE_REGISTRY), AAP._AUTO_MANAGE_LOCK)
     # An inactive, bloated Float32 CUDA slot (cap = `big` high-water, last extent = `small`).
     function _cuda_inactive_bloated(big::Int, small::Int)
         pool = CuAdaptiveArrayPool{0}()
@@ -45,42 +45,42 @@ AAP.disable_auto_compact!()   # stop the __init__-started timer for deterministi
     @testset "registry sweep flags a registered CUDA pool" begin
         _clear_registry!()
         p = CuAdaptiveArrayPool{0}()
-        AAP.register_auto_compact!(p)
+        AAP.register_auto_manage!(p)
         @test _registry_len() == 1
-        AAP._auto_compact_sweep!(nothing)               # the timer callback body
+        AAP._auto_manage_sweep!(nothing)               # the timer callback body
         @test (@atomic p._compact_requested) == true
         _clear_registry!()
     end
 
-    @testset "_run_auto_compact! resets the flag and compacts inactive CUDA bloat" begin
+    @testset "_run_auto_manage! resets the flag and compacts inactive CUDA bloat" begin
         pool = _cuda_inactive_bloated(1_000_000, 100)
         @atomic pool._compact_requested = true
         @test _ccap(pool.float32.vectors[1]) >= 1_000_000
 
-        AAP._run_auto_compact!(pool)
+        AAP._run_auto_manage!(pool)
 
         @test (@atomic pool._compact_requested) == false   # reset (before the work)
         @test _ccap(pool.float32.vectors[1]) < 1000        # device buffer shrunk in place
     end
 
     # ── Scope-entry hook (dispatches on CuAdaptiveArrayPool) ──────────────────
-    @testset "_maybe_auto_compact!(::CuAdaptiveArrayPool) fires only at depth 1" begin
+    @testset "_maybe_auto_manage!(::CuAdaptiveArrayPool) fires only at depth 1" begin
         pool = _cuda_inactive_bloated(1_000_000, 100)
         checkpoint!(pool)                                   # depth → 2
         @atomic pool._compact_requested = true
-        AAP._maybe_auto_compact!(pool)                      # depth 2 ≠ 1 → must NOT act
+        AAP._maybe_auto_manage!(pool)                      # depth 2 ≠ 1 → must NOT act
         @test (@atomic pool._compact_requested) == true     # flag preserved for the outer exit
         @test _ccap(pool.float32.vectors[1]) >= 1_000_000   # not compacted
         rewind!(pool)                                       # depth → 1
-        AAP._maybe_auto_compact!(pool)                      # depth 1 → fires
+        AAP._maybe_auto_manage!(pool)                      # depth 1 → fires
         @test (@atomic pool._compact_requested) == false    # reset
         @test _ccap(pool.float32.vectors[1]) < 1000         # compacted
     end
 
-    @testset "_maybe_auto_compact! is a no-op when the CUDA flag is clear" begin
+    @testset "_maybe_auto_manage! is a no-op when the CUDA flag is clear" begin
         pool = _cuda_inactive_bloated(1_000_000, 100)
         @test (@atomic pool._compact_requested) == false
-        AAP._maybe_auto_compact!(pool)
+        AAP._maybe_auto_manage!(pool)
         @test _ccap(pool.float32.vectors[1]) >= 1_000_000   # untouched (no request)
     end
 
@@ -91,8 +91,8 @@ AAP.disable_auto_compact!()   # stop the __init__-started timer for deterministi
                 sum(x)
             end
         )
-        @test occursin("_maybe_auto_compact!", s)           # hook emitted…
-        @test occursin("AUTO_COMPACT", s)                   # …gated by the compile-time const
+        @test occursin("_maybe_auto_manage!", s)           # hook emitted…
+        @test occursin("AUTO_MANAGE", s)                   # …gated by the compile-time const
     end
 
     # ── Auto-registration via the CUDA task-local slow path ───────────────────
@@ -103,12 +103,12 @@ AAP.disable_auto_compact!()   # stop the __init__-started timer for deterministi
         _clear_registry!()
     end
 
-    @testset "end-to-end: bloat auto-compacts at a @with_pool :cuda boundary" begin
-        AAP.disable_auto_compact!()
+    @testset "end-to-end: bloat auto-manages at a @with_pool :cuda boundary" begin
+        AAP.disable_auto_manage!()
         _clear_registry!()
         pool = get_task_local_cuda_pool()
         empty!(pool)                                        # clean slate
-        AAP.register_auto_compact!(pool)
+        AAP.register_auto_manage!(pool)
         @with_pool :cuda p begin                            # grow slot to 1M high-water
             x = acquire!(p, Float32, 1_000_000); fill!(x, 0.0f0)
         end
@@ -120,14 +120,14 @@ AAP.disable_auto_compact!()   # stop the __init__-started timer for deterministi
 
         # Set the request flag directly (deterministic). This exercises the unique end-to-end
         # piece: the MACRO-emitted hook firing at a real @with_pool :cuda entry and dispatching
-        # to _maybe_auto_compact!(::CuAdaptiveArrayPool).
+        # to _maybe_auto_manage!(::CuAdaptiveArrayPool).
         @atomic pool._compact_requested = true
         @with_pool :cuda p begin                            # scope ENTRY at depth 1 → hook fires
             acquire!(p, Float32, 4)
         end
 
         @test (@atomic pool._compact_requested) == false    # hook consumed the request
-        @test _ccap(pool.float32.vectors[1]) < cap0         # auto-compacted, no manual compact!
+        @test _ccap(pool.float32.vectors[1]) < cap0         # auto-manageed, no manual compact!
         empty!(pool)
         _clear_registry!()
     end
@@ -138,7 +138,7 @@ AAP.disable_auto_compact!()   # stop the __init__-started timer for deterministi
     # tracks pools, not tasks). Each then compacts independently at its OWN scope boundary;
     # servicing one never touches the other's flag or buffers.
     @testset "CPU + CUDA coexist: one sweep flags both; each compacts independently" begin
-        AAP.disable_auto_compact!()
+        AAP.disable_auto_manage!()
         _clear_registry!()
 
         # CPU pool, inactive-bloated Float64.
@@ -148,8 +148,8 @@ AAP.disable_auto_compact!()   # stop the __init__-started timer for deterministi
         # CUDA pool, inactive-bloated Float32.
         cu = _cuda_inactive_bloated(1_000_000, 100)
 
-        AAP.register_auto_compact!(cpu)
-        AAP.register_auto_compact!(cu)
+        AAP.register_auto_manage!(cpu)
+        AAP.register_auto_manage!(cu)
         @test _registry_len() == 2
 
         cpu_cap0 = _cpucap(cpu.float64.vectors[1])
@@ -158,19 +158,19 @@ AAP.disable_auto_compact!()   # stop the __init__-started timer for deterministi
         @test cu_cap0 >= 1_000_000
 
         # ONE sweep (the single CPU-side Timer body) flags BOTH pools.
-        AAP._auto_compact_sweep!(nothing)
+        AAP._auto_manage_sweep!(nothing)
         @test (@atomic cpu._compact_requested) == true
         @test (@atomic cu._compact_requested) == true
 
         # Service the CPU pool at ITS boundary → only the CPU pool compacts; CUDA untouched.
-        AAP._maybe_auto_compact!(cpu)
+        AAP._maybe_auto_manage!(cpu)
         @test (@atomic cpu._compact_requested) == false          # CPU flag consumed
         @test _cpucap(cpu.float64.vectors[1]) < cpu_cap0         # CPU compacted
         @test (@atomic cu._compact_requested) == true            # CUDA flag still pending
         @test _ccap(cu.float32.vectors[1]) >= 1_000_000          # CUDA NOT compacted yet
 
         # Service the CUDA pool at ITS boundary → now the CUDA pool compacts, on its own.
-        AAP._maybe_auto_compact!(cu)
+        AAP._maybe_auto_manage!(cu)
         @test (@atomic cu._compact_requested) == false           # CUDA flag consumed
         @test _ccap(cu.float32.vectors[1]) < 1000                # CUDA compacted independently
 
@@ -178,4 +178,4 @@ AAP.disable_auto_compact!()   # stop the __init__-started timer for deterministi
     end
 end
 
-AAP.disable_auto_compact!()   # leave the timer stopped for later CUDA test files
+AAP.disable_auto_manage!()   # leave the timer stopped for later CUDA test files

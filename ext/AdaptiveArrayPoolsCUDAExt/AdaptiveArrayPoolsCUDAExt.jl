@@ -34,7 +34,7 @@ using CUDA
     include("state.jl")
 
     # Auto-compact: service the timer-flagged request at `@with_pool :cuda` entry
-    include("auto_compact.jl")
+    include("auto_manage.jl")
 
     # Safety: poisoning, escape detection, borrow tracking
     include("debug.jl")
