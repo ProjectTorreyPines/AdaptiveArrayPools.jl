@@ -53,5 +53,6 @@ else
         include("test_task_local_pool.jl")
         include("test_trim.jl")
         include("test_compact.jl")
+        include("test_auto_compact.jl")
     end
 end

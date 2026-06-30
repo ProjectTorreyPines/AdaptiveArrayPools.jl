@@ -54,9 +54,11 @@ const _AUTO_COMPACT_CONFIG = _AutoCompactConfig(10.0, 1.5, 2^20, true)
 
 Add `pool` to the auto-compact registry (under lock) so the background Timer's sweep
 will flag it. Called from the task-local-pool slow path when `AUTO_COMPACT` is on
-(one entry per task-local pool).
+(one entry per task-local pool). Accepts any `AbstractArrayPool` so the same registry
+serves every backend (CPU `AdaptiveArrayPool`, GPU `MetalAdaptiveArrayPool`, …); each
+carries its own `@atomic _compact_requested` flag and services it at its own scope entry.
 """
-function register_auto_compact!(pool::AdaptiveArrayPool)
+function register_auto_compact!(pool::AbstractArrayPool)
     lock(() -> push!(_AUTO_COMPACT_REGISTRY, WeakRef(pool)), _AUTO_COMPACT_LOCK)
     return nothing
 end
@@ -73,7 +75,7 @@ function _auto_compact_sweep!(_timer)
                 _AUTO_COMPACT_REGISTRY[i] = _AUTO_COMPACT_REGISTRY[end]
                 pop!(_AUTO_COMPACT_REGISTRY)          # dead → swap-remove
             else
-                p = pool::AdaptiveArrayPool
+                p = pool::AbstractArrayPool          # CPU or any GPU backend pool
                 @atomic :monotonic p._compact_requested = true   # request compaction
                 i += 1
             end
@@ -87,8 +89,10 @@ end
 # by `enable_auto_compact!`), then run the full `compact!`. Wrapped in try/catch so a
 # background-maintenance failure (e.g. OOM allocating the new backing) is logged and the
 # cycle skipped — it must never surface as a user-visible error at the `@with_pool` boundary.
-# Returns nothing; the summary is discarded (no allocation).
-function _run_auto_compact!(pool::AdaptiveArrayPool)
+# Returns nothing; the summary is discarded (no allocation). Shared across backends:
+# `compact!` takes the same factor/shrink_to/min_bytes/active kwargs for every
+# `AbstractArrayPool`, so one implementation drives CPU and GPU pools alike.
+function _run_auto_compact!(pool::AbstractArrayPool)
     @atomic :monotonic pool._compact_requested = false
     factor, shrink_to, min_bytes, active = lock(_AUTO_COMPACT_LOCK) do
         cfg = _AUTO_COMPACT_CONFIG
@@ -109,9 +113,11 @@ end
 # with a single hook point, and never runs compaction inside a `finally` during unwind.
 # `@inline` so the common case (flag clear) is a cheap inlined monotonic read + compare; the
 # cold `_run_auto_compact!` stays a non-inlined call. The `::Any` fallback keeps the SHARED
-# `@with_pool` codegen safe for non-CPU (GPU) pools — they no-op here; a future phase adds
-# their own methods. `:monotonic` suffices: the flag is a one-way eventual-visibility signal
-# with no cross-field ordering invariant (cheaper than seq-cst on weak-ordered CPUs).
+# `@with_pool` codegen safe for pools that don't opt in (e.g. `DisabledPool`, or a backend
+# without its own method) — they no-op here. GPU backends define their own concrete method
+# in their extension (e.g. `_maybe_auto_compact!(::MetalAdaptiveArrayPool)`), reusing the
+# shared `_run_auto_compact!`. `:monotonic` suffices: the flag is a one-way eventual-visibility
+# signal with no cross-field ordering invariant (cheaper than seq-cst on weak-ordered CPUs).
 @inline _maybe_auto_compact!(::Any) = nothing
 @inline function _maybe_auto_compact!(pool::AdaptiveArrayPool)
     if (@atomic :monotonic pool._compact_requested) && pool._current_depth == 1
