@@ -43,6 +43,12 @@ mutable struct MetalTypedPool{T, S} <: AbstractTypedPool{T, MtlArray{T, 1, S}}
     n_active::Int
     _checkpoint_n_active::Vector{Int}
     _checkpoint_depths::Vector{Int}
+
+    # --- Auto-trim telemetry (parity with CPU TypedPool; see its docstring) ---
+    # Peak `n_active` since the last auto-trim — the recent working-set width. Written on the
+    # hot path (`_metal_claim_slot!`, one `max`, gated by AUTO_MANAGE → DCE'd off); auto-trim
+    # reads it as the slot count to keep, then resets it to 0. Owner-only (non-atomic).
+    _ac_peak_n_active::Int
 end
 
 function MetalTypedPool{T, S}() where {T, S}
@@ -51,6 +57,7 @@ function MetalTypedPool{T, S}() where {T, S}
         Union{Nothing, Vector{Any}}[],       # arr_wrappers (indexed by N)
         Int[],                               # slot_extents (parallel to vectors)
         0, [0], [0],                         # State (1-based sentinel)
+        0,                                   # _ac_peak_n_active: no usage observed yet
     )
 end
 
@@ -122,10 +129,14 @@ mutable struct MetalAdaptiveArrayPool{R, S} <: AbstractArrayPool
     _pending_return_site::String
     _borrow_log::Union{Nothing, IdDict{Any, String}}
 
-    # Auto-compact request flag (parity with CPU AdaptiveArrayPool): set by the base
+    # Auto-manage request flags (parity with CPU AdaptiveArrayPool): set by the base
     # module's background Timer sweep (a different thread), read + reset by the owner task
     # at the `@with_pool :metal` entry safepoint. Atomic for the cross-thread handoff.
+    # `_compact_requested` is set every tick (→ compact!); `_trim_requested` every
+    # `trim_interval` (→ auto-trim the tail). The entry hook fires on `_compact_requested`
+    # (set on the same sweep), so the generic `_run_auto_manage!` services both at once.
     @atomic _compact_requested::Bool
+    @atomic _trim_requested::Bool
 end
 
 function MetalAdaptiveArrayPool{R, S}() where {R, S}
@@ -144,7 +155,8 @@ function MetalAdaptiveArrayPool{R, S}() where {R, S}
         "",             # _pending_callsite
         "",             # _pending_return_site
         nothing,        # _borrow_log: lazily created when R >= 1
-        false,          # _compact_requested: no pending auto-manage request
+        false,          # _compact_requested: no pending compact request
+        false,          # _trim_requested: no pending auto-trim request
     )
 end
 

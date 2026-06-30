@@ -54,5 +54,6 @@ else
         include("test_trim.jl")
         include("test_compact.jl")
         include("test_auto_manage.jl")
+        include("test_auto_trim.jl")
     end
 end
