@@ -13,17 +13,32 @@ whole point. But over a long-running program two kinds of slack accumulate:
 
 ## What it does
 
-One background `Timer` drives two actions, on independent cadences:
+One background `Timer` drives two complementary actions, on independent cadences:
 
 | Action          | Reclaims                                            | Default cadence |
 |-----------------|-----------------------------------------------------|-----------------|
-| **auto-compact** | shrinks an over-allocated slot's backing **in place** | every `interval` (30 s) |
-| **auto-trim**   | drops slots beyond the **recent working-set peak**   | every `trim_interval` (120 s) |
+| **auto-compact** | shrinks an over-allocated slot's backing **in place** | every `compact_interval` (30 s) |
+| **auto-trim**   | drops **whole slots** beyond the recent working-set peak | every `trim_interval` (120 s) |
 
-A slot is auto-compacted only when it is genuinely bloated — backing capacity `≥ factor ×`
-its last use **and** the reclaim is `≥ min_bytes` (1 MiB) — so a steady-state pool is left
-untouched. Auto-trim drops each type's slots down to the largest concurrency seen in the last
-period (a type unused for the whole period trims to zero).
+They act on different axes — one shrinks the buffer *within* a slot, the other drops *whole* slots:
+
+```text
+auto-compact — shrink ONE slot's bloated backing buffer (the slot itself stays)
+
+    before   ▓▓▓░░░░░░░░░░░░░░░░░░░░░░░░     ▓ live data   ░ wasted capacity  (bloated)
+    after    ▓▓▓░                           reallocated to ~1.5× the live size;
+                                            arrays you're still holding follow the move
+
+auto-trim — drop whole SLOTS that fell out of the recent working set
+
+    before   [1][2][3][4][5]                grew to a past peak of 5 concurrent arrays…
+    after    [1][2]                         …recent peak is 2  →  slots 3–5 freed entirely
+```
+
+A slot is auto-compacted only when it is genuinely bloated — backing capacity
+`≥ compact_bloat_factor ×` its last use **and** the reclaim is `≥ compact_min_bytes` (1 MiB) — so a
+steady-state pool is left untouched. Auto-trim drops each type's slots down to the largest
+concurrency seen in the last period (a type unused for the whole period trims to zero).
 
 ## When (and where) the work happens
 
