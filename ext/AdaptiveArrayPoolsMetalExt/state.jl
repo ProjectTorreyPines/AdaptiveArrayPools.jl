@@ -439,10 +439,15 @@ end
 # reference. All buffer ownership goes through `_update_metal_wrapper_data!`
 # (unsafe_free! old + copy/retain new), so the old device buffer's refcount reaches
 # zero and Metal frees it.
-function AdaptiveArrayPools._compact_slot!(tp::MetalTypedPool{T, S}, slot::Int, target::Int, used::Int) where {T, S}
+# `copy_live` (parity with CPU `_compact_slot!`): copy the `used` live elements into the
+# new device buffer. TRUE for ACTIVE slots — still held, must survive the shrink. FALSE
+# for INACTIVE slots: their contents are dead (the next `acquire!` returns uninitialized
+# device memory the caller fills), so the GPU→GPU `copyto!` is pure waste; skipping it
+# makes inactive compaction allocate-only (no device copy / kernel launch).
+function AdaptiveArrayPools._compact_slot!(tp::MetalTypedPool{T, S}, slot::Int, target::Int, used::Int, copy_live::Bool) where {T, S}
     v = @inbounds tp.vectors[slot]
     nv = MtlArray{T, 1, S}(undef, target)
-    used > 0 && copyto!(nv, 1, v, 1, used)
+    copy_live && copyto!(nv, 1, v, 1, used)
     _update_metal_wrapper_data!(v, nv)          # backing takes nv's buffer (refcounted)
     setfield!(v, :dims, (target,))
     for wrappers in tp.arr_wrappers
@@ -460,12 +465,18 @@ end
 function AdaptiveArrayPools._maybe_compact_slot!(tp::MetalTypedPool{T, S}, slot::Int, factor::Real, shrink_to::Real, min_bytes::Int) where {T, S}
     used = AdaptiveArrayPools._slot_used(tp, slot)
     used == 0 && return 0
+    # RUNTIME_CHECK (R=1) invalidation poisons a released slot AND shrinks its logical length
+    # to 0 (device buffer retained) so an escaped view reads NaN/typemax. Compacting it would
+    # swap in fresh device storage and UNDO the poison — skip it (compacts once re-acquired).
+    # Parity with CPU `_maybe_compact_slot!`; `length == 0 && used > 0` ⟺ poisoned.
+    @inbounds(length(tp.vectors[slot])) == 0 && return 0
     cap = AdaptiveArrayPools._slot_capacity(@inbounds tp.vectors[slot])
     cap >= factor * used || return 0
     target = max(used, ceil(Int, min(Float64(cap), shrink_to * used)))   # clamp to [used, cap]
     reclaim = (cap - target) * sizeof(T)
     reclaim >= min_bytes || return 0
-    AdaptiveArrayPools._compact_slot!(tp, slot, target, used)
+    # Copy live data only for ACTIVE slots (1:n_active); inactive slots hold dead data.
+    AdaptiveArrayPools._compact_slot!(tp, slot, target, used, slot <= tp.n_active)
     return reclaim
 end
 

@@ -125,6 +125,11 @@ mutable struct CuAdaptiveArrayPool{S} <: AbstractArrayPool
     _pending_callsite::String
     _pending_return_site::String
     _borrow_log::Union{Nothing, IdDict{Any, String}}
+
+    # Auto-compact request flag (parity with CPU AdaptiveArrayPool): set by the base
+    # module's background Timer sweep (a different thread), read + reset by the owner task
+    # at the `@with_pool :cuda` entry safepoint. Atomic for the cross-thread handoff.
+    @atomic _compact_requested::Bool
 end
 
 function CuAdaptiveArrayPool{S}() where {S}
@@ -145,7 +150,8 @@ function CuAdaptiveArrayPool{S}() where {S}
         CUDA.deviceid(dev),
         "",             # _pending_callsite
         "",             # _pending_return_site
-        nothing         # _borrow_log: lazily created when S >= 1
+        nothing,        # _borrow_log: lazily created when S >= 1
+        false           # _compact_requested: no pending auto-compact request
     )
 end
 
@@ -206,7 +212,8 @@ function _transfer_cuda_pool(::Val{V}, old::CuAdaptiveArrayPool) where {V}
         old.device_id,
         "",       # _pending_callsite: reset
         "",       # _pending_return_site: reset
-        V >= 1 ? IdDict{Any, String}() : nothing  # _borrow_log
+        V >= 1 ? IdDict{Any, String}() : nothing,  # _borrow_log
+        false                                       # _compact_requested: reset on migration
     )
 end
 

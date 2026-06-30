@@ -36,6 +36,10 @@ Uses `Dict{Int, CuAdaptiveArrayPool{RUNTIME_CHECK}}` in task-local storage, keye
     if pool === nothing
         pool = CuAdaptiveArrayPool()  # Uses RUNTIME_CHECK for initial S
         pools[dev_id] = pool
+        # Register for auto-compaction (gated by the compile-time const; mirrors CPU
+        # get_task_local_pool). One entry per (task, device) pool. DCE'd when the
+        # Preference is off, so no registry traffic on the zero-overhead build.
+        AdaptiveArrayPools.AUTO_COMPACT && AdaptiveArrayPools.register_auto_compact!(pool)
     end
 
     return pool::CuAdaptiveArrayPool{RUNTIME_CHECK}

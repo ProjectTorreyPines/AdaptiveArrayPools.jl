@@ -383,6 +383,11 @@ mutable struct AdaptiveArrayPool{S} <: AbstractArrayPool
     _pending_callsite::String                        # "" = no pending; set by macro before acquire
     _pending_return_site::String                     # "" = no pending; set by macro before validate
     _borrow_log::Union{Nothing, IdDict{Any, String}} # vector_obj => callsite string
+
+    # Auto-compact request flag: set by the background Timer sweep (a different
+    # thread), read + reset by the owner task at the `_current_depth == 1` safepoint.
+    # Atomic for the cross-thread handoff; ignored when auto-compact is disabled.
+    @atomic _compact_requested::Bool
 end
 
 function AdaptiveArrayPool{S}() where {S}
@@ -404,7 +409,8 @@ function AdaptiveArrayPool{S}() where {S}
         Int[0],         # _others_ptr_bounds_checkpoints: sentinel
         "",             # _pending_callsite: no pending
         "",             # _pending_return_site: no pending
-        nothing         # _borrow_log: lazily created at S=1
+        nothing,        # _borrow_log: lazily created at S=1
+        false,          # _compact_requested: no pending auto-compact request
     )
 end
 
@@ -456,7 +462,8 @@ _make_pool(runtime_check::Bool, old::AdaptiveArrayPool) = _make_pool(Int(runtime
         old._others_ptr_bounds_checkpoints,
         "",       # _pending_callsite: reset
         "",       # _pending_return_site: reset
-        S >= 1 ? IdDict{Any, String}() : nothing  # _borrow_log
+        S >= 1 ? IdDict{Any, String}() : nothing,  # _borrow_log
+        false,                                      # _compact_requested: reset on migration
     )
     level == 0 && return _new(Val(0))
     return _new(Val(1))

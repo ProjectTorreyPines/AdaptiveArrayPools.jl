@@ -17,6 +17,7 @@ export @with_pool, @maybe_with_pool, @safe_with_pool, @safe_maybe_with_pool
 export STATIC_POOLING, MAYBE_POOLING, RUNTIME_CHECK
 export PoolEscapeError, EscapePoint, PoolMutationError, MutationPoint
 export checkpoint!, rewind!, reset!, trim!, compact!
+export enable_auto_compact!, disable_auto_compact!, auto_compact_enabled, AUTO_COMPACT
 export get_task_local_cuda_pool, get_task_local_cuda_pools  # CUDA (stubs, overridden by extension)
 export get_task_local_metal_pool, get_task_local_metal_pools  # Metal (stubs, overridden by extension)
 
@@ -33,6 +34,7 @@ export DisabledPool, DISABLED_CPU, pooling_enabled  # Disabled pool support
     include("bitarray.jl")
     include("convenience.jl")
     include("state.jl")
+    include("auto_compact.jl")
     include("task_local_pool.jl")
     include("debug.jl")
     include("macros.jl")
@@ -44,6 +46,7 @@ else
     include("legacy/bitarray.jl")
     include("convenience.jl")
     include("legacy/state.jl")
+    include("legacy/auto_compact.jl")
     include("task_local_pool.jl")
     include("debug.jl")
     include("macros.jl")

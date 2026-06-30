@@ -743,6 +743,7 @@ function _generate_block_inner(pool_name, expr, safe::Bool, source)
     if safe
         transformed_expr = _transform_return_stmts(transformed_expr, pool_name)
         return quote
+            $(_auto_compact_hook(pool_name))
             $checkpoint_call
             try
                 local _result = $(esc(transformed_expr))
@@ -768,6 +769,7 @@ function _generate_block_inner(pool_name, expr, safe::Bool, source)
 
         return quote
             local $(esc(entry_depth_var)) = $(esc(pool_name))._current_depth
+            $(_auto_compact_hook(pool_name))
             $checkpoint_call
             local _result = $(esc(transformed_expr))
             # Leaked scope cleanup BEFORE validation: if an inner @with_pool threw
@@ -821,6 +823,7 @@ function _generate_function_inner(pool_name, expr, safe::Bool, source)
     if safe
         transformed_expr = _transform_return_stmts(transformed_expr, pool_name)
         return quote
+            $(_auto_compact_hook(pool_name))
             $checkpoint_call
             try
                 local _result = $(esc(transformed_expr))
@@ -846,6 +849,7 @@ function _generate_function_inner(pool_name, expr, safe::Bool, source)
 
         return quote
             local $(esc(entry_depth_var)) = $(esc(pool_name))._current_depth
+            $(_auto_compact_hook(pool_name))
             $checkpoint_call
             local _result = $(esc(transformed_expr))
             # Leaked scope cleanup BEFORE validation: if an inner @with_pool threw
@@ -1587,6 +1591,16 @@ const _RUNTIME_CHECK_REF = GlobalRef(@__MODULE__, :_runtime_check)
 const _WARN_LEAKED_SCOPE_REF = GlobalRef(@__MODULE__, :_warn_leaked_scope)
 const _REWIND_REF = GlobalRef(@__MODULE__, :rewind!)
 const _LAZY_REWIND_REF = GlobalRef(@__MODULE__, :_lazy_rewind!)
+
+# Auto-compact scope-ENTRY hook, generated before the checkpoint in every `@with_pool`.
+# Gated by the `AUTO_COMPACT` compile-time const (constant-folded → DCE'd to nothing when
+# off → zero cost). Dispatches through `_maybe_auto_compact!` so non-CPU (GPU) pools safely
+# no-op. Placed BEFORE the checkpoint, so `_current_depth == 1` ⇒ the OUTERMOST scope is
+# being entered from global (nothing borrowed → safe). Servicing the flag at entry handles
+# every exit type of the previous scope (return/break/throw), with no compaction in `finally`.
+const _AUTO_COMPACT_REF = GlobalRef(@__MODULE__, :AUTO_COMPACT)
+const _MAYBE_AUTO_COMPACT_REF = GlobalRef(@__MODULE__, :_maybe_auto_compact!)
+_auto_compact_hook(pool_name) = :($_AUTO_COMPACT_REF && $_MAYBE_AUTO_COMPACT_REF($(esc(pool_name))))
 const _TYPED_LAZY_REWIND_REF = GlobalRef(@__MODULE__, :_typed_lazy_rewind!)
 const _CAN_USE_TYPED_PATH_REF = GlobalRef(@__MODULE__, :_can_use_typed_path)
 const _TRACKED_MASK_REF = GlobalRef(@__MODULE__, :_tracked_mask_for_types)

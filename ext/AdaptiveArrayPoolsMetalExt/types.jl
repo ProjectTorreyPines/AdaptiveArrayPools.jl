@@ -121,6 +121,11 @@ mutable struct MetalAdaptiveArrayPool{R, S} <: AbstractArrayPool
     _pending_callsite::String
     _pending_return_site::String
     _borrow_log::Union{Nothing, IdDict{Any, String}}
+
+    # Auto-compact request flag (parity with CPU AdaptiveArrayPool): set by the base
+    # module's background Timer sweep (a different thread), read + reset by the owner task
+    # at the `@with_pool :metal` entry safepoint. Atomic for the cross-thread handoff.
+    @atomic _compact_requested::Bool
 end
 
 function MetalAdaptiveArrayPool{R, S}() where {R, S}
@@ -139,6 +144,7 @@ function MetalAdaptiveArrayPool{R, S}() where {R, S}
         "",             # _pending_callsite
         "",             # _pending_return_site
         nothing,        # _borrow_log: lazily created when R >= 1
+        false,          # _compact_requested: no pending auto-compact request
     )
 end
 
