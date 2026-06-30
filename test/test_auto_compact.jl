@@ -1,4 +1,5 @@
 using Test
+using Logging: with_logger, NullLogger
 using AdaptiveArrayPools
 using AdaptiveArrayPools: checkpoint!, rewind!
 import AdaptiveArrayPools as AAP
@@ -16,22 +17,24 @@ import AdaptiveArrayPools as AAP
 # explicitly and the suite stays deterministic.
 # ==============================================================================
 
-_cap(v) = length(getfield(v, :ref).mem)
-
-# An inactive, bloated Float64 slot (cap = `big` high-water, last extent = `small`).
-function _inactive_bloated(big::Int, small::Int)
-    pool = AdaptiveArrayPool{0}()
-    checkpoint!(pool); a = acquire!(pool, Float64, big); a .= 0.0; rewind!(pool)
-    checkpoint!(pool); b = acquire!(pool, Float64, small); b .= 0.0; rewind!(pool)
-    return pool
-end
-
-_clear_registry!() = lock(() -> empty!(AAP._AUTO_COMPACT_REGISTRY), AAP._AUTO_COMPACT_LOCK)
-_registry_len() = lock(() -> length(AAP._AUTO_COMPACT_REGISTRY), AAP._AUTO_COMPACT_LOCK)
-
 AAP.disable_auto_compact!()   # stop the __init__-started timer for deterministic tests
 
 @testset "auto_compact" begin
+
+    # Helpers are scoped INSIDE this testset (a local scope) so they don't define top-level
+    # methods in `Main` that collide with identically-named helpers in other test files when
+    # the full suite loads them together — e.g. `_cap` is also defined at the top of
+    # test_compact.jl (otherwise: "WARNING: Method definition _cap(Any) ... overwritten").
+    _cap(v) = length(getfield(v, :ref).mem)
+    _clear_registry!() = lock(() -> empty!(AAP._AUTO_COMPACT_REGISTRY), AAP._AUTO_COMPACT_LOCK)
+    _registry_len() = lock(() -> length(AAP._AUTO_COMPACT_REGISTRY), AAP._AUTO_COMPACT_LOCK)
+    # An inactive, bloated Float64 slot (cap = `big` high-water, last extent = `small`).
+    function _inactive_bloated(big::Int, small::Int)
+        pool = AdaptiveArrayPool{0}()
+        checkpoint!(pool); a = acquire!(pool, Float64, big); a .= 0.0; rewind!(pool)
+        checkpoint!(pool); b = acquire!(pool, Float64, small); b .= 0.0; rewind!(pool)
+        return pool
+    end
 
     # ── Data layer: flag field + registry + run ──────────────────────────────
     @testset "pool carries an atomic _compact_requested flag (default false)" begin
@@ -135,7 +138,12 @@ AAP.disable_auto_compact!()   # stop the __init__-started timer for deterministi
         _clear_registry!()
         bogus = Ref(42)                                      # heap object, NOT a pool
         lock(() -> push!(AAP._AUTO_COMPACT_REGISTRY, WeakRef(bogus)), AAP._AUTO_COMPACT_LOCK)
-        @test (AAP._safe_auto_compact_sweep!(nothing); true) # _safe wrapper swallows the throw
+        # The _safe wrapper catches the sweep's throw (a non-pool in the registry) and @warns
+        # so the timer survives. Silence that EXPECTED warning (NullLogger) so it doesn't read
+        # as a real failure in the suite log; we still assert the wrapper does not rethrow.
+        with_logger(NullLogger()) do
+            @test (AAP._safe_auto_compact_sweep!(nothing); true)  # _safe wrapper swallows the throw
+        end
         @test bogus[] == 42                                  # keep `bogus` alive past the sweep
         _clear_registry!()
     end
