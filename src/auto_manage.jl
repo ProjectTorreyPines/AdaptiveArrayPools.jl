@@ -1,11 +1,12 @@
 # ==============================================================================
-# Auto-Compact: timer-driven background capacity compaction.
+# Auto-Manage: timer-driven background memory management (compaction + trim).
 # Design: docs/plans/DESIGN_auto_manage.md
 #
-# A single global Timer periodically *requests* compaction by setting each live
-# pool's `@atomic _compact_requested` flag (via a WeakRef registry). Each pool's
-# owner task *executes* the request — the full `compact!` — at its next `@with_pool`
-# ENTRY (the `_current_depth == 1` safepoint), where nothing is borrowed.
+# A single global Timer periodically *requests* maintenance by setting each live pool's
+# `@atomic _compact_requested` flag every tick (and `@atomic _trim_requested` every
+# `trim_interval`) via a WeakRef registry. Each pool's owner task *executes* the request —
+# the full `compact!`, plus auto-trim of cold slots — at its next `@with_pool` ENTRY
+# (the `_current_depth == 1` safepoint), where nothing is borrowed.
 #
 # Tier 1 (compile-time): `AUTO_MANAGE` gates whether the scope-entry flag check is
 # emitted (macros.jl) and whether pools register (task_local_pool.jl). Default ON
@@ -18,7 +19,7 @@ using Preferences: @load_preference
 """
     AUTO_MANAGE::Bool
 
-Compile-time master switch (Tier 1) for auto-manageion. Default `true`: the scope-entry
+Compile-time master switch (Tier 1) for auto-management. Default `true`: the scope-entry
 flag check is emitted (a ~0.6 ns inlined check per `@with_pool` entry), new task-local
 pools auto-register, and `__init__` auto-starts the background Timer. Set `false` in
 `LocalPreferences.toml` (then restart) to compile the feature OUT entirely — the hook is
@@ -34,7 +35,7 @@ auto_manage = false
 """
 const AUTO_MANAGE = @load_preference("auto_manage", true)::Bool
 
-# Registry of pools eligible for auto-manageion. `WeakRef` so a pool dies with its
+# Registry of pools eligible for auto-management. `WeakRef` so a pool dies with its
 # task; dead refs are swap-removed on each sweep. All access under the lock below.
 const _AUTO_MANAGE_REGISTRY = WeakRef[]
 const _AUTO_MANAGE_LOCK = ReentrantLock()
@@ -221,12 +222,15 @@ function _stop_auto_manage_timer_unlocked!()
 end
 
 """
-    enable_auto_manage!(; interval = 30.0, factor = 10, shrink_to = 1.5,
-                           min_bytes = 2^20, active = true)
+    enable_auto_manage!(; interval = 30.0, trim_interval = 120.0, factor = 10,
+                           shrink_to = 1.5, min_bytes = 2^20, active = true)
 
 Start (or restart) the background auto-manage `Timer` with the given config. Every
-`interval` seconds it flags every registered pool; each pool then runs the full
-`compact!` at its next `@with_pool` **entry** (the `_current_depth == 1` safepoint).
+`interval` seconds it flags every registered pool to **auto-compact** (shrink over-allocated
+backing buffers in place); every `trim_interval` seconds it additionally flags an
+**auto-trim** (drop slots beyond the recent working-set peak). Each pool services its pending
+flags at its next `@with_pool` **entry** (the `_current_depth == 1` safepoint). A non-finite
+`trim_interval` (e.g. `Inf`) disables auto-trim, leaving compaction only.
 
 Requires the `auto_manage` compile-time Preference (`AUTO_MANAGE`) for the scope-entry
 hook and pool auto-registration. With the Preference **off**, the `@with_pool` hook is
@@ -235,16 +239,16 @@ flags), nothing ever *services* those flags — no automatic compaction happens,
 registering pools manually does not change that. Set the Preference and restart, or call
 `compact!` yourself.
 
-!!! note "What gets compacted, when, and the zero-alloc trade-off"
-    Auto-compaction targets the **task-local pool** (`get_task_local_pool()`) — the pool
-    `@with_pool` uses and the only one that auto-registers. A hand-made `AdaptiveArrayPool()`
-    is **not** auto-registered (so not auto-manageed); `register_auto_manage!` it explicitly
-    to include it in the sweep, or just call `compact!` on it directly. The work
-    runs at a `@with_pool` **entry** (`_current_depth == 1`), so an idle task with no
-    `@with_pool` activity won't compact until it next enters a scope. Because a compaction
-    allocates the new right-sized backing(s), a `@with_pool` that services a pending request
-    is **not** strictly zero-allocation; set `auto_manage = false` (Preference) for a
-    guaranteed-zero-alloc hot path.
+!!! note "What gets managed, when, and the zero-alloc trade-off"
+    Auto-management (compaction + trim) targets the **task-local pool**
+    (`get_task_local_pool()`) — the pool `@with_pool` uses and the only one that
+    auto-registers. A hand-made `AdaptiveArrayPool()` is **not** auto-registered (so not
+    auto-managed); `register_auto_manage!` it explicitly to include it in the sweep, or just
+    call `compact!` / `trim!` on it directly. The work runs at a `@with_pool` **entry**
+    (`_current_depth == 1`), so an idle task with no `@with_pool` activity won't be serviced
+    until it next enters a scope. Because a compaction allocates the new right-sized
+    backing(s), a `@with_pool` that services a pending request is **not** strictly
+    zero-allocation; set `auto_manage = false` (Preference) for a guaranteed-zero-alloc hot path.
 
 See also [`disable_auto_manage!`](@ref), [`auto_manage_enabled`](@ref).
 """

@@ -1,5 +1,5 @@
 # ==============================================================================
-# CUDA Auto-Compact: service a flagged CUDA pool at its `@with_pool :cuda` entry.
+# CUDA Auto-Manage: service a flagged CUDA pool at its `@with_pool :cuda` entry.
 # ==============================================================================
 #
 # Parity with the CPU `_maybe_auto_manage!(::AdaptiveArrayPool)` in src/auto_manage.jl

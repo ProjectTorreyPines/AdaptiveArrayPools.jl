@@ -147,6 +147,19 @@ AAP.disable_auto_manage!()
         AAP.disable_auto_manage!()
         _clear_registry!()
     end
+
+    @testset "auto-trim reclaims a non-fixed-slot (`others`) type" begin
+        # `_auto_trim!` trims the fixed slots AND every fallback type in `pool.others`.
+        # UInt8 is not a fixed slot (FIXED_SLOT_FIELDS), so this exercises the `others` loop.
+        pool = AdaptiveArrayPool{0}()
+        checkpoint!(pool); acquire!(pool, UInt8, 100); acquire!(pool, UInt8, 100); rewind!(pool)
+        tp = AAP.get_typed_pool!(pool, UInt8)
+        @test length(tp.vectors) == 2
+        tp._am_peak_n_active = 0                            # unused this period → trim the tail to 0
+        @atomic pool._trim_requested = true
+        AAP._run_auto_manage!(pool)
+        @test length(tp.vectors) == 0                       # the `others`-type slots were reclaimed
+    end
 end
 
 AAP.disable_auto_manage!()

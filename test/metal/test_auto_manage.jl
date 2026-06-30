@@ -127,7 +127,7 @@ AAP.disable_auto_manage!()   # stop the __init__-started timer for deterministic
         end
 
         @test (@atomic pool._compact_requested) == false    # hook consumed the request
-        @test _mcap(pool.float32.vectors[1]) < cap0         # auto-manageed, no manual compact!
+        @test _mcap(pool.float32.vectors[1]) < cap0         # auto-managed, no manual compact!
         empty!(pool)
         _clear_registry!()
     end

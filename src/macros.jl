@@ -1592,7 +1592,7 @@ const _WARN_LEAKED_SCOPE_REF = GlobalRef(@__MODULE__, :_warn_leaked_scope)
 const _REWIND_REF = GlobalRef(@__MODULE__, :rewind!)
 const _LAZY_REWIND_REF = GlobalRef(@__MODULE__, :_lazy_rewind!)
 
-# Auto-compact scope-ENTRY hook, generated before the checkpoint in every `@with_pool`.
+# Auto-manage scope-ENTRY hook, generated before the checkpoint in every `@with_pool`.
 # Gated by the `AUTO_MANAGE` compile-time const (constant-folded → DCE'd to nothing when
 # off → zero cost). Dispatches through `_maybe_auto_manage!` so non-CPU (GPU) pools safely
 # no-op. Placed BEFORE the checkpoint, so `_current_depth == 1` ⇒ the OUTERMOST scope is

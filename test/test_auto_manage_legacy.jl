@@ -14,7 +14,9 @@ using AdaptiveArrayPools: get_task_local_pool
     # enable! warns once and stays a no-op; disable!/enabled are safe and idempotent.
     @test (@test_logs (:warn,) match_mode = :any enable_auto_manage!()) === nothing
     @test auto_manage_enabled() == false
-    @test enable_auto_manage!(interval = 5.0, factor = 20, active = false) === nothing
+    # Accepts the full 1.12+ keyword set (incl. `trim_interval`) so the public API is
+    # call-compatible across all supported Julia — passing it must not MethodError.
+    @test enable_auto_manage!(interval = 5.0, trim_interval = 60.0, factor = 20, active = false) === nothing
     @test disable_auto_manage!() === nothing
     @test auto_manage_enabled() == false
 
@@ -22,7 +24,7 @@ using AdaptiveArrayPools: get_task_local_pool
     @test AdaptiveArrayPools.register_auto_manage!(get_task_local_pool()) === nothing
     @test AdaptiveArrayPools._maybe_auto_manage!(get_task_local_pool()) === nothing
 
-    # @with_pool still works on legacy (the hook DCEs to nothing; no auto-manageion).
+    # @with_pool still works on legacy (the hook DCEs to nothing; no auto-management).
     r = @with_pool pool begin
         x = acquire!(pool, Float64, 4)
         x .= 1.0

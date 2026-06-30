@@ -4,7 +4,7 @@ using AdaptiveArrayPools: get_typed_pool!
 import AdaptiveArrayPools: checkpoint!, rewind!
 
 # AUTO_MANAGE defaults on, so __init__ auto-starts the background timer. Stop it so the
-# suite is deterministic; testsets that exercise auto-manageion enable it explicitly.
+# suite is deterministic; testsets that exercise auto-management enable it explicitly.
 AdaptiveArrayPools.disable_auto_manage!()
 
 # Version-specific helpers (always defined, even for ARGS path)

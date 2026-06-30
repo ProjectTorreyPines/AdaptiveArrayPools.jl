@@ -1,5 +1,5 @@
 # ==============================================================================
-# Metal Auto-Compact: service a flagged Metal pool at its `@with_pool :metal` entry.
+# Metal Auto-Manage: service a flagged Metal pool at its `@with_pool :metal` entry.
 # ==============================================================================
 #
 # Parity with the CPU `_maybe_auto_manage!(::AdaptiveArrayPool)` in src/auto_manage.jl.

@@ -162,6 +162,24 @@ AAP.disable_auto_manage!()   # stop the __init__-started timer for deterministic
         _clear_registry!()
     end
 
+    @testset "_run_auto_manage! swallows per-action failures (trim + compact catch)" begin
+        # The owner-side service must never surface a maintenance failure at the `@with_pool`
+        # boundary: each action is wrapped in try/catch + @warn. Force both to throw by parking a
+        # non-pool object in the others collections (mirrors the throwing-sweep test above), with
+        # both flags set. `_auto_trim!` iterates `values(others)` (backend-generic); CPU `compact!`
+        # iterates the `_others_values` cache — a real type registers in both, so we mirror that.
+        pool = AdaptiveArrayPool{0}()
+        pool.others[String] = "not a typed pool"             # _auto_trim! iterates values(others)
+        push!(pool._others_values, "not a typed pool")       # compact! iterates _others_values
+        @atomic pool._trim_requested = true
+        @atomic pool._compact_requested = true
+        with_logger(NullLogger()) do                          # silence the two EXPECTED @warns
+            @test (AAP._run_auto_manage!(pool); true)         # both catches fire; does NOT rethrow
+        end
+        @test (@atomic pool._trim_requested) == false         # flags still consumed (reset before work)
+        @test (@atomic pool._compact_requested) == false
+    end
+
     # ── Scope-entry hook ─────────────────────────────────────────────────────
     @testset "_maybe_auto_manage! fires only at _current_depth == 1" begin
         pool = _inactive_bloated(1_000_000, 100)
@@ -243,7 +261,7 @@ AAP.disable_auto_manage!()   # stop the __init__-started timer for deterministic
         end
 
         @test (@atomic pool._compact_requested) == false     # hook consumed the request
-        @test _cap(pool.float64.vectors[1]) < cap0           # auto-manageed, no manual compact!
+        @test _cap(pool.float64.vectors[1]) < cap0           # auto-managed, no manual compact!
         empty!(pool)
         _clear_registry!()
     end
