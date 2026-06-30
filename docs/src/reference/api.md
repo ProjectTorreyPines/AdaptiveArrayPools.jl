@@ -25,6 +25,7 @@
 | `get_task_local_pool()` | Returns the task-local pool instance. |
 | `reset!(pool)` | Resets active-slot counters to 0 but **keeps** all buffers for reuse. |
 | `trim!(pool; force_gc=false)` | Releases **inactive** retained buffers, keeping active arrays. Returns `(; slots_released, wrappers_released, estimated_bytes_released, gc_triggered)`. Works on CPU, CUDA, and Metal pools. Reclaims on Julia 1.12+; defined no-op (zero summary + one-time warning) on older Julia. |
+| `compact!(pool; factor=10, shrink_to=1.5, min_bytes=2^20, active=true, force_gc=false)` | Shrinks over-allocated backing buffers **in place** (held arrays follow). Returns `(; slots_compacted, bytes_reclaimed, gc_triggered)`. Usually run automatically — see [Automatic Memory Management](@ref). |
 | `empty!(pool)` | Clears all internal storage, releasing **all** memory. |
 
 ### Convenience Functions
@@ -56,6 +57,10 @@ Default element type is `Float64` (CPU) or `Float32` (CUDA).
 | `MAYBE_POOLING` | Runtime `Ref{Bool}` for `@maybe_with_pool`. (alias: `MAYBE_POOLING_ENABLED`) |
 | `RUNTIME_CHECK` | Compile-time `Int` constant (0=off, 1=on). Set via `runtime_check` preference. Restart required. |
 | `set_cache_ways!(n)` | Set N-way cache size (≤1.11 / CUDA only; no effect on Julia 1.12+ CPU). |
+| `enable_auto_manage!(; …)` | (Re)start the background auto-compact/auto-trim timer. See [Automatic Memory Management](@ref). |
+| `disable_auto_manage!()` | Stop the background timer for this session. |
+| `auto_manage_enabled()` | `Bool`: is the background timer running? |
+| `AUTO_MANAGE` | Compile-time `Bool` constant. Set via `auto_manage` preference (default `true`); `false` compiles the feature out. |
 
 ---
 

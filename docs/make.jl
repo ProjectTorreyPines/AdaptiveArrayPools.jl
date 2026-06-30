@@ -135,6 +135,7 @@ makedocs(
             "Bit Arrays" => "features/bit-arrays.md",
             "CUDA Support" => "features/cuda-support.md",
             "Metal Support" => "features/metal-support.md",
+            "Automatic Memory Management" => "features/auto-manage.md",
             "Configuration" => "features/configuration.md",
         ],
         "Reference" => [

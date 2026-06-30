@@ -55,7 +55,7 @@ All pooling code is **completely eliminated at compile time** (zero overhead).
 
 ## Compile-time: RUNTIME_CHECK
 
-Enable runtime safety checks to catch pool-escape bugs. See [Safety](safety.md) for full details.
+Enable runtime safety checks to catch pool-escape bugs. See [Safety](../safety/overview.md) for full details.
 
 ```toml
 # LocalPreferences.toml
@@ -111,6 +111,18 @@ set_cache_ways!(8)
 
 **When to increase**: If your CUDA code or Julia ≤1.11 code alternates between more than 4 dimension patterns per `acquire!` call, increase `cache_ways` to avoid cache eviction (~100 bytes header per miss).
 
+## Compile-time: `auto_manage`
+
+Master switch for the background memory reclamation engine (see [Automatic Memory Management](@ref)). **Default `true`** — a background timer periodically auto-compacts and auto-trims the task-local pool.
+
+```toml
+# LocalPreferences.toml
+[AdaptiveArrayPools]
+auto_manage = false   # compile the feature out; restart Julia to take effect
+```
+
+Setting it to `false` dead-code-eliminates the `@with_pool` reclamation hook entirely, guaranteeing a zero-allocation hot path; `enable_auto_manage!` then becomes a no-op-with-warning and you reclaim memory only via manual `compact!` / `trim!`. The background timer is also tunable at runtime (no restart) with `enable_auto_manage!` / `disable_auto_manage!`.
+
 ## Summary
 
 | Setting | Scope | Restart? | Priority | Affects |
@@ -118,4 +130,5 @@ set_cache_ways!(8)
 | `use_pooling` | Compile-time | Yes | ⭐ Primary | All macros, `acquire!` behavior |
 | `runtime_check` | Compile-time | Yes | Safety | Poisoning, invalidation, escape detection |
 | `cache_ways` | Compile-time | Yes | Advanced | `acquire!` N-D caching (≤1.11 / CUDA only) |
+| `auto_manage` | Compile-time | Yes | Optional | Background auto-compact/auto-trim (default on) |
 | `MAYBE_POOLING` | Runtime | No | Optional | `@maybe_with_pool` only |
