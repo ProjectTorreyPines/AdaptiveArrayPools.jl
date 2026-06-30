@@ -84,7 +84,7 @@ AAP.disable_auto_manage!()
         # during the ~N_STEPS loop (interval 0.01 s ⇒ tens of sweeps over the run's wall-time).
         empty!(pool)
         AAP.register_auto_manage!(pool)
-        AAP.enable_auto_manage!(interval = 0.01, trim_interval = 0.02)
+        AAP.enable_auto_manage!(compact_interval = 0.01, trim_interval = 0.02)
         test = run_sim!(N_STEPS)
         AAP.disable_auto_manage!()
 
@@ -114,7 +114,7 @@ AAP.disable_auto_manage!()
         pool = AdaptiveArrayPool{0}()
         AAP.register_auto_manage!(pool)
         # interval 0.2 s, trim every 0.6 s ⇒ K = 3 ticks. Timer first fires at t = interval.
-        AAP.enable_auto_manage!(interval = 0.2, trim_interval = 0.6)
+        AAP.enable_auto_manage!(compact_interval = 0.2, trim_interval = 0.6)
 
         sleep(0.35)                                           # ~1 tick elapsed (tick @ 0.2 s)
         @test (@atomic pool._compact_requested) == true       # compact flagged after 1 tick

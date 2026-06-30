@@ -16,7 +16,7 @@ using AdaptiveArrayPools: get_task_local_pool
     @test auto_manage_enabled() == false
     # Accepts the full 1.12+ keyword set (incl. `trim_interval`) so the public API is
     # call-compatible across all supported Julia — passing it must not MethodError.
-    @test enable_auto_manage!(interval = 5.0, trim_interval = 60.0, factor = 20, active = false) === nothing
+    @test enable_auto_manage!(compact_interval = 5.0, trim_interval = 60.0, compact_bloat_factor = 20) === nothing
     @test disable_auto_manage!() === nothing
     @test auto_manage_enabled() == false
 

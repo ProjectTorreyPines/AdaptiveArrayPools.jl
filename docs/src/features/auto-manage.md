@@ -49,18 +49,36 @@ This means reclamation never runs mid-computation and never on the background th
 
 ## Controlling it
 
+The usual way to configure auto-manage is **once, in `LocalPreferences.toml`** — the timer reads
+these `auto_manage_*` keys at startup, so you never need to write any code:
+
+```toml
+# LocalPreferences.toml  (restart Julia to take effect)
+[AdaptiveArrayPools]
+auto_manage = true                    # master on/off (compile-time)
+auto_manage_compact_interval = 30.0   # seconds — how often to auto-compact
+auto_manage_trim_interval    = 120.0  # seconds — how often to auto-trim (Inf disables it)
+# advanced compaction tuning (rarely needed):
+auto_manage_compact_bloat_factor  = 10      # compact a slot at ≥ this × its live size
+auto_manage_compact_target_ratio  = 1.5     # shrink it down to this × live size
+auto_manage_compact_min_bytes     = 1048576 # skip if it would reclaim less
+```
+
+The same knobs are available at **runtime** (same names, minus the package-implied prefix) for
+ad-hoc tuning or in startup code — these override the Preference defaults:
+
 ```julia
-# Re-tune the background timer (any subset of keywords)
-enable_auto_manage!(; interval = 30.0, trim_interval = 120.0,
-                      factor = 10, shrink_to = 1.5, min_bytes = 2^20)
+enable_auto_manage!(; compact_interval = 30.0, trim_interval = 120.0,
+                      compact_bloat_factor = 10, compact_target_ratio = 1.5,
+                      compact_min_bytes = 2^20)
 
 enable_auto_manage!(; trim_interval = Inf)   # compact-only: disable auto-trim
-disable_auto_manage!()                       # stop the background timer
+disable_auto_manage!()                       # stop the background timer (this session)
 auto_manage_enabled()                        # → Bool
 ```
 
 `disable_auto_manage!()` only stops the timer for the current session; the feature re-arms on
-the next Julia start. To turn it off permanently, use the Preference below.
+the next Julia start. To turn it off permanently, set the `auto_manage` preference (below).
 
 ## Performance & turning it off
 

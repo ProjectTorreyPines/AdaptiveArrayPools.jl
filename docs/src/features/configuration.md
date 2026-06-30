@@ -121,7 +121,22 @@ Master switch for the background memory reclamation engine (see [Automatic Memor
 auto_manage = false   # compile the feature out; restart Julia to take effect
 ```
 
-Setting it to `false` dead-code-eliminates the `@with_pool` reclamation hook entirely, guaranteeing a zero-allocation hot path; `enable_auto_manage!` then becomes a no-op-with-warning and you reclaim memory only via manual `compact!` / `trim!`. The background timer is also tunable at runtime (no restart) with `enable_auto_manage!` / `disable_auto_manage!`.
+Setting it to `false` (compile-time) dead-code-eliminates the `@with_pool` reclamation hook entirely, guaranteeing a zero-allocation hot path; `enable_auto_manage!` then becomes a no-op-with-warning and you reclaim memory only via manual `compact!` / `trim!`.
+
+### Tuning the timer (`auto_manage_*`)
+
+When `auto_manage` is on, the background timer's cadence and thresholds default from these flat keys (read once at startup; `enable_auto_manage!` overrides them at runtime). All optional:
+
+```toml
+[AdaptiveArrayPools]
+auto_manage_compact_interval = 30.0   # seconds — how often to auto-compact
+auto_manage_trim_interval    = 120.0  # seconds — how often to auto-trim (Inf disables)
+auto_manage_compact_bloat_factor = 10      # compact a slot at ≥ this × its live size
+auto_manage_compact_target_ratio = 1.5     # shrink it down to this × live size
+auto_manage_compact_min_bytes    = 1048576 # skip if it would reclaim less
+```
+
+See [Automatic Memory Management](@ref) for what each does.
 
 ## Summary
 

@@ -129,7 +129,7 @@ AAP.disable_auto_manage!()
         pool = AdaptiveArrayPool{0}()
         AAP.register_auto_manage!(pool)
         # interval 0.1s, trim every 0.2s (K=2 ticks): within ~0.5s, _trim_requested fires
-        AAP.enable_auto_manage!(interval = 0.1, trim_interval = 0.2)
+        AAP.enable_auto_manage!(compact_interval = 0.1, trim_interval = 0.2)
         sleep(0.55)
         @test (@atomic pool._trim_requested) == true
         AAP.disable_auto_manage!()
@@ -141,7 +141,7 @@ AAP.disable_auto_manage!()
         AAP.disable_auto_manage!()
         pool = AdaptiveArrayPool{0}()
         AAP.register_auto_manage!(pool)
-        AAP.enable_auto_manage!(interval = 0.1, trim_interval = Inf)
+        AAP.enable_auto_manage!(compact_interval = 0.1, trim_interval = Inf)
         sleep(0.35)
         @test (@atomic pool._trim_requested) == false      # never flagged for trim
         AAP.disable_auto_manage!()

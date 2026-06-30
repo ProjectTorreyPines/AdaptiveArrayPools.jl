@@ -19,16 +19,18 @@ register_auto_manage!(pool) = nothing
 @inline _maybe_auto_manage!(::Any) = nothing
 
 """
-    enable_auto_manage!(; interval = 30.0, trim_interval = 120.0, factor = 10,
-                           shrink_to = 1.5, min_bytes = 2^20, active = true)
+    enable_auto_manage!(; compact_interval = 30.0, trim_interval = 120.0,
+                           compact_bloat_factor = 10, compact_target_ratio = 1.5,
+                           compact_min_bytes = 2^20)
 
 No-op on Julia < 1.12 (the legacy pool architecture has no capacity management). Warns
 once. Upgrade to Julia 1.12+ for background auto-management. Accepts (and ignores) the same
 keywords as the 1.12+ method, so the public API is call-compatible across all supported Julia.
 """
 function enable_auto_manage!(;
-        interval::Real = 30.0, trim_interval::Real = 120.0, factor::Real = 10,
-        shrink_to::Real = 1.5, min_bytes::Int = 2^20, active::Bool = true,
+        compact_interval::Real = 30.0, trim_interval::Real = 120.0,
+        compact_bloat_factor::Real = 10, compact_target_ratio::Real = 1.5,
+        compact_min_bytes::Int = 2^20,
     )
     @warn "enable_auto_manage! is a no-op on Julia < 1.12 (legacy pool architecture). " *
         "Upgrade to Julia 1.12+ for background auto-management." maxlog = 1

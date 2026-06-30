@@ -68,7 +68,7 @@ AAP.disable_auto_manage!()
 
         empty!(pool)
         AAP.register_auto_manage!(pool)
-        AAP.enable_auto_manage!(interval = 0.01, trim_interval = 0.02)
+        AAP.enable_auto_manage!(compact_interval = 0.01, trim_interval = 0.02)
         test = run_sim_cuda!(N_STEPS)
         AAP.disable_auto_manage!()
 
@@ -93,7 +93,7 @@ AAP.disable_auto_manage!()
         AAP.disable_auto_manage!(); _clear_registry!()
         pool = CuAdaptiveArrayPool{0}()
         AAP.register_auto_manage!(pool)
-        AAP.enable_auto_manage!(interval = 0.2, trim_interval = 0.6)   # K = 3
+        AAP.enable_auto_manage!(compact_interval = 0.2, trim_interval = 0.6)   # K = 3
 
         sleep(0.35)                                               # ~1 tick
         @test (@atomic pool._compact_requested) == true

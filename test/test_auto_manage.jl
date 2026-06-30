@@ -87,10 +87,9 @@ AAP.disable_auto_manage!()   # stop the __init__-started timer for deterministic
     end
 
     @testset "_run_auto_manage! uses the global config defaults" begin
-        @test AAP._AUTO_MANAGE_CONFIG.factor == 10
-        @test AAP._AUTO_MANAGE_CONFIG.shrink_to == 1.5
-        @test AAP._AUTO_MANAGE_CONFIG.min_bytes == 2^20
-        @test AAP._AUTO_MANAGE_CONFIG.active == true
+        @test AAP._AUTO_MANAGE_CONFIG.compact_bloat_factor == 10
+        @test AAP._AUTO_MANAGE_CONFIG.compact_target_ratio == 1.5
+        @test AAP._AUTO_MANAGE_CONFIG.compact_min_bytes == 2^20
     end
 
     # ── Timer lifecycle (enable/disable). AUTO_MANAGE is on → enable does NOT warn ─
@@ -101,23 +100,22 @@ AAP.disable_auto_manage!()   # stop the __init__-started timer for deterministic
         AAP.register_auto_manage!(pool)
 
         AAP.enable_auto_manage!(
-            interval = 0.1, factor = 20, shrink_to = 2.0, min_bytes = 4096, active = false,
+            compact_interval = 0.1, compact_bloat_factor = 20,
+            compact_target_ratio = 2.0, compact_min_bytes = 4096,
         )
         @test AAP.auto_manage_enabled() == true
-        @test AAP._AUTO_MANAGE_CONFIG.factor == 20.0
-        @test AAP._AUTO_MANAGE_CONFIG.shrink_to == 2.0
-        @test AAP._AUTO_MANAGE_CONFIG.min_bytes == 4096
-        @test AAP._AUTO_MANAGE_CONFIG.active == false
+        @test AAP._AUTO_MANAGE_CONFIG.compact_bloat_factor == 20.0
+        @test AAP._AUTO_MANAGE_CONFIG.compact_target_ratio == 2.0
+        @test AAP._AUTO_MANAGE_CONFIG.compact_min_bytes == 4096
 
         sleep(0.35)                                  # ~3 ticks @ 0.1s
         @test (@atomic pool._compact_requested) == true
 
         AAP.disable_auto_manage!()
         @test AAP.auto_manage_enabled() == false
-        AAP._AUTO_MANAGE_CONFIG.factor = 10.0       # restore defaults
-        AAP._AUTO_MANAGE_CONFIG.shrink_to = 1.5
-        AAP._AUTO_MANAGE_CONFIG.min_bytes = 2^20
-        AAP._AUTO_MANAGE_CONFIG.active = true
+        AAP._AUTO_MANAGE_CONFIG.compact_bloat_factor = 10.0   # restore defaults
+        AAP._AUTO_MANAGE_CONFIG.compact_target_ratio = 1.5
+        AAP._AUTO_MANAGE_CONFIG.compact_min_bytes = 2^20
         _clear_registry!()
     end
 
@@ -125,7 +123,7 @@ AAP.disable_auto_manage!()   # stop the __init__-started timer for deterministic
         _clear_registry!()
         pool = AdaptiveArrayPool{0}()
         AAP.register_auto_manage!(pool)
-        AAP.enable_auto_manage!(interval = 0.1)
+        AAP.enable_auto_manage!(compact_interval = 0.1)
         AAP.disable_auto_manage!()
         @test AAP.auto_manage_enabled() == false
         @atomic pool._compact_requested = false
@@ -138,9 +136,9 @@ AAP.disable_auto_manage!()   # stop the __init__-started timer for deterministic
 
     @testset "enable! replaces an existing timer (closes the old one)" begin
         AAP.disable_auto_manage!()
-        AAP.enable_auto_manage!(interval = 0.1)
+        AAP.enable_auto_manage!(compact_interval = 0.1)
         t1 = AAP._AUTO_MANAGE_TIMER[]
-        AAP.enable_auto_manage!(interval = 0.2)
+        AAP.enable_auto_manage!(compact_interval = 0.2)
         t2 = AAP._AUTO_MANAGE_TIMER[]
         @test t1 !== t2
         @test !isopen(t1)                                    # old timer closed

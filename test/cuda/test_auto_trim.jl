@@ -142,7 +142,7 @@ AAP.disable_auto_manage!()   # stop the __init__-started timer for deterministic
         p = CuAdaptiveArrayPool{0}()
         AAP.register_auto_manage!(p)
         @test _registry_len() == 1
-        AAP.enable_auto_manage!(interval = 0.1, trim_interval = 0.1)   # K=1: trim every sweep
+        AAP.enable_auto_manage!(compact_interval = 0.1, trim_interval = 0.1)   # K=1: trim every sweep
         AAP._auto_manage_sweep!(nothing)                    # one sweep body → trim cadence hits
         @test (@atomic p._trim_requested) == true
         AAP.disable_auto_manage!()
