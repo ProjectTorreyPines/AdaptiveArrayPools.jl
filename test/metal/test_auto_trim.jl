@@ -4,7 +4,7 @@
 # action of the unified auto_manage engine. Design: docs/plans/DESIGN_auto_trim.md
 #
 # A `MetalTypedPool` records the peak `n_active` reached since the last auto-trim in
-# `_ac_peak_n_active` (one hot-path `max` in `_metal_claim_slot!`, gated by AUTO_MANAGE).
+# `_am_peak_n_active` (one hot-path `max` in `_metal_claim_slot!`, gated by AUTO_MANAGE).
 # Every `trim_interval`, the base-module Timer sets the pool's `@atomic _trim_requested`;
 # the owner services it at a `@with_pool :metal` entry — trimming each type's slot tail
 # down to that recent peak (a type unused for the period trims to 0), then resetting it.
@@ -26,24 +26,24 @@ AAP.disable_auto_manage!()   # stop the __init__-started timer for deterministic
     _registry_len() = lock(() -> length(AAP._AUTO_MANAGE_REGISTRY), AAP._AUTO_MANAGE_LOCK)
 
     # ── Data layer ───────────────────────────────────────────────────────────
-    @testset "MetalTypedPool._ac_peak_n_active (default 0) + pool._trim_requested (default false)" begin
+    @testset "MetalTypedPool._am_peak_n_active (default 0) + pool._trim_requested (default false)" begin
         pool = MetalAdaptiveArrayPool{0, METAL_STORAGE}()
-        @test pool.float32._ac_peak_n_active == 0
+        @test pool.float32._am_peak_n_active == 0
         @test (@atomic pool._trim_requested) == false
         @atomic pool._trim_requested = true
         @test (@atomic pool._trim_requested) == true
     end
 
-    @testset "_metal_claim_slot! records the peak n_active in _ac_peak_n_active" begin
+    @testset "_metal_claim_slot! records the peak n_active in _am_peak_n_active" begin
         pool = MetalAdaptiveArrayPool{0, METAL_STORAGE}()
         checkpoint!(pool)
         acquire!(pool, Float32, 4); acquire!(pool, Float32, 4); acquire!(pool, Float32, 4)  # n_active → 3
         rewind!(pool)
-        @test pool.float32._ac_peak_n_active == 3          # peak captured (not reset by rewind)
+        @test pool.float32._am_peak_n_active == 3          # peak captured (not reset by rewind)
         # a narrower second period after a manual reset stays at the new peak
-        pool.float32._ac_peak_n_active = 0
+        pool.float32._am_peak_n_active = 0
         checkpoint!(pool); acquire!(pool, Float32, 4); rewind!(pool)
-        @test pool.float32._ac_peak_n_active == 1
+        @test pool.float32._am_peak_n_active == 1
     end
 
     # ── _trim_to! primitive (generic, dispatches on MetalTypedPool) ───────────
@@ -71,23 +71,23 @@ AAP.disable_auto_manage!()   # stop the __init__-started timer for deterministic
         checkpoint!(pool)                                  # wide: 3 concurrent
         acquire!(pool, Float32, 100); acquire!(pool, Float32, 100); acquire!(pool, Float32, 100)
         rewind!(pool)
-        pool.float32._ac_peak_n_active = 0                 # start a fresh observation period
+        pool.float32._am_peak_n_active = 0                 # start a fresh observation period
         checkpoint!(pool); acquire!(pool, Float32, 100); rewind!(pool)   # narrowed: peak = 1
-        @test pool.float32._ac_peak_n_active == 1
+        @test pool.float32._am_peak_n_active == 1
         @test length(pool.float32.vectors) == 3            # tail still retained
 
         @atomic pool._trim_requested = true
         AAP._run_auto_manage!(pool)
 
         @test length(pool.float32.vectors) == 1            # trimmed to the recent peak
-        @test pool.float32._ac_peak_n_active == 0          # reset for the next period
+        @test pool.float32._am_peak_n_active == 0          # reset for the next period
         @test (@atomic pool._trim_requested) == false      # flag consumed
     end
 
     @testset "a type unused for the period trims to 0" begin
         pool = MetalAdaptiveArrayPool{0, METAL_STORAGE}()
         checkpoint!(pool); acquire!(pool, Int32, 1000); acquire!(pool, Int32, 1000); rewind!(pool)
-        pool.int32._ac_peak_n_active = 0                   # new period, then NO Int32 use
+        pool.int32._am_peak_n_active = 0                   # new period, then NO Int32 use
         @test length(pool.int32.vectors) == 2
         @atomic pool._trim_requested = true
         AAP._run_auto_manage!(pool)
@@ -97,7 +97,7 @@ AAP.disable_auto_manage!()   # stop the __init__-started timer for deterministic
     @testset "no-op when _trim_requested is clear" begin
         pool = MetalAdaptiveArrayPool{0, METAL_STORAGE}()
         checkpoint!(pool); acquire!(pool, Float32, 100); acquire!(pool, Float32, 100); rewind!(pool)
-        pool.float32._ac_peak_n_active = 0
+        pool.float32._am_peak_n_active = 0
         AAP._run_auto_manage!(pool)                        # no flag set
         @test length(pool.float32.vectors) == 2            # untouched
     end
@@ -111,7 +111,7 @@ AAP.disable_auto_manage!()   # stop the __init__-started timer for deterministic
     @testset "peak tracking is live through real acquire! (functional guard)" begin
         pool = MetalAdaptiveArrayPool{0, METAL_STORAGE}()
         checkpoint!(pool); acquire!(pool, Float32, 8); acquire!(pool, Float32, 8); rewind!(pool)
-        @test pool.float32._ac_peak_n_active >= 2          # the max is tracking the peak
+        @test pool.float32._am_peak_n_active >= 2          # the max is tracking the peak
     end
 
     # ── Safety (R=1): auto-trim drops the slot ref WITHOUT a buffer swap ──────
@@ -126,7 +126,7 @@ AAP.disable_auto_manage!()   # stop the __init__-started timer for deterministic
         @test length(tp.vectors) == 1
         v = tp.vectors[1]                                   # the backing an escaped view would share
         data_before = getfield(v, :data)                    # its DataRef (compact! would swap this)
-        pool.float32._ac_peak_n_active = 0                  # unused this period → trim to 0
+        pool.float32._am_peak_n_active = 0                  # unused this period → trim to 0
         @atomic pool._trim_requested = true
         AAP._run_auto_manage!(pool)
         @test length(tp.vectors) == 0                       # slot reference dropped

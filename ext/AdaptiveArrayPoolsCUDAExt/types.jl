@@ -50,7 +50,7 @@ mutable struct CuTypedPool{T} <: AbstractTypedPool{T, CuVector{T}}
     # Peak `n_active` since the last auto-trim — the recent working-set width. Written on the
     # hot path (`_cuda_claim_slot!`, one `max`, gated by AUTO_MANAGE → DCE'd off); auto-trim
     # reads it as the slot count to keep, then resets it to 0. Owner-only (non-atomic).
-    _ac_peak_n_active::Int
+    _am_peak_n_active::Int
 end
 
 function CuTypedPool{T}() where {T}
@@ -59,7 +59,7 @@ function CuTypedPool{T}() where {T}
         Union{Nothing, Vector{Any}}[],   # arr_wrappers (indexed by N)
         Int[],                           # slot_extents (parallel to vectors)
         0, [0], [0],                     # State (1-based sentinel)
-        0,                               # _ac_peak_n_active: no usage observed yet
+        0,                               # _am_peak_n_active: no usage observed yet
     )
 end
 

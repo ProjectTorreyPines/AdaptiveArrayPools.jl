@@ -8,7 +8,7 @@ import AdaptiveArrayPools as AAP
 # unified auto_manage engine). Design: docs/plans/DESIGN_auto_trim.md
 #
 # A `TypedPool` records the peak `n_active` reached since the last auto-trim in
-# `_ac_peak_n_active` (one hot-path `max` in `_claim_slot!`, gated by AUTO_MANAGE).
+# `_am_peak_n_active` (one hot-path `max` in `_claim_slot!`, gated by AUTO_MANAGE).
 # Every `trim_interval`, the Timer sets the pool's `@atomic _trim_requested`; the
 # owner services it at a `@with_pool` entry — trimming each type's slot tail down
 # to that recent peak (a type unused for the period trims to 0), then resetting it.
@@ -23,24 +23,24 @@ AAP.disable_auto_manage!()
     _clear_registry!() = lock(() -> empty!(AAP._AUTO_MANAGE_REGISTRY), AAP._AUTO_MANAGE_LOCK)
 
     # ── Data layer ───────────────────────────────────────────────────────────
-    @testset "TypedPool._ac_peak_n_active (default 0) + pool._trim_requested (default false)" begin
+    @testset "TypedPool._am_peak_n_active (default 0) + pool._trim_requested (default false)" begin
         pool = AdaptiveArrayPool{0}()
-        @test pool.float64._ac_peak_n_active == 0
+        @test pool.float64._am_peak_n_active == 0
         @test (@atomic pool._trim_requested) == false
         @atomic pool._trim_requested = true
         @test (@atomic pool._trim_requested) == true
     end
 
-    @testset "_claim_slot! records the peak n_active in _ac_peak_n_active" begin
+    @testset "_claim_slot! records the peak n_active in _am_peak_n_active" begin
         pool = AdaptiveArrayPool{0}()
         checkpoint!(pool)
         acquire!(pool, Float64, 4); acquire!(pool, Float64, 4); acquire!(pool, Float64, 4)  # n_active → 3
         rewind!(pool)
-        @test pool.float64._ac_peak_n_active == 3          # peak captured (not reset by rewind)
+        @test pool.float64._am_peak_n_active == 3          # peak captured (not reset by rewind)
         # a narrower second period after a manual reset stays at the new peak
-        pool.float64._ac_peak_n_active = 0
+        pool.float64._am_peak_n_active = 0
         checkpoint!(pool); acquire!(pool, Float64, 4); rewind!(pool)
-        @test pool.float64._ac_peak_n_active == 1
+        @test pool.float64._am_peak_n_active == 1
     end
 
     # ── _trim_to! primitive ──────────────────────────────────────────────────
@@ -68,23 +68,23 @@ AAP.disable_auto_manage!()
         checkpoint!(pool)                                  # wide: 3 concurrent
         acquire!(pool, Float64, 100); acquire!(pool, Float64, 100); acquire!(pool, Float64, 100)
         rewind!(pool)
-        pool.float64._ac_peak_n_active = 0                 # start a fresh observation period
+        pool.float64._am_peak_n_active = 0                 # start a fresh observation period
         checkpoint!(pool); acquire!(pool, Float64, 100); rewind!(pool)   # narrowed: peak = 1
-        @test pool.float64._ac_peak_n_active == 1
+        @test pool.float64._am_peak_n_active == 1
         @test length(pool.float64.vectors) == 3            # tail still retained
 
         @atomic pool._trim_requested = true
         AAP._run_auto_manage!(pool)
 
         @test length(pool.float64.vectors) == 1            # trimmed to the recent peak
-        @test pool.float64._ac_peak_n_active == 0          # reset for the next period
+        @test pool.float64._am_peak_n_active == 0          # reset for the next period
         @test (@atomic pool._trim_requested) == false      # flag consumed
     end
 
     @testset "a type unused for the period trims to 0" begin
         pool = AdaptiveArrayPool{0}()
         checkpoint!(pool); acquire!(pool, Int64, 1000); acquire!(pool, Int64, 1000); rewind!(pool)
-        pool.int64._ac_peak_n_active = 0                   # new period, then NO Int64 use
+        pool.int64._am_peak_n_active = 0                   # new period, then NO Int64 use
         @test length(pool.int64.vectors) == 2
         @atomic pool._trim_requested = true
         AAP._run_auto_manage!(pool)
@@ -94,7 +94,7 @@ AAP.disable_auto_manage!()
     @testset "no-op when _trim_requested is clear" begin
         pool = AdaptiveArrayPool{0}()
         checkpoint!(pool); acquire!(pool, Float64, 100); acquire!(pool, Float64, 100); rewind!(pool)
-        pool.float64._ac_peak_n_active = 0
+        pool.float64._am_peak_n_active = 0
         AAP._run_auto_manage!(pool)                        # no flag set
         @test length(pool.float64.vectors) == 2            # untouched
     end
@@ -105,7 +105,7 @@ AAP.disable_auto_manage!()
         g(p) = (checkpoint!(p); acquire!(p, Float64, 8); acquire!(p, Float64, 8); rewind!(p); nothing)
         g(pool); g(pool)                               # warmup
         @test @allocated(g(pool)) == 0                 # the max adds no allocation
-        @test pool.float64._ac_peak_n_active >= 2      # …and it is tracking the peak
+        @test pool.float64._am_peak_n_active >= 2      # …and it is tracking the peak
     end
 
     @testset "RUNTIME_CHECK=1: auto-trim drops the slot ref, preserving poison (no buffer swap)" begin
@@ -115,7 +115,7 @@ AAP.disable_auto_manage!()
         @test length(tp.vectors) == 1
         backing = tp.vectors[1]                        # the poisoned backing an escaped view would hold
         mem_before = getfield(backing, :ref).mem
-        pool.float64._ac_peak_n_active = 0             # unused this period → trim to 0
+        pool.float64._am_peak_n_active = 0             # unused this period → trim to 0
         @atomic pool._trim_requested = true
         AAP._run_auto_manage!(pool)
         @test length(tp.vectors) == 0                  # slot reference dropped

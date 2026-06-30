@@ -75,7 +75,7 @@ AAP.disable_auto_manage!()
         @test test == ref                                         # ★ SAFETY: identical values, no corruption
 
         # Deterministic reclamation + self-heal after the run.
-        pool.float32._ac_peak_n_active = 0
+        pool.float32._am_peak_n_active = 0
         @atomic pool._trim_requested = true
         @atomic pool._compact_requested = true
         @with_pool :cuda p begin

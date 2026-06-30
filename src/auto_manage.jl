@@ -120,18 +120,18 @@ end
 # `compact!` takes the same factor/shrink_to/min_bytes/active kwargs for every
 # `AbstractArrayPool`, so one implementation drives CPU and GPU pools alike.
 # Auto-trim one pool: drop each type's cold slot tail down to its recent working-set peak
-# (`_ac_peak_n_active`), then reset that peak for the next observation period. Generic over
+# (`_am_peak_n_active`), then reset that peak for the next observation period. Generic over
 # `foreach_fixed_slot` + `others`, so it serves every backend once its typed pools carry the
 # field. Drops references only (no buffer swap), so `RUNTIME_CHECK` poison on a dropped slot
 # survives for any escaped view.
 function _auto_trim!(pool::AbstractArrayPool)
     foreach_fixed_slot(pool) do tp
-        _trim_to!(tp, tp._ac_peak_n_active)
-        tp._ac_peak_n_active = 0
+        _trim_to!(tp, tp._am_peak_n_active)
+        tp._am_peak_n_active = 0
     end
     for tp in values(pool.others)
-        _trim_to!(tp, tp._ac_peak_n_active)
-        tp._ac_peak_n_active = 0
+        _trim_to!(tp, tp._am_peak_n_active)
+        tp._am_peak_n_active = 0
     end
     return nothing
 end

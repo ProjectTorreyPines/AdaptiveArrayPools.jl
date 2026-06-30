@@ -93,7 +93,7 @@ AAP.disable_auto_manage!()
         # Non-vacuity: the reclamation path actually shrinks the pool and the next acquire
         # self-heals correctly. Reset the recent peak so the next auto-trim drops the whole
         # tail deterministically, then service one flagged scope entry.
-        pool.float64._ac_peak_n_active = 0
+        pool.float64._am_peak_n_active = 0
         @atomic pool._trim_requested = true
         @atomic pool._compact_requested = true
         @with_pool p begin

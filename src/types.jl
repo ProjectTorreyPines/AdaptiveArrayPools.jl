@@ -130,7 +130,7 @@ mutable struct TypedPool{T} <: AbstractTypedPool{T, Vector{T}}
     # Peak `n_active` reached since the last auto-trim — the recent working-set width.
     # Written on the hot path (`_claim_slot!`, one `max`, gated by AUTO_MANAGE → DCE'd off);
     # auto-trim reads it as the slot count to keep, then resets it to 0. Owner-only (non-atomic).
-    _ac_peak_n_active::Int
+    _am_peak_n_active::Int
 end
 
 TypedPool{T}() where {T} = TypedPool{T}(
@@ -144,7 +144,7 @@ TypedPool{T}() where {T} = TypedPool{T}(
     0,          # n_active
     [0],        # _checkpoint_n_active: sentinel (n_active=0 at depth=0)
     [0],        # _checkpoint_depths: sentinel (depth=0 = no checkpoint)
-    0,          # _ac_peak_n_active: no usage observed yet
+    0,          # _am_peak_n_active: no usage observed yet
 )
 
 # ==============================================================================
@@ -250,7 +250,7 @@ mutable struct BitTypedPool <: AbstractTypedPool{Bool, BitVector}
     _checkpoint_depths::Vector{Int}
 
     # --- Auto-trim telemetry (parallel to TypedPool; see its docstring) ---
-    _ac_peak_n_active::Int
+    _am_peak_n_active::Int
 end
 
 BitTypedPool() = BitTypedPool(
@@ -262,7 +262,7 @@ BitTypedPool() = BitTypedPool(
     0,          # n_active
     [0],        # _checkpoint_n_active: sentinel
     [0],        # _checkpoint_depths: sentinel
-    0,          # _ac_peak_n_active
+    0,          # _am_peak_n_active
 )
 
 # ==============================================================================

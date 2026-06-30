@@ -81,7 +81,7 @@ Metal.jl's resize! unnecessarily (especially after safety invalidation sets dims
     # Auto-trim working-set telemetry (parity with CPU `_claim_slot!`): track the peak
     # concurrency since the last trim. Branchless `max`, gated by the compile-time const →
     # DCE'd to nothing when AUTO_MANAGE is off (one `Int` field write when on).
-    AdaptiveArrayPools.AUTO_MANAGE && (tp._ac_peak_n_active = max(tp._ac_peak_n_active, idx))
+    AdaptiveArrayPools.AUTO_MANAGE && (tp._am_peak_n_active = max(tp._am_peak_n_active, idx))
     if idx > length(tp.vectors)
         push!(tp.vectors, allocate_vector(tp, total_len))
         push!(tp.slot_extents, total_len)        # parallel to `vectors` (for compact!/_slot_used)
@@ -103,7 +103,7 @@ the wrapper points to a different array's memory via `setfield!(:data)`.
 @inline function _metal_claim_slot!(tp::MetalTypedPool{T, S}) where {T, S}
     tp.n_active += 1
     idx = tp.n_active
-    AdaptiveArrayPools.AUTO_MANAGE && (tp._ac_peak_n_active = max(tp._ac_peak_n_active, idx))   # working-set peak (DCE'd off)
+    AdaptiveArrayPools.AUTO_MANAGE && (tp._am_peak_n_active = max(tp._am_peak_n_active, idx))   # working-set peak (DCE'd off)
     if idx > length(tp.vectors)
         push!(tp.vectors, MtlArray{T, 1, S}(undef, 0))
         push!(tp.slot_extents, 0)        # placeholder slot: wrapper points elsewhere (reshape!)
