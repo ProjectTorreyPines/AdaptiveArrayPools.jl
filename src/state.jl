@@ -902,16 +902,26 @@ end
 # Julia's `Memory` cannot be shrunk in place (any real reclaim must allocate anew).
 function _compact_slot!(tp::TypedPool{T}, slot::Int, target::Int, used::Int, copy_live::Bool) where {T}
     v = @inbounds tp.vectors[slot]
+    old_mem = getfield(getfield(v, :ref), :mem)   # the backing Memory, captured BEFORE the swap
     nv = Vector{T}(undef, target)
     copy_live && copyto!(nv, 1, v, 1, used)
     setfield!(v, :size, (target,))
     setfield!(v, :ref, getfield(nv, :ref))
+    new_ref = getfield(v, :ref)
+    # Re-point EVERY cached wrapper that aliased this slot's old backing memory — not only the
+    # wrappers cached AT `slot`. `reshape!(pool, a, dims)` (M≠N) stores its reshaped wrapper in a
+    # SEPARATE placeholder slot while pointing it at `a`'s (this slot's) memory; a per-slot scan
+    # missed that alias, so an `active=true` compact! stranded it on the freed backing — `a`
+    # followed the new memory while the reshape view silently diverged. Matching by `Memory`
+    # identity catches both: every pool wrapper points at offset 0 of its backing, so any wrapper
+    # whose `:ref.mem` is the swapped-out memory must be re-pointed to the new backing (`:size`
+    # unchanged; `target ≥ used` keeps every live element).
     for wrappers in tp.arr_wrappers
         wrappers === nothing && continue
-        slot <= length(wrappers) || continue
-        w = @inbounds wrappers[slot]
-        w === nothing && continue
-        setfield!(w, :ref, getfield(v, :ref))   # :size unchanged
+        for w in wrappers
+            w === nothing && continue
+            getfield(getfield(w, :ref), :mem) === old_mem && setfield!(w, :ref, new_ref)
+        end
     end
     return nothing
 end

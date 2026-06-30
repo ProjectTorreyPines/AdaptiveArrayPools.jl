@@ -446,16 +446,22 @@ end
 # makes inactive compaction allocate-only (no device copy / kernel launch).
 function AdaptiveArrayPools._compact_slot!(tp::MetalTypedPool{T, S}, slot::Int, target::Int, used::Int, copy_live::Bool) where {T, S}
     v = @inbounds tp.vectors[slot]
+    old_rc = getfield(getfield(v, :data), :rc)   # OLD device-buffer identity, captured BEFORE the swap
     nv = MtlArray{T, 1, S}(undef, target)
     copy_live && copyto!(nv, 1, v, 1, used)
     _update_metal_wrapper_data!(v, nv)          # backing takes nv's buffer (refcounted)
     setfield!(v, :dims, (target,))
+    # Re-point EVERY cached wrapper sharing this slot's OLD device buffer — not only the wrappers
+    # cached AT `slot`. A `reshape!` alias lives in a SEPARATE placeholder slot while sharing this
+    # buffer's DataRef; the per-slot scan missed it, stranding it on the freed buffer after an
+    # `active=true` compact!. Match by refcount identity (the same `.data.rc` test `reshape!` uses)
+    # and migrate each alias onto the new buffer via the refcount-balanced helper (dims kept).
     for wrappers in tp.arr_wrappers
         wrappers === nothing && continue
-        slot <= length(wrappers) || continue
-        w = @inbounds wrappers[slot]
-        w === nothing && continue
-        _update_metal_wrapper_data!(w, v)       # held wrapper re-points to new buffer (dims kept)
+        for w in wrappers
+            w === nothing && continue
+            getfield(getfield(w, :data), :rc) === old_rc && _update_metal_wrapper_data!(w, v)
+        end
     end
     unsafe_free!(getfield(nv, :data))           # drop the temporary's own reference
     return nothing
