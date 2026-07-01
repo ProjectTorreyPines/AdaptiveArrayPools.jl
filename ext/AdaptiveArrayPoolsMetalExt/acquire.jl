@@ -18,7 +18,7 @@ using AdaptiveArrayPools: get_view!, get_array!, allocate_vector, safe_prod,
     _acquire_impl!, _acquire_view_impl!, _maybe_record_borrow!,
     _MODE_BITS_MASK
 
-using Metal.GPUArrays: unsafe_free!
+using Metal: unsafe_free!
 
 # Guard against Metal.jl internal API changes
 @static if !(

@@ -36,7 +36,7 @@ using AdaptiveArrayPools: get_view!, get_array!, allocate_vector, safe_prod,
     _acquire_impl!, _acquire_view_impl!, _maybe_record_borrow!,
     _MODE_BITS_MASK
 
-using CUDA.GPUArrays: unsafe_free!
+using CUDA: unsafe_free!
 
 # Guard against CUDA.jl internal API changes (tested with v5.x).
 @static if !(
