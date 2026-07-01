@@ -225,12 +225,33 @@ end
 
 _stop_auto_manage_timer!() = (lock(_stop_auto_manage_timer_unlocked!, _AUTO_MANAGE_LOCK); nothing)
 
+# Drop every live pool's pending maintenance request and reset the trim cadence. Called from
+# the timer-stop path (below) so that once the Timer is gone, no stale flag set by the last
+# sweep can still trigger one post-disable `_run_auto_manage!` at a later `@with_pool` entry.
+# Runs under `_AUTO_MANAGE_LOCK` (the caller holds it), the same lock the sweep takes, so the
+# stop-and-clear is atomic against a concurrent sweep. Dead WeakRefs are skipped (not pruned —
+# the next sweep prunes them); the `_trim_requested` clear is guarded for backends lacking it.
+function _clear_auto_manage_requests_unlocked!()
+    for ref in _AUTO_MANAGE_REGISTRY
+        pool = ref.value
+        pool === nothing && continue
+        p = pool::AbstractArrayPool
+        @atomic :monotonic p._compact_requested = false
+        if hasfield(typeof(p), :_trim_requested)
+            @atomic :monotonic p._trim_requested = false
+        end
+    end
+    _AUTO_MANAGE_TICK[] = 0
+    return nothing
+end
+
 function _stop_auto_manage_timer_unlocked!()
     t = _AUTO_MANAGE_TIMER[]
     if t !== nothing
         close(t)
         _AUTO_MANAGE_TIMER[] = nothing
     end
+    _clear_auto_manage_requests_unlocked!()   # no stale flag outlives the timer
     return nothing
 end
 

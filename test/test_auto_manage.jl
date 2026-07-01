@@ -151,6 +151,29 @@ AAP.disable_auto_manage!()   # stop the __init__-started timer for deterministic
         _clear_registry!()
     end
 
+    @testset "disable! clears pending requests so no post-disable auto-manage runs" begin
+        # Regression: `disable_auto_manage!` must not just stop the Timer — it must also drop
+        # any flag the last sweep already set, or the NEXT `@with_pool` entry would run one
+        # more compaction/trim AFTER the user explicitly turned auto-manage off (surprising an
+        # allocation on a hot path someone disabled precisely to keep zero-alloc).
+        _clear_registry!()
+        AAP.disable_auto_manage!()
+        pool = _inactive_bloated(1_000_000, 100)
+        AAP.register_auto_manage!(pool)
+
+        AAP._auto_manage_sweep!(nothing)                    # last pre-disable sweep sets the flag
+        @test (@atomic pool._compact_requested) == true
+
+        AAP.disable_auto_manage!()                          # explicit off → must also clear flags
+        @test AAP.auto_manage_enabled() == false
+        @test (@atomic pool._compact_requested) == false    # stale request dropped
+
+        AAP._maybe_auto_manage!(pool)                       # a later scope entry now no-ops
+        @test (@atomic pool._compact_requested) == false
+        @test _cap(pool.float64.vectors[1]) >= 1_000_000     # NOT compacted post-disable
+        _clear_registry!()
+    end
+
     @testset "enable! replaces an existing timer (closes the old one)" begin
         AAP.disable_auto_manage!()
         AAP.enable_auto_manage!(compact_interval = 0.1)
