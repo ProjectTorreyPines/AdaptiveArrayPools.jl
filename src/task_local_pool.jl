@@ -96,8 +96,8 @@ type-asserts directly to `AdaptiveArrayPool{RUNTIME_CHECK}`.
         # This branch is rarely taken (only once per Task)
         pool = AdaptiveArrayPool()
         task_local_storage(_POOL_KEY, pool)
-        # Register for background auto-compaction (DCE'd to nothing when AUTO_COMPACT is off).
-        AUTO_COMPACT && register_auto_compact!(pool)
+        # Register for background auto-management (DCE'd to nothing when AUTO_MANAGE is off).
+        AUTO_MANAGE && register_auto_manage!(pool)
     end
 
     return pool::AdaptiveArrayPool{RUNTIME_CHECK}

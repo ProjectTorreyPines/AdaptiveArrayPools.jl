@@ -65,6 +65,10 @@ Returns the slot index. This is the shared primitive for all acquisition paths
 @inline function _claim_slot!(tp::TypedPool{T}, n::Int) where {T}
     tp.n_active += 1
     idx = tp.n_active
+    # Auto-trim working-set telemetry: track the peak concurrency since the last trim.
+    # Branchless `max` on the `n_active` bump; gated by the compile-time const → DCE'd to
+    # nothing when AUTO_MANAGE is off (measured ~0.15 ns/acquire, zero-alloc, when on).
+    AUTO_MANAGE && (tp._am_peak_n_active = max(tp._am_peak_n_active, idx))
     if idx > length(tp.vectors)
         push!(tp.vectors, allocate_vector(tp, n))
         push!(tp.slot_extents, n)        # parallel to `vectors`; records this slot's extent
@@ -89,6 +93,7 @@ the wrapper points to a different array's memory via `setfield!(:ref)`.
 @inline function _claim_slot!(tp::TypedPool{T}) where {T}
     tp.n_active += 1
     idx = tp.n_active
+    AUTO_MANAGE && (tp._am_peak_n_active = max(tp._am_peak_n_active, idx))   # working-set peak (DCE'd off)
     if idx > length(tp.vectors)
         push!(tp.vectors, Vector{T}(undef, 0))
         push!(tp.slot_extents, 0)        # placeholder slot: backing points elsewhere (reshape!)

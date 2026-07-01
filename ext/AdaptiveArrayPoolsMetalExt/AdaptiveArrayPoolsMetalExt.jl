@@ -27,7 +27,7 @@ using Metal
     include("acquire.jl")
     include("task_local_pool.jl")
     include("state.jl")
-    include("auto_compact.jl")
+    include("auto_manage.jl")
     include("debug.jl")
     include("utils.jl")
     include("macros.jl")

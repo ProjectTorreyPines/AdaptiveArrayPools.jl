@@ -56,6 +56,31 @@
         rewind!(pool)
     end
 
+    @testset "active=true preserves a live reshape! alias (cross-slot, different dim)" begin
+        # `reshape!(pool, a, dims)` with M≠N stores the reshaped MtlArray wrapper in a SEPARATE
+        # placeholder slot while SHARING `a`'s device buffer (same DataRef). An active compact!
+        # that shrinks `a`'s slot must re-point that cross-slot alias too — else `a` follows the
+        # new buffer while the reshape view is stranded on the freed buffer. Regression for the
+        # per-slot-only wrapper re-sync in the Metal `_compact_slot!`.
+        pool = MetalAdaptiveArrayPool{0, METAL_STORAGE}()
+        checkpoint!(pool); big = acquire!(pool, Float32, 200_000); rewind!(pool)   # slot 1 high-water
+        checkpoint!(pool)
+        a = acquire!(pool, Float32, 100); fill!(a, 1.0f0)     # reuse slot 1: bloated (used=100)
+        b = reshape!(pool, a, 10, 10)                          # 2-D alias of `a` (placeholder slot 2)
+        tp = pool.float32
+        @test getfield(a, :data).rc === getfield(b, :data).rc # one shared device buffer before compact
+        @test _mcap(tp.vectors[1]) >= 200_000
+
+        s = compact!(pool; active = true, min_bytes = 0)      # shrink slot 1's device buffer in place
+        @test s.slots_compacted == 1
+
+        # The alias must SURVIVE: still one buffer, and a write through `a` is visible in `b`.
+        @test getfield(a, :data).rc === getfield(b, :data).rc # ← reshape view follows the new buffer
+        fill!(a, 42.0f0)
+        @test all(==(42.0f0), Array(b))                        # data flows across the alias post-compact
+        rewind!(pool)
+    end
+
     @testset "no-op + force_gc + type stability + DisabledPool" begin
         pool = MetalAdaptiveArrayPool{0, METAL_STORAGE}()
         @test compact!(pool) == ZERO

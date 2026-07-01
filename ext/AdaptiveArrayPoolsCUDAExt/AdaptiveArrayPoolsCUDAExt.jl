@@ -33,8 +33,8 @@ using CUDA
     # State management (checkpoint!, rewind!, reset!, empty!)
     include("state.jl")
 
-    # Auto-compact: service the timer-flagged request at `@with_pool :cuda` entry
-    include("auto_compact.jl")
+    # Auto-manage: service the timer-flagged request at `@with_pool :cuda` entry
+    include("auto_manage.jl")
 
     # Safety: poisoning, escape detection, borrow tracking
     include("debug.jl")

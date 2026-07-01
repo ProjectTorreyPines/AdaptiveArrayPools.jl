@@ -94,6 +94,10 @@ CUDA.jl's resize! unnecessarily (especially after safety invalidation sets dims=
 @inline function _cuda_claim_slot!(tp::CuTypedPool{T}, total_len::Int) where {T}
     tp.n_active += 1
     idx = tp.n_active
+    # Auto-trim working-set telemetry (parity with CPU `_claim_slot!`): track the peak
+    # concurrency since the last trim. Branchless `max` on host-side `Int` fields (NOT a GPU
+    # scalar op), gated by the compile-time const → DCE'd to nothing when AUTO_MANAGE is off.
+    AdaptiveArrayPools.AUTO_MANAGE && (tp._am_peak_n_active = max(tp._am_peak_n_active, idx))
     if idx > length(tp.vectors)
         push!(tp.vectors, allocate_vector(tp, total_len))
         push!(tp.slot_extents, total_len)        # parallel to `vectors` (for compact!/_slot_used)
@@ -119,6 +123,7 @@ the wrapper points to a different array's memory via `setfield!(:data)`.
 @inline function _cuda_claim_slot!(tp::CuTypedPool{T}) where {T}
     tp.n_active += 1
     idx = tp.n_active
+    AdaptiveArrayPools.AUTO_MANAGE && (tp._am_peak_n_active = max(tp._am_peak_n_active, idx))   # working-set peak (DCE'd off)
     if idx > length(tp.vectors)
         push!(tp.vectors, CuVector{T}(undef, 0))
         push!(tp.slot_extents, 0)        # placeholder slot: wrapper points elsewhere (reshape!)

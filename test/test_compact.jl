@@ -430,6 +430,33 @@ const _ZERO_COMPACT = (; slots_compacted = 0, bytes_reclaimed = 0, gc_triggered 
         rewind!(pool)
     end
 
+    @testset "active=true preserves a live reshape! alias (cross-slot, different dim)" begin
+        # `reshape!(pool, a, dims)` with M≠N stores the reshaped Array wrapper in a SEPARATE
+        # placeholder slot while aliasing `a`'s backing memory. An active compact! that shrinks
+        # `a`'s slot must re-point that cross-slot alias too — else `a` follows the new backing
+        # while the reshape view is stranded on the freed memory (silent divergence). Regression
+        # for the per-slot-only wrapper re-sync in `_compact_slot!`.
+        pool = AdaptiveArrayPool{0}()
+        checkpoint!(pool); big = acquire!(pool, Float64, 200_000); rewind!(pool)   # slot 1 high-water
+        checkpoint!(pool)
+        a = acquire!(pool, Float64, 100); a .= 1.0          # reuse slot 1: bloated (used=100)
+        b = reshape!(pool, a, 10, 10)                        # 2-D alias of `a` (placeholder slot 2)
+        tp = pool.float64
+        @test a[1] == b[1, 1] == 1.0                         # aliased before compact
+        @test _cap(tp.vectors[1]) >= 200_000                 # bloated → will be compacted
+
+        s = compact!(pool; active = true)                    # shrinks slot 1's backing in place
+        @test s.slots_compacted == 1
+
+        # The alias must SURVIVE: writes through either view are visible in the other.
+        a[1] = 42.0
+        @test b[1, 1] == 42.0                                # ← reshape view follows the new backing
+        b[2, 1] = 7.0                                        # b[2,1] is column-major a[2]
+        @test a[2] == 7.0                                    # …and the reverse direction holds
+        @test pointer(a) == pointer(b)                       # both wrappers share one backing
+        rewind!(pool)
+    end
+
     @testset "extreme kwargs never throw (shrink target clamped to capacity)" begin
         pool = _inactive_bloated_pool(1_000_000, 100)
         # shrink_to so large that ceil(Int, shrink_to*used) would overflow Int —

@@ -55,7 +55,7 @@ All pooling code is **completely eliminated at compile time** (zero overhead).
 
 ## Compile-time: RUNTIME_CHECK
 
-Enable runtime safety checks to catch pool-escape bugs. See [Safety](safety.md) for full details.
+Enable runtime safety checks to catch pool-escape bugs. See [Safety](../safety/overview.md) for full details.
 
 ```toml
 # LocalPreferences.toml
@@ -111,6 +111,33 @@ set_cache_ways!(8)
 
 **When to increase**: If your CUDA code or Julia ≤1.11 code alternates between more than 4 dimension patterns per `acquire!` call, increase `cache_ways` to avoid cache eviction (~100 bytes header per miss).
 
+## Compile-time: `auto_manage`
+
+Master switch for the background memory reclamation engine (see [Automatic Memory Management](@ref)). **Default `true`** — a background timer periodically auto-compacts and auto-trims the task-local pool.
+
+```toml
+# LocalPreferences.toml
+[AdaptiveArrayPools]
+auto_manage = false   # compile the feature out; restart Julia to take effect
+```
+
+Setting it to `false` (compile-time) dead-code-eliminates the `@with_pool` reclamation hook entirely, guaranteeing a zero-allocation hot path; `enable_auto_manage!` then becomes a no-op-with-warning and you reclaim memory only via manual `compact!` / `trim!`.
+
+### Tuning the timer (`auto_manage_*`)
+
+When `auto_manage` is on, the background timer's cadence and thresholds default from these flat keys (read once at startup; `enable_auto_manage!` overrides them at runtime). All optional:
+
+```toml
+[AdaptiveArrayPools]
+auto_manage_compact_interval = 30.0   # seconds — how often to auto-compact
+auto_manage_trim_interval    = 120.0  # seconds — how often to auto-trim (Inf disables)
+auto_manage_compact_bloat_factor = 10      # compact a slot at ≥ this × its live size
+auto_manage_compact_target_ratio = 1.5     # shrink it down to this × live size
+auto_manage_compact_min_bytes    = 1048576 # skip if it would reclaim less
+```
+
+See [Automatic Memory Management](@ref) for what each does.
+
 ## Summary
 
 | Setting | Scope | Restart? | Priority | Affects |
@@ -118,4 +145,5 @@ set_cache_ways!(8)
 | `use_pooling` | Compile-time | Yes | ⭐ Primary | All macros, `acquire!` behavior |
 | `runtime_check` | Compile-time | Yes | Safety | Poisoning, invalidation, escape detection |
 | `cache_ways` | Compile-time | Yes | Advanced | `acquire!` N-D caching (≤1.11 / CUDA only) |
+| `auto_manage` | Compile-time | Yes | Optional | Background auto-compact/auto-trim (default on) |
 | `MAYBE_POOLING` | Runtime | No | Optional | `@maybe_with_pool` only |

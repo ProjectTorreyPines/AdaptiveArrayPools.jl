@@ -37,10 +37,10 @@ Uses `Dict{UInt64, MetalAdaptiveArrayPool{RUNTIME_CHECK, METAL_STORAGE}}` in tas
     if pool === nothing
         pool = MetalAdaptiveArrayPool()  # Uses RUNTIME_CHECK for initial R
         pools[dev_key] = pool
-        # Register for auto-compaction (gated by the compile-time const; mirrors CPU
+        # Register for auto-management (gated by the compile-time const; mirrors CPU
         # get_task_local_pool). One entry per (task, device) pool. DCE'd when the
         # Preference is off, so no registry traffic on the zero-overhead build.
-        AdaptiveArrayPools.AUTO_COMPACT && AdaptiveArrayPools.register_auto_compact!(pool)
+        AdaptiveArrayPools.AUTO_MANAGE && AdaptiveArrayPools.register_auto_manage!(pool)
     end
 
     return pool::MetalAdaptiveArrayPool{RUNTIME_CHECK, METAL_STORAGE}

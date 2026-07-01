@@ -53,6 +53,7 @@ function get_bitarray!(tp::BitTypedPool, dims::NTuple{N, Int}) where {N}
     total_len = safe_prod(dims)
     tp.n_active += 1
     idx = tp.n_active
+    AUTO_MANAGE && (tp._am_peak_n_active = max(tp._am_peak_n_active, idx))   # working-set peak (DCE'd off)
 
     # 1. Pool expansion needed (new slot)
     if idx > length(tp.vectors)

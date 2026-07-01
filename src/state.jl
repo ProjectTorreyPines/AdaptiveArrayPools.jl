@@ -814,6 +814,21 @@ function _trim_counts!(tp::AbstractTypedPool)::NTuple{3, Int}
     return (max(0, released), wrappers_released, bytes)
 end
 
+# Trim one typed pool down to exactly `keep` slots — the generalization of `_trim_counts!`
+# (which keeps `n_active`) used by auto-trim to drop the cold tail beyond the recent
+# working-set peak. Clamped to `≥ n_active` so it never drops a slot still in use (auto-trim
+# calls it at `depth == 1` where `n_active == 0`, so this only guards misuse). Drops
+# references only (no buffer swap), so under `RUNTIME_CHECK` a dropped poisoned slot keeps its
+# poison for any escaped view. Returns nothing (the byte summary is for the public `trim!`).
+function _trim_to!(tp::AbstractTypedPool, keep::Int)
+    keep = max(keep, tp.n_active)
+    length(tp.vectors) <= keep && return nothing
+    _trim_inactive_wrappers!(tp, keep)
+    resize!(tp.vectors, keep)
+    _trim_slot_extents!(tp, keep)
+    return nothing
+end
+
 # Sum `_trim_counts!` over every fixed slot, unrolled at compile time. A plain
 # `foreach_fixed_slot(pool) do tp ... end` closure would box the accumulators
 # (Core.Box) and widen the summary to `Any`; this unrolled fold stays concrete
@@ -887,16 +902,26 @@ end
 # Julia's `Memory` cannot be shrunk in place (any real reclaim must allocate anew).
 function _compact_slot!(tp::TypedPool{T}, slot::Int, target::Int, used::Int, copy_live::Bool) where {T}
     v = @inbounds tp.vectors[slot]
+    old_mem = getfield(getfield(v, :ref), :mem)   # the backing Memory, captured BEFORE the swap
     nv = Vector{T}(undef, target)
     copy_live && copyto!(nv, 1, v, 1, used)
     setfield!(v, :size, (target,))
     setfield!(v, :ref, getfield(nv, :ref))
+    new_ref = getfield(v, :ref)
+    # Re-point EVERY cached wrapper that aliased this slot's old backing memory — not only the
+    # wrappers cached AT `slot`. `reshape!(pool, a, dims)` (M≠N) stores its reshaped wrapper in a
+    # SEPARATE placeholder slot while pointing it at `a`'s (this slot's) memory; a per-slot scan
+    # missed that alias, so an `active=true` compact! stranded it on the freed backing — `a`
+    # followed the new memory while the reshape view silently diverged. Matching by `Memory`
+    # identity catches both: every pool wrapper points at offset 0 of its backing, so any wrapper
+    # whose `:ref.mem` is the swapped-out memory must be re-pointed to the new backing (`:size`
+    # unchanged; `target ≥ used` keeps every live element).
     for wrappers in tp.arr_wrappers
         wrappers === nothing && continue
-        slot <= length(wrappers) || continue
-        w = @inbounds wrappers[slot]
-        w === nothing && continue
-        setfield!(w, :ref, getfield(v, :ref))   # :size unchanged
+        for w in wrappers
+            w === nothing && continue
+            getfield(getfield(w, :ref), :mem) === old_mem && setfield!(w, :ref, new_ref)
+        end
     end
     return nothing
 end

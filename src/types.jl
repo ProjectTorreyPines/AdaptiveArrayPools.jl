@@ -125,6 +125,12 @@ mutable struct TypedPool{T} <: AbstractTypedPool{T, Vector{T}}
     n_active::Int
     _checkpoint_n_active::Vector{Int}   # Saved n_active at each checkpoint
     _checkpoint_depths::Vector{Int}     # Depth of each checkpoint
+
+    # --- Auto-trim telemetry ---
+    # Peak `n_active` reached since the last auto-trim — the recent working-set width.
+    # Written on the hot path (`_claim_slot!`, one `max`, gated by AUTO_MANAGE → DCE'd off);
+    # auto-trim reads it as the slot count to keep, then resets it to 0. Owner-only (non-atomic).
+    _am_peak_n_active::Int
 end
 
 TypedPool{T}() where {T} = TypedPool{T}(
@@ -137,7 +143,8 @@ TypedPool{T}() where {T} = TypedPool{T}(
     # State Management (1-based sentinel pattern: guaranteed non-empty)
     0,          # n_active
     [0],        # _checkpoint_n_active: sentinel (n_active=0 at depth=0)
-    [0]         # _checkpoint_depths: sentinel (depth=0 = no checkpoint)
+    [0],        # _checkpoint_depths: sentinel (depth=0 = no checkpoint)
+    0,          # _am_peak_n_active: no usage observed yet
 )
 
 # ==============================================================================
@@ -241,6 +248,9 @@ mutable struct BitTypedPool <: AbstractTypedPool{Bool, BitVector}
     n_active::Int
     _checkpoint_n_active::Vector{Int}
     _checkpoint_depths::Vector{Int}
+
+    # --- Auto-trim telemetry (parallel to TypedPool; see its docstring) ---
+    _am_peak_n_active::Int
 end
 
 BitTypedPool() = BitTypedPool(
@@ -251,7 +261,8 @@ BitTypedPool() = BitTypedPool(
     # State Management (1-based sentinel pattern)
     0,          # n_active
     [0],        # _checkpoint_n_active: sentinel
-    [0]         # _checkpoint_depths: sentinel
+    [0],        # _checkpoint_depths: sentinel
+    0,          # _am_peak_n_active
 )
 
 # ==============================================================================
@@ -384,10 +395,12 @@ mutable struct AdaptiveArrayPool{S} <: AbstractArrayPool
     _pending_return_site::String                     # "" = no pending; set by macro before validate
     _borrow_log::Union{Nothing, IdDict{Any, String}} # vector_obj => callsite string
 
-    # Auto-compact request flag: set by the background Timer sweep (a different
-    # thread), read + reset by the owner task at the `_current_depth == 1` safepoint.
-    # Atomic for the cross-thread handoff; ignored when auto-compact is disabled.
+    # Auto-manage request flags: set by the background Timer sweep (a different thread),
+    # read + reset by the owner task at the `_current_depth == 1` safepoint. Atomic for the
+    # cross-thread handoff; ignored when auto-manage is disabled. `_compact_requested` is set
+    # every tick (→ compact!); `_trim_requested` every `trim_interval` (→ auto-trim the tail).
     @atomic _compact_requested::Bool
+    @atomic _trim_requested::Bool
 end
 
 function AdaptiveArrayPool{S}() where {S}
@@ -410,7 +423,8 @@ function AdaptiveArrayPool{S}() where {S}
         "",             # _pending_callsite: no pending
         "",             # _pending_return_site: no pending
         nothing,        # _borrow_log: lazily created at S=1
-        false,          # _compact_requested: no pending auto-compact request
+        false,          # _compact_requested: no pending compact request
+        false,          # _trim_requested: no pending auto-trim request
     )
 end
 
@@ -464,6 +478,7 @@ _make_pool(runtime_check::Bool, old::AdaptiveArrayPool) = _make_pool(Int(runtime
         "",       # _pending_return_site: reset
         S >= 1 ? IdDict{Any, String}() : nothing,  # _borrow_log
         false,                                      # _compact_requested: reset on migration
+        false,                                      # _trim_requested: reset on migration
     )
     level == 0 && return _new(Val(0))
     return _new(Val(1))

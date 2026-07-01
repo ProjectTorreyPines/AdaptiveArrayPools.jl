@@ -45,6 +45,12 @@ mutable struct CuTypedPool{T} <: AbstractTypedPool{T, CuVector{T}}
     n_active::Int
     _checkpoint_n_active::Vector{Int}
     _checkpoint_depths::Vector{Int}
+
+    # --- Auto-trim telemetry (parity with CPU TypedPool; see its docstring) ---
+    # Peak `n_active` since the last auto-trim — the recent working-set width. Written on the
+    # hot path (`_cuda_claim_slot!`, one `max`, gated by AUTO_MANAGE → DCE'd off); auto-trim
+    # reads it as the slot count to keep, then resets it to 0. Owner-only (non-atomic).
+    _am_peak_n_active::Int
 end
 
 function CuTypedPool{T}() where {T}
@@ -52,7 +58,8 @@ function CuTypedPool{T}() where {T}
         CuVector{T}[],                   # vectors
         Union{Nothing, Vector{Any}}[],   # arr_wrappers (indexed by N)
         Int[],                           # slot_extents (parallel to vectors)
-        0, [0], [0]                      # State (1-based sentinel)
+        0, [0], [0],                     # State (1-based sentinel)
+        0,                               # _am_peak_n_active: no usage observed yet
     )
 end
 
@@ -126,10 +133,14 @@ mutable struct CuAdaptiveArrayPool{S} <: AbstractArrayPool
     _pending_return_site::String
     _borrow_log::Union{Nothing, IdDict{Any, String}}
 
-    # Auto-compact request flag (parity with CPU AdaptiveArrayPool): set by the base
+    # Auto-manage request flags (parity with CPU AdaptiveArrayPool): set by the base
     # module's background Timer sweep (a different thread), read + reset by the owner task
     # at the `@with_pool :cuda` entry safepoint. Atomic for the cross-thread handoff.
+    # `_compact_requested` is set every tick (→ compact!); `_trim_requested` every
+    # `trim_interval` (→ auto-trim the tail). The entry hook fires on `_compact_requested`
+    # (set on the same sweep), so the generic `_run_auto_manage!` services both at once.
     @atomic _compact_requested::Bool
+    @atomic _trim_requested::Bool
 end
 
 function CuAdaptiveArrayPool{S}() where {S}
@@ -151,7 +162,8 @@ function CuAdaptiveArrayPool{S}() where {S}
         "",             # _pending_callsite
         "",             # _pending_return_site
         nothing,        # _borrow_log: lazily created when S >= 1
-        false           # _compact_requested: no pending auto-compact request
+        false,          # _compact_requested: no pending compact request
+        false           # _trim_requested: no pending auto-trim request
     )
 end
 
@@ -213,7 +225,8 @@ function _transfer_cuda_pool(::Val{V}, old::CuAdaptiveArrayPool) where {V}
         "",       # _pending_callsite: reset
         "",       # _pending_return_site: reset
         V >= 1 ? IdDict{Any, String}() : nothing,  # _borrow_log
-        false                                       # _compact_requested: reset on migration
+        false,                                      # _compact_requested: reset on migration
+        false                                       # _trim_requested: reset on migration
     )
 end
 
