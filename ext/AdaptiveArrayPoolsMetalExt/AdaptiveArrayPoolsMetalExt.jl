@@ -20,7 +20,6 @@ using Metal
 @static if VERSION >= v"1.12-"
 
     using AdaptiveArrayPools: AbstractTypedPool, AbstractArrayPool
-    using Metal.GPUArrays
 
     include("types.jl")
     include("dispatch.jl")
