@@ -1,7 +1,7 @@
 name = "AdaptiveArrayPools"
 uuid = "4f381ef7-9af0-4cbe-99d4-cf36d7b0f233"
-authors = ["Min-Gu Yoo <mgyoo86@gmail.com>"]
 version = "0.3.8"
+authors = ["Min-Gu Yoo <mgyoo86@gmail.com>"]
 
 [deps]
 Preferences = "21216c6a-2e73-6563-6e65-726566657250"
@@ -17,7 +17,7 @@ AdaptiveArrayPoolsCUDAExt = "CUDA"
 AdaptiveArrayPoolsMetalExt = "Metal"
 
 [compat]
-CUDA = "5"
+CUDA = "5, 6"
 Metal = "1"
 Preferences = "1"
 Printf = "1"
