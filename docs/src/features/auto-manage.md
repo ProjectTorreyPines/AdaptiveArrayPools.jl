@@ -13,32 +13,29 @@ whole point. But over a long-running program two kinds of slack accumulate:
 
 ## What it does
 
-One background `Timer` drives two complementary actions, on independent cadences:
-
-| Action          | Reclaims                                            | Default cadence |
-|-----------------|-----------------------------------------------------|-----------------|
-| **auto-compact** | shrinks an over-allocated slot's backing **in place** | every `compact_interval` (30 s) |
-| **auto-trim**   | drops **whole slots** beyond the recent working-set peak | every `trim_interval` (120 s) |
-
-They act on different axes — one shrinks the buffer *within* a slot, the other drops *whole* slots:
+The reclaiming is done by two primitives — `compact!` and `trim!` — and `auto_manage` simply
+runs them for you on a timer. First, what each one does to a pool:
 
 ```text
-auto-compact — shrink ONE slot's bloated backing buffer (the slot itself stays)
+compact — shrink ONE slot's over-grown backing buffer down to what it actually holds
 
-    before   ▓▓▓░░░░░░░░░░░░░░░░░░░░░░░░     ▓ live data   ░ wasted capacity  (bloated)
-    after    ▓▓▓░                           reallocated to ~1.5× the live size;
-                                            arrays you're still holding follow the move
+    before   ███░░░░░░░░░░░░░░░░░░░░░░░░   █ live data   ░ over-allocated slack
+    after    ███░                          buffer reallocated to ~1.5× the live data
+                                           (the slot stays; arrays you hold follow the move)
 
-auto-trim — drop whole SLOTS that fell out of the recent working set
+trim — free the retained slots that sit BEYOND the ones currently in use
 
-    before   [1][2][3][4][5]                grew to a past peak of 5 concurrent arrays…
-    after    [1][2]                         …recent peak is 2  →  slots 3–5 freed entirely
+    before   [█][█][░][░][░]               █ in use (2)   ░ idle, still retained (3)
+    after    [█][█]                        the idle tail is freed; the in-use slots stay
 ```
 
-A slot is auto-compacted only when it is genuinely bloated — backing capacity
-`≥ compact_bloat_factor ×` its last use **and** the reclaim is `≥ compact_min_bytes` (1 MiB) — so a
-steady-state pool is left untouched. Auto-trim drops each type's slots down to the largest
-concurrency seen in the last period (a type unused for the whole period trims to zero).
+So `compact` works *within* a slot (a smaller buffer); `trim` drops *whole* slots. `auto_manage`
+runs both on a background `Timer` — a little more smartly than calling them by hand:
+
+| Runs | Action | …automatically, but only where it pays off |
+|------|--------|--------------------------------------------|
+| every `compact_interval` (**30 s**) | **auto-compact** | `compact!` restricted to genuinely bloated slots: capacity `≥ compact_bloat_factor ×` the live size **and** `≥ compact_min_bytes` (1 MiB) to reclaim — a steady-state pool is left untouched |
+| every `trim_interval` (**120 s**) | **auto-trim** | `trim!` down to the **recent working-set peak** (the widest concurrency seen since the last trim, not just the instantaneous in-use count) — so a pool that briefly widens isn't thrashed; a type unused all period trims to zero |
 
 ## When (and where) the work happens
 
