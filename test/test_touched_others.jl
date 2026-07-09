@@ -251,3 +251,32 @@ end
     @test tl._touched_others_checkpoints == [0]
     empty!(tl)   # leave the task-local pool clean for other test files
 end
+
+# Function barriers for @allocated measurements
+function _to_lazy_roundtrip(pool, n)
+    _lazy_checkpoint!(pool)
+    v = acquire!(pool, TOFooA, n)
+    s = length(v)
+    _lazy_rewind!(pool)
+    return s
+end
+
+function _to_macro_roundtrip(n)
+    return @with_pool p begin
+        v = acquire!(p, TOFooA, n)
+        length(v)
+    end
+end
+
+@testset "touched-others: zero allocation after warmup" begin
+    pool = AdaptiveArrayPool()
+    # Pollute the registry to also confirm cost independence at the alloc level
+    acquire!(pool, TOFooB, 4); acquire!(pool, TOFooC, 4); reset!(pool)
+
+    _to_lazy_roundtrip(pool, 32); _to_lazy_roundtrip(pool, 32)   # warmup
+    @test @allocated(_to_lazy_roundtrip(pool, 32)) == 0
+
+    _to_macro_roundtrip(32); _to_macro_roundtrip(32)             # warmup
+    @test @allocated(_to_macro_roundtrip(32)) == 0
+    empty!(get_task_local_pool())
+end
