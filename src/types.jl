@@ -390,6 +390,14 @@ mutable struct AdaptiveArrayPool{S} <: AbstractArrayPool
     _others_ptr_bounds::Vector{UInt}             # flat [ptr1,end1,ptr2,end2,...]
     _others_ptr_bounds_checkpoints::Vector{Int}  # per-depth: saved length of bounds vector
 
+    # Touched-others tracking (per-scope selective fallback rewind).
+    # Flat stack of fallback typed pools first-touched at each open depth, plus
+    # per-depth saved lengths — same pattern as _others_ptr_bounds(+_checkpoints).
+    # Rewind drains only the current depth's segment: O(touched fallback types
+    # this scope) instead of O(all registered fallback pools).
+    _touched_others::Vector{Any}
+    _touched_others_checkpoints::Vector{Int}
+
     # Borrow registry (S = 1 only)
     _pending_callsite::String                        # "" = no pending; set by macro before acquire
     _pending_return_site::String                     # "" = no pending; set by macro before validate
@@ -420,6 +428,8 @@ function AdaptiveArrayPool{S}() where {S}
         Any[],          # _others_values: empty cache
         UInt[],         # _others_ptr_bounds: no bounds
         Int[0],         # _others_ptr_bounds_checkpoints: sentinel
+        Any[],          # _touched_others: no fallback touches yet
+        Int[0],         # _touched_others_checkpoints: sentinel
         "",             # _pending_callsite: no pending
         "",             # _pending_return_site: no pending
         nothing,        # _borrow_log: lazily created at S=1
@@ -474,6 +484,8 @@ _make_pool(runtime_check::Bool, old::AdaptiveArrayPool) = _make_pool(Int(runtime
         old._others_values,
         old._others_ptr_bounds,
         old._others_ptr_bounds_checkpoints,
+        old._touched_others,
+        old._touched_others_checkpoints,
         "",       # _pending_callsite: reset
         "",       # _pending_return_site: reset
         S >= 1 ? IdDict{Any, String}() : nothing,  # _borrow_log

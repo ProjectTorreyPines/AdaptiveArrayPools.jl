@@ -555,6 +555,11 @@ function Base.empty!(pool::AdaptiveArrayPool)
     empty!(pool._others_ptr_bounds_checkpoints)
     push!(pool._others_ptr_bounds_checkpoints, 0)  # Sentinel
 
+    # Reset touched-others tracking (transient scope state)
+    empty!(pool._touched_others)
+    empty!(pool._touched_others_checkpoints)
+    push!(pool._touched_others_checkpoints, 0)  # Sentinel
+
     # Reset type touch tracking state (1-based sentinel pattern)
     pool._current_depth = 1                   # 1 = global scope (sentinel)
     empty!(pool._touched_type_masks)
@@ -644,6 +649,11 @@ function reset!(pool::AdaptiveArrayPool{S}) where {S}
     empty!(pool._others_ptr_bounds)
     empty!(pool._others_ptr_bounds_checkpoints)
     push!(pool._others_ptr_bounds_checkpoints, 0)  # Sentinel
+
+    # Reset touched-others tracking (transient scope state)
+    empty!(pool._touched_others)
+    empty!(pool._touched_others_checkpoints)
+    push!(pool._touched_others_checkpoints, 0)  # Sentinel
 
     # Reset type touch tracking state (1-based sentinel pattern)
     pool._current_depth = 1                   # 1 = global scope (sentinel)

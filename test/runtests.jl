@@ -56,6 +56,7 @@ else
         include("test_coverage.jl")
         include("test_allocation.jl")
         include("test_fallback_reclamation.jl")
+        include("test_touched_others.jl")
         include("test_scope_depth_validation.jl")
     else
         include("test_aqua.jl")
