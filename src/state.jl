@@ -669,6 +669,12 @@ reset!(pool)  # Restore state, keep allocated memory
 # Now pool.n_active == 0, but vectors are still available for reuse
 ```
 
+!!! note "Fallback registry"
+    `reset!` keeps registered fallback typed pools (`pool.others`) so their
+    buffers can be reused. Since the touched-others tracking, inactive registered
+    fallbacks add no per-scope checkpoint/rewind cost; use `empty!` only when the
+    buffers themselves should be released.
+
 See also: [`empty!`](@ref), [`rewind!`](@ref)
 """
 function reset!(pool::AdaptiveArrayPool{S}) where {S}
