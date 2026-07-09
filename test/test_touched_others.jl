@@ -1,5 +1,8 @@
 # Tests for the touched-others stack: per-scope selective fallback checkpoint/rewind.
-# See docs/plans/DESIGN_fallback_touch_tracking.md.
+# Invariant: a fallback pool has a checkpoint entry at depth d ⟺ it is in the depth-d
+# segment of pool._touched_others — except under full checkpoint!(pool), whose eager
+# sweep pairs with full rewind!(pool)'s sweep (segment stays empty, truncate-only).
+# See the docstrings of _touch_fallback_pool!/_drain_touched_others! in src/state.jl.
 
 using Test
 using AdaptiveArrayPools

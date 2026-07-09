@@ -1,41 +1,15 @@
 # Design Documents
 
-For in-depth analysis of design decisions, implementation tradeoffs, and architectural choices, see the design documents in the repository:
+The historical design documents that used to live under `docs/design/` (covering
+the hybrid API strategy, the N-D array approach comparison, fixed-slot codegen,
+untracked-acquire detection, and the CUDA extension) have been removed as
+outdated — the decisions they recorded either shipped and became the current
+implementation, or were superseded by later approaches (e.g. the N-way cache
+described in some of them is legacy on Julia 1.12+, see below).
 
-## API Design
-
-- **[hybrid_api_design.md](https://github.com/ProjectTorreyPines/AdaptiveArrayPools.jl/blob/master/docs/design/hybrid_api_design.md)**
-  Historical two-API strategy (`acquire!` vs `acquire_view!`) and type stability analysis
-
-## Caching & Performance
-
-- **[nd_array_approach_comparison.md](https://github.com/ProjectTorreyPines/AdaptiveArrayPools.jl/blob/master/docs/design/nd_array_approach_comparison.md)**
-  N-way cache design (now legacy — replaced by `setfield!` reuse on Julia 1.12+ CPU), boxing analysis, and ReshapedArray benchmarks
-
-- **[fixed_slots_codegen_design.md](https://github.com/ProjectTorreyPines/AdaptiveArrayPools.jl/blob/master/docs/design/fixed_slots_codegen_design.md)**
-  Zero-allocation iteration via `@generated` functions and fixed-slot type dispatch
-
-## Macro Internals
-
-- **[untracked_acquire_design.md](https://github.com/ProjectTorreyPines/AdaptiveArrayPools.jl/blob/master/docs/design/untracked_acquire_design.md)**
-  Macro-based untracked acquire detection and 1-based sentinel pattern
-
-## Backend Extensions
-
-- **[cuda_extension_design.md](https://github.com/ProjectTorreyPines/AdaptiveArrayPools.jl/blob/master/docs/design/cuda_extension_design.md)**
-  CUDA backend architecture and package extension loading
-
----
-
-## Document Overview
-
-| Document | Focus Area | Key Insights |
-|----------|------------|--------------|
-| hybrid_api_design | API strategy | Array by default, views via `acquire_view!` |
-| nd_array_approach_comparison | Caching | N-way cache (legacy); setfield! reuse on Julia 1.12+ CPU |
-| fixed_slots_codegen_design | Codegen | @generated functions enable type-stable iteration |
-| untracked_acquire_design | Macro safety | Sentinel pattern ensures correct cleanup |
-| cuda_extension_design | GPU support | Seamless CPU/CUDA API parity |
+Current architecture documentation lives in [How It Works](how-it-works.md),
+which explains the mechanisms that enable zero-allocation array reuse as they
+exist today.
 
 ## See Also
 
