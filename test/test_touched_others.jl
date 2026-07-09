@@ -5,7 +5,7 @@ using Test
 using AdaptiveArrayPools
 using AdaptiveArrayPools: get_typed_pool!, checkpoint!, rewind!,
     _lazy_checkpoint!, _lazy_rewind!, _typed_lazy_checkpoint!, _typed_lazy_rewind!,
-    _tracked_mask_for_types, _can_use_typed_path
+    _tracked_mask_for_types, _can_use_typed_path, get_task_local_pool, @with_pool
 
 # Distinct isbits fallback types (not fixed slots)
 struct TOFooA
@@ -75,4 +75,169 @@ end
     rewind!(pool, Float64)
     _lazy_rewind!(pool)
     @test pool._touched_others_checkpoints == [0]
+end
+
+@testset "touched-others: no eager checkpoint on lazy entry (pollution regression)" begin
+    pool = AdaptiveArrayPool()
+    # Register three fallback types at global scope, then reset counters
+    acquire!(pool, TOFooA, 4); acquire!(pool, TOFooB, 4); acquire!(pool, TOFooC, 4)
+    reset!(pool)
+    tpA = get_typed_pool!(pool, TOFooA)
+    tpB = get_typed_pool!(pool, TOFooB)
+    tpC = get_typed_pool!(pool, TOFooC)
+
+    _lazy_checkpoint!(pool)
+    # THE regression assertion: unrelated registered fallbacks are NOT touched
+    @test tpB._checkpoint_depths == [0]
+    @test tpC._checkpoint_depths == [0]
+
+    v = acquire!(pool, TOFooA, 8)
+    @test tpA._checkpoint_depths[end] == 2       # first-touch checkpoint at depth 2
+    @test length(pool._touched_others) == 1
+    @test pool._touched_others[end] === tpA
+    @test tpA.n_active == 1
+
+    # Re-acquire same type: no duplicate stack entry
+    acquire!(pool, TOFooA, 8)
+    @test length(pool._touched_others) == 1
+
+    _lazy_rewind!(pool)
+    @test tpA.n_active == 0
+    @test isempty(pool._touched_others)
+    @test tpB._checkpoint_depths == [0]          # still never visited
+    @test tpC._checkpoint_depths == [0]
+end
+
+@testset "touched-others: nested scopes, same fallback type at two depths" begin
+    pool = AdaptiveArrayPool()
+    tpA = get_typed_pool!(pool, TOFooA)
+
+    _lazy_checkpoint!(pool)                       # depth 2
+    acquire!(pool, TOFooA, 4)
+    @test tpA.n_active == 1
+
+    _lazy_checkpoint!(pool)                       # depth 3
+    acquire!(pool, TOFooA, 4)
+    acquire!(pool, TOFooA, 4)
+    @test tpA.n_active == 3
+    @test length(pool._touched_others) == 2       # one entry per depth
+
+    _lazy_rewind!(pool)                           # exit depth 3
+    @test tpA.n_active == 1
+
+    _lazy_rewind!(pool)                           # exit depth 2
+    @test tpA.n_active == 0
+end
+
+@testset "touched-others: nested scope NOT touching outer's fallback" begin
+    pool = AdaptiveArrayPool()
+    tpA = get_typed_pool!(pool, TOFooA)
+
+    _lazy_checkpoint!(pool)                       # depth 2
+    acquire!(pool, TOFooA, 4)
+    _lazy_checkpoint!(pool)                       # depth 3: does not touch TOFooA
+    zeros!(pool, 16)                              # Float64 fixed-slot work only
+    @test length(pool._touched_others) == 1       # no new fallback entry
+    _lazy_rewind!(pool)
+    @test tpA.n_active == 1                       # outer's array untouched
+    _lazy_rewind!(pool)
+    @test tpA.n_active == 0
+end
+
+@testset "touched-others: typed scope with helper touching a fallback (typed-lazy)" begin
+    pool = AdaptiveArrayPool()
+    tpB = get_typed_pool!(pool, TOFooB)
+
+    _typed_lazy_checkpoint!(pool, Float64)
+    zeros!(pool, 8)                               # tracked fixed-slot work
+    acquire!(pool, TOFooB, 4)                     # untracked helper-style fallback touch
+    @test pool._touched_has_others[end] == true
+    @test pool._touched_others[end] === tpB
+    @test !_can_use_typed_path(pool, _tracked_mask_for_types(Float64))
+    _typed_lazy_rewind!(pool, _tracked_mask_for_types(Float64))
+    @test tpB.n_active == 0
+end
+
+@testset "touched-others: tracked fallback type via typed checkpoint!" begin
+    pool = AdaptiveArrayPool()
+
+    checkpoint!(pool, TOFooA)                     # fallback T tracked by macro
+    tpA = get_typed_pool!(pool, TOFooA)
+    @test pool._touched_others[end] === tpA       # pushed at checkpoint
+    acquire!(pool, TOFooA, 4)                     # public-API acquire: no double push
+    @test count(tp -> tp === tpA, pool._touched_others) == 1
+    # macro exit path for has_others=true is _typed_lazy_rewind!
+    _typed_lazy_rewind!(pool, _tracked_mask_for_types(TOFooA))
+    @test tpA.n_active == 0
+    @test pool._touched_others_checkpoints == [0]
+end
+
+@testset "touched-others: new type registered mid-scope" begin
+    pool = AdaptiveArrayPool()
+    _lazy_checkpoint!(pool)
+    acquire!(pool, TOFooC, 4)                     # first-ever registration, in-scope
+    tpC = get_typed_pool!(pool, TOFooC)
+    @test pool._touched_others[end] === tpC
+    @test count(tp -> tp === tpC, pool._touched_others) == 1
+    _lazy_rewind!(pool)
+    @test tpC.n_active == 0
+end
+
+@testset "touched-others: full checkpoint!/rewind! pairing unchanged" begin
+    pool = AdaptiveArrayPool()
+    acquire!(pool, TOFooA, 4); reset!(pool)
+    tpA = get_typed_pool!(pool, TOFooA)
+
+    checkpoint!(pool)                             # eager: checkpoints ALL others
+    @test tpA._checkpoint_depths[end] == 2
+    acquire!(pool, TOFooA, 4)
+    @test isempty(pool._touched_others)           # guard saw existing depth-2 entry
+    rewind!(pool)
+    @test tpA.n_active == 0
+    @test pool._touched_others_checkpoints == [0]
+end
+
+@testset "touched-others: similar! records fallback touch" begin
+    pool = AdaptiveArrayPool()
+    src = [TOFooA(1.0), TOFooA(2.0)]
+    _lazy_checkpoint!(pool)
+    similar!(pool, src)
+    tpA = get_typed_pool!(pool, TOFooA)
+    @test pool._touched_others[end] === tpA
+    _lazy_rewind!(pool)
+    @test tpA.n_active == 0
+end
+
+@testset "touched-others: @with_pool integration + exception-leak recovery" begin
+    # Integration through the real macro (task-local pool)
+    f_leaf(n) = @with_pool p begin
+        q = acquire!(p, TOFooA, n)
+        length(q)
+    end
+    @test f_leaf(8) == 8
+    tl = get_task_local_pool()
+    @test get_typed_pool!(tl, TOFooA).n_active == 0
+    @test isempty(tl._touched_others)
+
+    # Inner scope throws, outer catches: outer exit must clean up leaked state
+    function f_outer()
+        @with_pool p begin
+            acquire!(p, TOFooB, 4)
+            try
+                @with_pool p2 begin
+                    acquire!(p2, TOFooC, 4)
+                    error("boom")
+                end
+            catch
+            end
+            1
+        end
+    end
+    @test f_outer() == 1
+    @test tl._current_depth == 1
+    @test get_typed_pool!(tl, TOFooB).n_active == 0
+    @test get_typed_pool!(tl, TOFooC).n_active == 0
+    @test isempty(tl._touched_others)
+    @test tl._touched_others_checkpoints == [0]
+    empty!(tl)   # leave the task-local pool clean for other test files
 end
