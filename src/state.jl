@@ -18,6 +18,7 @@ function checkpoint!(pool::AdaptiveArrayPool)
     pool._current_depth += 1
     push!(pool._touched_type_masks, UInt16(0))
     push!(pool._touched_has_others, false)
+    push!(pool._touched_others_checkpoints, length(pool._touched_others))
     _runtime_check(pool) && push!(pool._others_ptr_bounds_checkpoints, length(pool._others_ptr_bounds))
     depth = pool._current_depth
 
@@ -52,6 +53,7 @@ Also updates _current_depth and bitmask state for type touch tracking.
     # _typed_lazy_rewind! iterates pool.others even if _acquire_impl!
     # (which bypasses _record_type_touch!) is the only acquire path.
     push!(pool._touched_has_others, _fixed_slot_bit(T) == UInt16(0))
+    push!(pool._touched_others_checkpoints, length(pool._touched_others))
     _runtime_check(pool) && push!(pool._others_ptr_bounds_checkpoints, length(pool._others_ptr_bounds))
     _checkpoint_typed_pool!(get_typed_pool!(pool, T), pool._current_depth)
     return nothing
@@ -83,6 +85,7 @@ compile-time unrolling. Increments _current_depth once for all types.
         pool._current_depth += 1
         push!(pool._touched_type_masks, UInt16(0))
         push!(pool._touched_has_others, $has_any_fallback)
+        push!(pool._touched_others_checkpoints, length(pool._touched_others))
         _runtime_check(pool) && push!(pool._others_ptr_bounds_checkpoints, length(pool._others_ptr_bounds))
         $(checkpoint_exprs...)
         nothing
@@ -124,6 +127,7 @@ Performance: ~2ns vs ~540ns for full `checkpoint!`.
     # _LAZY_MODE_BIT = lazy mode flag (bits 0–7 are fixed-slot type bits)
     push!(pool._touched_type_masks, _LAZY_MODE_BIT)
     push!(pool._touched_has_others, false)
+    push!(pool._touched_others_checkpoints, length(pool._touched_others))
     _runtime_check(pool) && push!(pool._others_ptr_bounds_checkpoints, length(pool._others_ptr_bounds))
     depth = pool._current_depth
     # Eagerly checkpoint any pre-existing others entries.
@@ -173,6 +177,7 @@ function rewind!(pool::AdaptiveArrayPool{S}) where {S}
     for tp in pool._others_values
         _rewind_typed_pool!(tp, cur_depth, S)
     end
+    _truncate_touched_others!(pool)
 
     if S >= 1 && length(pool._others_ptr_bounds_checkpoints) > 1
         resize!(pool._others_ptr_bounds, pop!(pool._others_ptr_bounds_checkpoints))
@@ -198,6 +203,7 @@ Also updates _current_depth and bitmask state.
         return nothing
     end
     _rewind_typed_pool!(get_typed_pool!(pool, T), pool._current_depth, S)
+    _drain_touched_others!(pool, pool._current_depth)
     if S >= 1 && length(pool._others_ptr_bounds_checkpoints) > 1
         resize!(pool._others_ptr_bounds, pop!(pool._others_ptr_bounds_checkpoints))
     end
@@ -233,6 +239,7 @@ Decrements _current_depth once after all types are rewound.
             return nothing
         end
         $(rewind_exprs...)
+        _drain_touched_others!(pool, pool._current_depth)
         if $S >= 1 && length(pool._others_ptr_bounds_checkpoints) > 1
             resize!(pool._others_ptr_bounds, pop!(pool._others_ptr_bounds_checkpoints))
         end
@@ -372,6 +379,30 @@ end
     return nothing
 end
 
+# ==============================================================================
+# Touched-Others Stack (per-scope selective fallback checkpoint/rewind)
+# ==============================================================================
+
+# Rewind and remove the fallback typed pools first-touched in the current scope.
+# The current depth's segment of `_touched_others` is (base+1):end, where base is
+# the saved length pushed by the matching checkpoint variant. O(touched this scope).
+@inline function _drain_touched_others!(pool::AdaptiveArrayPool{S}, d::Int) where {S}
+    base = pop!(pool._touched_others_checkpoints)
+    stack = pool._touched_others
+    for i in (base + 1):length(stack)
+        _rewind_typed_pool!(@inbounds(stack[i]), d, S)
+    end
+    length(stack) > base && resize!(stack, base)
+    return nothing
+end
+
+# Truncate-only variant for full rewind!(pool): its _others_values sweep already
+# rewound every fallback pool, so draining again would double-pop checkpoints.
+@inline function _truncate_touched_others!(pool::AdaptiveArrayPool)
+    resize!(pool._touched_others, pop!(pool._touched_others_checkpoints))
+    return nothing
+end
+
 """
     _lazy_rewind!(pool::AdaptiveArrayPool)
 
@@ -393,6 +424,7 @@ Called directly from the macro-generated `finally` clause as a single function c
             _rewind_typed_pool!(tp, d, S)
         end
     end
+    _drain_touched_others!(pool, d)
     if S >= 1 && length(pool._others_ptr_bounds_checkpoints) > 1
         resize!(pool._others_ptr_bounds, pop!(pool._others_ptr_bounds_checkpoints))
     end
@@ -460,6 +492,7 @@ guaranteed by the `_TYPED_LAZY_BIT` mode set in `_typed_lazy_checkpoint!`.
             _rewind_typed_pool!(tp, d, S)
         end
     end
+    _drain_touched_others!(pool, d)
     if S >= 1 && length(pool._others_ptr_bounds_checkpoints) > 1
         resize!(pool._others_ptr_bounds, pop!(pool._others_ptr_bounds_checkpoints))
     end

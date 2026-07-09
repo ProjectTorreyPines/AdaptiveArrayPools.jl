@@ -37,3 +37,42 @@ end
     @test pool._touched_others_checkpoints == [0]
     @test !haskey(pool.others, TOFooA)
 end
+
+@testset "touched-others: checkpoint/rewind plumbing balance" begin
+    pool = AdaptiveArrayPool()
+
+    # lazy pair
+    _lazy_checkpoint!(pool)
+    @test pool._touched_others_checkpoints == [0, 0]
+    _lazy_rewind!(pool)
+    @test pool._touched_others_checkpoints == [0]
+
+    # typed single pair (fixed-slot type)
+    checkpoint!(pool, Float64)
+    @test length(pool._touched_others_checkpoints) == 2
+    rewind!(pool, Float64)
+    @test pool._touched_others_checkpoints == [0]
+
+    # typed multi pair
+    checkpoint!(pool, Float64, Int64)
+    rewind!(pool, Float64, Int64)
+    @test pool._touched_others_checkpoints == [0]
+
+    # full pair
+    checkpoint!(pool)
+    rewind!(pool)
+    @test pool._touched_others_checkpoints == [0]
+
+    # typed-lazy pair
+    _typed_lazy_checkpoint!(pool, Float64)
+    _typed_lazy_rewind!(pool, _tracked_mask_for_types(Float64))
+    @test pool._touched_others_checkpoints == [0]
+
+    # nesting
+    _lazy_checkpoint!(pool)
+    checkpoint!(pool, Float64)
+    @test length(pool._touched_others_checkpoints) == 3
+    rewind!(pool, Float64)
+    _lazy_rewind!(pool)
+    @test pool._touched_others_checkpoints == [0]
+end
