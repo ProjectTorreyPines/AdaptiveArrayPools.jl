@@ -533,6 +533,9 @@ const _FIXED_SLOT_TYPES = Union{Float64, Float32, Int64, Int32, ComplexF64, Comp
         # _record_type_touch!) would leave has_others=false, causing the
         # rewind to skip pool.others entirely and leak this new type's n_active.
         @inbounds p._touched_has_others[p._current_depth] = true
+        # Record in the touched-others stack so the selective rewind visits this
+        # brand-new pool (its checkpoint was just pushed above).
+        push!(p._touched_others, new_tp)
     end
     return new_tp
 end
