@@ -209,6 +209,16 @@ end
 end
 
 @testset "touched-others: @with_pool integration + exception-leak recovery" begin
+    # The task-local pool is a process-wide singleton shared with every other test
+    # file. `@with_pool`'s fast (non-try/finally) path does not guarantee cleanup
+    # for exceptions that escape ITS OWN scope (only nested leaks within one
+    # invocation are caught by the entry-depth guard — see macros.jl docstring),
+    # so earlier test files that deliberately throw across a `@with_pool` boundary
+    # (e.g. stack-trace tests in test_macro_expansion.jl) can leave `_current_depth`
+    # elevated. Start from a known-clean baseline so the absolute-depth assertions
+    # below are independent of test file execution order.
+    empty!(get_task_local_pool())
+
     # Integration through the real macro (task-local pool)
     f_leaf(n) = @with_pool p begin
         q = acquire!(p, TOFooA, n)
