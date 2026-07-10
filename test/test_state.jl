@@ -2390,10 +2390,15 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
         end
     end
 
-    @testset "Issue #4: CUDA _lazy_checkpoint! parity (has_others flag)" begin
-        # Bug: CUDA _lazy_checkpoint! eagerly checkpoints pool.others but
-        # does NOT set _touched_has_others = true, same as CPU Issue #1.
-        # Verify via source code inspection (no GPU needed).
+    @testset "Issue #4: CUDA _lazy_checkpoint! parity" begin
+        # Parity with the CPU touched-others-stack architecture (the constant-cost
+        # touched-others architecture, depth-tagged stack):
+        # _lazy_checkpoint! must NOT eagerly checkpoint pool.others — fallback
+        # pools are first-touch checkpointed via _touch_fallback_pool! (from
+        # _record_type_touch!/get_typed_pool!) and drained selectively at rewind
+        # via _drain_touched_others!, so only the fallback pools a scope actually
+        # touches pay any cost. Eagerly snapshotting pool.others here would
+        # re-introduce the cross-scope pollution that architecture removed.
         cuda_state_path = joinpath(@__DIR__, "..", "ext", "AdaptiveArrayPoolsCUDAExt", "state.jl")
         if isfile(cuda_state_path)
             code = read(cuda_state_path, String)
@@ -2405,11 +2410,8 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
             @test func_match !== nothing
             if func_match !== nothing
                 func_body = func_match.match
-                # If it eagerly checkpoints others (has `for p in values(pool.others)`),
-                # then it MUST also set _touched_has_others[...] = true within the loop
-                if contains(func_body, "values(pool.others)")
-                    @test occursin(r"_touched_has_others\[.*\]\s*=\s*true", func_body)
-                end
+                # Must NOT eagerly snapshot pool.others (pollution regression guard)
+                @test !contains(func_body, "values(pool.others)")
             end
         else
             @warn "CUDA extension not found, skipping parity test"
@@ -2417,9 +2419,13 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
     end
 
     @testset "Issue #5: CUDA _typed_lazy_checkpoint! parity" begin
-        # Bug: CUDA version is missing two features present in CPU version:
-        # 1. Double-checkpoint guard: `_checkpoint_depths[end] != d`
-        # 2. has_others flag: `_touched_has_others[d] = true`
+        # Parity with the CPU touched-others-stack architecture (the constant-cost
+        # touched-others architecture, depth-tagged stack):
+        # _typed_lazy_checkpoint! must delegate to checkpoint!(pool, types...)
+        # (which routes fallback types through _touch_fallback_pool! — the
+        # double-checkpoint guard and has_others flag live THERE now) and set
+        # _TYPED_LAZY_BIT. It must NOT eagerly snapshot pool.others — that
+        # re-introduces the cross-scope pollution that architecture removed.
         cuda_state_path = joinpath(@__DIR__, "..", "ext", "AdaptiveArrayPoolsCUDAExt", "state.jl")
         if isfile(cuda_state_path)
             code = read(cuda_state_path, String)
@@ -2431,11 +2437,14 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
             if func_match !== nothing
                 func_body = func_match.match
 
-                # Must have double-checkpoint guard (like CPU version)
-                @test contains(func_body, "_checkpoint_depths[end]")
+                # Must delegate to checkpoint!(pool, types...) (like CPU version)
+                @test contains(func_body, "checkpoint!(pool, types...)")
 
-                # Must set _touched_has_others flag (like CPU version)
-                @test contains(func_body, "_touched_has_others")
+                # Must set the typed-lazy mode bit (like CPU version)
+                @test contains(func_body, "_TYPED_LAZY_BIT")
+
+                # Must NOT eagerly snapshot pool.others (pollution regression)
+                @test !contains(func_body, "values(pool.others)")
             end
         else
             @warn "CUDA extension not found, skipping parity test"

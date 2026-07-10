@@ -5,12 +5,21 @@
     @testset "CuTypedPool structure" begin
         tp_fields = fieldnames(CuTypedPool)
         @test :vectors in tp_fields
-        @test :n_active in tp_fields
+        @test :state in tp_fields          # PoolCheckpointState (n_active + checkpoint vectors)
+        @test !(:n_active in tp_fields)    # moved into state; reachable via property forwarding
         # arr_wrappers (setfield!-based wrapper reuse, replaces N-way cache)
         @test :arr_wrappers in tp_fields
-        # State management
-        @test :_checkpoint_n_active in tp_fields
-        @test :_checkpoint_depths in tp_fields
+        # Forwarding round-trip (mirrors CPU src/types.jl:294-307)
+        tp = CuTypedPool{Float32}()
+        @test tp.n_active === 0
+        @test tp._checkpoint_n_active == [0]
+        @test tp._checkpoint_depths == [0]
+        tp.n_active = 2
+        @test getfield(tp, :state).n_active === 2
+        tp.n_active = Int32(1)              # default-convert semantics preserved
+        @test tp.n_active === 1
+        tp.n_active = 0
+        @test :n_active in propertynames(tp)
     end
 
     @testset "CuAdaptiveArrayPool structure" begin
@@ -89,6 +98,8 @@ end
         @test tp._checkpoint_n_active == [0, 0]
         @test tp._checkpoint_depths == [0, 2]
         @test pool._touched_has_others == [false, true]   # depth-2 marked as "has dynamic types"
+        @test pool._touched_others_depths == [2]
+        @test length(pool._touched_others_states) == 1
     end
 end
 

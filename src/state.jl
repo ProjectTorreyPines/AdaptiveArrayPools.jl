@@ -48,9 +48,10 @@ Also updates _current_depth and bitmask state for type touch tracking.
 
     pool._current_depth += 1
     push!(pool._touched_type_masks, UInt16(0))
-    # Push true when T is a fallback type (non-fixed-slot) so that
-    # _typed_lazy_rewind! iterates pool.others even if _acquire_impl!
-    # (which bypasses _record_type_touch!) is the only acquire path.
+    # Push true when T is a fallback type (non-fixed-slot). The flag no longer
+    # drives fallback rewind coverage (the touched-others stack below handles
+    # that); it only feeds _can_use_typed_path's fast-path check and the S>=1
+    # pointer-overlap validation in debug.jl.
     push!(pool._touched_has_others, _fixed_slot_bit(T) == UInt16(0))
     _runtime_check(pool) && push!(pool._others_ptr_bounds_checkpoints, length(pool._others_ptr_bounds))
     if _fixed_slot_bit(T) == UInt16(0)
@@ -356,7 +357,10 @@ end
 # T-independent rewind core: orphan cleanup + Case A/B restore. Returns the
 # pre-rewind n_active so the (S >= 1) caller can decide whether to invalidate.
 @inline function _rewind_state_core!(st, current_depth::Int)
-    # 1. Orphaned checkpoints from deeper scopes
+    # 1. Orphaned checkpoints from deeper scopes. These arise when a deeper
+    # scope checkpointed this pool but its own rewind was skipped (e.g. an
+    # exception unwound past it before rewind! ran) — see the exception-leak
+    # testset.
     while @inbounds(st._checkpoint_depths[end]) > current_depth
         pop!(st._checkpoint_depths)
         pop!(st._checkpoint_n_active)
@@ -385,18 +389,25 @@ end
 # Touched-Others Stack (per-scope selective fallback checkpoint/rewind)
 # ==============================================================================
 
-# Rewind and remove this depth's touched-fallback entries. At S = 0 the loop runs
-# entirely on concrete PoolCheckpointState objects — zero dynamic dispatch; at
-# S >= 1 it routes through the typed pools so released slots get invalidated.
-# Fixed-only scopes exit via one isempty/top-depth check.
-@inline function _drain_touched_others!(pool::AdaptiveArrayPool{S}, d::Int) where {S}
+# Rewind and remove this depth's touched-fallback entries. With runtime checks
+# off the loop runs entirely on concrete PoolCheckpointState objects — zero
+# dynamic dispatch; with checks on it routes through the typed pools so released
+# slots get invalidated. Fixed-only scopes exit via one isempty/top-depth check.
+# Generic over AbstractArrayPool: CPU and GPU pools share this implementation
+# (all carry the three parallel stacks; _runtime_check/_check_level are
+# compile-time constants per pool type, so the branch still folds away).
+@inline function _drain_touched_others!(pool::AbstractArrayPool, d::Int)
     depths = pool._touched_others_depths
     states = pool._touched_others_states
     while !isempty(depths) && @inbounds(depths[end]) == d
         pop!(depths)
         st = pop!(states)
-        if S >= 1
-            _rewind_typed_pool!(pop!(pool._touched_others_pools), d, S)
+        if _runtime_check(pool)
+            # `st` is intentionally discarded here: `_touched_others_pools` is
+            # popped in lockstep with `states`, and `_rewind_typed_pool!`
+            # re-derives the checkpoint state from the popped `tp` via
+            # `_cp_state`, so the two never disagree.
+            _rewind_typed_pool!(pop!(pool._touched_others_pools), d, _check_level(pool))
         else
             _rewind_state_core!(st, d)
         end
@@ -404,14 +415,14 @@ end
     return nothing
 end
 
-# Truncate-only variant for full rewind!(pool): its _others_values sweep already
-# rewound every fallback pool, so draining again would double-pop checkpoints.
-@inline function _truncate_touched_others!(pool::AdaptiveArrayPool{S}, d::Int) where {S}
+# Truncate-only variant for full rewind!(pool): its full sweep already rewound
+# every fallback pool, so draining again would double-pop checkpoints.
+@inline function _truncate_touched_others!(pool::AbstractArrayPool, d::Int)
     depths = pool._touched_others_depths
     while !isempty(depths) && @inbounds(depths[end]) == d
         pop!(depths)
         pop!(pool._touched_others_states)
-        S >= 1 && pop!(pool._touched_others_pools)
+        _runtime_check(pool) && pop!(pool._touched_others_pools)
     end
     return nothing
 end
@@ -420,7 +431,7 @@ end
 # depth-tagged entry, exactly once per (pool, depth). The checkpoint-depth guard
 # keeps it idempotent across the three producer paths and skips pools already
 # eagerly checkpointed by a full checkpoint!(pool) at this depth.
-@inline function _touch_fallback_pool!(pool::AdaptiveArrayPool, tp::AbstractTypedPool, depth::Int)
+@inline function _touch_fallback_pool!(pool::AbstractArrayPool, tp::AbstractTypedPool, depth::Int)
     st = _cp_state(tp)::PoolCheckpointState
     if @inbounds(st._checkpoint_depths[end]) != depth
         push!(st._checkpoint_n_active, st.n_active)

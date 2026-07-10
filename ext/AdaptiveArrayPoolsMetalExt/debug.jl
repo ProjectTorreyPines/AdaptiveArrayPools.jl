@@ -36,7 +36,14 @@ Fill a MtlArray with a detectable sentinel value (NaN for floats, typemax for in
 @noinline to avoid inlining GPU kernel launch overhead into hot rewind paths.
 """
 @noinline function _metal_poison_fill!(v::MtlArray{T, 1}) where {T}
-    length(v) > 0 && Metal.fill!(v, _metal_poison_value(T))
+    length(v) > 0 || return nothing
+    # Mirror the CPU _poison_fill! contract: poisoning is best-effort and must
+    # not throw during rewind — custom isbits structs without zero(T) simply
+    # skip the poison pass (invalidation still shrinks the logical length).
+    try
+        Metal.fill!(v, _metal_poison_value(T))
+    catch
+    end
     return nothing
 end
 

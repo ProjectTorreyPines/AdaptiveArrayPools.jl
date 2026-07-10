@@ -33,17 +33,32 @@ const _CUDA_FIXED_TYPES = Union{Float32, Float64, Float16, Int32, Int64, Complex
 
 # Slow path: rare types via IdDict (with checkpoint correction!)
 @inline function AdaptiveArrayPools.get_typed_pool!(p::CuAdaptiveArrayPool, ::Type{T}) where {T}
-    return get!(p.others, T) do
-        tp = CuTypedPool{T}()
-        # CRITICAL: Match CPU behavior - auto-checkpoint new pool if inside @with_pool scope
-        # Without this, rewind! would corrupt state for dynamically-created pools
-        if p._current_depth > 1
-            push!(tp._checkpoint_n_active, 0)  # n_active starts at 0
-            push!(tp._checkpoint_depths, p._current_depth)
-            # Signal that a fallback type was touched so lazy/typed-lazy rewind
-            # iterates pool.others (same fix as CPU get_typed_pool!)
-            @inbounds p._touched_has_others[p._current_depth] = true
-        end
-        tp
-    end::CuTypedPool{T}
+    # Memo fast path: same type as the previous slow-path lookup (mirror of CPU
+    # src/types.jl's get_typed_pool!; one pointer compare instead of an IdDict lookup).
+    p._lookup_memo_type === T && return p._lookup_memo_tp::CuTypedPool{T}
+    tp = get(p.others, T, nothing)
+    if tp !== nothing
+        tp = tp::CuTypedPool{T}
+        p._lookup_memo_type = T
+        p._lookup_memo_tp = tp
+        return tp
+    end
+    # New type — create, register, memoize, and first-touch checkpoint when
+    # inside a scope (depth > 1), pushing one depth-tagged stack entry.
+    new_tp = CuTypedPool{T}()
+    p.others[T] = new_tp
+    p._lookup_memo_type = T
+    p._lookup_memo_tp = new_tp
+    if p._current_depth > 1
+        st = getfield(new_tp, :state)
+        push!(st._checkpoint_n_active, 0)  # n_active starts at 0
+        push!(st._checkpoint_depths, p._current_depth)
+        push!(p._touched_others_states, st)
+        push!(p._touched_others_depths, p._current_depth)
+        AdaptiveArrayPools._runtime_check(p) && push!(p._touched_others_pools, new_tp)
+        # Signal that a fallback type was touched so lazy/typed-lazy rewind
+        # iterates the drain path (same fix as CPU get_typed_pool!)
+        @inbounds p._touched_has_others[p._current_depth] = true
+    end
+    return new_tp
 end

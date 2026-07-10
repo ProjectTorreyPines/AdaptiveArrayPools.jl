@@ -282,10 +282,10 @@ AAP.disable_auto_manage!()   # stop the __init__-started timer for deterministic
         empty!(pool)                                         # clean slate
         AAP.register_auto_manage!(pool)
         @with_pool p begin                                   # grow slot to 1M high-water
-            x = acquire!(p, Float64, 1_000_000); x .= 0.0
+            x = acquire!(p, Float64, 1_000_000); x .= 0.0; nothing
         end
         @with_pool p begin                                   # reuse small → bloated, inactive
-            x = acquire!(p, Float64, 100); x .= 0.0
+            x = acquire!(p, Float64, 100); x .= 0.0; nothing
         end
         cap0 = _cap(pool.float64.vectors[1])
         @test cap0 >= 1_000_000
@@ -296,10 +296,19 @@ AAP.disable_auto_manage!()   # stop the __init__-started timer for deterministic
         @atomic pool._compact_requested = true
         @with_pool p begin                                   # scope ENTRY at depth 1 → hook fires
             acquire!(p, Float64, 4)
+            nothing
         end
 
         @test (@atomic pool._compact_requested) == false     # hook consumed the request
-        @test _cap(pool.float64.vectors[1]) < cap0           # auto-managed, no manual compact!
+        if RUNTIME_CHECK == 0
+            @test _cap(pool.float64.vectors[1]) < cap0       # auto-managed, no manual compact!
+        else
+            # S=1: rewind's invalidation poisoned the released slot (logical length 0);
+            # compact! deliberately skips poisoned slots so escaped views keep reading
+            # sentinels (see _maybe_compact_slot!). The hook still fired (flag consumed
+            # above); the capacity shrink is deferred until the slot is re-acquired.
+            @test _cap(pool.float64.vectors[1]) == cap0
+        end
         empty!(pool)
         _clear_registry!()
     end
@@ -313,10 +322,10 @@ AAP.disable_auto_manage!()   # stop the __init__-started timer for deterministic
 
         empty!(pool)                                         # early RETURN
         @with_pool p begin
-            x = acquire!(p, Float64, 1_000_000); x .= 0.0
+            x = acquire!(p, Float64, 1_000_000); x .= 0.0; nothing
         end
         @with_pool p begin
-            x = acquire!(p, Float64, 100); x .= 0.0
+            x = acquire!(p, Float64, 100); x .= 0.0; nothing
         end
         cap0 = _cap(pool.float64.vectors[1])
         @atomic pool._compact_requested = true
@@ -326,14 +335,18 @@ AAP.disable_auto_manage!()   # stop the __init__-started timer for deterministic
         end
         @test ret() == 42
         @test (@atomic pool._compact_requested) == false     # serviced at the next scope ENTRY
-        @test _cap(pool.float64.vectors[1]) < cap0
+        if RUNTIME_CHECK == 0
+            @test _cap(pool.float64.vectors[1]) < cap0
+        else
+            @test _cap(pool.float64.vectors[1]) == cap0      # S=1: poisoned slot, shrink deferred
+        end
 
         empty!(pool)                                         # early BREAK
         @with_pool p begin
-            x = acquire!(p, Float64, 1_000_000); x .= 0.0
+            x = acquire!(p, Float64, 1_000_000); x .= 0.0; nothing
         end
         @with_pool p begin
-            x = acquire!(p, Float64, 100); x .= 0.0
+            x = acquire!(p, Float64, 100); x .= 0.0; nothing
         end
         cap1 = _cap(pool.float64.vectors[1])
         @atomic pool._compact_requested = true
@@ -344,7 +357,11 @@ AAP.disable_auto_manage!()   # stop the __init__-started timer for deterministic
             end
         end
         @test (@atomic pool._compact_requested) == false     # serviced at the scope ENTRY
-        @test _cap(pool.float64.vectors[1]) < cap1
+        if RUNTIME_CHECK == 0
+            @test _cap(pool.float64.vectors[1]) < cap1
+        else
+            @test _cap(pool.float64.vectors[1]) == cap1      # S=1: poisoned slot, shrink deferred
+        end
         empty!(pool)
     end
 
@@ -353,10 +370,10 @@ AAP.disable_auto_manage!()   # stop the __init__-started timer for deterministic
         AAP.disable_auto_manage!()
         empty!(pool)
         @with_pool p begin
-            x = acquire!(p, Float64, 1_000_000); x .= 0.0
+            x = acquire!(p, Float64, 1_000_000); x .= 0.0; nothing
         end
         @with_pool p begin
-            x = acquire!(p, Float64, 100); x .= 0.0
+            x = acquire!(p, Float64, 100); x .= 0.0; nothing
         end
         cap0 = _cap(pool.float64.vectors[1])
         @atomic pool._compact_requested = true
@@ -372,7 +389,11 @@ AAP.disable_auto_manage!()   # stop the __init__-started timer for deterministic
         end
         @test threw
         @test (@atomic pool._compact_requested) == false     # hook fired at scope ENTRY (before the throw)
-        @test _cap(pool.float64.vectors[1]) < cap0
+        if RUNTIME_CHECK == 0
+            @test _cap(pool.float64.vectors[1]) < cap0
+        else
+            @test _cap(pool.float64.vectors[1]) == cap0      # S=1: poisoned slot, shrink deferred
+        end
         empty!(pool)
     end
 end

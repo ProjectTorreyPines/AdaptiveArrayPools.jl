@@ -16,7 +16,7 @@ using CUDA
 # On older Julia, the extension loads but provides no functionality.
 @static if VERSION >= v"1.12-"
 
-    using AdaptiveArrayPools: AbstractTypedPool, AbstractArrayPool
+    using AdaptiveArrayPools: AbstractTypedPool, AbstractArrayPool, PoolCheckpointState
 
     # Type definitions
     include("types.jl")
