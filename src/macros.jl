@@ -1291,7 +1291,9 @@ Filter types for typed checkpoint/rewind generation.
 
 - Symbols NOT in local_vars are passed through (type parameters, global types)
 - Symbols IN local_vars trigger fallback (defined after checkpoint!)
-- Parametric types like Vector{T} trigger fallback
+- Parametric types like `Vector{Float64}` are static iff every free name inside
+  the curly resolves outside the block (global type or `where` param); a curly
+  over a local name (e.g. `Vector{T}` with `T` assigned in-block) triggers fallback
 - `eltype(x)` expressions: usable if `x` does NOT reference a local variable
 
 Type parameters (T, S from `where` clause) resolve to concrete types at runtime.
@@ -1313,8 +1315,14 @@ function _filter_static_types(types, local_vars = Set{Symbol}())
             end
         elseif t isa Expr
             if t.head == :curly
-                # Parametric type like Vector{Float64} - can't use as Type argument
-                has_dynamic = true
+                # Parametric type literal like Vector{Float64} / Foo{T}.
+                # Static iff every free name resolves outside the block
+                # (global type or `where` param) — same rule as eltype(x) below.
+                if _uses_local_var(t, local_vars)
+                    has_dynamic = true
+                else
+                    push!(static_types, t)
+                end
             elseif t.head == :call && length(t.args) >= 2 && t.args[1] == :eltype
                 # eltype(x) expression from acquire!(pool, x) form
                 inner_arg = t.args[2]
@@ -1505,8 +1513,36 @@ const _RESHAPE_IMPL_REF = GlobalRef(@__MODULE__, :_reshape_impl!)
 const _RAND_IMPL_REF = GlobalRef(@__MODULE__, :_rand_impl!)
 const _RANDN_IMPL_REF = GlobalRef(@__MODULE__, :_randn_impl!)
 
+# `@with_pool`/`@maybe_with_pool`/`@safe_with_pool`/`@safe_maybe_with_pool` each
+# establish their own independent checkpoint/rewind scope and will run this same
+# transform on their own body once Julia expands them. `_transform_acquire_calls`
+# must not recurse into a nested macrocall for one of these: doing so renames the
+# inner scope's `acquire!` to `_acquire_impl!` before the inner macro ever sees it,
+# so the inner macro's own (unrelated) type-extraction pass finds no `acquire!`
+# calls and silently demotes to the dynamic/lazy path (bypassing its own typed
+# checkpoint/rewind for the type it actually uses).
+const _WITH_POOL_FAMILY_MACROS = (
+    Symbol("@with_pool"), Symbol("@maybe_with_pool"),
+    Symbol("@safe_with_pool"), Symbol("@safe_maybe_with_pool"),
+)
+
+function _is_nested_with_pool_macrocall(expr)
+    expr isa Expr && expr.head === :macrocall && !isempty(expr.args) || return false
+    fn = expr.args[1]
+    fn isa Symbol && return fn in _WITH_POOL_FAMILY_MACROS
+    # Module-qualified form: `AdaptiveArrayPools.@with_pool ...` etc.
+    # Match on the FINAL name regardless of the module path prefix — same policy
+    # as the qualified-name handling for acquire!/zeros!/etc. below.
+    fn isa Expr && fn.head === :. && length(fn.args) >= 2 || return false
+    qn = fn.args[end]
+    return qn isa QuoteNode && qn.value in _WITH_POOL_FAMILY_MACROS
+end
+
 function _transform_acquire_calls(expr, pool_name)
     if expr isa Expr
+        # Independent nested scope — leave untouched, it transforms its own body.
+        _is_nested_with_pool_macrocall(expr) && return expr
+
         # Handle call expressions
         if expr.head == :call && length(expr.args) >= 2
             fn = expr.args[1]

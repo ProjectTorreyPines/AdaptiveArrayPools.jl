@@ -919,3 +919,67 @@ end
     end
 
 end # Dynamic selective mode expansion
+
+# ==============================================================================
+# Task 1: `:curly` static-type widening
+# ==============================================================================
+
+@static if VERSION >= v"1.12-"
+    @testset "curly static types take typed path" begin
+        # Discriminator: only the typed path emits _can_use_typed_path.
+        ex = @macroexpand @with_pool pool begin
+            v = acquire!(pool, Vector{Float64}, 4)
+            length(v); nothing
+        end
+        @test occursin("_can_use_typed_path", string(ex))
+
+        # Mixed fixed + curly must also stay typed
+        ex2 = @macroexpand @with_pool pool begin
+            a = acquire!(pool, Float64, 4)
+            b = acquire!(pool, Vector{Float64}, 2)
+            a[1] = 1.0; nothing
+        end
+        @test occursin("_can_use_typed_path", string(ex2))
+
+        # Curly over a LOCAL name must still demote to lazy
+        ex3 = @macroexpand @with_pool pool begin
+            T = Float64
+            v = acquire!(pool, Vector{T}, 4)
+            nothing
+        end
+        @test !occursin("_can_use_typed_path", string(ex3))
+
+        # Curly over a where-param-like global stays static: eltype-style nesting
+        ex4 = @macroexpand @with_pool pool begin
+            v = acquire!(pool, Vector{eltype(x)}, 4)   # x undefined locally → static
+            nothing
+        end
+        @test occursin("_can_use_typed_path", string(ex4))
+    end
+
+    @testset "curly typed path: end-state parity" begin
+        # NOTE: `@with_pool pool begin` REBINDS `pool` to the task-local pool
+        # inside the block — post-scope asserts must target the same object.
+        tlp = get_task_local_pool()
+        reset!(tlp)
+        @with_pool pool begin
+            v = acquire!(pool, Vector{Float64}, 3)
+            v[1] = [1.0]
+            nothing
+        end
+        tp = AdaptiveArrayPools.get_typed_pool!(tlp, Vector{Float64})
+        @test tp.n_active == 0
+
+        # Nested scopes: inner acquire of the same curly type rewinds in lockstep
+        @with_pool pool begin
+            acquire!(pool, Vector{Float64}, 2)
+            @with_pool pool begin
+                acquire!(pool, Vector{Float64}, 5)
+                nothing
+            end
+            @test tp.n_active == 1
+            nothing
+        end
+        @test tp.n_active == 0
+    end
+end

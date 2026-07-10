@@ -135,11 +135,12 @@
         @test !(:T in static2)
         @test has_dyn2
 
-        # With curly expression (parametric type)
-        types3 = Set{Any}([Expr(:curly, :Vector, :Float64)])
+        # With curly expression (parametric type, no free local names) - static
+        curly3 = Expr(:curly, :Vector, :Float64)
+        types3 = Set{Any}([curly3])
         static3, has_dyn3 = AdaptiveArrayPools._filter_static_types(types3)
-        @test isempty(static3)
-        @test has_dyn3
+        @test curly3 in static3
+        @test !has_dyn3
 
         # With eltype expression
         types4 = Set{Any}([Expr(:call, :eltype, :x)])
