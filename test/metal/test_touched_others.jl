@@ -349,14 +349,21 @@ end
 @testset "Float16 bit-7: typed inner scope alongside live parent Float16 arrays" begin
     empty!(get_task_local_metal_pool())
     pool = get_task_local_metal_pool()
+    depth_before = pool._current_depth
 
     _lazy_checkpoint!(pool)                       # depth 2 (parent, lazy)
     v_outer = acquire!(pool, Float16, 4)
     v_outer .= Float16(3)
     @test pool.float16.n_active == 1
 
+    # acquire!(pool2, Float16, 8) below is a static-type call, so the macro
+    # statically resolves Float16 and drives the TYPED path
+    # (_typed_lazy_checkpoint!/_typed_lazy_rewind!) rather than the untyped
+    # _lazy_checkpoint!/_lazy_rewind! path — no separate typed-macro syntax
+    # exists or is needed to opt in.
     result = @with_pool :metal pool2 begin
         w = acquire!(pool2, Float16, 8)
+        @test isempty(pool._touched_others_depths)    # Float16 never stack-managed, even in typed scope
         w .= Float16(9)
         sum(w)
     end
@@ -367,6 +374,7 @@ end
 
     _lazy_rewind!(pool)
     @test pool.float16.n_active == 0
+    @test pool._current_depth == depth_before     # depth balance: no leak across the testset
     empty!(get_task_local_metal_pool())
 end
 

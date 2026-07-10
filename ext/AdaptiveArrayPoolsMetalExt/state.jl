@@ -170,7 +170,7 @@ end
     # Fixed slots INCLUDING Float16 rewind directly; genuine-fallback types were
     # pushed onto the touched-others stack by checkpoint!(pool, types...) and
     # are covered by the drain below.
-    fixed_indices = [i for i in unique_indices if !(types[i].parameters[1] <: _METAL_FIXED_TYPES) == false]
+    fixed_indices = [i for i in unique_indices if types[i].parameters[1] <: _METAL_FIXED_TYPES]
     rewind_exprs = [:(_rewind_typed_pool!(AdaptiveArrayPools.get_typed_pool!(pool, types[$i]), pool._current_depth, R)) for i in reverse(fixed_indices)]
     reset_exprs = [:(reset!(AdaptiveArrayPools.get_typed_pool!(pool, types[$i]), R)) for i in unique_indices]
     return quote
