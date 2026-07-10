@@ -231,10 +231,16 @@
         @test pool1 isa AdaptiveArrayPool{1}
         @test pool1._borrow_log === nothing  # lazily initialized on first borrow
 
-        # The former 2-arg _make_pool(level, old) S-migration overload was removed:
-        # the touched-others stack's shape is S-dependent, so cross-S transfer of
-        # open scope state would desync the drain (no production callers existed).
-        @test !hasmethod(AdaptiveArrayPools._make_pool, Tuple{Int, AdaptiveArrayPool})
+        # The former 2-arg _make_pool(level, old) S-migration overload was removed
+        # from the modern tree: the touched-others stack's shape is S-dependent, so
+        # cross-S transfer of open scope state would desync the drain (no production
+        # callers existed). The legacy tree (Julia < 1.12) has no depth-tagged stack,
+        # so its overload is harmless and retained.
+        @static if VERSION >= v"1.12-"
+            @test !hasmethod(AdaptiveArrayPools._make_pool, Tuple{Int, AdaptiveArrayPool})
+        else
+            @test hasmethod(AdaptiveArrayPools._make_pool, Tuple{Int, AdaptiveArrayPool})
+        end
     end
 
     @testset "Pool growth warning at 512 arrays" begin
