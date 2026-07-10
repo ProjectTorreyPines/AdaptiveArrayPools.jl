@@ -49,3 +49,35 @@ end
     @test pool.float64.state.n_active == 0
     @test pool.float64.state._checkpoint_depths == [0]
 end
+
+using AdaptiveArrayPools: _cp_state, _checkpoint_state_core!, _rewind_state_core!
+
+@testset "state cores: checkpoint/rewind on bare PoolCheckpointState" begin
+    st = PoolCheckpointState()
+    _checkpoint_state_core!(st, 2)
+    @test st._checkpoint_depths == [0, 2]
+    _checkpoint_state_core!(st, 2)                 # same-depth guard: no double push
+    @test st._checkpoint_depths == [0, 2]
+    st.n_active = 5
+    @test _rewind_state_core!(st, 2) == 5          # returns pre-rewind n_active
+    @test st.n_active == 0                         # Case A restore
+    @test st._checkpoint_depths == [0]
+
+    # Case B: no checkpoint at depth → restore from stack top
+    st.n_active = 7
+    @test _rewind_state_core!(st, 3) == 7
+    @test st.n_active == 0                         # sentinel top
+
+    # orphan cleanup: stale deeper entries popped first
+    _checkpoint_state_core!(st, 4)
+    st.n_active = 9
+    @test _rewind_state_core!(st, 2) == 9          # pops orphan depth-4 entry, Case B
+    @test st._checkpoint_depths == [0]
+    @test st.n_active == 0
+
+    # _cp_state mapping
+    tp = TypedPool{Int32}()
+    @test _cp_state(tp) === tp.state
+    btp = BitTypedPool()
+    @test _cp_state(btp) === btp.state
+end

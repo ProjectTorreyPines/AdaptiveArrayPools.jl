@@ -104,18 +104,26 @@ compile-time unrolling. Increments _current_depth once for all types.
     end
 end
 
-# Internal helper for checkpoint (works for any AbstractTypedPool)
-@inline function _checkpoint_typed_pool!(tp::AbstractTypedPool, depth::Int)
-
-    # Guard: skip if already checkpointed at this depth (prevents double-push
-    # when get_typed_pool! auto-checkpoints a new fallback type and then
-    # checkpoint!(pool, types...) calls _checkpoint_typed_pool! for the same type).
-    if @inbounds(tp._checkpoint_depths[end]) != depth
-        push!(tp._checkpoint_n_active, tp.n_active)
-        push!(tp._checkpoint_depths, depth)
+# T-independent checkpoint core. `st` is a PoolCheckpointState (CPU) or a
+# flat-field typed pool acting as its own state carrier (GPU backends) — both
+# expose the same three properties.
+@inline function _checkpoint_state_core!(st, depth::Int)
+    # Guard: skip if already checkpointed at this depth (prevents double-push).
+    if @inbounds(st._checkpoint_depths[end]) != depth
+        push!(st._checkpoint_n_active, st.n_active)
+        push!(st._checkpoint_depths, depth)
     end
     return nothing
 end
+
+# Map a typed pool to its checkpoint-state carrier: CPU pools carry a dedicated
+# PoolCheckpointState; other backends (GPU) keep flat fields and act as their own.
+@inline _cp_state(tp::AbstractTypedPool) = tp
+@inline _cp_state(tp::TypedPool) = getfield(tp, :state)
+@inline _cp_state(tp::BitTypedPool) = getfield(tp, :state)
+
+@inline _checkpoint_typed_pool!(tp::AbstractTypedPool, depth::Int) =
+    _checkpoint_state_core!(_cp_state(tp), depth)
 
 """
     _lazy_checkpoint!(pool::AdaptiveArrayPool)
@@ -349,45 +357,31 @@ end
 # Internal: Rewind with Orphan Cleanup
 # ==============================================================================
 
-# Internal helper for rewind with orphan cleanup (works for any AbstractTypedPool)
-# Uses 1-based sentinel pattern: no isempty checks needed (sentinel [0] guarantees non-empty)
-#
-# S parameter: runtime check level (0=off, 1=on). When called from AdaptiveArrayPool{S}
-# callers, S is a compile-time constant → `S >= 1` dead-code-eliminates at S=0.
-@inline function _rewind_typed_pool!(tp::AbstractTypedPool, current_depth::Int, S::Int)
-
-    # 1. Orphaned Checkpoints Cleanup
-    # If there are checkpoints from deeper scopes (depth > current), pop them first.
-    # This happens when a nested scope did full checkpoint but typed rewind,
-    # leaving orphaned checkpoints that must be cleaned before finding current state.
-    while @inbounds tp._checkpoint_depths[end] > current_depth
-        pop!(tp._checkpoint_depths)
-        pop!(tp._checkpoint_n_active)
+# T-independent rewind core: orphan cleanup + Case A/B restore. Returns the
+# pre-rewind n_active so the (S >= 1) caller can decide whether to invalidate.
+@inline function _rewind_state_core!(st, current_depth::Int)
+    # 1. Orphaned checkpoints from deeper scopes
+    while @inbounds(st._checkpoint_depths[end]) > current_depth
+        pop!(st._checkpoint_depths)
+        pop!(st._checkpoint_n_active)
     end
-
-    # Capture n_active before restore (compiler eliminates dead variable at S=0)
-    _old_n_active = tp.n_active
-
-    # 2. Normal Rewind Logic (Sentinel Pattern)
-    # Now the stack top is guaranteed to be at depth <= current depth.
-    if @inbounds tp._checkpoint_depths[end] == current_depth
-        # Checkpointed at current depth: pop and restore
-        pop!(tp._checkpoint_depths)
-        tp.n_active = pop!(tp._checkpoint_n_active)
+    old_n_active = st.n_active
+    # 2. Case A (pop) / Case B (restore from parent top)
+    if @inbounds(st._checkpoint_depths[end]) == current_depth
+        pop!(st._checkpoint_depths)
+        st.n_active = pop!(st._checkpoint_n_active)
     else
-        # No checkpoint at current depth (this type was excluded from typed checkpoint)
-        # MUST restore n_active from parent checkpoint value!
-        # - Untracked acquire may have modified n_active
-        # - If sentinel (_checkpoint_n_active=[0]), restores to n_active=0
-        tp.n_active = @inbounds tp._checkpoint_n_active[end]
+        st.n_active = @inbounds st._checkpoint_n_active[end]
     end
+    return old_n_active
+end
 
-    # 3. Safety: invalidate released slots (Level 1+)
-    # At S=0: `0 >= 1` is false → entire branch eliminated (dead code)
+@inline function _rewind_typed_pool!(tp::AbstractTypedPool, current_depth::Int, S::Int)
+    _old_n_active = _rewind_state_core!(_cp_state(tp), current_depth)
+    # 3. Safety: invalidate released slots (S >= 1; DCE'd at S = 0)
     if S >= 1 && _old_n_active > tp.n_active
         _invalidate_released_slots!(tp, _old_n_active, S)
     end
-
     return nothing
 end
 
