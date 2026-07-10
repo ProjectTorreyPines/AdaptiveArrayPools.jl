@@ -10,14 +10,14 @@
         # First acquire - populates pool
         @with_pool :metal p begin
             v = acquire!(p, Float32, 100)
-            v .= 1.0f0
+            v .= 1.0f0; nothing
         end
 
         # Second acquire (same size) - should reuse GPU memory
         alloc = Metal.@allocated begin
             @with_pool :metal p begin
                 v = acquire!(p, Float32, 100)
-                v .= 2.0f0
+                v .= 2.0f0; nothing
             end
         end
 
@@ -34,6 +34,7 @@
             acquire!(p, Float32, 100)
             acquire!(p, Float32, 200)
             acquire!(p, Float32, 300)
+            nothing
         end
 
         # Second pass should reuse all GPU memory
@@ -42,7 +43,7 @@
                 v1 = acquire!(p, Float32, 100)
                 v2 = acquire!(p, Float32, 200)
                 v3 = acquire!(p, Float32, 300)
-                v1 .= 1.0f0; v2 .= 2.0f0; v3 .= 3.0f0
+                v1 .= 1.0f0; v2 .= 2.0f0; v3 .= 3.0f0; nothing
             end
         end
 
@@ -57,14 +58,14 @@
         # Warmup with 2D array
         @with_pool :metal p begin
             A = acquire!(p, Float32, 10, 10)
-            A .= 1.0f0
+            A .= 1.0f0; nothing
         end
 
         # Reuse check — GPU allocation only
         alloc = Metal.@allocated begin
             @with_pool :metal p begin
                 A = acquire!(p, Float32, 10, 10)
-                A .= 2.0f0
+                A .= 2.0f0; nothing
             end
         end
 
@@ -78,13 +79,13 @@
         # Warmup with 3D array
         @with_pool :metal p begin
             T = acquire!(p, Float32, 5, 5, 4)
-            T .= 1.0f0
+            T .= 1.0f0; nothing
         end
 
         alloc = Metal.@allocated begin
             @with_pool :metal p begin
                 T = acquire!(p, Float32, 5, 5, 4)
-                T .= 2.0f0
+                T .= 2.0f0; nothing
             end
         end
 
@@ -180,6 +181,7 @@ end
         function _test_metal_nd_alloc!()
             @with_pool :metal p begin
                 acquire!(p, Float32, 10, 10)
+                nothing
             end
         end
 
@@ -198,6 +200,7 @@ end
         function _test_metal_1d_alloc!()
             @with_pool :metal p begin
                 acquire!(p, Float32, 100)
+                nothing
             end
         end
 
@@ -222,6 +225,7 @@ end
             acquire!(p, Float32, 100)
             acquire!(p, Int32, 100)
             acquire!(p, Float16, 100)
+            nothing
         end
 
         # Reuse all types — check GPU allocation only
@@ -231,6 +235,7 @@ end
                 vi32 = acquire!(p, Int32, 100)
                 v16 = acquire!(p, Float16, 100)
                 v32 .= 1.0f0; vi32 .= 3; v16 .= Float16(4.0)
+                nothing
             end
         end
 
@@ -246,12 +251,14 @@ end
         @with_pool :metal p begin
             v = acquire!(p, Float16, 100)
             v .= Float16(1.0)
+            nothing
         end
 
         alloc = Metal.@allocated begin
             @with_pool :metal p begin
                 v = acquire!(p, Float16, 100)
                 v .= Float16(2.0)
+                nothing
             end
         end
 

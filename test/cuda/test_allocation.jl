@@ -10,14 +10,14 @@
         # First acquire - populates pool
         @with_pool :cuda p begin
             v = acquire!(p, Float32, 100)
-            v .= 1.0f0
+            v .= 1.0f0; nothing
         end
 
         # Second acquire (same size) - should reuse
         alloc = CUDA.@allocated begin
             @with_pool :cuda p begin
                 v = acquire!(p, Float32, 100)
-                v .= 2.0f0
+                v .= 2.0f0; nothing
             end
         end
 
@@ -34,6 +34,7 @@
             acquire!(p, Float32, 100)
             acquire!(p, Float32, 200)
             acquire!(p, Float32, 300)
+            nothing
         end
 
         # Second pass should reuse all
@@ -42,7 +43,7 @@
                 v1 = acquire!(p, Float32, 100)
                 v2 = acquire!(p, Float32, 200)
                 v3 = acquire!(p, Float32, 300)
-                v1 .= 1.0f0; v2 .= 2.0f0; v3 .= 3.0f0
+                v1 .= 1.0f0; v2 .= 2.0f0; v3 .= 3.0f0; nothing
             end
         end
 
@@ -56,14 +57,14 @@
         # Warmup with 2D array
         @with_pool :cuda p begin
             A = acquire!(p, Float64, 10, 10)
-            A .= 1.0
+            A .= 1.0; nothing
         end
 
         # Reuse check
         alloc = CUDA.@allocated begin
             @with_pool :cuda p begin
                 A = acquire!(p, Float64, 10, 10)
-                A .= 2.0
+                A .= 2.0; nothing
             end
         end
 
@@ -77,13 +78,13 @@
         # Warmup with 3D array
         @with_pool :cuda p begin
             T = acquire!(p, Float32, 5, 5, 4)
-            T .= 1.0f0
+            T .= 1.0f0; nothing
         end
 
         alloc = CUDA.@allocated begin
             @with_pool :cuda p begin
                 T = acquire!(p, Float32, 5, 5, 4)
-                T .= 2.0f0
+                T .= 2.0f0; nothing
             end
         end
 
@@ -119,13 +120,13 @@
         # Warmup
         @with_pool :cuda p begin
             A = acquire!(p, Float64, 10, 10)
-            A .= 1.0
+            A .= 1.0; nothing
         end
 
         alloc = CUDA.@allocated begin
             @with_pool :cuda p begin
                 A = acquire!(p, Float64, 10, 10)
-                A .= 2.0
+                A .= 2.0; nothing
             end
         end
 
@@ -141,6 +142,7 @@
         # Warmup pool
         @with_pool :cuda p begin
             acquire!(p, Float32, N)
+            nothing
         end
 
         # Measure pooled allocation
@@ -149,7 +151,7 @@
             for _ in 1:ITERS
                 @with_pool :cuda p begin
                     v = acquire!(p, Float32, N)
-                    v .= 1.0f0
+                    v .= 1.0f0; nothing
                 end
             end
         end
@@ -247,6 +249,7 @@ end
         function _test_cuda_nd_alloc!()
             @with_pool :cuda p begin
                 acquire!(p, Float64, 10, 10)
+                nothing
             end
         end
 
@@ -266,6 +269,7 @@ end
         function _test_cuda_nd_cached_alloc!()
             @with_pool :cuda p begin
                 acquire!(p, Float64, 10, 10)
+                nothing
             end
         end
 
@@ -285,6 +289,7 @@ end
         function _test_cuda_1d_alloc!()
             @with_pool :cuda p begin
                 acquire!(p, Float64, 100)
+                nothing
             end
         end
 
@@ -310,6 +315,7 @@ end
             acquire!(p, Float32, 100)
             acquire!(p, Float64, 100)
             acquire!(p, Int32, 100)
+            nothing
         end
 
         # Reuse all types
@@ -318,7 +324,7 @@ end
                 v32 = acquire!(p, Float32, 100)
                 v64 = acquire!(p, Float64, 100)
                 vi32 = acquire!(p, Int32, 100)
-                v32 .= 1.0f0; v64 .= 2.0; vi32 .= 3
+                v32 .= 1.0f0; v64 .= 2.0; vi32 .= 3; nothing
             end
         end
 
@@ -332,13 +338,13 @@ end
         # Warmup
         @with_pool :cuda p begin
             v = acquire!(p, Float16, 100)
-            v .= Float16(1.0)
+            v .= Float16(1.0); nothing
         end
 
         alloc = CUDA.@allocated begin
             @with_pool :cuda p begin
                 v = acquire!(p, Float16, 100)
-                v .= Float16(2.0)
+                v .= Float16(2.0); nothing
             end
         end
 
