@@ -83,7 +83,59 @@ function _render_return_expr(io::IO, expr, escaped::Set{Symbol})
     end
 end
 
+"""Recover the incidental-tail `(kind, detail)` pair from a stored return expression,
+for `showerror` rendering. No `tainted`/`pool_name` context is available at render
+time, but the expression's own shape is enough to tell which of the three Stage-2
+patterns produced it — that is exactly how `_incidental_exposure` decided in the
+first place, and a `PoolEscapeError` with empty `vars` only ever comes from there."""
+function _incidental_kind_detail_from_expr(expr)
+    if expr isa Expr && _is_dotted_assign_head(expr.head) && length(expr.args) >= 1
+        lhs = expr.args[1]
+        base = Meta.isexpr(lhs, :ref) ? lhs.args[1] : lhs
+        return (:broadcast_assign, base isa Symbol ? base : "the assigned array")
+    elseif Meta.isexpr(expr, :(=))
+        return (:assign, nothing)
+    else
+        return (:acquire_call, nothing)
+    end
+end
+
+"""Render a `PoolEscapeError` that came from an incidental-tail pattern (Task 3):
+`e.vars` is empty because the escaping thing is a tail *expression* (an acquire call,
+a broadcast-assign, or an assignment), not a directly-returned named variable — see
+`_incidental_exposure`. Reuses `_lint_message` so the wording matches the
+`escape_lint = "warn"` path exactly."""
+function _showerror_incidental_tail(io::IO, e::PoolEscapeError)
+    printstyled(io, "PoolEscapeError"; color = :red, bold = true)
+    printstyled(io, " (compile-time)"; color = :light_black)
+    println(io)
+    println(io)
+    for pt in e.points
+        kind, detail = _incidental_kind_detail_from_expr(pt.expr)
+        printstyled(io, "  "; color = :normal)
+        print(io, _lint_message(kind, detail, pt.expr))
+        println(io)
+        loc = _format_point_location(e.file, pt.line)
+        if loc !== nothing
+            printstyled(io, "  ["; color = :magenta, bold = true)
+            printstyled(io, loc; color = :magenta, bold = true)
+            printstyled(io, "] "; color = :magenta, bold = true)
+            println(io)
+        end
+    end
+    println(io)
+    printstyled(io, "  False positive?\n"; bold = true)
+    printstyled(io, "    Please file an issue at "; color = :light_black)
+    printstyled(io, "https://github.com/ProjectTorreyPines/AdaptiveArrayPools.jl/issues"; bold = true)
+    return printstyled(io, "\n    with a minimal reproducer so we can improve the escape detector.\n"; color = :light_black)
+end
+
 function Base.showerror(io::IO, e::PoolEscapeError)
+    # Incidental-tail escapes (Task 3) carry no named variable — render separately.
+    if isempty(e.vars) && !isempty(e.points)
+        return _showerror_incidental_tail(io, e)
+    end
+
     # Header
     printstyled(io, "PoolEscapeError"; color = :red, bold = true)
     printstyled(io, " (compile-time)"; color = :light_black)
@@ -2465,6 +2517,78 @@ function _find_direct_exposure(expr, acquired)
     return found
 end
 
+"""Dotted (broadcast) assignment head: :.=, :.+=, :.*=, …"""
+function _is_dotted_assign_head(h)
+    h isa Symbol || return false
+    s = String(h)
+    return length(s) >= 2 && startswith(s, ".") && endswith(s, "=")
+end
+
+"""
+    _incidental_exposure(expr, tainted, pool_name) -> Union{Nothing, Tuple{Symbol, Any}}
+
+Detect the three incidental pool-backed tail patterns the direct-exposure ERROR
+does not cover (their value escapes as the block's return value, but the syntax
+does not *look* like a return):
+
+- `(:acquire_call, expr)`     — tail is a direct acquire-family call
+- `(:broadcast_assign, var)`  — tail is `x .= v` / `x .op= v` with `x` acquired
+                                 (also `x[...] .= v` on an acquired base)
+- `(:assign, var)`            — tail is `x = <acquire call>` or `x = <acquired var>`
+                                 (assignment evaluates to its RHS value)
+
+`ret_expr` values arrive here either as the bare tail expression (implicit
+return) or as the whole `Expr(:return, ...)` node (explicit `return`, per
+`_collect_all_return_values`). An explicit `return` is unwrapped first — one
+recursion into `expr.args[1]` — mirroring `_find_direct_exposure`'s handling
+of `:return`, so `return acquire!(...)`, `return (v .= 0.0)`, etc. are caught
+exactly like their implicit-tail equivalents. A bare `return` (no value) is
+safe and falls through untouched.
+"""
+function _incidental_exposure(expr, tainted, pool_name)
+    expr isa Expr || return nothing
+    if expr.head == :return && !isempty(expr.args)
+        return _incidental_exposure(expr.args[1], tainted, pool_name)
+    end
+    if _is_acquire_call(expr, pool_name)
+        return (:acquire_call, expr)
+    elseif _is_dotted_assign_head(expr.head) && length(expr.args) >= 1
+        lhs = expr.args[1]
+        base = Meta.isexpr(lhs, :ref) ? lhs.args[1] : lhs
+        if base isa Symbol && base in tainted
+            return (:broadcast_assign, base)
+        end
+    elseif expr.head == :(=) && length(expr.args) >= 2
+        rhs = expr.args[2]
+        if _is_acquire_call(rhs, pool_name)
+            return (:assign, expr.args[1])
+        elseif rhs isa Symbol && rhs in tainted
+            return (:assign, rhs)
+        end
+    end
+    return nothing
+end
+
+"""Build the human-readable expansion-time lint message for an incidental-tail escape.
+Used both for the `escape_lint = "warn"` path and for rendering `PoolEscapeError`
+(via `showerror`) when the error originates from an incidental tail rather than an
+intentional-return pattern."""
+function _lint_message(kind, detail, ret_expr)
+    tail = sprint(Base.show_unquoted, ret_expr)
+    what = kind === :acquire_call ?
+        "is a direct acquire call — its pool-backed array" :
+        kind === :broadcast_assign ?
+        "evaluates to the pool-backed array `$(detail)`" :
+        "assigns a pool-backed array, and the assignment's value"
+    return string(
+        "the scope's last expression `", tail, "` ", what,
+        " becomes the scope's return value and escapes",
+        " (a pool array is invalid after the scope rewinds).",
+        " If the value is meant to be discarded, end the block with `nothing`.",
+        " [escape_lint preference: \"error\" (default) | \"warn\" | \"off\"]"
+    )
+end
+
 
 """Collect acquired variable names contained in a literal expression (symbol, tuple, vect)."""
 function _collect_acquired_in_literal(expr, acquired_keys::Set{Symbol})
@@ -2601,43 +2725,72 @@ a pool-backed variable. This catches the most common beginner mistake
 at zero runtime cost.
 
 All detected escapes are errors — bare symbol (`v`), `return v`, and
-container patterns (`(v, w)`, `[v]`, `(key=v,)`).
+container patterns (`(v, w)`, `[v]`, `(key=v,)`) (Stage 1), plus the three
+incidental-tail patterns — direct acquire-call tail, broadcast-assign tail,
+assignment tail — gated by the `ESCAPE_LINT` preference (Stage 2, default "error").
 
 Skipped when `STATIC_POOLING = false` (pooling disabled, acquire returns normal arrays).
 """
 function _check_compile_time_escape(expr, pool_name, source::Union{LineNumberNode, Nothing})
     # Order-aware extraction: single forward pass that tracks taint per statement order
     acquired = _extract_ordered_acquired(expr, pool_name)
-    isempty(acquired) && return
 
     # Collect ALL return points: explicit returns + implicit (last expr / if-else branches)
     return_values = _collect_all_return_values(expr)
     isempty(return_values) && return
 
-    # Check each return point for direct exposure of acquired vars
-    all_escaped = Set{Symbol}()
-    points = EscapePoint[]
-    seen_lines = Set{Int}()
-    for (ret_expr, ret_line) in return_values
-        # Deduplicate: explicit + implicit scanners can find the same return
-        if ret_line !== nothing && ret_line in seen_lines
-            continue
+    # ---- Stage 1: intentional-return patterns → ERROR (existing behavior) ----
+    if !isempty(acquired)
+        # Check each return point for direct exposure of acquired vars
+        all_escaped = Set{Symbol}()
+        points = EscapePoint[]
+        seen_lines = Set{Int}()
+        for (ret_expr, ret_line) in return_values
+            # Deduplicate: explicit + implicit scanners can find the same return
+            if ret_line !== nothing && ret_line in seen_lines
+                continue
+            end
+            point_escaped = _find_direct_exposure(ret_expr, acquired)
+            if !isempty(point_escaped)
+                push!(points, EscapePoint(ret_expr, ret_line, sort!(collect(point_escaped))))
+                union!(all_escaped, point_escaped)
+                ret_line !== nothing && push!(seen_lines, ret_line)
+            end
         end
-        point_escaped = _find_direct_exposure(ret_expr, acquired)
-        if !isempty(point_escaped)
-            push!(points, EscapePoint(ret_expr, ret_line, sort!(collect(point_escaped))))
-            union!(all_escaped, point_escaped)
-            ret_line !== nothing && push!(seen_lines, ret_line)
+        if !isempty(all_escaped)
+            sorted = sort!(collect(all_escaped))
+            var_info = _classify_escaped_vars(expr, pool_name, sorted, acquired)
+            declarations = _extract_declaration_sites(expr, all_escaped)
+            file = source !== nothing ? string(source.file) : nothing
+            line = source !== nothing ? source.line : nothing
+            throw(PoolEscapeError(sorted, file, line, points, var_info, declarations))
         end
     end
-    isempty(all_escaped) && return
 
-    sorted = sort!(collect(all_escaped))
-    var_info = _classify_escaped_vars(expr, pool_name, sorted, acquired)
-    declarations = _extract_declaration_sites(expr, all_escaped)
+    # ---- Stage 2: incidental-tail patterns (NEW, error by default) ----
+    # Reached whenever Stage 1 found nothing to throw on — including when
+    # `acquired` is empty (e.g. a bare `acquire!(pool, ...)` tail with no
+    # assigned variable at all: Stage 1 has nothing to track, but the call's
+    # result still escapes as the scope's return value).
+    ESCAPE_LINT == "off" && return
     file = source !== nothing ? string(source.file) : nothing
     line = source !== nothing ? source.line : nothing
-    throw(PoolEscapeError(sorted, file, line, points, var_info, declarations))
+    for (ret_expr, ret_line) in return_values
+        hit = _incidental_exposure(ret_expr, acquired, pool_name)
+        hit === nothing && continue
+        kind, detail = hit
+        if ESCAPE_LINT == "error"
+            # No named variable directly escapes here (the tail is an acquire
+            # call / broadcast-assign / assignment expression, not a returned
+            # variable) — `vars` stays empty so `showerror` renders the
+            # incidental-tail message (`_showerror_incidental_tail`) instead
+            # of the Stage-1 variable-listing layout.
+            throw(PoolEscapeError(Symbol[], file, line, [EscapePoint(ret_expr, ret_line, Symbol[])]))
+        else # "warn"
+            @warn _lint_message(kind, detail, ret_expr) _file = file _line = something(ret_line, line, 0)
+        end
+    end
+    return
 end
 
 # ==============================================================================

@@ -124,6 +124,7 @@ AAP.disable_auto_manage!()   # stop the __init__-started timer for deterministic
         @atomic pool._compact_requested = true
         @with_pool :metal p begin                           # scope ENTRY at depth 1 → hook fires
             acquire!(p, Float32, 4)
+            nothing
         end
 
         @test (@atomic pool._compact_requested) == false    # hook consumed the request

@@ -238,10 +238,12 @@ using AdaptiveArrayPools: checkpoint!, rewind!
         @with_pool pool begin
             m = acquire!(pool, Float64, 10, 10)
             m .= 1.0
+            nothing
         end
         @with_pool pool begin
             m = acquire!(pool, Float64, 10, 10)
             m .= 1.0
+            nothing
         end
 
         # Measure (cache hit → should be 0 bytes)

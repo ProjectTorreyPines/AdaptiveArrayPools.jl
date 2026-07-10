@@ -256,6 +256,7 @@
         @testset "zeros! default type uses default_eltype(pool)" begin
             expr = @macroexpand @with_pool pool begin
                 v = zeros!(pool, 10)
+                nothing
             end
 
             expr_str = string(expr)
@@ -268,6 +269,7 @@
         @testset "zeros! explicit type uses that type" begin
             expr = @macroexpand @with_pool pool begin
                 v = zeros!(pool, Float32, 10)
+                nothing
             end
 
             expr_str = string(expr)
@@ -279,6 +281,7 @@
         @testset "ones! default type uses default_eltype(pool)" begin
             expr = @macroexpand @with_pool pool begin
                 v = ones!(pool, 10)
+                nothing
             end
 
             expr_str = string(expr)
@@ -289,6 +292,7 @@
         @testset "zeros! default type uses default_eltype(pool) (second check)" begin
             expr = @macroexpand @with_pool pool begin
                 v = zeros!(pool, 10)
+                nothing
             end
 
             expr_str = string(expr)
@@ -299,6 +303,7 @@
         @testset "ones! default type uses default_eltype(pool) (second check)" begin
             expr = @macroexpand @with_pool pool begin
                 v = ones!(pool, 10)
+                nothing
             end
 
             expr_str = string(expr)
@@ -311,6 +316,7 @@
                 v1 = zeros!(pool, Float64, 10)  # explicit
                 v2 = ones!(pool, 5)              # default
                 v3 = zeros!(pool, Float32, 3)   # explicit
+                nothing
             end
 
             expr_str = string(expr)
@@ -432,6 +438,7 @@ end
         expected_line = (@__LINE__) + 2
         expr = @macroexpand @with_pool pool begin
             v = acquire!(pool, Float64, 10)
+            nothing
         end
         # Should find LNN matching the macro call line AND pointing to THIS file
         lnn = find_linenumbernode_with_line(expr, expected_line)
@@ -448,6 +455,7 @@ end
         expected_line = (@__LINE__) + 2
         func_expr = @macroexpand @with_pool pool function test_func_source(n)
             acquire!(pool, Float64, n)
+            nothing
         end
         body = get_function_body(func_expr)
         @test body !== nothing
@@ -466,6 +474,7 @@ end
         expected_line = (@__LINE__) + 2
         expr = @macroexpand @maybe_with_pool pool begin
             v = acquire!(pool, Float64, 10)
+            nothing
         end
         lnn = find_linenumbernode_with_line(expr, expected_line)
         @test lnn !== nothing
@@ -478,6 +487,7 @@ end
         expected_line = (@__LINE__) + 2
         expr = @macroexpand @with_pool :cpu pool begin
             v = acquire!(pool, Float64, 10)
+            nothing
         end
         lnn = find_linenumbernode_with_line(expr, expected_line)
         @test lnn !== nothing
@@ -500,7 +510,7 @@ end
     # Test 6: Short-form function (f(x) = ...) - LNN이 없는 케이스, __source__로 보정됨
     # The FIRST LNN in function body must point to user file
     @testset "@with_pool short function source location" begin
-        func_expr = @macroexpand @with_pool pool test_short_func(x) = acquire!(pool, Float64, x)
+        func_expr = @macroexpand @with_pool pool test_short_func(x) = (acquire!(pool, Float64, x); nothing)
         body = get_function_body(func_expr)
         @test body !== nothing
         # Short functions need __source__ fallback since they lack original LNN
@@ -519,6 +529,7 @@ end
     @testset "@maybe_with_pool function source location" begin
         func_expr = @macroexpand @maybe_with_pool pool function maybe_test_func(n)
             acquire!(pool, Float64, n)
+            nothing
         end
         body = get_function_body(func_expr)
         @test body !== nothing
@@ -537,6 +548,7 @@ end
     @testset "@with_pool :cpu function source location" begin
         func_expr = @macroexpand @with_pool :cpu pool function cpu_test_func(n)
             acquire!(pool, Float64, n)
+            nothing
         end
         body = get_function_body(func_expr)
         @test body !== nothing
@@ -695,6 +707,7 @@ end
     @testset "@inline outer macro function source location" begin
         func_expr = @macroexpand @inline @with_pool pool function _test_inline_outer(n)
             acquire!(pool, Float64, n)
+            nothing
         end
 
         body = get_function_body(func_expr)
@@ -714,6 +727,7 @@ end
         expected_line = (@__LINE__) + 2
         expr = @macroexpand @inbounds @with_pool pool begin
             v = acquire!(pool, Float64, 10)
+            nothing
         end
         lnn = find_linenumbernode_with_line(expr, expected_line)
         @test lnn !== nothing
@@ -895,6 +909,7 @@ end
         expr = @macroexpand @with_pool pool begin
             v = acquire!(pool, Float64, 10)  # static type Float64 → use_typed=true
             v .= 1.0
+            nothing
         end
         expr_str = string(expr)
 
@@ -909,6 +924,7 @@ end
         expr = @macroexpand @with_pool pool begin
             v = acquire!(pool, Float64, 10)
             v .= 1.0
+            nothing
         end
         expr_str = string(expr)
 
