@@ -443,6 +443,15 @@ mutable struct AdaptiveArrayPool{S} <: AbstractArrayPool
     _touched_others_depths::Vector{Int}
     _touched_others_pools::Vector{Any}
 
+    # Last-lookup memo for the fallback registry. The public acquire! path resolves
+    # the same fallback type twice per call (touch record + impl); this turns the
+    # second — and, steady-state, both — into one pointer compare (~1 ns vs ~7 ns
+    # IdDict lookup). Pure cache of others[T]: set on every slow-path lookup,
+    # cleared by empty!/_make_pool. reset!/trim!/compact! keep pool identities, so
+    # the memo stays valid through them. Task-local pool → single-owner, no races.
+    _lookup_memo_type::Any    # DataType of the memoized entry, or nothing
+    _lookup_memo_tp::Any      # its TypedPool
+
     # Borrow registry (S = 1 only)
     _pending_callsite::String                        # "" = no pending; set by macro before acquire
     _pending_return_site::String                     # "" = no pending; set by macro before validate
@@ -476,6 +485,8 @@ function AdaptiveArrayPool{S}() where {S}
         PoolCheckpointState[], # _touched_others_states: no fallback touches yet
         Int[],          # _touched_others_depths: no fallback touches yet
         Any[],          # _touched_others_pools: no fallback touches yet
+        nothing,        # _lookup_memo_type: no memoized lookup yet
+        nothing,        # _lookup_memo_tp: no memoized lookup yet
         "",             # _pending_callsite: no pending
         "",             # _pending_return_site: no pending
         nothing,        # _borrow_log: lazily created at S=1
@@ -536,6 +547,8 @@ _make_pool(runtime_check::Bool, old::AdaptiveArrayPool) = _make_pool(Int(runtime
         old._touched_others_states,
         old._touched_others_depths,
         old._touched_others_pools,
+        nothing,  # _lookup_memo_type: reset on migration
+        nothing,  # _lookup_memo_tp: reset on migration
         "",       # _pending_callsite: reset
         "",       # _pending_return_site: reset
         S >= 1 ? IdDict{Any, String}() : nothing,  # _borrow_log
@@ -567,12 +580,21 @@ const _FIXED_SLOT_TYPES = Union{Float64, Float32, Int64, Int32, ComplexF64, Comp
 
 # Slow Path: rare types via IdDict
 @inline function get_typed_pool!(p::AdaptiveArrayPool, ::Type{T}) where {T}
+    # Memo fast path: same type as the previous slow-path lookup.
+    p._lookup_memo_type === T && return p._lookup_memo_tp::TypedPool{T}
     tp = get(p.others, T, nothing)
-    tp !== nothing && return tp::TypedPool{T}
+    if tp !== nothing
+        tp = tp::TypedPool{T}
+        p._lookup_memo_type = T
+        p._lookup_memo_tp = tp
+        return tp
+    end
     # New type — create, register in IdDict + values cache, and auto-checkpoint
     new_tp = TypedPool{T}()
     p.others[T] = new_tp
     push!(p._others_values, new_tp)
+    p._lookup_memo_type = T
+    p._lookup_memo_tp = new_tp
     # If inside a checkpoint scope (_current_depth > 1 means inside @with_pool),
     # auto-checkpoint the new pool to prevent issues on rewind
     if p._current_depth > 1

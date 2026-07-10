@@ -321,3 +321,24 @@ end
     @test @allocated(_to_macro_roundtrip(32)) == 0
     empty!(get_task_local_pool())
 end
+
+@testset "fallback lookup memo: identity and invalidation" begin
+    pool = AdaptiveArrayPool()
+    tp1 = get_typed_pool!(pool, TOFooA)
+    @test get_typed_pool!(pool, TOFooA) === tp1     # repeat lookup: same pool
+    @test get_typed_pool!(pool, TOFooB) !== tp1     # different type: different pool
+    @test get_typed_pool!(pool, TOFooA) === tp1     # alternating types stay correct
+
+    reset!(pool)                                     # keeps registry → memo may stay
+    @test get_typed_pool!(pool, TOFooA) === tp1
+
+    empty!(pool)                                     # kills registry → memo MUST die
+    tp2 = get_typed_pool!(pool, TOFooA)
+    @test tp2 !== tp1                                # stale-memo regression guard
+    @test tp2 === pool.others[TOFooA]
+
+    # end-to-end: acquire after empty! must use the fresh pool
+    v = acquire!(pool, TOFooA, 4)
+    @test tp2.n_active == 1 && tp1.n_active == 0
+    reset!(pool)
+end

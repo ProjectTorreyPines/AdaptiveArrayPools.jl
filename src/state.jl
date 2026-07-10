@@ -590,6 +590,10 @@ function Base.empty!(pool::AdaptiveArrayPool)
     empty!(pool.others)
     empty!(pool._others_values)
 
+    # Memo points into the registry being cleared — drop it with the registry.
+    pool._lookup_memo_type = nothing
+    pool._lookup_memo_tp = nothing
+
     # Reset pre-collected pointer bounds
     empty!(pool._others_ptr_bounds)
     empty!(pool._others_ptr_bounds_checkpoints)
