@@ -22,6 +22,11 @@ using AdaptiveArrayPools: TypedPool, BitTypedPool, PoolCheckpointState
     @test tp.n_active == 3
     tp.n_active = 0
 
+    # fallback setproperty! keeps default auto-convert semantics
+    tp._am_peak_n_active = Int32(2)
+    @test tp._am_peak_n_active === 2
+    tp._am_peak_n_active = 0
+
     # non-forwarded fields still direct
     @test tp.vectors isa Vector{Vector{Float64}}
     @test tp._am_peak_n_active == 0

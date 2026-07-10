@@ -300,7 +300,7 @@ end
 
 @inline function Base.setproperty!(tp::Union{TypedPool, BitTypedPool}, f::Symbol, v)
     f === :n_active && return setfield!(getfield(tp, :state), :n_active, convert(Int, v))
-    return setfield!(tp, f, v)   # moved vector fields are never reassigned; loud error if tried
+    return setfield!(tp, f, convert(fieldtype(typeof(tp), f), v))   # moved vector fields are never reassigned; loud error if tried
 end
 
 Base.propertynames(tp::Union{TypedPool, BitTypedPool}) =
