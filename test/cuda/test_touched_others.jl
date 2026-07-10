@@ -209,6 +209,23 @@ end
     @test isempty(pool._touched_others_depths)
 end
 
+@testset "touched-others: mixed fixed+fallback tuple via typed checkpoint!" begin
+    pool = CuAdaptiveArrayPool()
+
+    checkpoint!(pool, Float32, UInt16)            # mixed tuple: one fixed slot, one fallback
+    acquire!(pool, Float32, 4)                    # fixed slot: checkpointed directly, no stack entry
+    acquire!(pool, UInt16, 4)                     # fallback: already pushed at checkpoint! time
+    tpU = get_typed_pool!(pool, UInt16)
+    @test length(pool._touched_others_depths) == 1          # exactly the UInt16 entry
+    @test pool._touched_others_states[end] === tpU.state
+    @test pool.float32._checkpoint_depths[end] == pool._current_depth   # fixed slot checkpointed directly
+
+    rewind!(pool, Float32, UInt16)
+    @test isempty(pool._touched_others_depths)
+    @test pool.float32.n_active == 0
+    @test tpU.n_active == 0
+end
+
 @testset "touched-others: new type registered mid-scope" begin
     pool = CuAdaptiveArrayPool()
     _lazy_checkpoint!(pool)
@@ -313,6 +330,86 @@ end
     # were zeroed (same assertion pattern as "arr_wrappers invalidated on rewind"
     # in test_cuda_safety.jl).
     @test all(==(0), size(v))
+end
+
+@testset "touched-others: S=1 exception-leak recovery (lockstep across throw)" begin
+    # The "@with_pool integration + exception-leak recovery" testset above only
+    # exercises the two-stack (states/depths) lockstep at the default S=0. Construct
+    # an S=1 pool directly (same pattern as the S=1 lockstep testset above) to verify
+    # the third parallel stack (_touched_others_pools) stays in lockstep through a
+    # leaked-scope exception unwind too.
+    pool = ext._make_cuda_pool(1)
+
+    _lazy_checkpoint!(pool)                       # outer scope, depth 2
+    acquire!(pool, UInt8, 4)
+    @test length(pool._touched_others_states) == length(pool._touched_others_depths) == length(pool._touched_others_pools) == 1
+    @test pool._touched_others_depths == [2]
+
+    # Inner scope checkpoints, touches a fallback type, then throws BEFORE its own
+    # rewind runs — mirrors @with_pool's direct-rewind fast path, which has no
+    # try/finally at its own scope (only an OUTER caller's entry-depth guard cleans
+    # up a leaked nested scope; see _generate_block_inner in src/macros.jl).
+    function _leaky_inner!(p)
+        _lazy_checkpoint!(p)                      # inner scope, depth 3
+        acquire!(p, Int8, 4)
+        error("boom")
+    end
+
+    try
+        _leaky_inner!(pool)
+    catch
+    end
+
+    # Leaked: still at the inner depth, both fallback entries live, in lockstep
+    @test pool._current_depth == 3
+    @test length(pool._touched_others_states) == length(pool._touched_others_depths) == length(pool._touched_others_pools) == 2
+    @test pool._touched_others_depths == [2, 3]
+
+    # Outer recovers exactly like @with_pool's entry-depth guard: the generic
+    # (eager) rewind! — not _lazy_rewind! — since the caller does not know which
+    # mode the leaked scope's checkpoint used.
+    rewind!(pool)                                  # exit depth 3 (leaked inner)
+    @test pool._current_depth == 2
+    @test length(pool._touched_others_states) == length(pool._touched_others_depths) == length(pool._touched_others_pools) == 1
+    @test pool._touched_others_depths == [2]
+    @test get_typed_pool!(pool, Int8).n_active == 0
+
+    _lazy_rewind!(pool)                            # outer's own scope exit
+    @test pool._current_depth == 1
+    @test isempty(pool._touched_others_states) && isempty(pool._touched_others_depths) && isempty(pool._touched_others_pools)
+    @test get_typed_pool!(pool, UInt8).n_active == 0
+end
+
+@testset "touched-others: S=1 nested-depth lockstep (fallback touches at depths 2 and 3)" begin
+    # Mirrors "touched-others: depth tags are exact and monotone" above, but at S=1,
+    # with the three-stack lockstep asserted at every observation point.
+    pool = ext._make_cuda_pool(1)
+    tpA = get_typed_pool!(pool, UInt16)
+
+    _lazy_checkpoint!(pool)                       # depth 2
+    @test isempty(pool._touched_others_depths)
+    @test length(pool._touched_others_states) == length(pool._touched_others_depths) == length(pool._touched_others_pools)
+    acquire!(pool, UInt16, 4)
+    @test pool._touched_others_depths == [2]
+    @test length(pool._touched_others_states) == length(pool._touched_others_depths) == length(pool._touched_others_pools) == 1
+    @test pool._touched_others_pools[end] === tpA
+
+    _lazy_checkpoint!(pool)                       # depth 3
+    acquire!(pool, UInt8, 4)                      # different fallback type, new depth
+    @test pool._touched_others_depths == [2, 3]
+    @test issorted(pool._touched_others_depths)   # monotone invariant
+    @test length(pool._touched_others_states) == length(pool._touched_others_depths) == length(pool._touched_others_pools) == 2
+
+    _lazy_rewind!(pool)                           # rewind one level: drains ONLY the ==3 entries
+    @test pool._touched_others_depths == [2]
+    @test length(pool._touched_others_states) == length(pool._touched_others_depths) == length(pool._touched_others_pools) == 1
+    @test tpA.n_active == 1
+    @test get_typed_pool!(pool, UInt8).n_active == 0
+
+    _lazy_rewind!(pool)                           # rewind the remaining level
+    @test isempty(pool._touched_others_depths)
+    @test length(pool._touched_others_states) == length(pool._touched_others_depths) == length(pool._touched_others_pools)
+    @test tpA.n_active == 0
 end
 
 @testset "fallback lookup memo: fields and lifecycle" begin

@@ -62,7 +62,8 @@ function MetalTypedPool{T, S}() where {T, S}
     )
 end
 
-# Checkpoint-state property forwarding (mirror of CPU src/types.jl:294-307).
+# Checkpoint-state property forwarding (mirror of the CPU checkpoint-state property
+# forwarding on TypedPool/BitTypedPool in src/types.jl).
 @inline function Base.getproperty(tp::MetalTypedPool, f::Symbol)
     f === :n_active && return getfield(tp, :state).n_active
     f === :_checkpoint_n_active && return getfield(tp, :state)._checkpoint_n_active
@@ -143,8 +144,9 @@ mutable struct MetalAdaptiveArrayPool{R, S} <: AbstractArrayPool
     _touched_type_masks::Vector{UInt16}  # Per-depth: which fixed slots were touched + mode flags
     _touched_has_others::Vector{Bool}    # Per-depth: any non-fixed-slot type touched?
 
-    # Touched-others tracking (depth-tagged, concrete) — mirror of CPU
-    # src/types.jl:434-453. Checkpoint variants push NOTHING; producers push one
+    # Touched-others tracking (depth-tagged, concrete) — mirror of the CPU
+    # touched-others tracking fields on AdaptiveArrayPool in src/types.jl.
+    # Checkpoint variants push NOTHING; producers push one
     # (state, depth) entry per first touch; rewind pops while the top tag matches.
     # _touched_others_pools is populated only when R >= 1 (slot invalidation).
     _touched_others_states::Vector{PoolCheckpointState}
@@ -220,9 +222,10 @@ Return compile-time constant indicating whether runtime safety checks are enable
 """
     _check_level(pool::MetalAdaptiveArrayPool) -> Int
 
-Runtime-check level as an Int (mirror of CPU `src/types.jl:513`), for
-backend-shared code that forwards it to `_invalidate_released_slots!` /
-`_rewind_typed_pool!`. Compile-time constant per concrete pool type.
+Runtime-check level as an Int (mirror of the CPU `_check_level` for
+`AdaptiveArrayPool` in src/types.jl), for backend-shared code that forwards it to
+`_invalidate_released_slots!` / `_rewind_typed_pool!`. Compile-time constant per
+concrete pool type.
 """
 @inline AdaptiveArrayPools._check_level(::MetalAdaptiveArrayPool{R, S}) where {R, S} = R
 

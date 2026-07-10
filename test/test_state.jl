@@ -2391,13 +2391,14 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
     end
 
     @testset "Issue #4: CUDA _lazy_checkpoint! parity" begin
-        # Parity with the CPU touched-others-stack architecture (PR #51):
+        # Parity with the CPU touched-others-stack architecture (the constant-cost
+        # touched-others architecture, depth-tagged stack):
         # _lazy_checkpoint! must NOT eagerly checkpoint pool.others — fallback
         # pools are first-touch checkpointed via _touch_fallback_pool! (from
         # _record_type_touch!/get_typed_pool!) and drained selectively at rewind
         # via _drain_touched_others!, so only the fallback pools a scope actually
         # touches pay any cost. Eagerly snapshotting pool.others here would
-        # re-introduce the cross-scope pollution PR #51 removed.
+        # re-introduce the cross-scope pollution that architecture removed.
         cuda_state_path = joinpath(@__DIR__, "..", "ext", "AdaptiveArrayPoolsCUDAExt", "state.jl")
         if isfile(cuda_state_path)
             code = read(cuda_state_path, String)
@@ -2418,12 +2419,13 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
     end
 
     @testset "Issue #5: CUDA _typed_lazy_checkpoint! parity" begin
-        # Parity with the CPU touched-others-stack architecture (PR #51):
+        # Parity with the CPU touched-others-stack architecture (the constant-cost
+        # touched-others architecture, depth-tagged stack):
         # _typed_lazy_checkpoint! must delegate to checkpoint!(pool, types...)
         # (which routes fallback types through _touch_fallback_pool! — the
         # double-checkpoint guard and has_others flag live THERE now) and set
         # _TYPED_LAZY_BIT. It must NOT eagerly snapshot pool.others — that
-        # re-introduces the cross-scope pollution PR #51 removed.
+        # re-introduces the cross-scope pollution that architecture removed.
         cuda_state_path = joinpath(@__DIR__, "..", "ext", "AdaptiveArrayPoolsCUDAExt", "state.jl")
         if isfile(cuda_state_path)
             code = read(cuda_state_path, String)
