@@ -91,6 +91,7 @@ end
             for dims in dims_list
                 @with_pool :cuda p begin
                     _ = acquire!(p, Float64, dims...)
+                    nothing
                 end
             end
         end
@@ -115,6 +116,7 @@ end
             for dims in dims_list
                 @with_pool :cuda p begin
                     _ = acquire!(p, Float64, dims...)
+                    nothing
                 end
             end
         end
@@ -166,6 +168,7 @@ end
             for dims in dims_list
                 @with_pool :cuda p begin
                     _ = acquire!(p, Float64, dims...)
+                    nothing
                 end
             end
         end
@@ -189,6 +192,7 @@ end
             for dims in dims_list
                 @with_pool :cuda p begin
                     _ = acquire!(p, Float64, dims...)
+                    nothing
                 end
             end
         end
@@ -314,12 +318,15 @@ end
         function test_mixed_n_cpu()
             @with_pool :cuda p begin
                 _ = acquire!(p, Float64, 100)        # 1D
+                nothing
             end
             @with_pool :cuda p begin
                 _ = acquire!(p, Float64, 10, 10)     # 2D
+                nothing
             end
             @with_pool :cuda p begin
                 _ = acquire!(p, Float64, 5, 5, 4)    # 3D
+                nothing
             end
         end
 
@@ -344,12 +351,15 @@ end
                 )
                 @with_pool :cuda p begin
                     _ = acquire!(p, Float64, d1)
+                    nothing
                 end
                 @with_pool :cuda p begin
                     _ = acquire!(p, Float64, d2...)
+                    nothing
                 end
                 @with_pool :cuda p begin
                     _ = acquire!(p, Float64, d3...)
+                    nothing
                 end
             end
         end
@@ -372,6 +382,7 @@ end
                 _ = acquire!(p, Float64, 100)        # Slot 1, 1D
                 _ = acquire!(p, Float64, 10, 10)     # Slot 2, 2D
                 _ = acquire!(p, Float64, 5, 5, 4)    # Slot 3, 3D
+                nothing
             end
         end
 
@@ -421,6 +432,7 @@ end
                 _ = acquire!(p, Float64, 100)
                 _ = acquire!(p, Float64, 10, 10)
                 _ = acquire!(p, Float64, 5, 5, 4)
+                nothing
             end
         end
 
@@ -580,6 +592,7 @@ end
             @with_pool :cuda p begin
                 A = acquire!(p, Float64, 12)
                 B = reshape!(p, A, 3, 4)
+                nothing
             end
         end
 
