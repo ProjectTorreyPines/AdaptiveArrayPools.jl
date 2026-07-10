@@ -113,6 +113,10 @@ makedocs(
         canonical = "https://projecttorreypines.github.io/AdaptiveArrayPools.jl",
         edit_link = :commit,
         assets = String[],
+        # The single-page Full API reference renders just over Documenter's 200 KiB
+        # hard limit in CI (GitHub source links, absent locally, add a few KiB).
+        # Exempt only this page; every other page keeps the size guardrail.
+        size_threshold_ignore = ["reference/api.md"],
     ),
     pages = [
         "Home" => "index.md",

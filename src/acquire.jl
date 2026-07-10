@@ -310,6 +310,12 @@ end
     b = _fixed_slot_bit(T)
     if b == UInt16(0)
         @inbounds pool._touched_has_others[depth] = true
+        # First-touch lazy checkpoint for fallback types (identity-list analogue of
+        # the fixed-slot bitmask path below). depth == 1 (global scope) is exempt:
+        # there is no scope to rewind to, matching get_typed_pool!'s gate.
+        if depth > 1
+            _touch_fallback_pool!(pool, get_typed_pool!(pool, T), depth)
+        end
     else
         current_mask = @inbounds pool._touched_type_masks[depth]
         # Lazy checkpoint: lazy mode (bit 15) OR typed lazy mode (bit 14), AND first touch.

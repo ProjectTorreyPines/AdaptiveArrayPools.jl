@@ -4,7 +4,7 @@ using AdaptiveArrayPools: checkpoint!, rewind!
 
 # ==============================================================================
 # compact! — capacity compaction (shrink over-allocated backing buffers in place)
-# Design: docs/design/capacity_compaction.md  |  Plan: docs/plans/PLAN_compact.md
+# Design: see the compact! docstring in src/state.jl  |  Plan: docs/plans/PLAN_compact.md
 #
 # Model: a slot's backing Vector length is the HIGH-WATER mark (largest ever
 # acquired; _claim_slot! only grows). The CURRENT use is recorded per-slot in

@@ -178,10 +178,7 @@ This pattern reduces branching in hot paths where every nanosecond counts.
 
 ## Further Reading
 
-For detailed design documents:
-
-- [`hybrid_api_design.md`](https://github.com/ProjectTorreyPines/AdaptiveArrayPools.jl/blob/master/docs/design/hybrid_api_design.md) — Two-API strategy (`acquire!` vs `acquire_view!`) and type stability analysis
-- [`nd_array_approach_comparison.md`](https://github.com/ProjectTorreyPines/AdaptiveArrayPools.jl/blob/master/docs/design/nd_array_approach_comparison.md) — N-way cache design, boxing analysis, and ReshapedArray benchmarks
-- [`untracked_acquire_design.md`](https://github.com/ProjectTorreyPines/AdaptiveArrayPools.jl/blob/master/docs/design/untracked_acquire_design.md) — Macro-based untracked acquire detection and 1-based sentinel pattern
-- [`fixed_slots_codegen_design.md`](https://github.com/ProjectTorreyPines/AdaptiveArrayPools.jl/blob/master/docs/design/fixed_slots_codegen_design.md) — Zero-allocation iteration via `@generated` functions
-- [`cuda_extension_design.md`](https://github.com/ProjectTorreyPines/AdaptiveArrayPools.jl/blob/master/docs/design/cuda_extension_design.md) — CUDA backend architecture and extension loading
+The historical design documents that used to be linked here have been removed
+as outdated. See [Design Documents](design-docs.md) for details, or the
+[Type Dispatch & Cache](type-dispatch.md) and [`@with_pool` Macro Internals](macro-internals.md)
+pages for the current technical deep-dives.
