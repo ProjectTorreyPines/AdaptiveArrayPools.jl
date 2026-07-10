@@ -41,10 +41,11 @@ mutable struct CuTypedPool{T} <: AbstractTypedPool{T, CuVector{T}}
     # (`_slot_used`) to know how much of an over-allocated device buffer is in use.
     slot_extents::Vector{Int}
 
-    # --- State Management (1-based sentinel pattern) ---
-    n_active::Int
-    _checkpoint_n_active::Vector{Int}
-    _checkpoint_depths::Vector{Int}
+    # --- State Management ---
+    # Checkpoint bookkeeping, extracted into a concrete shared struct (see CPU
+    # PoolCheckpointState docstring). `const`: the reference never changes after
+    # construction. Accessed as tp.n_active / tp._checkpoint_* via forwarding below.
+    const state::PoolCheckpointState
 
     # --- Auto-trim telemetry (parity with CPU TypedPool; see its docstring) ---
     # Peak `n_active` since the last auto-trim — the recent working-set width. Written on the
@@ -58,10 +59,31 @@ function CuTypedPool{T}() where {T}
         CuVector{T}[],                   # vectors
         Union{Nothing, Vector{Any}}[],   # arr_wrappers (indexed by N)
         Int[],                           # slot_extents (parallel to vectors)
-        0, [0], [0],                     # State (1-based sentinel)
+        PoolCheckpointState(),           # state (1-based sentinel)
         0,                               # _am_peak_n_active: no usage observed yet
     )
 end
+
+# Checkpoint-state property forwarding (mirror of CPU src/types.jl:294-307).
+@inline function Base.getproperty(tp::CuTypedPool, f::Symbol)
+    f === :n_active && return getfield(tp, :state).n_active
+    f === :_checkpoint_n_active && return getfield(tp, :state)._checkpoint_n_active
+    f === :_checkpoint_depths && return getfield(tp, :state)._checkpoint_depths
+    return getfield(tp, f)
+end
+
+@inline function Base.setproperty!(tp::CuTypedPool, f::Symbol, v)
+    f === :n_active && return setfield!(getfield(tp, :state), :n_active, convert(Int, v))
+    return setfield!(tp, f, convert(fieldtype(typeof(tp), f), v))
+end
+
+Base.propertynames(tp::CuTypedPool) =
+    (fieldnames(typeof(tp))..., :n_active, :_checkpoint_n_active, :_checkpoint_depths)
+
+# Route the generic checkpoint/rewind cores at the concrete state (zero-dispatch
+# drain); without this, CuTypedPool falls back to _cp_state(tp) = tp and
+# _touch_fallback_pool!'s ::PoolCheckpointState assert throws.
+@inline AdaptiveArrayPools._cp_state(tp::CuTypedPool) = getfield(tp, :state)
 
 # ==============================================================================
 # GPU Fixed Slot Configuration
@@ -125,6 +147,20 @@ mutable struct CuAdaptiveArrayPool{S} <: AbstractArrayPool
     _touched_type_masks::Vector{UInt16}  # Per-depth: which fixed slots were touched + mode flags
     _touched_has_others::Vector{Bool}    # Per-depth: any non-fixed-slot type touched?
 
+    # Touched-others tracking (depth-tagged, concrete) — mirror of CPU
+    # src/types.jl:434-453. Checkpoint variants push NOTHING; producers push one
+    # (state, depth) entry per first touch; rewind pops while the top tag matches.
+    # _touched_others_pools is populated only when S >= 1 (slot invalidation).
+    _touched_others_states::Vector{PoolCheckpointState}
+    _touched_others_depths::Vector{Int}
+    _touched_others_pools::Vector{Any}
+
+    # Last-lookup memo for the fallback registry (mirror of CPU). Set on every
+    # slow-path lookup; cleared by empty! (identities die), preserved by
+    # reset!/trim!/compact! (identities survive). Task-local pool → no races.
+    _lookup_memo_type::Any
+    _lookup_memo_tp::Any
+
     # Device tracking (safety)
     device_id::Int
 
@@ -158,6 +194,11 @@ function CuAdaptiveArrayPool{S}() where {S}
         1,              # _current_depth (1 = global scope)
         [UInt16(0)],    # _touched_type_masks: sentinel (no bits set)
         [false],        # _touched_has_others: sentinel (no others)
+        PoolCheckpointState[],  # _touched_others_states: no fallback touches yet
+        Int[],                   # _touched_others_depths
+        Any[],                   # _touched_others_pools
+        nothing,                 # _lookup_memo_type
+        nothing,                 # _lookup_memo_tp
         CUDA.deviceid(dev),
         "",             # _pending_callsite
         "",             # _pending_return_site
@@ -184,6 +225,15 @@ Return compile-time constant indicating whether runtime safety checks are enable
 @inline AdaptiveArrayPools._runtime_check(::CuAdaptiveArrayPool) = true  # S >= 1
 
 """
+    _check_level(pool::CuAdaptiveArrayPool) -> Int
+
+Runtime-check level as an Int (mirror of CPU `src/types.jl:513`), for
+backend-shared code that forwards it to `_invalidate_released_slots!` /
+`_rewind_typed_pool!`. Compile-time constant per concrete pool type.
+"""
+@inline AdaptiveArrayPools._check_level(::CuAdaptiveArrayPool{S}) where {S} = S
+
+"""
     _make_cuda_pool(level) -> CuAdaptiveArrayPool
 
 Function barrier: converts runtime check level to concrete `CuAdaptiveArrayPool{S}`.
@@ -195,40 +245,12 @@ _make_cuda_pool(runtime_check::Bool) = _make_cuda_pool(Int(runtime_check))
     return CuAdaptiveArrayPool{1}()
 end
 
-"""
-    _make_cuda_pool(level, old::CuAdaptiveArrayPool) -> CuAdaptiveArrayPool
-
-Create a new CUDA pool, transferring cached arrays and scope state from `old`.
-Only reference copies — no memory allocation for underlying GPU buffers.
-
-Transferred: all CuTypedPool slots, `others`, depth & touch tracking, device_id.
-Reset: `_pending_callsite/return_site` (transient macro state),
-       `_borrow_log` (created fresh when S >= 1).
-"""
-_make_cuda_pool(runtime_check::Bool, old::CuAdaptiveArrayPool) = _make_cuda_pool(Int(runtime_check), old)
-@noinline function _make_cuda_pool(level::Int, old::CuAdaptiveArrayPool)
-    level == 0 && return _transfer_cuda_pool(Val(0), old)
-    return _transfer_cuda_pool(Val(1), old)
-end
-
-"""Transfer cached arrays and scope state from `old` pool into a new `CuAdaptiveArrayPool{V}`."""
-function _transfer_cuda_pool(::Val{V}, old::CuAdaptiveArrayPool) where {V}
-    return CuAdaptiveArrayPool{V}(
-        old.float32, old.float64, old.float16,
-        old.int32, old.int64,
-        old.complexf32, old.complexf64, old.bool,
-        old.others,
-        old._current_depth,
-        old._touched_type_masks,
-        old._touched_has_others,
-        old.device_id,
-        "",       # _pending_callsite: reset
-        "",       # _pending_return_site: reset
-        V >= 1 ? IdDict{Any, String}() : nothing,  # _borrow_log
-        false,                                      # _compact_requested: reset on migration
-        false                                       # _trim_requested: reset on migration
-    )
-end
+# NOTE: a former 2-arg `_make_cuda_pool(level, old)` overload migrated a pool
+# across S while transferring caches by reference. Removed (no production
+# callers): the touched-others stack's shape is S-dependent (pools entries
+# exist only at S >= 1), so a mid-scope migration would desync the next
+# rewind. If runtime S switching is ever needed, reintroduce it with an
+# explicit global-scope guard.
 
 """Human-readable runtime check label."""
 function _cuda_check_label(s::Int)

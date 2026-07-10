@@ -40,6 +40,7 @@ else
 
         # Include all CUDA test files
         include("test_extension.jl")
+        include("test_touched_others.jl")
         include("test_allocation.jl")
         include("test_nway_cache.jl")
         include("test_display.jl")

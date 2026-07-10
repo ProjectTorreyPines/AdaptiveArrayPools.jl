@@ -34,7 +34,7 @@ using AdaptiveArrayPools: get_view!, get_array!, allocate_vector, safe_prod,
     _record_type_touch!, _fixed_slot_bit, _checkpoint_typed_pool!,
     _store_arr_wrapper!, _check_pool_growth, _reshape_impl!,
     _acquire_impl!, _acquire_view_impl!, _maybe_record_borrow!,
-    _MODE_BITS_MASK
+    _MODE_BITS_MASK, _touch_fallback_pool!
 
 using CUDA: unsafe_free!
 
@@ -339,8 +339,13 @@ end
             end
             @inbounds pool._touched_type_masks[depth] = current_mask | b16
         else
-            # Genuine others type (UInt8, Int8, etc.) — eagerly snapshotted at scope entry.
+            # Genuine others type (UInt8, Int8, etc.).
             @inbounds pool._touched_has_others[depth] = true
+            # First-touch lazy checkpoint for fallback types; depth == 1 (global
+            # scope) is exempt — matches get_typed_pool!'s gate.
+            if depth > 1
+                _touch_fallback_pool!(pool, AdaptiveArrayPools.get_typed_pool!(pool, T), depth)
+            end
         end
     else
         current_mask = @inbounds pool._touched_type_masks[depth]
