@@ -1617,4 +1617,38 @@ import AdaptiveArrayPools: _is_nested_with_pool_macrocall
         end
     end
 
+    # ==================================================================
+    # Task 2: per-scope `tp` hoisting
+    # ==================================================================
+
+    @static if VERSION >= v"1.12-"
+        @testset "tp hoisting: semantics parity + zero-alloc" begin
+            # `@with_pool pool begin` binds `pool` to the TASK-LOCAL pool — the
+            # functions take no pool argument; asserts target get_task_local_pool().
+            tlp = get_task_local_pool()
+            reset!(tlp)
+            f!() = @with_pool pool begin
+                a = acquire!(pool, UInt8, 16)          # fallback type → real lookup saved
+                b = acquire!(pool, UInt8, 32)
+                c = zeros!(pool, UInt8, 8)
+                a[1] = 0x01; b[1] = 0x02
+                Int(a[1]) + Int(b[1]) + Int(c[1])
+            end
+            @test f!() == 3
+            @test AdaptiveArrayPools.get_typed_pool!(tlp, UInt8).n_active == 0
+            f!()  # warmup
+            @test (@allocated f!()) == 0
+
+            # Conditional acquire: hoist binding runs eagerly, scope must still rewind clean
+            g!(flag) = @with_pool pool begin
+                flag && acquire!(pool, UInt16, 4)
+                nothing
+            end
+            g!(false)
+            @test AdaptiveArrayPools.get_typed_pool!(tlp, UInt16).n_active == 0
+            g!(true)
+            @test AdaptiveArrayPools.get_typed_pool!(tlp, UInt16).n_active == 0
+        end
+    end
+
 end # Macro Internals

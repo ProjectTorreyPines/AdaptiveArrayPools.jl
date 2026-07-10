@@ -738,6 +738,13 @@ function _generate_block_inner(pool_name, expr, safe::Bool, source)
     end
 
     transformed_expr = use_typed ? _transform_acquire_calls(expr, pool_name) : expr
+    tp_bindings = Expr[]
+    if use_typed
+        tp_vars, transformed_expr = _hoist_typed_pools(transformed_expr, static_types)
+        for (t, v) in tp_vars
+            push!(tp_bindings, :(local $(esc(v)) = $get_typed_pool!($(esc(pool_name)), $(esc(t)))))
+        end
+    end
     transformed_expr = _inject_pending_callsite(transformed_expr, pool_name, expr)
 
     if safe
@@ -745,6 +752,7 @@ function _generate_block_inner(pool_name, expr, safe::Bool, source)
         return quote
             $(_auto_manage_hook(pool_name))
             $checkpoint_call
+            $(tp_bindings...)
             try
                 local _result = $(esc(transformed_expr))
                 if $_RUNTIME_CHECK_REF($(esc(pool_name)))
@@ -771,6 +779,7 @@ function _generate_block_inner(pool_name, expr, safe::Bool, source)
             local $(esc(entry_depth_var)) = $(esc(pool_name))._current_depth
             $(_auto_manage_hook(pool_name))
             $checkpoint_call
+            $(tp_bindings...)
             local _result = $(esc(transformed_expr))
             # Leaked scope cleanup BEFORE validation: if an inner @with_pool threw
             # without rewind, _current_depth is still the inner depth. Validation
@@ -818,6 +827,13 @@ function _generate_function_inner(pool_name, expr, safe::Bool, source)
     end
 
     transformed_expr = use_typed ? _transform_acquire_calls(expr, pool_name) : expr
+    tp_bindings = Expr[]
+    if use_typed
+        tp_vars, transformed_expr = _hoist_typed_pools(transformed_expr, static_types)
+        for (t, v) in tp_vars
+            push!(tp_bindings, :(local $(esc(v)) = $get_typed_pool!($(esc(pool_name)), $(esc(t)))))
+        end
+    end
     transformed_expr = _inject_pending_callsite(transformed_expr, pool_name, expr)
 
     if safe
@@ -825,6 +841,7 @@ function _generate_function_inner(pool_name, expr, safe::Bool, source)
         return quote
             $(_auto_manage_hook(pool_name))
             $checkpoint_call
+            $(tp_bindings...)
             try
                 local _result = $(esc(transformed_expr))
                 if $_RUNTIME_CHECK_REF($(esc(pool_name)))
@@ -851,6 +868,7 @@ function _generate_function_inner(pool_name, expr, safe::Bool, source)
             local $(esc(entry_depth_var)) = $(esc(pool_name))._current_depth
             $(_auto_manage_hook(pool_name))
             $checkpoint_call
+            $(tp_bindings...)
             local _result = $(esc(transformed_expr))
             # Leaked scope cleanup BEFORE validation: if an inner @with_pool threw
             # without rewind, _current_depth is still the inner depth. Validation
@@ -1605,6 +1623,51 @@ function _transform_acquire_calls(expr, pool_name)
         return Expr(expr.head, new_args...)
     end
     return expr
+end
+
+# ==============================================================================
+# Internal: Per-Scope Typed-Pool Hoisting
+# ==============================================================================
+#
+# After `_transform_acquire_calls` rewrites `acquire!`/`zeros!`/etc. to their
+# `_*_impl!` GlobalRef forms, this pass replaces the literal type argument of
+# each such call with a per-scope local variable bound to the looked-up
+# `AbstractTypedPool`, so `get_typed_pool!` runs once per static type per scope
+# instead of once per acquire call.
+
+# Impl refs whose 2nd argument is a type literal replaceable by a hoisted tp.
+const _HOISTABLE_IMPL_REFS = (
+    _ACQUIRE_IMPL_REF, _ACQUIRE_VIEW_IMPL_REF,
+    _ZEROS_IMPL_REF, _ONES_IMPL_REF, _RAND_IMPL_REF, _RANDN_IMPL_REF,
+)
+
+"""
+    _hoist_typed_pools(expr, static_types) -> (tp_vars, rewritten_expr)
+
+For each static type expression, allocate a gensym and replace the type argument
+of transformed `_*_impl!` calls (structural `==` match) with that variable.
+Returns the type→gensym map (ordered as `static_types`) and the rewritten body.
+The caller emits `local var = get_typed_pool!(pool, T)` bindings after checkpoint.
+"""
+function _hoist_typed_pools(expr, static_types)
+    tp_vars = Vector{Pair{Any, Symbol}}()
+    lookup = Dict{Any, Symbol}()
+    for t in static_types
+        v = gensym(:_aap_tp)
+        push!(tp_vars, t => v)
+        lookup[t] = v
+    end
+    return tp_vars, _rewrite_hoisted_calls(expr, lookup)
+end
+
+function _rewrite_hoisted_calls(expr, lookup)
+    expr isa Expr || return expr
+    if expr.head == :call && length(expr.args) >= 3 &&
+            (expr.args[1] in _HOISTABLE_IMPL_REFS) && haskey(lookup, expr.args[3])
+        rest = Any[_rewrite_hoisted_calls(a, lookup) for a in expr.args[4:end]]
+        return Expr(:call, expr.args[1], expr.args[2], lookup[expr.args[3]], rest...)
+    end
+    return Expr(expr.head, Any[_rewrite_hoisted_calls(a, lookup) for a in expr.args]...)
 end
 
 # ==============================================================================

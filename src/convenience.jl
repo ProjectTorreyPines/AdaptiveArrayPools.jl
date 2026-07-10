@@ -87,6 +87,18 @@ end
     return _zeros_impl!(pool, default_eltype(pool), dims...)
 end
 
+# tp-hoisted forms: macro-transformed code binds `tp = get_typed_pool!(pool, T)`
+# once per scope and passes it here, skipping the per-acquire lookup.
+@inline function _zeros_impl!(pool::AbstractArrayPool, tp::AbstractTypedPool{T}, dims::Vararg{Int, N}) where {T, N}
+    arr = _acquire_impl!(pool, tp, dims...)
+    fill!(arr, zero(T))
+    return arr
+end
+
+@inline function _zeros_impl!(pool::AbstractArrayPool, tp::AbstractTypedPool{T}, dims::NTuple{N, Int}) where {T, N}
+    return _zeros_impl!(pool, tp, dims...)
+end
+
 # Bit type specialization: zeros!(pool, Bit, ...) delegates to falses!(pool, ...)
 @inline zeros!(pool::AbstractArrayPool, ::Type{Bit}, dims::Vararg{Int, N}) where {N} = falses!(pool, dims...)
 @inline zeros!(pool::AbstractArrayPool, ::Type{Bit}, dims::NTuple{N, Int}) where {N} = falses!(pool, dims)
@@ -162,6 +174,18 @@ end
 
 @inline function _ones_impl!(pool::AbstractArrayPool, dims::NTuple{N, Int}) where {N}
     return _ones_impl!(pool, default_eltype(pool), dims...)
+end
+
+# tp-hoisted forms: macro-transformed code binds `tp = get_typed_pool!(pool, T)`
+# once per scope and passes it here, skipping the per-acquire lookup.
+@inline function _ones_impl!(pool::AbstractArrayPool, tp::AbstractTypedPool{T}, dims::Vararg{Int, N}) where {T, N}
+    arr = _acquire_impl!(pool, tp, dims...)
+    fill!(arr, one(T))
+    return arr
+end
+
+@inline function _ones_impl!(pool::AbstractArrayPool, tp::AbstractTypedPool{T}, dims::NTuple{N, Int}) where {T, N}
+    return _ones_impl!(pool, tp, dims...)
 end
 
 # Bit type specialization: ones!(pool, Bit, ...) delegates to trues!(pool, ...)
@@ -338,6 +362,15 @@ end
 @inline _rand_impl!(pool::AbstractArrayPool, dims::Vararg{Int, N}) where {N} = _rand_impl!(pool, default_eltype(pool), dims...)
 @inline _rand_impl!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N} = _rand_impl!(pool, T, dims...)
 @inline _rand_impl!(pool::AbstractArrayPool, dims::NTuple{N, Int}) where {N} = _rand_impl!(pool, default_eltype(pool), dims...)
+
+# tp-hoisted forms: macro-transformed code binds `tp = get_typed_pool!(pool, T)`
+# once per scope and passes it here, skipping the per-acquire lookup.
+@inline function _rand_impl!(pool::AbstractArrayPool, tp::AbstractTypedPool, dims::Vararg{Int, N}) where {N}
+    arr = _acquire_impl!(pool, tp, dims...)
+    Random.rand!(arr)
+    return arr
+end
+@inline _rand_impl!(pool::AbstractArrayPool, tp::AbstractTypedPool, dims::NTuple{N, Int}) where {N} = _rand_impl!(pool, tp, dims...)
 # Collection form self-records its eltype touch: the macro registers the wrong
 # (default) type for `rand!(pool, S, dims)` because `S` is not a syntactic type,
 # so this impl records `eltype(S)` itself to keep checkpoint/rewind correct.
@@ -398,6 +431,15 @@ end
 @inline _randn_impl!(pool::AbstractArrayPool, dims::Vararg{Int, N}) where {N} = _randn_impl!(pool, default_eltype(pool), dims...)
 @inline _randn_impl!(pool::AbstractArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N} = _randn_impl!(pool, T, dims...)
 @inline _randn_impl!(pool::AbstractArrayPool, dims::NTuple{N, Int}) where {N} = _randn_impl!(pool, default_eltype(pool), dims...)
+
+# tp-hoisted forms: macro-transformed code binds `tp = get_typed_pool!(pool, T)`
+# once per scope and passes it here, skipping the per-acquire lookup.
+@inline function _randn_impl!(pool::AbstractArrayPool, tp::AbstractTypedPool, dims::Vararg{Int, N}) where {N}
+    arr = _acquire_impl!(pool, tp, dims...)
+    Random.randn!(arr)
+    return arr
+end
+@inline _randn_impl!(pool::AbstractArrayPool, tp::AbstractTypedPool, dims::NTuple{N, Int}) where {N} = _randn_impl!(pool, tp, dims...)
 
 # ==============================================================================
 # similar! - Acquire arrays with same type/size as template

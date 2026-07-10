@@ -183,6 +183,27 @@ end
     return _acquire_impl!(pool, T, dims...)
 end
 
+# tp-hoisted forms: macro-transformed code binds `tp = get_typed_pool!(pool, T)`
+# once per scope and passes it here, skipping the per-acquire lookup. More
+# specific than the generic `AbstractArrayPool` tp-variants in src/acquire.jl —
+# required because CUDA's `_acquire_impl!` skips `_maybe_record_others_bounds!`
+# (no pointer-overlap tracking on GPU memory).
+@inline function AdaptiveArrayPools._acquire_impl!(pool::CuAdaptiveArrayPool, tp::AbstractTypedPool, n::Int)
+    result = get_array!(tp, (n,))
+    _maybe_record_borrow!(pool, tp)
+    return result
+end
+
+@inline function AdaptiveArrayPools._acquire_impl!(pool::CuAdaptiveArrayPool, tp::AbstractTypedPool, dims::Vararg{Int, N}) where {N}
+    result = get_array!(tp, dims)
+    _maybe_record_borrow!(pool, tp)
+    return result
+end
+
+@inline function AdaptiveArrayPools._acquire_impl!(pool::CuAdaptiveArrayPool, tp::AbstractTypedPool, dims::NTuple{N, Int}) where {N}
+    return _acquire_impl!(pool, tp, dims...)
+end
+
 """
     _acquire_view_impl!(pool::CuAdaptiveArrayPool, T, dims...) -> CuArray{T,N}
 
@@ -198,6 +219,19 @@ end
 
 @inline function AdaptiveArrayPools._acquire_view_impl!(pool::CuAdaptiveArrayPool, ::Type{T}, dims::NTuple{N, Int}) where {T, N}
     return _acquire_impl!(pool, T, dims...)
+end
+
+# tp-hoisted forms (see above): view has no distinction from acquire on CUDA.
+@inline function AdaptiveArrayPools._acquire_view_impl!(pool::CuAdaptiveArrayPool, tp::AbstractTypedPool, n::Int)
+    return _acquire_impl!(pool, tp, n)
+end
+
+@inline function AdaptiveArrayPools._acquire_view_impl!(pool::CuAdaptiveArrayPool, tp::AbstractTypedPool, dims::Vararg{Int, N}) where {N}
+    return _acquire_impl!(pool, tp, dims...)
+end
+
+@inline function AdaptiveArrayPools._acquire_view_impl!(pool::CuAdaptiveArrayPool, tp::AbstractTypedPool, dims::NTuple{N, Int}) where {N}
+    return _acquire_impl!(pool, tp, dims...)
 end
 
 # ==============================================================================

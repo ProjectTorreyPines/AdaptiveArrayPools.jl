@@ -982,4 +982,17 @@ end # Dynamic selective mode expansion
         end
         @test tp.n_active == 0
     end
+
+    @testset "typed scopes hoist get_typed_pool! once per static type" begin
+        ex = @macroexpand @with_pool pool begin
+            a = acquire!(pool, Float64, 4)
+            b = acquire!(pool, Float64, 8)
+            c = zeros!(pool, Float64, 2)
+            a[1] = b[1] = c[1] = 0.0
+            nothing
+        end
+        s = string(ex)
+        # Exactly one hoisted lookup for Float64 in the emitted scope body
+        @test count("get_typed_pool!", s) == 1
+    end
 end
