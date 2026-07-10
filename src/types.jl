@@ -507,6 +507,11 @@ Compile-time constant for `AdaptiveArrayPool{S}` — dead-code eliminated when `
 @inline _runtime_check(::AdaptiveArrayPool{0}) = false
 @inline _runtime_check(::AdaptiveArrayPool) = true  # S >= 1
 
+# Runtime-check level as an Int for backend-shared code that forwards it to
+# _invalidate_released_slots! / _rewind_typed_pool!. A compile-time constant
+# per concrete pool type — inlines to a literal, so DCE at level 0 is intact.
+@inline _check_level(::AdaptiveArrayPool{S}) where {S} = S
+
 """
     _make_pool(level) -> AdaptiveArrayPool
 
