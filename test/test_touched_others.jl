@@ -1,14 +1,25 @@
 # Tests for the touched-others stack: per-scope selective fallback checkpoint/rewind.
-# Invariant: a fallback pool has a checkpoint entry at depth d ⟺ it is in the depth-d
-# segment of pool._touched_others — except under full checkpoint!(pool), whose eager
-# sweep pairs with full rewind!(pool)'s sweep (segment stays empty, truncate-only).
-# See the docstrings of _touch_fallback_pool!/_drain_touched_others! in src/state.jl.
+# Invariant: a fallback pool has an entry tagged with depth d in the depth-tagged
+# stack (states/depths, kept in lockstep) ⟺ it was first touched at depth d — except
+# under full checkpoint!(pool), whose eager sweep pairs with full rewind!(pool)'s
+# sweep (stack stays empty, truncate-only).
+# See the docstrings of the touch/drain helpers in src/state.jl.
 
 using Test
 using AdaptiveArrayPools
 using AdaptiveArrayPools: get_typed_pool!, checkpoint!, rewind!,
     _lazy_checkpoint!, _lazy_rewind!, _typed_lazy_checkpoint!, _typed_lazy_rewind!,
     _tracked_mask_for_types, _can_use_typed_path, get_task_local_pool, @with_pool
+
+# Depth-tagged stack shape: states/depths always in lockstep; pools populated
+# only in runtime-check builds.
+function _to_stack_shape_ok(pool)
+    ok = length(pool._touched_others_states) == length(pool._touched_others_depths)
+    expected_pools = AdaptiveArrayPools.RUNTIME_CHECK >= 1 ?
+        length(pool._touched_others_states) : 0
+    return ok && length(pool._touched_others_pools) == expected_pools
+end
+_to_stack_len(pool) = length(pool._touched_others_states)
 
 # Distinct isbits fallback types (not fixed slots)
 struct TOFooA
@@ -23,21 +34,21 @@ end
 
 @testset "touched-others: fields & lifecycle" begin
     pool = AdaptiveArrayPool()
-    @test pool._touched_others == Any[]
-    @test pool._touched_others_checkpoints == [0]
+    @test isempty(pool._touched_others_states) && isempty(pool._touched_others_depths) && isempty(pool._touched_others_pools)
+    @test isempty(pool._touched_others_depths)
 
     # reset! clears transient scope state, keeps registry
     acquire!(pool, TOFooA, 4)
     reset!(pool)
-    @test isempty(pool._touched_others)
-    @test pool._touched_others_checkpoints == [0]
+    @test _to_stack_len(pool) == 0
+    @test isempty(pool._touched_others_depths)
     @test haskey(pool.others, TOFooA)          # registry kept
 
     # empty! clears everything
     acquire!(pool, TOFooA, 4)
     empty!(pool)
-    @test isempty(pool._touched_others)
-    @test pool._touched_others_checkpoints == [0]
+    @test _to_stack_len(pool) == 0
+    @test isempty(pool._touched_others_depths)
     @test !haskey(pool.others, TOFooA)
 end
 
@@ -46,38 +57,38 @@ end
 
     # lazy pair
     _lazy_checkpoint!(pool)
-    @test pool._touched_others_checkpoints == [0, 0]
+    @test isempty(pool._touched_others_depths)
     _lazy_rewind!(pool)
-    @test pool._touched_others_checkpoints == [0]
+    @test isempty(pool._touched_others_depths)
 
     # typed single pair (fixed-slot type)
     checkpoint!(pool, Float64)
-    @test length(pool._touched_others_checkpoints) == 2
+    @test isempty(pool._touched_others_depths)
     rewind!(pool, Float64)
-    @test pool._touched_others_checkpoints == [0]
+    @test isempty(pool._touched_others_depths)
 
     # typed multi pair
     checkpoint!(pool, Float64, Int64)
     rewind!(pool, Float64, Int64)
-    @test pool._touched_others_checkpoints == [0]
+    @test isempty(pool._touched_others_depths)
 
     # full pair
     checkpoint!(pool)
     rewind!(pool)
-    @test pool._touched_others_checkpoints == [0]
+    @test isempty(pool._touched_others_depths)
 
     # typed-lazy pair
     _typed_lazy_checkpoint!(pool, Float64)
     _typed_lazy_rewind!(pool, _tracked_mask_for_types(Float64))
-    @test pool._touched_others_checkpoints == [0]
+    @test isempty(pool._touched_others_depths)
 
     # nesting
     _lazy_checkpoint!(pool)
     checkpoint!(pool, Float64)
-    @test length(pool._touched_others_checkpoints) == 3
+    @test isempty(pool._touched_others_depths)
     rewind!(pool, Float64)
     _lazy_rewind!(pool)
-    @test pool._touched_others_checkpoints == [0]
+    @test isempty(pool._touched_others_depths)
 end
 
 @testset "touched-others: no eager checkpoint on lazy entry (pollution regression)" begin
@@ -96,17 +107,17 @@ end
 
     v = acquire!(pool, TOFooA, 8)
     @test tpA._checkpoint_depths[end] == 2       # first-touch checkpoint at depth 2
-    @test length(pool._touched_others) == 1
-    @test pool._touched_others[end] === tpA
+    @test _to_stack_len(pool) == 1 && _to_stack_shape_ok(pool)
+    @test pool._touched_others_states[end] === tpA.state
     @test tpA.n_active == 1
 
     # Re-acquire same type: no duplicate stack entry
     acquire!(pool, TOFooA, 8)
-    @test length(pool._touched_others) == 1
+    @test _to_stack_len(pool) == 1 && _to_stack_shape_ok(pool)
 
     _lazy_rewind!(pool)
     @test tpA.n_active == 0
-    @test isempty(pool._touched_others)
+    @test _to_stack_len(pool) == 0
     @test tpB._checkpoint_depths == [0]          # still never visited
     @test tpC._checkpoint_depths == [0]
 end
@@ -123,12 +134,39 @@ end
     acquire!(pool, TOFooA, 4)
     acquire!(pool, TOFooA, 4)
     @test tpA.n_active == 3
-    @test length(pool._touched_others) == 2       # one entry per depth
+    @test _to_stack_len(pool) == 2 && _to_stack_shape_ok(pool)       # one entry per depth
 
     _lazy_rewind!(pool)                           # exit depth 3
     @test tpA.n_active == 1
 
     _lazy_rewind!(pool)                           # exit depth 2
+    @test tpA.n_active == 0
+end
+
+@testset "touched-others: depth tags are exact and monotone" begin
+    pool = AdaptiveArrayPool()
+    tpA = get_typed_pool!(pool, TOFooA)
+
+    _lazy_checkpoint!(pool)                       # depth 2
+    @test isempty(pool._touched_others_depths)    # entry pushes nothing
+    acquire!(pool, TOFooA, 4)
+    @test pool._touched_others_depths == [2]
+    @test pool._touched_others_states[end] === tpA.state
+
+    _lazy_checkpoint!(pool)                       # depth 3
+    acquire!(pool, TOFooB, 4)
+    acquire!(pool, TOFooA, 4)                     # same type, new depth → new entry
+    @test pool._touched_others_depths == [2, 3, 3]
+    @test issorted(pool._touched_others_depths)   # monotone invariant
+    @test _to_stack_shape_ok(pool)
+
+    _lazy_rewind!(pool)                           # drains ONLY the ==3 entries
+    @test pool._touched_others_depths == [2]
+    @test tpA.n_active == 1
+    @test get_typed_pool!(pool, TOFooB).n_active == 0
+
+    _lazy_rewind!(pool)
+    @test isempty(pool._touched_others_depths)
     @test tpA.n_active == 0
 end
 
@@ -140,7 +178,7 @@ end
     acquire!(pool, TOFooA, 4)
     _lazy_checkpoint!(pool)                       # depth 3: does not touch TOFooA
     zeros!(pool, 16)                              # Float64 fixed-slot work only
-    @test length(pool._touched_others) == 1       # no new fallback entry
+    @test _to_stack_len(pool) == 1 && _to_stack_shape_ok(pool)       # no new fallback entry
     _lazy_rewind!(pool)
     @test tpA.n_active == 1                       # outer's array untouched
     _lazy_rewind!(pool)
@@ -155,7 +193,7 @@ end
     zeros!(pool, 8)                               # tracked fixed-slot work
     acquire!(pool, TOFooB, 4)                     # untracked helper-style fallback touch
     @test pool._touched_has_others[end] == true
-    @test pool._touched_others[end] === tpB
+    @test pool._touched_others_states[end] === tpB.state
     @test !_can_use_typed_path(pool, _tracked_mask_for_types(Float64))
     _typed_lazy_rewind!(pool, _tracked_mask_for_types(Float64))
     @test tpB.n_active == 0
@@ -166,13 +204,13 @@ end
 
     checkpoint!(pool, TOFooA)                     # fallback T tracked by macro
     tpA = get_typed_pool!(pool, TOFooA)
-    @test pool._touched_others[end] === tpA       # pushed at checkpoint
+    @test pool._touched_others_states[end] === tpA.state       # pushed at checkpoint
     acquire!(pool, TOFooA, 4)                     # public-API acquire: no double push
-    @test count(tp -> tp === tpA, pool._touched_others) == 1
+    @test count(st -> st === tpA.state, pool._touched_others_states) == 1
     # macro exit path for has_others=true is _typed_lazy_rewind!
     _typed_lazy_rewind!(pool, _tracked_mask_for_types(TOFooA))
     @test tpA.n_active == 0
-    @test pool._touched_others_checkpoints == [0]
+    @test isempty(pool._touched_others_depths)
 end
 
 @testset "touched-others: new type registered mid-scope" begin
@@ -180,8 +218,8 @@ end
     _lazy_checkpoint!(pool)
     acquire!(pool, TOFooC, 4)                     # first-ever registration, in-scope
     tpC = get_typed_pool!(pool, TOFooC)
-    @test pool._touched_others[end] === tpC
-    @test count(tp -> tp === tpC, pool._touched_others) == 1
+    @test pool._touched_others_states[end] === tpC.state
+    @test count(st -> st === tpC.state, pool._touched_others_states) == 1
     _lazy_rewind!(pool)
     @test tpC.n_active == 0
 end
@@ -194,10 +232,10 @@ end
     checkpoint!(pool)                             # eager: checkpoints ALL others
     @test tpA._checkpoint_depths[end] == 2
     acquire!(pool, TOFooA, 4)
-    @test isempty(pool._touched_others)           # guard saw existing depth-2 entry
+    @test _to_stack_len(pool) == 0           # guard saw existing depth-2 entry
     rewind!(pool)
     @test tpA.n_active == 0
-    @test pool._touched_others_checkpoints == [0]
+    @test isempty(pool._touched_others_depths)
 end
 
 @testset "touched-others: similar! records fallback touch" begin
@@ -206,7 +244,7 @@ end
     _lazy_checkpoint!(pool)
     similar!(pool, src)
     tpA = get_typed_pool!(pool, TOFooA)
-    @test pool._touched_others[end] === tpA
+    @test pool._touched_others_states[end] === tpA.state
     _lazy_rewind!(pool)
     @test tpA.n_active == 0
 end
@@ -230,7 +268,7 @@ end
     @test f_leaf(8) == 8
     tl = get_task_local_pool()
     @test get_typed_pool!(tl, TOFooA).n_active == 0
-    @test isempty(tl._touched_others)
+    @test isempty(tl._touched_others_states)
 
     # Inner scope throws, outer catches: outer exit must clean up leaked state
     function f_outer()
@@ -250,8 +288,8 @@ end
     @test tl._current_depth == 1
     @test get_typed_pool!(tl, TOFooB).n_active == 0
     @test get_typed_pool!(tl, TOFooC).n_active == 0
-    @test isempty(tl._touched_others)
-    @test tl._touched_others_checkpoints == [0]
+    @test isempty(tl._touched_others_states)
+    @test isempty(tl._touched_others_depths)
     empty!(tl)   # leave the task-local pool clean for other test files
 end
 
@@ -282,4 +320,25 @@ end
     _to_macro_roundtrip(32); _to_macro_roundtrip(32)             # warmup
     @test @allocated(_to_macro_roundtrip(32)) == 0
     empty!(get_task_local_pool())
+end
+
+@testset "fallback lookup memo: identity and invalidation" begin
+    pool = AdaptiveArrayPool()
+    tp1 = get_typed_pool!(pool, TOFooA)
+    @test get_typed_pool!(pool, TOFooA) === tp1     # repeat lookup: same pool
+    @test get_typed_pool!(pool, TOFooB) !== tp1     # different type: different pool
+    @test get_typed_pool!(pool, TOFooA) === tp1     # alternating types stay correct
+
+    reset!(pool)                                     # keeps registry → memo may stay
+    @test get_typed_pool!(pool, TOFooA) === tp1
+
+    empty!(pool)                                     # kills registry → memo MUST die
+    tp2 = get_typed_pool!(pool, TOFooA)
+    @test tp2 !== tp1                                # stale-memo regression guard
+    @test tp2 === pool.others[TOFooA]
+
+    # end-to-end: acquire after empty! must use the fresh pool
+    v = acquire!(pool, TOFooA, 4)
+    @test tp2.n_active == 1 && tp1.n_active == 0
+    reset!(pool)
 end

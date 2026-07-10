@@ -82,6 +82,27 @@ pooling_enabled(::DisabledPool) = false
 # isempty() checks in hot paths. See docstrings for details.
 
 """
+    PoolCheckpointState
+
+Concrete, type-parameter-free checkpoint bookkeeping shared by all CPU typed pools.
+
+`checkpoint!`/`rewind!` at `S = 0` only ever touch these three fields — none of the
+`T`-dependent storage — so extracting them lets the touched-others stack hold
+`PoolCheckpointState` objects directly and drain with zero dynamic dispatch
+(`Vector{PoolCheckpointState}` is concrete; a `Vector{Any}` of `TypedPool{T}` is not).
+
+1-based sentinel pattern: both stacks start at `[0]` (depth 0 = no checkpoint), so
+`[end]` access never needs an isempty guard.
+"""
+mutable struct PoolCheckpointState
+    n_active::Int
+    _checkpoint_n_active::Vector{Int}   # Saved n_active at each checkpoint
+    _checkpoint_depths::Vector{Int}     # Depth of each checkpoint
+end
+
+PoolCheckpointState() = PoolCheckpointState(0, [0], [0])
+
+"""
     TypedPool{T} <: AbstractTypedPool{T, Vector{T}}
 
 Internal structure managing pooled vectors for a specific element type `T`.
@@ -121,10 +142,11 @@ mutable struct TypedPool{T} <: AbstractTypedPool{T, Vector{T}}
     # capacity high-water mark, not the current extent.
     slot_extents::Vector{Int}
 
-    # --- State Management (1-based sentinel pattern) ---
-    n_active::Int
-    _checkpoint_n_active::Vector{Int}   # Saved n_active at each checkpoint
-    _checkpoint_depths::Vector{Int}     # Depth of each checkpoint
+    # Checkpoint bookkeeping, extracted into a concrete shared struct (see
+    # PoolCheckpointState). `const`: the reference never changes after construction,
+    # so the compiler can hoist the pointer load on hot paths. Accessed as
+    # tp.n_active / tp._checkpoint_* via property forwarding below.
+    const state::PoolCheckpointState
 
     # --- Auto-trim telemetry ---
     # Peak `n_active` reached since the last auto-trim — the recent working-set width.
@@ -140,10 +162,7 @@ TypedPool{T}() where {T} = TypedPool{T}(
     Union{Nothing, Vector{Any}}[],
     # Per-slot current logical extent (parallel to `vectors`)
     Int[],
-    # State Management (1-based sentinel pattern: guaranteed non-empty)
-    0,          # n_active
-    [0],        # _checkpoint_n_active: sentinel (n_active=0 at depth=0)
-    [0],        # _checkpoint_depths: sentinel (depth=0 = no checkpoint)
+    PoolCheckpointState(),  # state
     0,          # _am_peak_n_active: no usage observed yet
 )
 
@@ -244,10 +263,11 @@ mutable struct BitTypedPool <: AbstractTypedPool{Bool, BitVector}
     # --- N-D Wrapper Cache (setfield!-based reuse) ---
     arr_wrappers::Vector{Union{Nothing, Vector{Any}}}  # index=N (dimensionality), value=per-slot BitArray{N}
 
-    # --- State Management (1-based sentinel pattern) ---
-    n_active::Int
-    _checkpoint_n_active::Vector{Int}
-    _checkpoint_depths::Vector{Int}
+    # Checkpoint bookkeeping, extracted into a concrete shared struct (see
+    # PoolCheckpointState). `const`: the reference never changes after construction,
+    # so the compiler can hoist the pointer load on hot paths. Accessed as
+    # tp.n_active / tp._checkpoint_* via property forwarding below.
+    const state::PoolCheckpointState
 
     # --- Auto-trim telemetry (parallel to TypedPool; see its docstring) ---
     _am_peak_n_active::Int
@@ -258,12 +278,33 @@ BitTypedPool() = BitTypedPool(
     BitVector[],
     # N-D Wrapper Cache
     Union{Nothing, Vector{Any}}[],
-    # State Management (1-based sentinel pattern)
-    0,          # n_active
-    [0],        # _checkpoint_n_active: sentinel
-    [0],        # _checkpoint_depths: sentinel
+    PoolCheckpointState(),  # state
     0,          # _am_peak_n_active
 )
+
+# ==============================================================================
+# Checkpoint-State Property Forwarding
+# ==============================================================================
+# The three checkpoint fields moved into `state`, but ~76 call sites across src/
+# (plus the GPU extensions' shared duck-typed functions and the test suite)
+# address them as `tp.n_active` etc. Forward exactly those three names; every
+# other name stays a plain field. The Symbol comparisons are constant-folded for
+# literal-symbol accesses (the only kind in this codebase).
+
+@inline function Base.getproperty(tp::Union{TypedPool, BitTypedPool}, f::Symbol)
+    f === :n_active && return getfield(tp, :state).n_active
+    f === :_checkpoint_n_active && return getfield(tp, :state)._checkpoint_n_active
+    f === :_checkpoint_depths && return getfield(tp, :state)._checkpoint_depths
+    return getfield(tp, f)
+end
+
+@inline function Base.setproperty!(tp::Union{TypedPool, BitTypedPool}, f::Symbol, v)
+    f === :n_active && return setfield!(getfield(tp, :state), :n_active, convert(Int, v))
+    return setfield!(tp, f, convert(fieldtype(typeof(tp), f), v))   # moved vector fields are never reassigned; loud error if tried
+end
+
+Base.propertynames(tp::Union{TypedPool, BitTypedPool}) =
+    (fieldnames(typeof(tp))..., :n_active, :_checkpoint_n_active, :_checkpoint_depths)
 
 # ==============================================================================
 # Fixed Slot Configuration
@@ -390,13 +431,26 @@ mutable struct AdaptiveArrayPool{S} <: AbstractArrayPool
     _others_ptr_bounds::Vector{UInt}             # flat [ptr1,end1,ptr2,end2,...]
     _others_ptr_bounds_checkpoints::Vector{Int}  # per-depth: saved length of bounds vector
 
-    # Touched-others tracking (per-scope selective fallback rewind).
-    # Flat stack of fallback typed pools first-touched at each open depth, plus
-    # per-depth saved lengths — same pattern as _others_ptr_bounds(+_checkpoints).
-    # Rewind drains only the current depth's segment: O(touched fallback types
-    # this scope) instead of O(all registered fallback pools).
-    _touched_others::Vector{Any}
-    _touched_others_checkpoints::Vector{Int}
+    # Touched-others tracking (depth-tagged, concrete).
+    # One entry per (fallback pool, depth) first-touch, in three parallel stacks.
+    # Checkpoint variants push NOTHING — a fixed-only scope pays a single isempty
+    # check at rewind. Producers push on first touch; rewind pops while the top
+    # entry's depth tag matches the current depth. Tags are monotone non-decreasing
+    # bottom-to-top (entries are only ever pushed at the current depth).
+    # `_touched_others_pools` is populated only when S >= 1: the S=0 drain needs
+    # just the concrete states (zero dispatch); slot invalidation needs the pools.
+    _touched_others_states::Vector{PoolCheckpointState}
+    _touched_others_depths::Vector{Int}
+    _touched_others_pools::Vector{Any}
+
+    # Last-lookup memo for the fallback registry. The public acquire! path resolves
+    # the same fallback type twice per call (touch record + impl); this turns the
+    # second — and, steady-state, both — into one pointer compare (~1 ns vs ~7 ns
+    # IdDict lookup). Pure cache of others[T]: set on every slow-path lookup,
+    # cleared by empty!/_make_pool. reset!/trim!/compact! keep pool identities, so
+    # the memo stays valid through them. Task-local pool → single-owner, no races.
+    _lookup_memo_type::Any    # DataType of the memoized entry, or nothing
+    _lookup_memo_tp::Any      # its TypedPool
 
     # Borrow registry (S = 1 only)
     _pending_callsite::String                        # "" = no pending; set by macro before acquire
@@ -428,8 +482,11 @@ function AdaptiveArrayPool{S}() where {S}
         Any[],          # _others_values: empty cache
         UInt[],         # _others_ptr_bounds: no bounds
         Int[0],         # _others_ptr_bounds_checkpoints: sentinel
-        Any[],          # _touched_others: no fallback touches yet
-        Int[0],         # _touched_others_checkpoints: sentinel
+        PoolCheckpointState[], # _touched_others_states: no fallback touches yet
+        Int[],          # _touched_others_depths: no fallback touches yet
+        Any[],          # _touched_others_pools: no fallback touches yet
+        nothing,        # _lookup_memo_type: no memoized lookup yet
+        nothing,        # _lookup_memo_tp: no memoized lookup yet
         "",             # _pending_callsite: no pending
         "",             # _pending_return_site: no pending
         nothing,        # _borrow_log: lazily created at S=1
@@ -462,39 +519,11 @@ _make_pool(runtime_check::Bool) = _make_pool(Int(runtime_check))
     return AdaptiveArrayPool{1}()
 end
 
-"""
-    _make_pool(level, old::AdaptiveArrayPool) -> AdaptiveArrayPool
-
-Create a new pool, transferring cached arrays and scope state from `old`.
-Only reference copies — no memory allocation for the underlying buffers.
-
-Transferred: all TypedPool/BitTypedPool slots, `others`, depth & touch tracking.
-Reset: `_pending_callsite/return_site` (transient macro state),
-       `_borrow_log` (created fresh when S >= 1).
-"""
-_make_pool(runtime_check::Bool, old::AdaptiveArrayPool) = _make_pool(Int(runtime_check), old)
-@noinline function _make_pool(level::Int, old::AdaptiveArrayPool)
-    _new(::Val{S}) where {S} = AdaptiveArrayPool{S}(
-        old.float64, old.float32, old.int64, old.int32,
-        old.complexf64, old.complexf32, old.bool, old.bits,
-        old.others,
-        old._current_depth,
-        old._touched_type_masks,
-        old._touched_has_others,
-        old._others_values,
-        old._others_ptr_bounds,
-        old._others_ptr_bounds_checkpoints,
-        old._touched_others,
-        old._touched_others_checkpoints,
-        "",       # _pending_callsite: reset
-        "",       # _pending_return_site: reset
-        S >= 1 ? IdDict{Any, String}() : nothing,  # _borrow_log
-        false,                                      # _compact_requested: reset on migration
-        false,                                      # _trim_requested: reset on migration
-    )
-    level == 0 && return _new(Val(0))
-    return _new(Val(1))
-end
+# NOTE: a former 2-arg `_make_pool(level, old)` overload migrated a pool across S
+# while transferring caches by reference. Removed (no production callers): the
+# touched-others stack's shape is S-dependent (pools entries exist only at S >= 1),
+# so a mid-scope migration would desync the next rewind. If runtime S switching is
+# ever needed, reintroduce it with an explicit global-scope guard.
 
 # ==============================================================================
 # Type Dispatch (Zero-cost for Fixed Slots)
@@ -517,25 +546,35 @@ const _FIXED_SLOT_TYPES = Union{Float64, Float32, Int64, Int32, ComplexF64, Comp
 
 # Slow Path: rare types via IdDict
 @inline function get_typed_pool!(p::AdaptiveArrayPool, ::Type{T}) where {T}
+    # Memo fast path: same type as the previous slow-path lookup.
+    p._lookup_memo_type === T && return p._lookup_memo_tp::TypedPool{T}
     tp = get(p.others, T, nothing)
-    tp !== nothing && return tp::TypedPool{T}
+    if tp !== nothing
+        tp = tp::TypedPool{T}
+        p._lookup_memo_type = T
+        p._lookup_memo_tp = tp
+        return tp
+    end
     # New type — create, register in IdDict + values cache, and auto-checkpoint
     new_tp = TypedPool{T}()
     p.others[T] = new_tp
     push!(p._others_values, new_tp)
+    p._lookup_memo_type = T
+    p._lookup_memo_tp = new_tp
     # If inside a checkpoint scope (_current_depth > 1 means inside @with_pool),
     # auto-checkpoint the new pool to prevent issues on rewind
     if p._current_depth > 1
-        push!(new_tp._checkpoint_n_active, 0)  # n_active starts at 0
-        push!(new_tp._checkpoint_depths, p._current_depth)
+        st = getfield(new_tp, :state)
+        push!(st._checkpoint_n_active, 0)  # n_active starts at 0
+        push!(st._checkpoint_depths, p._current_depth)
+        push!(p._touched_others_states, st)
+        push!(p._touched_others_depths, p._current_depth)
+        _runtime_check(p) && push!(p._touched_others_pools, new_tp)
         # Signal that a fallback type was touched so lazy/typed-lazy rewind
         # iterates pool.others. Without this, _acquire_impl! (which bypasses
         # _record_type_touch!) would leave has_others=false, causing the
         # rewind to skip pool.others entirely and leak this new type's n_active.
         @inbounds p._touched_has_others[p._current_depth] = true
-        # Record in the touched-others stack so the selective rewind visits this
-        # brand-new pool (its checkpoint was just pushed above).
-        push!(p._touched_others, new_tp)
     end
     return new_tp
 end
