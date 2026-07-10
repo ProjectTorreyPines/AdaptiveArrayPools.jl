@@ -4,7 +4,7 @@
 # first touched at depth d — except under full checkpoint!(pool), whose eager
 # sweep pairs with full rewind!(pool)'s sweep (stack stays empty, truncate-only).
 #
-# Fallback exercise types (per task-3 brief): UInt16, UInt8, Int8, UInt32, Int16,
+# Fallback exercise types: UInt16, UInt8, Int8, UInt32, Int16,
 # UInt64, Int128, UInt128 — CUDA would accept Int128/UInt128 as CuArray element
 # types, but two isbits structs are substituted anyway (same as Metal) to keep
 # the two GPU test files diffable against each other.
@@ -283,6 +283,36 @@ end
     @test isempty(tl._touched_others_states)
     @test isempty(tl._touched_others_depths)
     empty!(tl)   # leave the task-local pool clean for other test files
+end
+
+# ==============================================================================
+# S=1: runtime-check-gated pools vector + invalidation
+# ==============================================================================
+# Every touched-others testset above drives CuAdaptiveArrayPool() at the
+# default RUNTIME_CHECK level (S=0, no preference flip), so none of them exercise
+# the `_runtime_check(pool)` branch in `_drain_touched_others!`/`_touch_fallback_pool!`
+# that pushes/pops `_touched_others_pools` and invalidates a released fallback
+# slot. Construct an S=1 pool directly to close that gap.
+
+@testset "touched-others: S=1 lazy-drain lockstep (pools vector populated, invalidation engaged)" begin
+    pool = ext._make_cuda_pool(1)
+    _lazy_checkpoint!(pool)                       # depth 2
+    v = acquire!(pool, UInt16, 8)                 # genuine fallback acquire
+    tp = get_typed_pool!(pool, UInt16)
+    @test length(pool._touched_others_pools) == 1   # S=1-only: pools vector populated
+    @test pool._touched_others_depths == [2]
+    @test pool._touched_others_pools[end] === tp
+
+    _lazy_rewind!(pool)
+    @test isempty(pool._touched_others_states)
+    @test isempty(pool._touched_others_depths)
+    @test isempty(pool._touched_others_pools)
+    @test tp.n_active == 0
+
+    # S=1 invalidation actually engaged: the previously-acquired wrapper's dims
+    # were zeroed (same assertion pattern as "arr_wrappers invalidated on rewind"
+    # in test_cuda_safety.jl).
+    @test all(==(0), size(v))
 end
 
 @testset "fallback lookup memo: fields and lifecycle" begin
