@@ -55,7 +55,7 @@ end
 
 @with_pool pool begin
     v = acquire!(pool, Float64, 100)
-    x .= v                          # ← broadcast-assign tail
+    v .= 0.0                        # ← broadcast-assign tail (evaluates to `v`)
 end
 
 @with_pool pool begin
@@ -69,7 +69,7 @@ Fix: end the block with `nothing` if the value is meant to be discarded:
 ```julia
 @with_pool pool begin
     v = acquire!(pool, Float64, 100)
-    x .= v
+    v .= 0.0
     nothing   # ← no longer escapes
 end
 ```

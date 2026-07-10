@@ -89,7 +89,9 @@ time, but the expression's own shape is enough to tell which of the three Stage-
 patterns produced it — that is exactly how `_incidental_exposure` decided in the
 first place, and a `PoolEscapeError` with empty `vars` only ever comes from there."""
 function _incidental_kind_detail_from_expr(expr)
-    if expr isa Expr && _is_dotted_assign_head(expr.head) && length(expr.args) >= 1
+    if expr isa Expr && expr.head == :return && !isempty(expr.args)
+        return _incidental_kind_detail_from_expr(expr.args[1])
+    elseif expr isa Expr && _is_dotted_assign_head(expr.head) && length(expr.args) >= 1
         lhs = expr.args[1]
         base = Meta.isexpr(lhs, :ref) ? lhs.args[1] : lhs
         return (:broadcast_assign, base isa Symbol ? base : "the assigned array")
@@ -395,7 +397,7 @@ end
 
 @with_pool pool begin
     v = acquire!(pool, Float64, 100)
-    x .= v                          # ← broadcast-assign tail (evaluates to v)
+    v .= 0.0                        # ← broadcast-assign tail (evaluates to `v`, the LHS)
 end
 
 @with_pool pool begin
@@ -410,7 +412,7 @@ side effects" scope), end the block with `nothing`:
 ```julia
 @with_pool pool begin
     v = acquire!(pool, Float64, 100)
-    x .= v
+    v .= 0.0
     nothing   # ← fixed: block no longer returns a pool-backed value
 end
 ```

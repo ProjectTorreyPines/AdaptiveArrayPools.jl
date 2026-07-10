@@ -2557,6 +2557,30 @@ end
             ) isa Expr
         end
 
+        @testset "explicit-return escape renders correct pattern label (M5)" begin
+            # `return (v .= 0.0)` must still classify as broadcast_assign in
+            # showerror, not fall through to the acquire_call label — the
+            # `:return` wrapper must be unwrapped before pattern-matching,
+            # same as `_incidental_exposure` already does for detection.
+            err = try
+                macroexpand(
+                    @__MODULE__, :(
+                        @with_pool pool begin
+                            v = acquire!(pool, Float64, 4)
+                            return (v .= 0.0)
+                        end
+                    )
+                )
+                nothing
+            catch e
+                e isa LoadError ? e.error : e
+            end
+            @test err isa AdaptiveArrayPools.PoolEscapeError
+            msg = sprint(showerror, err)
+            @test occursin("pool-backed array `v`", msg)
+            @test !occursin("direct acquire call", msg)
+        end
+
         @testset "existing intentional-return errors unchanged" begin
             @test _expansion_escape_error(
                 :(

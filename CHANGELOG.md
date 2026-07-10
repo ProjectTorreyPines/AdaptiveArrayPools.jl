@@ -16,25 +16,29 @@ tail patterns at **macro-expansion time** — previously these only errored at
 runtime (and only when `RUNTIME_CHECK >= 1`):
 
 - a direct acquire-family call as the scope's last expression
-- a broadcast-assignment (`x .= v`) tail, where `x`/`v` is pool-backed
+- a broadcast-assignment (`x .= v`) tail, where the **LHS** `x` (the array
+  being written into) is pool-backed — a broadcast assignment evaluates to
+  `x`, not `v`, so an RHS-only pool value (e.g. `x .= v` with a non-pool `x`)
+  is safe and unflagged
 - a plain assignment (`y = v`) tail, where the RHS is pool-backed
 
 These join the existing return-looking patterns (bare variable, `return v`,
 tuple/vector/NamedTuple literals) that already errored at expansion time.
 
 ```julia
-# before (compiled and ran; the array was invalid the moment the caller
+# before (compiled and ran; `v .= 0.0` evaluates to `v` itself, so the pool
+# array escaped as the scope's return value — invalid the moment the caller
 # touched it, since it had already been rewound):
 @with_pool pool begin
     v = acquire!(pool, Float64, 100)
-    x .= v
+    v .= 0.0
 end
 
 # after (PoolEscapeError at expansion time). Fix: discard-style scopes must
 # end with `nothing`:
 @with_pool pool begin
     v = acquire!(pool, Float64, 100)
-    x .= v
+    v .= 0.0
     nothing
 end
 ```
