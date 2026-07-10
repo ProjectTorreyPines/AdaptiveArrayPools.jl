@@ -39,10 +39,11 @@ mutable struct MetalTypedPool{T, S} <: AbstractTypedPool{T, MtlArray{T, 1, S}}
     # (`_slot_used`) to know how much of an over-allocated device buffer is in use.
     slot_extents::Vector{Int}
 
-    # --- State Management (1-based sentinel pattern) ---
-    n_active::Int
-    _checkpoint_n_active::Vector{Int}
-    _checkpoint_depths::Vector{Int}
+    # --- State Management ---
+    # Checkpoint bookkeeping, extracted into a concrete shared struct (see CPU
+    # PoolCheckpointState docstring). `const`: the reference never changes after
+    # construction. Accessed as tp.n_active / tp._checkpoint_* via forwarding below.
+    const state::PoolCheckpointState
 
     # --- Auto-trim telemetry (parity with CPU TypedPool; see its docstring) ---
     # Peak `n_active` since the last auto-trim — the recent working-set width. Written on the
@@ -56,10 +57,31 @@ function MetalTypedPool{T, S}() where {T, S}
         MtlArray{T, 1, S}[],                # vectors
         Union{Nothing, Vector{Any}}[],       # arr_wrappers (indexed by N)
         Int[],                               # slot_extents (parallel to vectors)
-        0, [0], [0],                         # State (1-based sentinel)
+        PoolCheckpointState(),               # state (1-based sentinel)
         0,                                   # _am_peak_n_active: no usage observed yet
     )
 end
+
+# Checkpoint-state property forwarding (mirror of CPU src/types.jl:294-307).
+@inline function Base.getproperty(tp::MetalTypedPool, f::Symbol)
+    f === :n_active && return getfield(tp, :state).n_active
+    f === :_checkpoint_n_active && return getfield(tp, :state)._checkpoint_n_active
+    f === :_checkpoint_depths && return getfield(tp, :state)._checkpoint_depths
+    return getfield(tp, f)
+end
+
+@inline function Base.setproperty!(tp::MetalTypedPool, f::Symbol, v)
+    f === :n_active && return setfield!(getfield(tp, :state), :n_active, convert(Int, v))
+    return setfield!(tp, f, convert(fieldtype(typeof(tp), f), v))
+end
+
+Base.propertynames(tp::MetalTypedPool) =
+    (fieldnames(typeof(tp))..., :n_active, :_checkpoint_n_active, :_checkpoint_depths)
+
+# Route the generic checkpoint/rewind cores at the concrete state (zero-dispatch
+# drain); without this, MetalTypedPool falls back to _cp_state(tp) = tp and
+# _touch_fallback_pool!'s ::PoolCheckpointState assert throws.
+@inline AdaptiveArrayPools._cp_state(tp::MetalTypedPool) = getfield(tp, :state)
 
 # ==============================================================================
 # Metal Fixed Slot Configuration
@@ -121,6 +143,20 @@ mutable struct MetalAdaptiveArrayPool{R, S} <: AbstractArrayPool
     _touched_type_masks::Vector{UInt16}  # Per-depth: which fixed slots were touched + mode flags
     _touched_has_others::Vector{Bool}    # Per-depth: any non-fixed-slot type touched?
 
+    # Touched-others tracking (depth-tagged, concrete) — mirror of CPU
+    # src/types.jl:434-453. Checkpoint variants push NOTHING; producers push one
+    # (state, depth) entry per first touch; rewind pops while the top tag matches.
+    # _touched_others_pools is populated only when R >= 1 (slot invalidation).
+    _touched_others_states::Vector{PoolCheckpointState}
+    _touched_others_depths::Vector{Int}
+    _touched_others_pools::Vector{Any}
+
+    # Last-lookup memo for the fallback registry (mirror of CPU). Set on every
+    # slow-path lookup; cleared by empty! (identities die), preserved by
+    # reset!/trim!/compact! (identities survive). Task-local pool → no races.
+    _lookup_memo_type::Any
+    _lookup_memo_tp::Any
+
     # Device tracking (safety)
     device_key::Any
 
@@ -151,6 +187,11 @@ function MetalAdaptiveArrayPool{R, S}() where {R, S}
         1,              # _current_depth (1 = global scope)
         [UInt16(0)],    # _touched_type_masks: sentinel (no bits set)
         [false],        # _touched_has_others: sentinel (no others)
+        PoolCheckpointState[],  # _touched_others_states: no fallback touches yet
+        Int[],                  # _touched_others_depths
+        Any[],                  # _touched_others_pools
+        nothing,                # _lookup_memo_type
+        nothing,                # _lookup_memo_tp
         Metal.device(),
         "",             # _pending_callsite
         "",             # _pending_return_site
@@ -175,6 +216,15 @@ Return compile-time constant indicating whether runtime safety checks are enable
 """
 @inline AdaptiveArrayPools._runtime_check(::MetalAdaptiveArrayPool{0}) = false
 @inline AdaptiveArrayPools._runtime_check(::MetalAdaptiveArrayPool) = true  # R >= 1
+
+"""
+    _check_level(pool::MetalAdaptiveArrayPool) -> Int
+
+Runtime-check level as an Int (mirror of CPU `src/types.jl:513`), for
+backend-shared code that forwards it to `_invalidate_released_slots!` /
+`_rewind_typed_pool!`. Compile-time constant per concrete pool type.
+"""
+@inline AdaptiveArrayPools._check_level(::MetalAdaptiveArrayPool{R, S}) where {R, S} = R
 
 """
     _make_metal_pool(level) -> MetalAdaptiveArrayPool

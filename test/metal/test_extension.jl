@@ -5,10 +5,19 @@
     @testset "MetalTypedPool structure" begin
         tp_fields = fieldnames(MetalTypedPool)
         @test :vectors in tp_fields
-        @test :n_active in tp_fields
-        @test :arr_wrappers in tp_fields
-        @test :_checkpoint_n_active in tp_fields
-        @test :_checkpoint_depths in tp_fields
+        @test :state in tp_fields          # PoolCheckpointState (n_active + checkpoint vectors)
+        @test !(:n_active in tp_fields)    # moved into state; reachable via property forwarding
+        # Forwarding round-trip (mirrors CPU src/types.jl:294-307)
+        tp = MetalTypedPool{Float32, Metal.PrivateStorage}()
+        @test tp.n_active === 0
+        @test tp._checkpoint_n_active == [0]
+        @test tp._checkpoint_depths == [0]
+        tp.n_active = 2
+        @test getfield(tp, :state).n_active === 2
+        tp.n_active = Int32(1)              # default-convert semantics preserved
+        @test tp.n_active === 1
+        tp.n_active = 0
+        @test :n_active in propertynames(tp)
     end
 
     @testset "MetalAdaptiveArrayPool structure" begin
