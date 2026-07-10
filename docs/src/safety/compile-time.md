@@ -40,6 +40,50 @@ ERROR: LoadError: PoolEscapeError (compile-time)
 in expression starting at myfile.jl:1
 ```
 
+### Incidental Tail Patterns
+
+Beyond the direct-return patterns above, three additional tail shapes are
+checked — they don't *look* like a `return`, but the scope's last expression
+still evaluates to a pool-backed array, which then escapes as the scope's
+value:
+
+```julia
+@with_pool pool begin
+    v = acquire!(pool, Float64, 100)
+    acquire!(pool, Float64, 100)   # ← direct acquire-call tail
+end
+
+@with_pool pool begin
+    v = acquire!(pool, Float64, 100)
+    x .= v                          # ← broadcast-assign tail
+end
+
+@with_pool pool begin
+    v = acquire!(pool, Float64, 100)
+    y = v                           # ← assignment tail
+end
+```
+
+Fix: end the block with `nothing` if the value is meant to be discarded:
+
+```julia
+@with_pool pool begin
+    v = acquire!(pool, Float64, 100)
+    x .= v
+    nothing   # ← no longer escapes
+end
+```
+
+These three patterns are gated by the `escape_lint` preference (default
+`"error"`, matching the direct-return patterns above). Set `"warn"` to
+downgrade to a `@warn` diagnostic (migration escape hatch), or `"off"` to
+disable this stage of checking entirely:
+
+```julia
+using Preferences
+Preferences.set_preferences!("AdaptiveArrayPools", "escape_lint" => "warn")
+```
+
 ## Mutation Analysis (`PoolMutationError`)
 
 Structural mutations (`resize!`, `push!`, `append!`, etc.) on pool-backed arrays are rejected:

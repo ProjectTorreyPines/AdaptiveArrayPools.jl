@@ -377,6 +377,60 @@ Nested `@with_pool` blocks work correctly - each maintains its own checkpoint.
 end
 ```
 
+## Escape Detection
+
+`@with_pool` statically analyzes the scope body at macro-expansion time and
+rejects code whose return value would be a pool-backed array — a
+[`PoolEscapeError`](@ref), thrown at expansion time (zero runtime cost). This
+always covers the direct-return patterns (a bare variable, `return v`,
+container literals like `(v, w)` / `[v]`), and — as of this release — three
+additional "incidental" tail patterns that don't *look* like a `return` but
+still expose a pool-backed array as the scope's value:
+
+```julia
+@with_pool pool begin
+    v = acquire!(pool, Float64, 100)
+    acquire!(pool, Float64, 100)   # ← direct acquire-call tail
+end
+
+@with_pool pool begin
+    v = acquire!(pool, Float64, 100)
+    x .= v                          # ← broadcast-assign tail (evaluates to v)
+end
+
+@with_pool pool begin
+    v = acquire!(pool, Float64, 100)
+    y = v                           # ← assignment tail (evaluates to its RHS)
+end
+```
+
+If the scope's last expression is meant to be discarded (a "run it for its
+side effects" scope), end the block with `nothing`:
+
+```julia
+@with_pool pool begin
+    v = acquire!(pool, Float64, 100)
+    x .= v
+    nothing   # ← fixed: block no longer returns a pool-backed value
+end
+```
+
+Severity for these three incidental-tail patterns is controlled by the
+`escape_lint` preference (via `Preferences.jl`, read once at package load as
+the `ESCAPE_LINT` compile-time constant):
+- `"error"` (default) — throws `PoolEscapeError`, same as the direct-return patterns.
+- `"warn"` — prints the same diagnostic via `@warn` and continues (migration escape hatch).
+- `"off"` — disables Stage-2 (incidental-tail) checking; direct-return patterns still always error.
+
+```julia
+using Preferences
+Preferences.set_preferences!("AdaptiveArrayPools", "escape_lint" => "warn")
+```
+
+See also the "Compile-Time Detection" page in the manual for full error-message
+examples and known static-analysis limitations (opaque function calls, `let`
+blocks).
+
 ## Exception Behavior
 
 `@with_pool` does **not** use `try-finally` (for inlining performance). Implications:
