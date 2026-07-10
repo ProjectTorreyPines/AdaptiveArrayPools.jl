@@ -108,6 +108,8 @@ end
         @test tp._checkpoint_n_active == [0, 0]
         @test tp._checkpoint_depths == [0, 2]
         @test pool._touched_has_others == [false, true]   # depth-2 marked as "has dynamic types"
+        @test pool._touched_others_depths == [2]
+        @test length(pool._touched_others_states) == 1
     end
 end
 

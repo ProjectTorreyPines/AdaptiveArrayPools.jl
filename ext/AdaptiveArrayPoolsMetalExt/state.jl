@@ -8,7 +8,14 @@
 
 using AdaptiveArrayPools: checkpoint!, rewind!, reset!,
     _checkpoint_typed_pool!, _rewind_typed_pool!, _has_bit,
-    _LAZY_MODE_BIT, _TYPED_LAZY_BIT, _TYPE_BITS_MASK
+    _LAZY_MODE_BIT, _TYPED_LAZY_BIT, _TYPE_BITS_MASK,
+    _touch_fallback_pool!, _drain_touched_others!, _truncate_touched_others!
+
+# Genuine fallback = lives in pool.others (stack-managed). NOT equivalent to
+# _fixed_slot_bit(T) == 0: Float16 has bit 0 (bit-7 reassignment) but is a fixed
+# struct field — routing it through the touched-others stack would double-rewind
+# it against the lazy rewinds' Float16 special case (Case A then Case B).
+@inline _metal_is_fallback_type(::Type{T}) where {T} = !(T <: _METAL_FIXED_TYPES)
 
 # ==============================================================================
 # Metal Fixed Slot Iteration
@@ -56,8 +63,15 @@ end
 @inline function AdaptiveArrayPools.checkpoint!(pool::MetalAdaptiveArrayPool, ::Type{T}) where {T}
     pool._current_depth += 1
     push!(pool._touched_type_masks, UInt16(0))
+    # Flag push stays bit-based (feeds _can_use_typed_path/R>=1 validation only) —
+    # Float16 has bit 0 here even though it is routed as a fixed slot below.
     push!(pool._touched_has_others, AdaptiveArrayPools._fixed_slot_bit(T) == UInt16(0))
-    _checkpoint_typed_pool!(AdaptiveArrayPools.get_typed_pool!(pool, T), pool._current_depth)
+    if _metal_is_fallback_type(T)
+        _touch_fallback_pool!(pool, AdaptiveArrayPools.get_typed_pool!(pool, T), pool._current_depth)
+    else
+        # Fixed slots INCLUDING Float16: direct checkpoint, never stack-managed.
+        _checkpoint_typed_pool!(AdaptiveArrayPools.get_typed_pool!(pool, T), pool._current_depth)
+    end
     return nothing
 end
 
@@ -71,8 +85,17 @@ end
             push!(unique_indices, i)
         end
     end
+    # has_any_fallback keeps its current bit-based computation (flag semantics
+    # unchanged — Float16 contributes true here even though it is routed as a
+    # fixed slot below via _metal_is_fallback_type).
     has_any_fallback = any(i -> AdaptiveArrayPools._fixed_slot_bit(types[i].parameters[1]) == UInt16(0), unique_indices)
-    checkpoint_exprs = [:(_checkpoint_typed_pool!(AdaptiveArrayPools.get_typed_pool!(pool, types[$i]), pool._current_depth)) for i in unique_indices]
+    checkpoint_exprs = map(unique_indices) do i
+        if !(types[i].parameters[1] <: _METAL_FIXED_TYPES)
+            :(_touch_fallback_pool!(pool, AdaptiveArrayPools.get_typed_pool!(pool, types[$i]), pool._current_depth))
+        else
+            :(_checkpoint_typed_pool!(AdaptiveArrayPools.get_typed_pool!(pool, types[$i]), pool._current_depth))
+        end
+    end
     return quote
         pool._current_depth += 1
         push!(pool._touched_type_masks, UInt16(0))
@@ -104,6 +127,9 @@ function AdaptiveArrayPools.rewind!(pool::MetalAdaptiveArrayPool{R, S}) where {R
     for tp in values(pool.others)
         _rewind_typed_pool!(tp, cur_depth, R)
     end
+    # Full sweep above already rewound every fallback pool — truncate-only (no
+    # re-rewind) to avoid double-popping the touched-others stack.
+    _truncate_touched_others!(pool, cur_depth)
 
     pop!(pool._touched_type_masks)
     pop!(pool._touched_has_others)
@@ -118,7 +144,13 @@ end
         reset!(AdaptiveArrayPools.get_typed_pool!(pool, T), R)
         return nothing
     end
-    _rewind_typed_pool!(AdaptiveArrayPools.get_typed_pool!(pool, T), pool._current_depth, R)
+    # Fixed slots (INCLUDING Float16) rewind directly; genuine-fallback T was
+    # pushed onto the touched-others stack by checkpoint!(pool, T) and is
+    # covered by the drain below.
+    if !_metal_is_fallback_type(T)
+        _rewind_typed_pool!(AdaptiveArrayPools.get_typed_pool!(pool, T), pool._current_depth, R)
+    end
+    _drain_touched_others!(pool, pool._current_depth)
     pop!(pool._touched_type_masks)
     pop!(pool._touched_has_others)
     pool._current_depth -= 1
@@ -135,7 +167,11 @@ end
             push!(unique_indices, i)
         end
     end
-    rewind_exprs = [:(_rewind_typed_pool!(AdaptiveArrayPools.get_typed_pool!(pool, types[$i]), pool._current_depth, R)) for i in reverse(unique_indices)]
+    # Fixed slots INCLUDING Float16 rewind directly; genuine-fallback types were
+    # pushed onto the touched-others stack by checkpoint!(pool, types...) and
+    # are covered by the drain below.
+    fixed_indices = [i for i in unique_indices if !(types[i].parameters[1] <: _METAL_FIXED_TYPES) == false]
+    rewind_exprs = [:(_rewind_typed_pool!(AdaptiveArrayPools.get_typed_pool!(pool, types[$i]), pool._current_depth, R)) for i in reverse(fixed_indices)]
     reset_exprs = [:(reset!(AdaptiveArrayPools.get_typed_pool!(pool, types[$i]), R)) for i in unique_indices]
     return quote
         if pool._current_depth == 1
@@ -143,6 +179,7 @@ end
             return nothing
         end
         $(rewind_exprs...)
+        _drain_touched_others!(pool, pool._current_depth)
         pop!(pool._touched_type_masks)
         pop!(pool._touched_has_others)
         pool._current_depth -= 1
@@ -166,15 +203,11 @@ end
     pool._current_depth += 1
     push!(pool._touched_type_masks, _LAZY_MODE_BIT)  # lazy mode flag
     push!(pool._touched_has_others, false)
-    depth = pool._current_depth
-    # Eagerly checkpoint pre-existing others entries — same as CPU _lazy_checkpoint!.
-    # New types created during the scope start at n_active=0 (sentinel covers them, Case B safe).
-    # Pre-existing types need their count saved now so Case A fires correctly at rewind.
-    for p in values(pool.others)
-        _checkpoint_typed_pool!(p, depth)
-        @inbounds pool._touched_has_others[depth] = true
-    end
-    # Float16 uses lazy first-touch via bit 7 in _record_type_touch! — no eager checkpoint needed.
+    # Fallback (non-fixed-slot) pools are NOT eagerly checkpointed here: they are
+    # first-touch checkpointed via _touch_fallback_pool! (from _record_type_touch!
+    # or get_typed_pool!) and drained selectively at rewind via
+    # _drain_touched_others!, so only the fallback pools this scope actually
+    # touches pay any cost. Float16 uses its own lazy first-touch via bit 7.
     return nothing
 end
 
@@ -188,11 +221,7 @@ end
     _has_bit(mask, Bool)       && _rewind_typed_pool!(pool.bool, d, R)
     # Bit 7: Float16 (Metal reassignment — _fixed_slot_bit(Float16)==0, must use explicit bit check)
     mask & _metal_float16_bit() != 0 && _rewind_typed_pool!(pool.float16, d, R)
-    if @inbounds(pool._touched_has_others[d])
-        for tp in values(pool.others)
-            _rewind_typed_pool!(tp, d, R)
-        end
-    end
+    _drain_touched_others!(pool, d)
     pop!(pool._touched_type_masks)
     pop!(pool._touched_has_others)
     pool._current_depth -= 1
@@ -204,27 +233,25 @@ end
 # ==============================================================================
 
 # _typed_lazy_checkpoint!: typed checkpoint + set bit 14 for lazy extra-type tracking.
-# Also eagerly snapshots pre-existing others entries (mirrors CPU fix for Issue #3).
+# checkpoint!(pool, types...) already routes fallback types among `types` through
+# _touch_fallback_pool! (one depth-tagged stack entry each); extra fallback types
+# touched by helpers are first-touch checkpointed and stacked by
+# _record_type_touch!'s genuine-fallback branch. Float16 uses lazy first-touch via
+# bit 7 in _record_type_touch! — no eager checkpoint needed.
 @inline function AdaptiveArrayPools._typed_lazy_checkpoint!(pool::MetalAdaptiveArrayPool, types::Type...)
     checkpoint!(pool, types...)
     d = pool._current_depth
     @inbounds pool._touched_type_masks[d] |= _TYPED_LAZY_BIT
-    # Eagerly snapshot pre-existing others entries — same reasoning as _lazy_checkpoint!.
-    # Skip re-snapshot for entries already checkpointed at d by checkpoint!(pool, types...)
-    for p in values(pool.others)
-        if @inbounds(p._checkpoint_depths[end]) != d
-            _checkpoint_typed_pool!(p, d)
-        end
-        @inbounds pool._touched_has_others[d] = true
-    end
-    # Float16 uses lazy first-touch via bit 7 in _record_type_touch! — no eager checkpoint needed.
     return nothing
 end
 
 # _typed_lazy_rewind!: selective rewind of (tracked | touched) mask.
 # Uses direct field access with bit checks — foreach_fixed_slot is single-argument (no bit yield).
 # Bit 7: Float16 (Metal-specific; lazy-checkpointed on first touch by _record_type_touch!).
-# has_others: genuine others types (UInt8, Int8, etc.) — eagerly checkpointed at scope entry.
+# Genuine fallback types (UInt8, Int8, etc.) are drained selectively via
+# _drain_touched_others! — the ONLY rewinder for typed-Float16 scopes stays the
+# direct _checkpoint_depths[end] == d special case below (Float16 never gets a
+# stack entry).
 @inline function AdaptiveArrayPools._typed_lazy_rewind!(pool::MetalAdaptiveArrayPool{R, S}, tracked_mask::UInt16) where {R, S}
     d = pool._current_depth
     touched = @inbounds(pool._touched_type_masks[d]) & _TYPE_BITS_MASK
@@ -239,11 +266,7 @@ end
     if combined & _metal_float16_bit() != 0 || @inbounds(pool.float16._checkpoint_depths[end]) == d
         _rewind_typed_pool!(pool.float16, d, R)
     end
-    if @inbounds(pool._touched_has_others[d])
-        for tp in values(pool.others)
-            _rewind_typed_pool!(tp, d, R)
-        end
-    end
+    _drain_touched_others!(pool, d)
     pop!(pool._touched_type_masks)
     pop!(pool._touched_has_others)
     pool._current_depth -= 1
@@ -264,6 +287,12 @@ function AdaptiveArrayPools.reset!(pool::MetalAdaptiveArrayPool{R, S}) where {R,
     for tp in values(pool.others)
         reset!(tp, R)
     end
+
+    # Reset touched-others tracking (transient scope state; memo intentionally
+    # survives — registered fallback identities are preserved by reset!).
+    empty!(pool._touched_others_states)
+    empty!(pool._touched_others_depths)
+    empty!(pool._touched_others_pools)
 
     # Reset depth and bitmask sentinel state
     pool._current_depth = 1
@@ -320,6 +349,13 @@ function Base.empty!(pool::MetalAdaptiveArrayPool)
         empty!(tp)
     end
     empty!(pool.others)
+
+    # Memo points into the registry being cleared — drop it with the registry.
+    pool._lookup_memo_type = nothing
+    pool._lookup_memo_tp = nothing
+    empty!(pool._touched_others_states)
+    empty!(pool._touched_others_depths)
+    empty!(pool._touched_others_pools)
 
     # Reset depth and bitmask sentinel state
     pool._current_depth = 1

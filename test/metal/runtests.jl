@@ -41,6 +41,7 @@ else
 
         # Include all Metal test files
         include("test_extension.jl")
+        include("test_touched_others.jl")
         include("test_allocation.jl")
         include("test_display.jl")
         include("test_convenience.jl")
