@@ -431,13 +431,17 @@ mutable struct AdaptiveArrayPool{S} <: AbstractArrayPool
     _others_ptr_bounds::Vector{UInt}             # flat [ptr1,end1,ptr2,end2,...]
     _others_ptr_bounds_checkpoints::Vector{Int}  # per-depth: saved length of bounds vector
 
-    # Touched-others tracking (per-scope selective fallback rewind).
-    # Flat stack of fallback typed pools first-touched at each open depth, plus
-    # per-depth saved lengths — same pattern as _others_ptr_bounds(+_checkpoints).
-    # Rewind drains only the current depth's segment: O(touched fallback types
-    # this scope) instead of O(all registered fallback pools).
-    _touched_others::Vector{Any}
-    _touched_others_checkpoints::Vector{Int}
+    # Touched-others tracking (depth-tagged, concrete).
+    # One entry per (fallback pool, depth) first-touch, in three parallel stacks.
+    # Checkpoint variants push NOTHING — a fixed-only scope pays a single isempty
+    # check at rewind. Producers push on first touch; rewind pops while the top
+    # entry's depth tag matches the current depth. Tags are monotone non-decreasing
+    # bottom-to-top (entries are only ever pushed at the current depth).
+    # `_touched_others_pools` is populated only when S >= 1: the S=0 drain needs
+    # just the concrete states (zero dispatch); slot invalidation needs the pools.
+    _touched_others_states::Vector{PoolCheckpointState}
+    _touched_others_depths::Vector{Int}
+    _touched_others_pools::Vector{Any}
 
     # Borrow registry (S = 1 only)
     _pending_callsite::String                        # "" = no pending; set by macro before acquire
@@ -469,8 +473,9 @@ function AdaptiveArrayPool{S}() where {S}
         Any[],          # _others_values: empty cache
         UInt[],         # _others_ptr_bounds: no bounds
         Int[0],         # _others_ptr_bounds_checkpoints: sentinel
-        Any[],          # _touched_others: no fallback touches yet
-        Int[0],         # _touched_others_checkpoints: sentinel
+        PoolCheckpointState[], # _touched_others_states: no fallback touches yet
+        Int[],          # _touched_others_depths: no fallback touches yet
+        Any[],          # _touched_others_pools: no fallback touches yet
         "",             # _pending_callsite: no pending
         "",             # _pending_return_site: no pending
         nothing,        # _borrow_log: lazily created at S=1
@@ -525,8 +530,12 @@ _make_pool(runtime_check::Bool, old::AdaptiveArrayPool) = _make_pool(Int(runtime
         old._others_values,
         old._others_ptr_bounds,
         old._others_ptr_bounds_checkpoints,
-        old._touched_others,
-        old._touched_others_checkpoints,
+        # NOTE: transferred by reference. Migrating S with OPEN fallback touches is
+        # unsupported (S=0 scopes have no pools entries for the S=1 drain); callers
+        # migrate at global scope (depth == 1, stacks empty), as all current users do.
+        old._touched_others_states,
+        old._touched_others_depths,
+        old._touched_others_pools,
         "",       # _pending_callsite: reset
         "",       # _pending_return_site: reset
         S >= 1 ? IdDict{Any, String}() : nothing,  # _borrow_log
@@ -567,16 +576,17 @@ const _FIXED_SLOT_TYPES = Union{Float64, Float32, Int64, Int32, ComplexF64, Comp
     # If inside a checkpoint scope (_current_depth > 1 means inside @with_pool),
     # auto-checkpoint the new pool to prevent issues on rewind
     if p._current_depth > 1
-        push!(new_tp._checkpoint_n_active, 0)  # n_active starts at 0
-        push!(new_tp._checkpoint_depths, p._current_depth)
+        st = getfield(new_tp, :state)
+        push!(st._checkpoint_n_active, 0)  # n_active starts at 0
+        push!(st._checkpoint_depths, p._current_depth)
+        push!(p._touched_others_states, st)
+        push!(p._touched_others_depths, p._current_depth)
+        _runtime_check(p) && push!(p._touched_others_pools, new_tp)
         # Signal that a fallback type was touched so lazy/typed-lazy rewind
         # iterates pool.others. Without this, _acquire_impl! (which bypasses
         # _record_type_touch!) would leave has_others=false, causing the
         # rewind to skip pool.others entirely and leak this new type's n_active.
         @inbounds p._touched_has_others[p._current_depth] = true
-        # Record in the touched-others stack so the selective rewind visits this
-        # brand-new pool (its checkpoint was just pushed above).
-        push!(p._touched_others, new_tp)
     end
     return new_tp
 end
