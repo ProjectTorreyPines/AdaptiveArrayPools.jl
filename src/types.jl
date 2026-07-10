@@ -519,45 +519,11 @@ _make_pool(runtime_check::Bool) = _make_pool(Int(runtime_check))
     return AdaptiveArrayPool{1}()
 end
 
-"""
-    _make_pool(level, old::AdaptiveArrayPool) -> AdaptiveArrayPool
-
-Create a new pool, transferring cached arrays and scope state from `old`.
-Only reference copies — no memory allocation for the underlying buffers.
-
-Transferred: all TypedPool/BitTypedPool slots, `others`, depth & touch tracking.
-Reset: `_pending_callsite/return_site` (transient macro state),
-       `_borrow_log` (created fresh when S >= 1).
-"""
-_make_pool(runtime_check::Bool, old::AdaptiveArrayPool) = _make_pool(Int(runtime_check), old)
-@noinline function _make_pool(level::Int, old::AdaptiveArrayPool)
-    _new(::Val{S}) where {S} = AdaptiveArrayPool{S}(
-        old.float64, old.float32, old.int64, old.int32,
-        old.complexf64, old.complexf32, old.bool, old.bits,
-        old.others,
-        old._current_depth,
-        old._touched_type_masks,
-        old._touched_has_others,
-        old._others_values,
-        old._others_ptr_bounds,
-        old._others_ptr_bounds_checkpoints,
-        # NOTE: transferred by reference. Migrating S with OPEN fallback touches is
-        # unsupported (S=0 scopes have no pools entries for the S=1 drain); callers
-        # migrate at global scope (depth == 1, stacks empty), as all current users do.
-        old._touched_others_states,
-        old._touched_others_depths,
-        old._touched_others_pools,
-        nothing,  # _lookup_memo_type: reset on migration
-        nothing,  # _lookup_memo_tp: reset on migration
-        "",       # _pending_callsite: reset
-        "",       # _pending_return_site: reset
-        S >= 1 ? IdDict{Any, String}() : nothing,  # _borrow_log
-        false,                                      # _compact_requested: reset on migration
-        false,                                      # _trim_requested: reset on migration
-    )
-    level == 0 && return _new(Val(0))
-    return _new(Val(1))
-end
+# NOTE: a former 2-arg `_make_pool(level, old)` overload migrated a pool across S
+# while transferring caches by reference. Removed (no production callers): the
+# touched-others stack's shape is S-dependent (pools entries exist only at S >= 1),
+# so a mid-scope migration would desync the next rewind. If runtime S switching is
+# ever needed, reintroduce it with an explicit global-scope guard.
 
 # ==============================================================================
 # Type Dispatch (Zero-cost for Fixed Slots)

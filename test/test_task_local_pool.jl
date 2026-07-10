@@ -231,16 +231,10 @@
         @test pool1 isa AdaptiveArrayPool{1}
         @test pool1._borrow_log === nothing  # lazily initialized on first borrow
 
-        # _make_pool(Bool, old) preserves cached arrays
-        pool0_with_data = AdaptiveArrayPools._make_pool(false)
-        AdaptiveArrayPools._lazy_checkpoint!(pool0_with_data)
-        acquire!(pool0_with_data, Float64, 10)
-        AdaptiveArrayPools._lazy_rewind!(pool0_with_data)
-
-        old_f64 = pool0_with_data.float64
-        pool1_from_old = AdaptiveArrayPools._make_pool(true, pool0_with_data)
-        @test pool1_from_old isa AdaptiveArrayPool{1}
-        @test pool1_from_old.float64 === old_f64  # same TypedPool reference
+        # The former 2-arg _make_pool(level, old) S-migration overload was removed:
+        # the touched-others stack's shape is S-dependent, so cross-S transfer of
+        # open scope state would desync the drain (no production callers existed).
+        @test !hasmethod(AdaptiveArrayPools._make_pool, Tuple{Int, AdaptiveArrayPool})
     end
 
     @testset "Pool growth warning at 512 arrays" begin
