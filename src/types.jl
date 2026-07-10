@@ -82,6 +82,27 @@ pooling_enabled(::DisabledPool) = false
 # isempty() checks in hot paths. See docstrings for details.
 
 """
+    PoolCheckpointState
+
+Concrete, type-parameter-free checkpoint bookkeeping shared by all CPU typed pools.
+
+`checkpoint!`/`rewind!` at `S = 0` only ever touch these three fields — none of the
+`T`-dependent storage — so extracting them lets the touched-others stack hold
+`PoolCheckpointState` objects directly and drain with zero dynamic dispatch
+(`Vector{PoolCheckpointState}` is concrete; a `Vector{Any}` of `TypedPool{T}` is not).
+
+1-based sentinel pattern: both stacks start at `[0]` (depth 0 = no checkpoint), so
+`[end]` access never needs an isempty guard.
+"""
+mutable struct PoolCheckpointState
+    n_active::Int
+    _checkpoint_n_active::Vector{Int}   # Saved n_active at each checkpoint
+    _checkpoint_depths::Vector{Int}     # Depth of each checkpoint
+end
+
+PoolCheckpointState() = PoolCheckpointState(0, [0], [0])
+
+"""
     TypedPool{T} <: AbstractTypedPool{T, Vector{T}}
 
 Internal structure managing pooled vectors for a specific element type `T`.
@@ -121,10 +142,11 @@ mutable struct TypedPool{T} <: AbstractTypedPool{T, Vector{T}}
     # capacity high-water mark, not the current extent.
     slot_extents::Vector{Int}
 
-    # --- State Management (1-based sentinel pattern) ---
-    n_active::Int
-    _checkpoint_n_active::Vector{Int}   # Saved n_active at each checkpoint
-    _checkpoint_depths::Vector{Int}     # Depth of each checkpoint
+    # Checkpoint bookkeeping, extracted into a concrete shared struct (see
+    # PoolCheckpointState). `const`: the reference never changes after construction,
+    # so the compiler can hoist the pointer load on hot paths. Accessed as
+    # tp.n_active / tp._checkpoint_* via property forwarding below.
+    const state::PoolCheckpointState
 
     # --- Auto-trim telemetry ---
     # Peak `n_active` reached since the last auto-trim — the recent working-set width.
@@ -140,10 +162,7 @@ TypedPool{T}() where {T} = TypedPool{T}(
     Union{Nothing, Vector{Any}}[],
     # Per-slot current logical extent (parallel to `vectors`)
     Int[],
-    # State Management (1-based sentinel pattern: guaranteed non-empty)
-    0,          # n_active
-    [0],        # _checkpoint_n_active: sentinel (n_active=0 at depth=0)
-    [0],        # _checkpoint_depths: sentinel (depth=0 = no checkpoint)
+    PoolCheckpointState(),  # state
     0,          # _am_peak_n_active: no usage observed yet
 )
 
@@ -244,10 +263,11 @@ mutable struct BitTypedPool <: AbstractTypedPool{Bool, BitVector}
     # --- N-D Wrapper Cache (setfield!-based reuse) ---
     arr_wrappers::Vector{Union{Nothing, Vector{Any}}}  # index=N (dimensionality), value=per-slot BitArray{N}
 
-    # --- State Management (1-based sentinel pattern) ---
-    n_active::Int
-    _checkpoint_n_active::Vector{Int}
-    _checkpoint_depths::Vector{Int}
+    # Checkpoint bookkeeping, extracted into a concrete shared struct (see
+    # PoolCheckpointState). `const`: the reference never changes after construction,
+    # so the compiler can hoist the pointer load on hot paths. Accessed as
+    # tp.n_active / tp._checkpoint_* via property forwarding below.
+    const state::PoolCheckpointState
 
     # --- Auto-trim telemetry (parallel to TypedPool; see its docstring) ---
     _am_peak_n_active::Int
@@ -258,12 +278,33 @@ BitTypedPool() = BitTypedPool(
     BitVector[],
     # N-D Wrapper Cache
     Union{Nothing, Vector{Any}}[],
-    # State Management (1-based sentinel pattern)
-    0,          # n_active
-    [0],        # _checkpoint_n_active: sentinel
-    [0],        # _checkpoint_depths: sentinel
+    PoolCheckpointState(),  # state
     0,          # _am_peak_n_active
 )
+
+# ==============================================================================
+# Checkpoint-State Property Forwarding
+# ==============================================================================
+# The three checkpoint fields moved into `state`, but ~76 call sites across src/
+# (plus the GPU extensions' shared duck-typed functions and the test suite)
+# address them as `tp.n_active` etc. Forward exactly those three names; every
+# other name stays a plain field. The Symbol comparisons are constant-folded for
+# literal-symbol accesses (the only kind in this codebase).
+
+@inline function Base.getproperty(tp::Union{TypedPool, BitTypedPool}, f::Symbol)
+    f === :n_active && return getfield(tp, :state).n_active
+    f === :_checkpoint_n_active && return getfield(tp, :state)._checkpoint_n_active
+    f === :_checkpoint_depths && return getfield(tp, :state)._checkpoint_depths
+    return getfield(tp, f)
+end
+
+@inline function Base.setproperty!(tp::Union{TypedPool, BitTypedPool}, f::Symbol, v)
+    f === :n_active && return setfield!(getfield(tp, :state), :n_active, convert(Int, v))
+    return setfield!(tp, f, v)   # moved vector fields are never reassigned; loud error if tried
+end
+
+Base.propertynames(tp::Union{TypedPool, BitTypedPool}) =
+    (fieldnames(typeof(tp))..., :n_active, :_checkpoint_n_active, :_checkpoint_depths)
 
 # ==============================================================================
 # Fixed Slot Configuration
