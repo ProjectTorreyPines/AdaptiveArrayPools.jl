@@ -629,201 +629,211 @@ import AdaptiveArrayPools: checkpoint!, rewind!
         end
     end
 
-    # ==========================================================================
-    # safe/non-safe divergence guard
-    # ==========================================================================
-    # `@with_pool`/`@maybe_with_pool` (non-safe) and `@safe_*` (try/finally) are
-    # two fundamentally different generator branches. This matrix runs identical
-    # scenarios through ALL FOUR macros and asserts they agree on result AND leave
-    # no depth/active leak — the mechanical guard that a change to one branch
-    # (checkpoint/rewind/tp-hoisting) must not silently break the other. A leaked
-    # checkpoint from tp bindings emitted before the try (instead of inside it) is
-    # exactly what the safe rows catch.
+    # Gated to Julia >= 1.12. The metaprogramming below (@eval-generating four
+    # macro runners × four scenarios, with a nested macrocall spliced via `$(...)`)
+    # crashes Julia 1.11's type inference with a segfault on some CI platforms — a
+    # 1.11 compiler bug that does not reproduce on 1.10 or 1.12. The matrix targets
+    # the >= 1.12 tp-hoisting divergence anyway, and legacy macro behavior is
+    # covered by the testsets above; @static keeps this uncompiled on 1.11.
+    @static if VERSION >= v"1.12-"
 
-    # Build one runner per macro at module scope (avoids 4× body duplication).
-    # A macro name interpolated as `$sym pool begin … end` is not valid syntax, so
-    # each scope is assembled as an explicit `Expr(:macrocall, …)`. Each runner runs
-    # 4 scenarios exercising the divergent paths: typed fixed-slot (tp hoisting),
-    # fallback/lazy (local-var demotion), nested, mixed (2 fixed slots).
-    _divmat_mc(m, body) = Expr(:macrocall, m, LineNumberNode(0, :divmat), :pool, body)
-    for macname in (:with_pool, :maybe_with_pool, :safe_with_pool, :safe_maybe_with_pool)
-        fname = Symbol("_divmat_", macname)
-        m = Symbol("@", macname)
-        typed = _divmat_mc(
-            m, quote
-                a = acquire!(pool, Float64, 8)
-                @inbounds for i in 1:8
-                    a[i] = Float64(i)
+        # ==========================================================================
+        # safe/non-safe divergence guard
+        # ==========================================================================
+        # `@with_pool`/`@maybe_with_pool` (non-safe) and `@safe_*` (try/finally) are
+        # two fundamentally different generator branches. This matrix runs identical
+        # scenarios through ALL FOUR macros and asserts they agree on result AND leave
+        # no depth/active leak — the mechanical guard that a change to one branch
+        # (checkpoint/rewind/tp-hoisting) must not silently break the other. A leaked
+        # checkpoint from tp bindings emitted before the try (instead of inside it) is
+        # exactly what the safe rows catch.
+
+        # Build one runner per macro at module scope (avoids 4× body duplication).
+        # A macro name interpolated as `$sym pool begin … end` is not valid syntax, so
+        # each scope is assembled as an explicit `Expr(:macrocall, …)`. Each runner runs
+        # 4 scenarios exercising the divergent paths: typed fixed-slot (tp hoisting),
+        # fallback/lazy (local-var demotion), nested, mixed (2 fixed slots).
+        _divmat_mc(m, body) = Expr(:macrocall, m, LineNumberNode(0, :divmat), :pool, body)
+        for macname in (:with_pool, :maybe_with_pool, :safe_with_pool, :safe_maybe_with_pool)
+            fname = Symbol("_divmat_", macname)
+            m = Symbol("@", macname)
+            typed = _divmat_mc(
+                m, quote
+                    a = acquire!(pool, Float64, 8)
+                    @inbounds for i in 1:8
+                        a[i] = Float64(i)
+                    end
+                    sum(a)
                 end
-                sum(a)
-            end
-        )
-        fallback = _divmat_mc(
-            m, quote
-                T = Vector{Float64}          # local var → macro demotes to lazy path
-                a = acquire!(pool, T, 4)
-                a[1] = Float64[1.0]
-                length(a)
-            end
-        )
-        nested = _divmat_mc(
-            m, quote
-                a = acquire!(pool, Float64, 4)
-                a[1] = 10.0
-                inner = $(
-                    _divmat_mc(
-                        m, quote
-                            b = acquire!(pool, Float64, 4)
-                            b[1] = 20.0
-                            b[1]
-                        end
+            )
+            fallback = _divmat_mc(
+                m, quote
+                    T = Vector{Float64}          # local var → macro demotes to lazy path
+                    a = acquire!(pool, T, 4)
+                    a[1] = Float64[1.0]
+                    length(a)
+                end
+            )
+            nested = _divmat_mc(
+                m, quote
+                    a = acquire!(pool, Float64, 4)
+                    a[1] = 10.0
+                    inner = $(
+                        _divmat_mc(
+                            m, quote
+                                b = acquire!(pool, Float64, 4)
+                                b[1] = 20.0
+                                b[1]
+                            end
+                        )
                     )
-                )
-                a[1] + inner
+                    a[1] + inner
+                end
+            )
+            mixed = _divmat_mc(
+                m, quote
+                    a = acquire!(pool, Float64, 4)
+                    a[1] = 1.0
+                    c = acquire!(pool, Int32, 2)
+                    c[1] = Int32(2)
+                    Float64(a[1]) + c[1]
+                end
+            )
+            @eval $fname() = ($typed, $fallback, $nested, $mixed)
+        end
+
+        # These runners throw after a hoisted (fallback-type) acquire, so the safe rows
+        # verify that a scope rewinds on exception. Fixed slots aren't hoisted, so a
+        # fallback type (Vector{Float64}) is needed to actually exercise the hoisted
+        # binding. Note this alone does NOT pin the binding's position — the structural
+        # expansion test below is what guards "binding stays inside the try".
+        @eval _divmat_throw_safe() = @safe_with_pool pool begin
+            a = acquire!(pool, Vector{Float64}, 8)
+            a[1] = Float64[]
+            error("boom")
+        end
+        @eval _divmat_throw_safe_maybe() = @safe_maybe_with_pool pool begin
+            a = acquire!(pool, Vector{Float64}, 8)
+            a[1] = Float64[]
+            error("boom")
+        end
+
+        # Every pool the matrix touches (fixed float64/int32 + fallback others) must be
+        # fully rewound; checking only float64 would miss a lazy/fallback rewind bug.
+        _divmat_clean(pool) = pool.float64.n_active == 0 &&
+            pool.int32.n_active == 0 &&
+            all(tp -> tp.n_active == 0, pool._others_values)
+
+        @testset "divergence matrix: all 4 macros agree (result + no leak)" begin
+            # Only meaningful when pooling is compile-time enabled. With
+            # STATIC_POOLING = false every macro takes the DisabledPool path, so the
+            # guard would pass vacuously (no typed pool is ever touched).
+            if AdaptiveArrayPools.STATIC_POOLING
+                old_maybe = MAYBE_POOLING[]
+                MAYBE_POOLING[] = true            # @maybe_* take the pooled branch
+                try
+                    reset!(get_task_local_pool())
+
+                    # Known-good results. Asserting these exact values (not just mutual
+                    # agreement) means a shared regression that makes all four return
+                    # the same WRONG tuple still fails: typed sum(1..8)=36.0,
+                    # fallback length=4, nested 10+20=30.0, mixed 1+2=3.0.
+                    expected = (36.0, 4, 30.0, 3.0)
+                    runners = (
+                        ("@with_pool", _divmat_with_pool),
+                        ("@maybe_with_pool", _divmat_maybe_with_pool),
+                        ("@safe_with_pool", _divmat_safe_with_pool),
+                        ("@safe_maybe_with_pool", _divmat_safe_maybe_with_pool),
+                    )
+                    for (label, f) in runners
+                        r = f()
+                        pool = get_task_local_pool()
+                        @test pool._current_depth == 1        # no depth leak ($label)
+                        @test _divmat_clean(pool)              # all touched pools reclaimed ($label)
+                        @test r == expected                    # exact known result ($label)
+                    end
+                finally
+                    MAYBE_POOLING[] = old_maybe
+                end
             end
-        )
-        mixed = _divmat_mc(
-            m, quote
-                a = acquire!(pool, Float64, 4)
-                a[1] = 1.0
-                c = acquire!(pool, Int32, 2)
-                c[1] = Int32(2)
-                Float64(a[1]) + c[1]
-            end
-        )
-        @eval $fname() = ($typed, $fallback, $nested, $mixed)
-    end
+        end
 
-    # These runners throw after a hoisted (fallback-type) acquire, so the safe rows
-    # verify that a scope rewinds on exception. Fixed slots aren't hoisted, so a
-    # fallback type (Vector{Float64}) is needed to actually exercise the hoisted
-    # binding. Note this alone does NOT pin the binding's position — the structural
-    # expansion test below is what guards "binding stays inside the try".
-    @eval _divmat_throw_safe() = @safe_with_pool pool begin
-        a = acquire!(pool, Vector{Float64}, 8)
-        a[1] = Float64[]
-        error("boom")
-    end
-    @eval _divmat_throw_safe_maybe() = @safe_maybe_with_pool pool begin
-        a = acquire!(pool, Vector{Float64}, 8)
-        a[1] = Float64[]
-        error("boom")
-    end
-
-    # Every pool the matrix touches (fixed float64/int32 + fallback others) must be
-    # fully rewound; checking only float64 would miss a lazy/fallback rewind bug.
-    _divmat_clean(pool) = pool.float64.n_active == 0 &&
-        pool.int32.n_active == 0 &&
-        all(tp -> tp.n_active == 0, pool._others_values)
-
-    @testset "divergence matrix: all 4 macros agree (result + no leak)" begin
-        # Only meaningful when pooling is compile-time enabled. With
-        # STATIC_POOLING = false every macro takes the DisabledPool path, so the
-        # guard would pass vacuously (no typed pool is ever touched).
-        if AdaptiveArrayPools.STATIC_POOLING
+        @testset "safe macros: exception rewinds despite throw" begin
             old_maybe = MAYBE_POOLING[]
-            MAYBE_POOLING[] = true            # @maybe_* take the pooled branch
+            MAYBE_POOLING[] = true
             try
                 reset!(get_task_local_pool())
-
-                # Known-good results. Asserting these exact values (not just mutual
-                # agreement) means a shared regression that makes all four return
-                # the same WRONG tuple still fails: typed sum(1..8)=36.0,
-                # fallback length=4, nested 10+20=30.0, mixed 1+2=3.0.
-                expected = (36.0, 4, 30.0, 3.0)
-                runners = (
-                    ("@with_pool", _divmat_with_pool),
-                    ("@maybe_with_pool", _divmat_maybe_with_pool),
-                    ("@safe_with_pool", _divmat_safe_with_pool),
-                    ("@safe_maybe_with_pool", _divmat_safe_maybe_with_pool),
-                )
-                for (label, f) in runners
-                    r = f()
+                for f in (_divmat_throw_safe, _divmat_throw_safe_maybe)
                     pool = get_task_local_pool()
-                    @test pool._current_depth == 1        # no depth leak ($label)
-                    @test _divmat_clean(pool)              # all touched pools reclaimed ($label)
-                    @test r == expected                    # exact known result ($label)
+                    d0 = pool._current_depth
+                    @test_throws ErrorException f()
+                    @test pool._current_depth == d0        # finally rewound
+                    @test _divmat_clean(pool)               # no leaked capacity in use
                 end
             finally
                 MAYBE_POOLING[] = old_maybe
             end
         end
-    end
 
-    @testset "safe macros: exception rewinds despite throw" begin
-        old_maybe = MAYBE_POOLING[]
-        MAYBE_POOLING[] = true
-        try
+        @testset "safe+typed expansion keeps the tp binding inside the try" begin
+            # Direct structural guard for the invariant the exception test cannot see:
+            # the hoisted get_typed_pool! binding must live INSIDE the try, so a throw
+            # from it still hits the finally rewind. If the binding moved before the
+            # try, the try body would no longer reference get_typed_pool! and this
+            # fails. Only meaningful where curly types are hoisted (Julia >= 1.12).
+            if AdaptiveArrayPools._MACRO_TYPED_UPGRADES
+                # The macro splices the get_typed_pool! *function value* (via `$`), so
+                # match that as well as a GlobalRef/Symbol spelling.
+                gtp = AdaptiveArrayPools.get_typed_pool!
+                refs_gtp(e) =
+                    e === gtp ||
+                    (e isa GlobalRef && e.name === :get_typed_pool!) ||
+                    (e isa Symbol && e === :get_typed_pool!) ||
+                    (e isa Expr && any(refs_gtp, e.args))
+                function find_try(e)
+                    e isa Expr || return nothing
+                    e.head === :try && return e
+                    for a in e.args
+                        t = find_try(a)
+                        t === nothing || return t
+                    end
+                    return nothing
+                end
+                ex = @macroexpand @safe_with_pool pool begin
+                    a = acquire!(pool, Vector{Float64}, 8)
+                    a[1] = Float64[]
+                    nothing
+                end
+                tnode = find_try(ex)
+                @test tnode !== nothing
+                @test refs_gtp(tnode.args[1])          # binding is inside the try body
+            end
+        end
+
+        @testset "non-safe: parent normalizes a leaked inner scope on throw" begin
             reset!(get_task_local_pool())
-            for f in (_divmat_throw_safe, _divmat_throw_safe_maybe)
-                pool = get_task_local_pool()
-                d0 = pool._current_depth
-                @test_throws ErrorException f()
-                @test pool._current_depth == d0        # finally rewound
-                @test _divmat_clean(pool)               # no leaked capacity in use
-            end
-        finally
-            MAYBE_POOLING[] = old_maybe
-        end
-    end
-
-    @testset "safe+typed expansion keeps the tp binding inside the try" begin
-        # Direct structural guard for the invariant the exception test cannot see:
-        # the hoisted get_typed_pool! binding must live INSIDE the try, so a throw
-        # from it still hits the finally rewind. If the binding moved before the
-        # try, the try body would no longer reference get_typed_pool! and this
-        # fails. Only meaningful where curly types are hoisted (Julia >= 1.12).
-        if AdaptiveArrayPools._MACRO_TYPED_UPGRADES
-            # The macro splices the get_typed_pool! *function value* (via `$`), so
-            # match that as well as a GlobalRef/Symbol spelling.
-            gtp = AdaptiveArrayPools.get_typed_pool!
-            refs_gtp(e) =
-                e === gtp ||
-                (e isa GlobalRef && e.name === :get_typed_pool!) ||
-                (e isa Symbol && e === :get_typed_pool!) ||
-                (e isa Expr && any(refs_gtp, e.args))
-            function find_try(e)
-                e isa Expr || return nothing
-                e.head === :try && return e
-                for a in e.args
-                    t = find_try(a)
-                    t === nothing || return t
+            # Inner @with_pool throws without rewinding; the outer scope's leaked-scope
+            # cleanup loop (the non-safe counterpart of the safe finally) restores depth.
+            f() = @with_pool pool begin
+                a = acquire!(pool, Float64, 4)
+                a[1] = 1.0
+                try
+                    @with_pool pool begin
+                        b = acquire!(pool, Float64, 4)
+                        error("inner boom")
+                    end
+                catch
                 end
-                return nothing
+                a[1]
             end
-            ex = @macroexpand @safe_with_pool pool begin
-                a = acquire!(pool, Vector{Float64}, 8)
-                a[1] = Float64[]
-                nothing
-            end
-            tnode = find_try(ex)
-            @test tnode !== nothing
-            @test refs_gtp(tnode.args[1])          # binding is inside the try body
+            r = f()
+            pool = get_task_local_pool()
+            @test r == 1.0
+            @test pool._current_depth == 1             # outer cleanup normalized the leak
+            @test _divmat_clean(pool)
         end
-    end
 
-    @testset "non-safe: parent normalizes a leaked inner scope on throw" begin
-        reset!(get_task_local_pool())
-        # Inner @with_pool throws without rewinding; the outer scope's leaked-scope
-        # cleanup loop (the non-safe counterpart of the safe finally) restores depth.
-        f() = @with_pool pool begin
-            a = acquire!(pool, Float64, 4)
-            a[1] = 1.0
-            try
-                @with_pool pool begin
-                    b = acquire!(pool, Float64, 4)
-                    error("inner boom")
-                end
-            catch
-            end
-            a[1]
-        end
-        r = f()
-        pool = get_task_local_pool()
-        @test r == 1.0
-        @test pool._current_depth == 1             # outer cleanup normalized the leak
-        @test _divmat_clean(pool)
-    end
+    end  # @static if VERSION >= v"1.12-" (divergence matrix)
 
     # Restore the file-entry MAYBE_POOLING value (see capture at top). @testset
     # continues past inner failures, so this runs even if a testset above failed.
