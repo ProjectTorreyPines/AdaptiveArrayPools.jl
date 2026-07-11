@@ -256,6 +256,7 @@
         @testset "zeros! default type uses default_eltype(pool)" begin
             expr = @macroexpand @with_pool pool begin
                 v = zeros!(pool, 10)
+                nothing
             end
 
             expr_str = string(expr)
@@ -268,6 +269,7 @@
         @testset "zeros! explicit type uses that type" begin
             expr = @macroexpand @with_pool pool begin
                 v = zeros!(pool, Float32, 10)
+                nothing
             end
 
             expr_str = string(expr)
@@ -279,6 +281,7 @@
         @testset "ones! default type uses default_eltype(pool)" begin
             expr = @macroexpand @with_pool pool begin
                 v = ones!(pool, 10)
+                nothing
             end
 
             expr_str = string(expr)
@@ -289,6 +292,7 @@
         @testset "zeros! default type uses default_eltype(pool) (second check)" begin
             expr = @macroexpand @with_pool pool begin
                 v = zeros!(pool, 10)
+                nothing
             end
 
             expr_str = string(expr)
@@ -299,6 +303,7 @@
         @testset "ones! default type uses default_eltype(pool) (second check)" begin
             expr = @macroexpand @with_pool pool begin
                 v = ones!(pool, 10)
+                nothing
             end
 
             expr_str = string(expr)
@@ -311,6 +316,7 @@
                 v1 = zeros!(pool, Float64, 10)  # explicit
                 v2 = ones!(pool, 5)              # default
                 v3 = zeros!(pool, Float32, 3)   # explicit
+                nothing
             end
 
             expr_str = string(expr)
@@ -432,6 +438,7 @@ end
         expected_line = (@__LINE__) + 2
         expr = @macroexpand @with_pool pool begin
             v = acquire!(pool, Float64, 10)
+            nothing
         end
         # Should find LNN matching the macro call line AND pointing to THIS file
         lnn = find_linenumbernode_with_line(expr, expected_line)
@@ -448,6 +455,7 @@ end
         expected_line = (@__LINE__) + 2
         func_expr = @macroexpand @with_pool pool function test_func_source(n)
             acquire!(pool, Float64, n)
+            nothing
         end
         body = get_function_body(func_expr)
         @test body !== nothing
@@ -466,6 +474,7 @@ end
         expected_line = (@__LINE__) + 2
         expr = @macroexpand @maybe_with_pool pool begin
             v = acquire!(pool, Float64, 10)
+            nothing
         end
         lnn = find_linenumbernode_with_line(expr, expected_line)
         @test lnn !== nothing
@@ -478,6 +487,7 @@ end
         expected_line = (@__LINE__) + 2
         expr = @macroexpand @with_pool :cpu pool begin
             v = acquire!(pool, Float64, 10)
+            nothing
         end
         lnn = find_linenumbernode_with_line(expr, expected_line)
         @test lnn !== nothing
@@ -500,7 +510,7 @@ end
     # Test 6: Short-form function (f(x) = ...) - LNN이 없는 케이스, __source__로 보정됨
     # The FIRST LNN in function body must point to user file
     @testset "@with_pool short function source location" begin
-        func_expr = @macroexpand @with_pool pool test_short_func(x) = acquire!(pool, Float64, x)
+        func_expr = @macroexpand @with_pool pool test_short_func(x) = (acquire!(pool, Float64, x); nothing)
         body = get_function_body(func_expr)
         @test body !== nothing
         # Short functions need __source__ fallback since they lack original LNN
@@ -519,6 +529,7 @@ end
     @testset "@maybe_with_pool function source location" begin
         func_expr = @macroexpand @maybe_with_pool pool function maybe_test_func(n)
             acquire!(pool, Float64, n)
+            nothing
         end
         body = get_function_body(func_expr)
         @test body !== nothing
@@ -537,6 +548,7 @@ end
     @testset "@with_pool :cpu function source location" begin
         func_expr = @macroexpand @with_pool :cpu pool function cpu_test_func(n)
             acquire!(pool, Float64, n)
+            nothing
         end
         body = get_function_body(func_expr)
         @test body !== nothing
@@ -695,6 +707,7 @@ end
     @testset "@inline outer macro function source location" begin
         func_expr = @macroexpand @inline @with_pool pool function _test_inline_outer(n)
             acquire!(pool, Float64, n)
+            nothing
         end
 
         body = get_function_body(func_expr)
@@ -714,6 +727,7 @@ end
         expected_line = (@__LINE__) + 2
         expr = @macroexpand @inbounds @with_pool pool begin
             v = acquire!(pool, Float64, 10)
+            nothing
         end
         lnn = find_linenumbernode_with_line(expr, expected_line)
         @test lnn !== nothing
@@ -895,6 +909,7 @@ end
         expr = @macroexpand @with_pool pool begin
             v = acquire!(pool, Float64, 10)  # static type Float64 → use_typed=true
             v .= 1.0
+            nothing
         end
         expr_str = string(expr)
 
@@ -909,6 +924,7 @@ end
         expr = @macroexpand @with_pool pool begin
             v = acquire!(pool, Float64, 10)
             v .= 1.0
+            nothing
         end
         expr_str = string(expr)
 
@@ -919,3 +935,133 @@ end
     end
 
 end # Dynamic selective mode expansion
+
+# ==============================================================================
+# Task 1: `:curly` static-type widening
+# ==============================================================================
+
+@static if VERSION >= v"1.12-"
+    @testset "curly static types take typed path" begin
+        # Discriminator: only the typed path emits _can_use_typed_path.
+        ex = @macroexpand @with_pool pool begin
+            v = acquire!(pool, Vector{Float64}, 4)
+            length(v); nothing
+        end
+        @test occursin("_can_use_typed_path", string(ex))
+
+        # Mixed fixed + curly must also stay typed
+        ex2 = @macroexpand @with_pool pool begin
+            a = acquire!(pool, Float64, 4)
+            b = acquire!(pool, Vector{Float64}, 2)
+            a[1] = 1.0; nothing
+        end
+        @test occursin("_can_use_typed_path", string(ex2))
+
+        # Curly over a LOCAL name must still demote to lazy
+        ex3 = @macroexpand @with_pool pool begin
+            T = Float64
+            v = acquire!(pool, Vector{T}, 4)
+            nothing
+        end
+        @test !occursin("_can_use_typed_path", string(ex3))
+
+        # Curly over a where-param-like global stays static: eltype-style nesting
+        ex4 = @macroexpand @with_pool pool begin
+            v = acquire!(pool, Vector{eltype(x)}, 4)   # x undefined locally → static
+            nothing
+        end
+        @test occursin("_can_use_typed_path", string(ex4))
+    end
+
+    @testset "curly typed path: end-state parity" begin
+        # NOTE: `@with_pool pool begin` REBINDS `pool` to the task-local pool
+        # inside the block — post-scope asserts must target the same object.
+        tlp = get_task_local_pool()
+        reset!(tlp)
+        @with_pool pool begin
+            v = acquire!(pool, Vector{Float64}, 3)
+            v[1] = [1.0]
+            nothing
+        end
+        tp = AdaptiveArrayPools.get_typed_pool!(tlp, Vector{Float64})
+        @test tp.n_active == 0
+
+        # Nested scopes: inner acquire of the same curly type rewinds in lockstep
+        @with_pool pool begin
+            acquire!(pool, Vector{Float64}, 2)
+            @with_pool pool begin
+                acquire!(pool, Vector{Float64}, 5)
+                nothing
+            end
+            @test tp.n_active == 1
+            nothing
+        end
+        @test tp.n_active == 0
+    end
+
+    @testset "typed scopes hoist get_typed_pool! once per static type" begin
+        ex = @macroexpand @with_pool pool begin
+            a = acquire!(pool, Float64, 4)
+            b = acquire!(pool, Float64, 8)
+            c = zeros!(pool, Float64, 2)
+            a[1] = b[1] = c[1] = 0.0
+            nothing
+        end
+        s = string(ex)
+        # Exactly one hoisted lookup for Float64 in the emitted scope body
+        @test count("get_typed_pool!", s) == 1
+    end
+
+    # Regression: the hoisted get_typed_pool! binding may throw (fallback slow
+    # path allocates); in the safe (try/finally) forms it MUST sit inside the
+    # try so the finally rewind still runs after the checkpoint. Otherwise a
+    # throw between checkpoint and try leaks the checkpoint depth.
+    @testset "safe forms hoist get_typed_pool! inside the try" begin
+        # Walk to the first :try node; return (statements-before-it, try-node).
+        function _find_try(ex)
+            found = Ref{Any}(nothing)
+            pre = Ref{Vector{Any}}(Any[])
+            walk(x) = begin
+                found[] === nothing || return
+                x isa Expr || return
+                if x.head === :block
+                    for (i, a) in enumerate(x.args)
+                        if a isa Expr && a.head === :try
+                            found[] = a
+                            pre[] = x.args[1:(i - 1)]
+                            return
+                        end
+                        walk(a)
+                        found[] === nothing || return
+                    end
+                else
+                    foreach(walk, x.args)
+                end
+            end
+            walk(ex)
+            return pre[], found[]
+        end
+
+        # Safe block form
+        ex_block = @macroexpand @safe_with_pool pool begin
+            a = acquire!(pool, Float64, 4)
+            a[1] = 1.0
+            nothing
+        end
+        pre_b, try_b = _find_try(ex_block)
+        @test try_b !== nothing
+        @test occursin("get_typed_pool!", string(try_b.args[1]))       # inside the try body
+        @test !occursin("get_typed_pool!", string(Expr(:block, pre_b...)))  # not before the try
+
+        # Safe function form
+        ex_fn = @macroexpand @safe_with_pool pool function _safe_hoist_fn()
+            a = acquire!(pool, Float64, 4)
+            a[1] = 1.0
+            nothing
+        end
+        pre_f, try_f = _find_try(ex_fn)
+        @test try_f !== nothing
+        @test occursin("get_typed_pool!", string(try_f.args[1]))
+        @test !occursin("get_typed_pool!", string(Expr(:block, pre_f...)))
+    end
+end

@@ -56,6 +56,7 @@ end
                 for dims in dims_list
                     @with_pool p begin
                         acquire!(p, Float64, dims...)
+                        nothing
                     end
                 end
             end
@@ -80,6 +81,7 @@ end
                 for dims in dims_list
                     @with_pool p begin
                         acquire!(p, Float64, dims...)
+                        nothing
                     end
                 end
             end
@@ -100,6 +102,7 @@ end
         # Warmup with small array
         @with_pool pool begin
             acquire!(pool, Float64, 10, 10)
+            nothing
         end
 
         # Request larger array (forces resize, invalidates cache)
@@ -113,6 +116,7 @@ end
         function _test_resize_cache!()
             @with_pool pool begin
                 acquire!(pool, Float64, 100, 100)
+                nothing
             end
         end
 
@@ -133,10 +137,12 @@ end
             @with_pool pool begin
                 acquire!(pool, Float64, 5, 5)   # Slot 1
                 acquire!(pool, Float64, 10, 10) # Slot 2
+                nothing
             end
             @with_pool pool begin
                 acquire!(pool, Float64, 6, 6)   # Slot 1, different dims
                 acquire!(pool, Float64, 12, 12) # Slot 2, different dims
+                nothing
             end
         end
 
@@ -145,12 +151,14 @@ end
             @with_pool pool begin
                 acquire!(pool, Float64, 5, 5)
                 acquire!(pool, Float64, 10, 10)
+                nothing
             end
         end
         function _test_multi_slot_b!()
             @with_pool pool begin
                 acquire!(pool, Float64, 6, 6)
                 acquire!(pool, Float64, 12, 12)
+                nothing
             end
         end
 

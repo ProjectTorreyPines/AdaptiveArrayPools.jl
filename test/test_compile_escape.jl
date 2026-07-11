@@ -10,7 +10,9 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
     _find_first_lnn_index, _ensure_body_has_toplevel_lnn,
     _extract_ordered_acquired,
     _find_reassign_maybe_tainted, _is_safe_copy_call, _rhs_call_contains_sym,
-    _extract_container_vars
+    _extract_container_vars,
+    _is_dotted_assign_head, _incidental_exposure, _lint_message, ESCAPE_LINT,
+    _report_incidental_escape, PoolEscapeError
 
 function _capture_stderr(f)
     tmpf = tempname()
@@ -2350,6 +2352,453 @@ end
             end
         end
         @test !contains(warn_output2, "PoolContainerEscapeWarning")
+    end
+
+    # ==============================================================================
+    # Incidental-tail escape detection (Task 3): direct acquire-call tails,
+    # broadcast-assign tails, and assignment tails — error by default via ESCAPE_LINT.
+    # ==============================================================================
+
+    @static if VERSION >= v"1.12-"
+        # Helper: expansion must throw PoolEscapeError (possibly LoadError-wrapped)
+        function _expansion_escape_error(ex)
+            try
+                macroexpand(@__MODULE__, ex)
+                return false
+            catch err
+                err isa LoadError && (err = err.error)
+                return err isa AdaptiveArrayPools.PoolEscapeError
+            end
+        end
+
+        @testset "incidental tails error at expansion" begin
+            # w2: broadcast-assign tail of an acquired var
+            @test _expansion_escape_error(
+                :(
+                    @with_pool pool begin
+                        v = acquire!(pool, Float64, 4)
+                        v .= 0.0
+                    end
+                )
+            )
+
+            # w2': dotted op-assign
+            @test _expansion_escape_error(
+                :(
+                    @with_pool pool begin
+                        v = acquire!(pool, Float64, 4)
+                        v .+= 1.0
+                    end
+                )
+            )
+
+            # w1: direct acquire-family call tail (no acquired vars at all —
+            # regression for the early-return trap at macros.jl:2512)
+            @test _expansion_escape_error(
+                :(
+                    @with_pool pool begin
+                        acquire!(pool, Float64, 4)
+                    end
+                )
+            )
+
+            # w1 via convenience wrapper
+            @test _expansion_escape_error(
+                :(
+                    @with_pool pool begin
+                        zeros!(pool, Float64, 4)
+                    end
+                )
+            )
+
+            # w3: assignment tail whose RHS is an acquire call
+            @test _expansion_escape_error(
+                :(
+                    @with_pool pool begin
+                        v = acquire!(pool, Float64, 4)
+                    end
+                )
+            )
+
+            # function form: implicit x .= v tail is the function's return value.
+            # NOTE: uses the 2-arg `@with_pool pool function ... end` form (pool
+            # captured via closure) — `@with_pool function f(pool) ... end` (pool as
+            # the function's own parameter) is a different, unsupported pattern: the
+            # macro always gensyms its internal pool binding for the 1-arg function
+            # form, so a same-named parameter shadows it and never matches during
+            # escape analysis (confirmed via macroexpand: the two `pool`s are
+            # distinct bindings). See docs-plans-symlink / scoping-pitfall memory note.
+            @test _expansion_escape_error(
+                :(
+                    @with_pool pool function f()
+                        v = acquire!(pool, Float64, 4)
+                        v .= 0.0
+                    end
+                )
+            )
+
+            # w1 with explicit `return`: `return acquire!(...)` must be unwrapped
+            # just like the implicit-tail form above.
+            @test _expansion_escape_error(
+                :(
+                    @with_pool pool begin
+                        return acquire!(pool, Float64, 4)
+                    end
+                )
+            )
+
+            # w1 via convenience wrapper, explicit `return`
+            @test _expansion_escape_error(
+                :(
+                    @with_pool pool begin
+                        return zeros!(pool, Float64, 4)
+                    end
+                )
+            )
+
+            # w2 with explicit `return`: `return (v .= 0.0)`
+            @test _expansion_escape_error(
+                :(
+                    @with_pool pool begin
+                        v = acquire!(pool, Float64, 4)
+                        return v .= 0.0
+                    end
+                )
+            )
+
+            # Reviewer's reproduction: nested-if early return, function form.
+            @test _expansion_escape_error(
+                :(
+                    @with_pool pool function f()
+                        v = acquire!(pool, Float64, 4)
+                        if true
+                            return v .= 0.0
+                        end
+                        nothing
+                    end
+                )
+            )
+        end
+
+        @testset "incidental-tail error message teaches the fix" begin
+            err = try
+                macroexpand(
+                    @__MODULE__, :(
+                        @with_pool pool begin
+                            v = acquire!(pool, Float64, 4)
+                            v .= 0.0
+                        end
+                    )
+                )
+                nothing
+            catch e
+                e isa LoadError ? e.error : e
+            end
+            @test err isa AdaptiveArrayPools.PoolEscapeError
+            msg = sprint(showerror, err)
+            @test occursin("nothing", msg)          # suggests the one-line fix
+            @test occursin("last expression", msg)  # explains block-tail semantics
+        end
+
+        @testset "safe tails do not error" begin
+            # each expands cleanly (no throw): nothing tail, scalar call, owned copy,
+            # scalar index, broadcast into a non-pool array
+            @test macroexpand(
+                @__MODULE__, :(
+                    @with_pool pool begin
+                        v = acquire!(pool, Float64, 4); v .= 0.0; nothing
+                    end
+                )
+            ) isa Expr
+            @test macroexpand(
+                @__MODULE__, :(
+                    @with_pool pool begin
+                        v = acquire!(pool, Float64, 4); sum(v)
+                    end
+                )
+            ) isa Expr
+            @test macroexpand(
+                @__MODULE__, :(
+                    @with_pool pool begin
+                        v = acquire!(pool, Float64, 4); collect(v)
+                    end
+                )
+            ) isa Expr
+            @test macroexpand(
+                @__MODULE__, :(
+                    @with_pool pool begin
+                        v = acquire!(pool, Float64, 4); v[1]
+                    end
+                )
+            ) isa Expr
+            @test macroexpand(
+                @__MODULE__, :(
+                    @with_pool pool begin
+                        v = acquire!(pool, Float64, 4); w = zeros(4); w .= 1.0
+                    end
+                )
+            ) isa Expr
+            # explicit-return safe cases: bare `return` and `return sum(v)`
+            @test macroexpand(
+                @__MODULE__, :(
+                    @with_pool pool function f()
+                        v = acquire!(pool, Float64, 4)
+                        v .= 0.0
+                        return
+                    end
+                )
+            ) isa Expr
+            @test macroexpand(
+                @__MODULE__, :(
+                    @with_pool pool function f()
+                        v = acquire!(pool, Float64, 4)
+                        return sum(v)
+                    end
+                )
+            ) isa Expr
+        end
+
+        @testset "explicit-return escape renders correct pattern label (M5)" begin
+            # `return (v .= 0.0)` must still classify as broadcast_assign in
+            # showerror, not fall through to the acquire_call label — the
+            # `:return` wrapper must be unwrapped before pattern-matching,
+            # same as `_incidental_exposure` already does for detection.
+            err = try
+                macroexpand(
+                    @__MODULE__, :(
+                        @with_pool pool begin
+                            v = acquire!(pool, Float64, 4)
+                            return (v .= 0.0)
+                        end
+                    )
+                )
+                nothing
+            catch e
+                e isa LoadError ? e.error : e
+            end
+            @test err isa AdaptiveArrayPools.PoolEscapeError
+            msg = sprint(showerror, err)
+            @test occursin("pool-backed array `v`", msg)
+            @test !occursin("direct acquire call", msg)
+        end
+
+        @testset "incidental tail inside if/else implicit branch errors" begin
+            # A common Julia idiom: the block's last expression is an if/else
+            # whose branch tail is an incidental escape. `_collect_all_return_values`
+            # expands into both branch tails, and Stage 2 must flag the escaping one.
+            # w2 — broadcast-assign branch tail
+            @test _expansion_escape_error(
+                :(
+                    @with_pool pool begin
+                        v = acquire!(pool, Float64, 4)
+                        if true
+                            v .= 0.0
+                        else
+                            nothing
+                        end
+                    end
+                )
+            )
+            # w1 — direct acquire-call branch tail
+            @test _expansion_escape_error(
+                :(
+                    @with_pool pool begin
+                        if true
+                            acquire!(pool, Float64, 4)
+                        else
+                            nothing
+                        end
+                    end
+                )
+            )
+            # w3 — assignment branch tail
+            @test _expansion_escape_error(
+                :(
+                    @with_pool pool begin
+                        if true
+                            v = acquire!(pool, Float64, 4)
+                        else
+                            nothing
+                        end
+                    end
+                )
+            )
+            # Safe: both branch tails are `nothing` — must NOT error
+            @test macroexpand(
+                @__MODULE__, :(
+                    @with_pool pool begin
+                        v = acquire!(pool, Float64, 4)
+                        if true
+                            v .= 0.0
+                            nothing
+                        else
+                            nothing
+                        end
+                    end
+                )
+            ) isa Expr
+        end
+
+        @testset "incidental-tail showerror uses the stored (kind, detail) label" begin
+            # After the classification is stored on the EscapePoint at throw time,
+            # showerror renders each pattern's own label without re-deriving it.
+            function _escape_err(ex)
+                try
+                    macroexpand(@__MODULE__, ex)
+                    return nothing
+                catch e
+                    return e isa LoadError ? e.error : e
+                end
+            end
+
+            # w1 — acquire-call tail
+            e1 = _escape_err(
+                :(
+                    @with_pool pool begin
+                        acquire!(pool, Float64, 4)
+                    end
+                )
+            )
+            @test e1 isa AdaptiveArrayPools.PoolEscapeError
+            @test occursin("direct acquire call", sprint(showerror, e1))
+
+            # w2 — broadcast-assign tail names the array
+            e2 = _escape_err(
+                :(
+                    @with_pool pool begin
+                        v = acquire!(pool, Float64, 4)
+                        v .= 0.0
+                    end
+                )
+            )
+            @test e2 isa AdaptiveArrayPools.PoolEscapeError
+            @test occursin("pool-backed array `v`", sprint(showerror, e2))
+
+            # w3 — assignment tail
+            e3 = _escape_err(
+                :(
+                    @with_pool pool begin
+                        v = acquire!(pool, Float64, 4)
+                    end
+                )
+            )
+            @test e3 isa AdaptiveArrayPools.PoolEscapeError
+            @test occursin("assigns a pool-backed array", sprint(showerror, e3))
+        end
+
+        @testset "existing intentional-return errors unchanged" begin
+            @test _expansion_escape_error(
+                :(
+                    @with_pool pool begin
+                        v = acquire!(pool, Float64, 4)
+                        v
+                    end
+                )
+            )
+        end
+
+        # ==========================================================================
+        # Direct unit tests for _incidental_exposure and _lint_message.
+        #
+        # ESCAPE_LINT is a load-time constant (like RUNTIME_CHECK) — the "warn"/"off"
+        # severity branches cannot be integration-tested in-process, since the test
+        # session always runs under the default "error" preference. These unit tests
+        # exercise the detection helper and message builder directly instead, so the
+        # "warn"/"off" code paths (which call the same helpers) are covered by proxy.
+        # ==========================================================================
+
+        @testset "_is_dotted_assign_head" begin
+            @test _is_dotted_assign_head(Symbol(".="))
+            @test _is_dotted_assign_head(Symbol(".+="))
+            @test _is_dotted_assign_head(Symbol(".*="))
+            @test !_is_dotted_assign_head(:(=))
+            @test !_is_dotted_assign_head(:ref)
+            @test !_is_dotted_assign_head(:call)
+            @test !_is_dotted_assign_head(1)  # non-Symbol head
+        end
+
+        @testset "_incidental_exposure: detects the three incidental patterns" begin
+            # w1: direct acquire-family call tail — no tainted vars needed at all
+            hit = _incidental_exposure(:(acquire!(pool, Float64, 4)), Set{Symbol}(), :pool)
+            @test hit !== nothing
+            @test hit[1] === :acquire_call
+
+            hit = _incidental_exposure(:(zeros!(pool, Float64, 4)), Set{Symbol}(), :pool)
+            @test hit !== nothing
+            @test hit[1] === :acquire_call
+
+            # w2: broadcast-assign tail of a tainted var
+            hit = _incidental_exposure(:(v .= 0.0), Set([:v]), :pool)
+            @test hit == (:broadcast_assign, :v)
+
+            # w2': dotted op-assign
+            hit = _incidental_exposure(:(v .+= 1.0), Set([:v]), :pool)
+            @test hit == (:broadcast_assign, :v)
+
+            # w2'': indexed base — x[...] .= v on a tainted base
+            hit = _incidental_exposure(:(v[1:2] .= 0.0), Set([:v]), :pool)
+            @test hit == (:broadcast_assign, :v)
+
+            # w3: assignment tail whose RHS is a direct acquire call
+            hit = _incidental_exposure(:(v = acquire!(pool, Float64, 4)), Set{Symbol}(), :pool)
+            @test hit !== nothing
+            @test hit[1] === :assign
+
+            # w3': assignment tail whose RHS is an already-tainted var (alias)
+            hit = _incidental_exposure(:(d = v), Set([:v]), :pool)
+            @test hit == (:assign, :v)
+        end
+
+        @testset "_incidental_exposure: safe tails return nothing" begin
+            @test _incidental_exposure(:nothing, Set([:v]), :pool) === nothing
+            @test _incidental_exposure(1, Set([:v]), :pool) === nothing  # non-Expr
+            @test _incidental_exposure(:(v[1]), Set([:v]), :pool) === nothing  # scalar index
+            @test _incidental_exposure(:(sum(v)), Set([:v]), :pool) === nothing
+            @test _incidental_exposure(:(collect(v)), Set([:v]), :pool) === nothing
+            # broadcast into a non-tainted (non-pool) array
+            @test _incidental_exposure(:(w .= 1.0), Set([:v]), :pool) === nothing
+            # assignment whose RHS is neither an acquire call nor a tainted var
+            @test _incidental_exposure(:(d = 1), Set([:v]), :pool) === nothing
+            @test _incidental_exposure(:(d = sum(v)), Set([:v]), :pool) === nothing
+        end
+
+        @testset "_lint_message: content pins \"last expression\" and \"nothing\"" begin
+            acquire_expr = :(acquire!(pool, Float64, 4))
+            msg = _lint_message(:acquire_call, acquire_expr, acquire_expr)
+            @test occursin("last expression", msg)
+            @test occursin("nothing", msg)
+            @test occursin("escape_lint", msg)
+
+            broadcast_expr = :(v .= 0.0)
+            msg = _lint_message(:broadcast_assign, :v, broadcast_expr)
+            @test occursin("last expression", msg)
+            @test occursin("nothing", msg)
+            @test occursin("v", msg)
+
+            assign_expr = :(v = acquire!(pool, Float64, 4))
+            msg = _lint_message(:assign, :v, assign_expr)
+            @test occursin("last expression", msg)
+            @test occursin("nothing", msg)
+        end
+
+        @testset "_report_incidental_escape: both severity branches" begin
+            # ESCAPE_LINT is a load-time constant so the call site only ever
+            # exercises one branch per session — test both directly here.
+            ax = :(acquire!(pool, Float64, 4))
+            # "error" throws PoolEscapeError carrying the incidental point
+            err = try
+                _report_incidental_escape("error", :acquire_call, ax, ax, 10, "f.jl", 1)
+                nothing
+            catch e
+                e
+            end
+            @test err isa PoolEscapeError
+            @test occursin("direct acquire call", sprint(showerror, err))
+
+            # "warn" emits an expansion-time warning (no throw)
+            bx = :(v .= 0.0)
+            @test_logs (:warn,) _report_incidental_escape("warn", :broadcast_assign, :v, bx, 12, "f.jl", 1)
+        end
     end
 
 end # Compile-Time Escape Detection

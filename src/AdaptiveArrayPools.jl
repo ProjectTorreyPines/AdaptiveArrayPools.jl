@@ -1,6 +1,7 @@
 module AdaptiveArrayPools
 
 using Printf
+using Preferences: @load_preference
 import Random
 # Extend (and re-export) Random's rand!/randn! with pool-constructor methods.
 # Re-exporting the SAME binding means no conflict warning when a user also
@@ -14,7 +15,7 @@ export zeros!, ones!, trues!, falses!, similar!, reshape!, default_eltype  # Con
 export rand!, randn!  # Random-array convenience constructors (re-exported from Random)
 export Bit  # Sentinel type for BitArray (use with acquire!, trues!, falses!)
 export @with_pool, @maybe_with_pool, @safe_with_pool, @safe_maybe_with_pool
-export STATIC_POOLING, MAYBE_POOLING, RUNTIME_CHECK
+export STATIC_POOLING, MAYBE_POOLING, RUNTIME_CHECK, ESCAPE_LINT
 export PoolEscapeError, EscapePoint, PoolMutationError, MutationPoint
 export checkpoint!, rewind!, reset!, trim!, compact!
 export enable_auto_manage!, disable_auto_manage!, auto_manage_enabled, AUTO_MANAGE
@@ -25,6 +26,14 @@ export get_task_local_metal_pool, get_task_local_metal_pools  # Metal (stubs, ov
 export AbstractTypedPool, AbstractArrayPool  # For subtyping
 export DisabledPool, DISABLED_CPU, pooling_enabled  # Disabled pool support
 # Note: Extensions add methods to _get_pool_for_backend(::Val{:backend}) directly
+
+# Expansion-time incidental-tail escape severity: "error" (default) | "warn" | "off".
+# Read once at package load; a compile-time constant like RUNTIME_CHECK.
+const ESCAPE_LINT = let v = @load_preference("escape_lint", "error")
+    v in ("error", "warn", "off") ||
+        error("escape_lint preference must be \"error\", \"warn\", or \"off\" (got \"$v\")")
+    v
+end
 
 # All includes grouped under a single version branch
 @static if VERSION >= v"1.12-"

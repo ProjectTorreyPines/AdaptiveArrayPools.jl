@@ -8,6 +8,7 @@
 import AdaptiveArrayPools: _extract_local_assignments, _filter_static_types, _extract_acquire_types, _uses_local_var
 import AdaptiveArrayPools: _lazy_checkpoint!, _lazy_rewind!
 import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracked_mask_for_types
+import AdaptiveArrayPools: _is_nested_with_pool_macrocall
 
 @testset "Macro Internals" begin
 
@@ -217,13 +218,21 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
                 @test has_dynamic
             end
 
-            # Parametric type: Vector{Float64} → dynamic
+            # Parametric type: Vector{Float64} with no free local names → static
+            # (curly widening: Task 1 of the macro-static-lint plan)
+            # Legacy tree (< 1.12) keeps the old unconditional-fallback behavior
+            # for curly type literals (gated by `_MACRO_TYPED_UPGRADES`).
             @testset "parametric type" begin
                 types = Set{Any}([:(Vector{Float64})])
                 local_vars = Set{Symbol}()
                 static_types, has_dynamic = _filter_static_types(types, local_vars)
-                @test isempty(static_types)
-                @test has_dynamic
+                @static if VERSION >= v"1.12-"
+                    @test :(Vector{Float64}) in static_types
+                    @test !has_dynamic
+                else
+                    @test isempty(static_types)
+                    @test has_dynamic
+                end
             end
 
             # GlobalRef or other concrete types → static
@@ -245,20 +254,43 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
                 @test !has_dynamic
             end
 
-            # All dynamic (all in locals or parametric)
-            @testset "all dynamic" begin
+            # Locals dynamic, but a parametric type with no free local names is still static
+            # (legacy: curly always demotes, see `_MACRO_TYPED_UPGRADES`)
+            @testset "locals dynamic, curly with no free local names static" begin
                 types = Set{Any}([:T, :S, :(Vector{Int})])
                 local_vars = Set{Symbol}([:T, :S])
                 static_types, has_dynamic = _filter_static_types(types, local_vars)
-                @test isempty(static_types)
-                @test has_dynamic
+                @static if VERSION >= v"1.12-"
+                    @test :(Vector{Int}) in static_types
+                else
+                    @test :(Vector{Int}) ∉ static_types
+                end
+                @test :T ∉ static_types
+                @test :S ∉ static_types
+                @test has_dynamic  # T and S are still local → whole scope demotes
             end
 
-            # Curly expression detection
+            # Curly expression detection: static when no free name is local
+            # (legacy: curly always demotes, see `_MACRO_TYPED_UPGRADES`)
             @testset "curly expression" begin
                 curly_expr = Expr(:curly, :Vector, :Float64)
                 types = Set{Any}([curly_expr])
                 local_vars = Set{Symbol}()
+                static_types, has_dynamic = _filter_static_types(types, local_vars)
+                @static if VERSION >= v"1.12-"
+                    @test curly_expr in static_types
+                    @test !has_dynamic
+                else
+                    @test curly_expr ∉ static_types
+                    @test has_dynamic
+                end
+            end
+
+            # Curly expression over a local name still demotes to dynamic
+            @testset "curly expression over local name" begin
+                curly_expr = Expr(:curly, :Vector, :T)
+                types = Set{Any}([curly_expr])
+                local_vars = Set{Symbol}([:T])
                 static_types, has_dynamic = _filter_static_types(types, local_vars)
                 @test isempty(static_types)
                 @test has_dynamic
@@ -1550,6 +1582,120 @@ import AdaptiveArrayPools: _typed_lazy_checkpoint!, _typed_lazy_rewind!, _tracke
 
         rewind!(pool, Int64)
         @test pool.int64.n_active == 0
+    end
+
+    # ==================================================================
+    # Task 1 review fix: `_is_nested_with_pool_macrocall` must also match
+    # module-qualified nested macrocalls (e.g. `AdaptiveArrayPools.@with_pool`),
+    # not just bare-symbol invocations.
+    # ==================================================================
+
+    @static if VERSION >= v"1.12-"
+        @testset "_is_nested_with_pool_macrocall guard" begin
+
+            @testset "matches with_pool-family macrocalls" begin
+                @test _is_nested_with_pool_macrocall(:(@with_pool pool begin end))
+                @test _is_nested_with_pool_macrocall(:(@maybe_with_pool pool begin end))
+                @test _is_nested_with_pool_macrocall(:(@safe_with_pool pool begin end))
+                @test _is_nested_with_pool_macrocall(:(@with_pool :metal p begin end))
+                # Module-qualified form: expr.args[1] is Expr(:., :AdaptiveArrayPools, QuoteNode(:@with_pool)),
+                # not a bare Symbol — the pre-fix predicate misses this spelling entirely.
+                @test _is_nested_with_pool_macrocall(:(AdaptiveArrayPools.@with_pool pool begin end))
+            end
+
+            @testset "does not match unrelated macrocalls" begin
+                @test !_is_nested_with_pool_macrocall(:(@inbounds v .= 0))
+                @test !_is_nested_with_pool_macrocall(:(@views acquire!(pool, Float64, 4)))
+            end
+
+            @testset "integration: @inbounds-wrapped acquire! is still transformed" begin
+                ex = @macroexpand @with_pool pool begin
+                    @inbounds v = acquire!(pool, Float64, 4)
+                    nothing
+                end
+                @test occursin("_acquire_impl!", string(ex))
+            end
+
+            @testset "integration: qualified nested @with_pool stays typed on both sides" begin
+                # Pre-fix: the outer transform recurses into the qualified nested macrocall's
+                # body, renaming its acquire! to _acquire_impl! before the inner macro expands —
+                # so the inner macro finds no acquire! calls and silently demotes to the
+                # lazy/dynamic path (only the outer's checkpoint+rewind would be typed: count == 2).
+                # Post-fix: both outer and inner scopes take the typed path (count == 4).
+                ex = @macroexpand @with_pool pool begin
+                    acquire!(pool, Float64, 2)
+                    AdaptiveArrayPools.@with_pool pool begin
+                        acquire!(pool, Float64, 5)
+                        nothing
+                    end
+                    nothing
+                end
+                @test count("_can_use_typed_path", string(ex)) == 4
+            end
+
+            @testset "integration: bare nested @with_pool stays typed on both sides" begin
+                # The plain (unqualified) spelling is the common form that actually
+                # regressed; assert both scopes keep the typed path (count == 4), the
+                # same guarantee the qualified case checks above.
+                ex = @macroexpand @with_pool pool begin
+                    acquire!(pool, Float64, 2)
+                    @with_pool pool begin
+                        acquire!(pool, Float64, 5)
+                        nothing
+                    end
+                    nothing
+                end
+                @test count("_can_use_typed_path", string(ex)) == 4
+            end
+        end
+    end
+
+    # ==================================================================
+    # Task 2: per-scope `tp` hoisting
+    # ==================================================================
+
+    @static if VERSION >= v"1.12-"
+        @testset "tp hoisting: semantics parity + zero-alloc" begin
+            # `@with_pool pool begin` binds `pool` to the TASK-LOCAL pool — the
+            # functions take no pool argument; asserts target get_task_local_pool().
+            tlp = get_task_local_pool()
+            reset!(tlp)
+            f!() = @with_pool pool begin
+                a = acquire!(pool, UInt8, 16)          # fallback type → real lookup saved
+                b = acquire!(pool, UInt8, 32)
+                c = zeros!(pool, UInt8, 8)
+                a[1] = 0x01; b[1] = 0x02
+                Int(a[1]) + Int(b[1]) + Int(c[1])
+            end
+            @test f!() == 3
+            @test AdaptiveArrayPools.get_typed_pool!(tlp, UInt8).n_active == 0
+            f!()  # warmup
+            @test (@allocated f!()) == 0
+
+            # Conditional acquire: hoist binding runs eagerly, scope must still rewind clean
+            g!(flag) = @with_pool pool begin
+                flag && acquire!(pool, UInt16, 4)
+                nothing
+            end
+            g!(false)
+            @test AdaptiveArrayPools.get_typed_pool!(tlp, UInt16).n_active == 0
+            g!(true)
+            @test AdaptiveArrayPools.get_typed_pool!(tlp, UInt16).n_active == 0
+        end
+
+        @testset "tp hoisting: only substituted types get a binding" begin
+            # `_hoist_typed_pools` must NOT emit a `local tp = get_typed_pool!(...)`
+            # binding for a static type that never lands in a hoistable `_*_impl!`
+            # call — otherwise a type reached solely via a non-hoistable wrapper
+            # (similar!/reshape!/trues!/falses!) gets a dead binding.
+            AAP = AdaptiveArrayPools
+            body = Expr(:block, Expr(:call, AAP._ACQUIRE_IMPL_REF, :pool, :Float64, 4))
+            tp_vars, rewritten = AAP._hoist_typed_pools(body, Any[:Float64, :Int32])
+            bound = [p.first for p in tp_vars]
+            @test :Float64 in bound          # substituted → bound
+            @test !(:Int32 in bound)         # never substituted → no dead binding
+            @test occursin("_aap_tp", string(rewritten))  # the call was rewritten
+        end
     end
 
 end # Macro Internals

@@ -2,16 +2,32 @@
 # Macros for AdaptiveArrayPools
 # ==============================================================================
 
+# The typed-path macro upgrades (parametric static types, per-scope tp hoisting,
+# nested-macrocall transform guard) target the modern (Julia >= 1.12) tree only.
+# The legacy tree keeps its pre-existing expansion byte-for-byte; the escape
+# lint below is version-independent and stays active everywhere.
+const _MACRO_TYPED_UPGRADES = VERSION >= v"1.12-"
+
 # ==============================================================================
 # PoolEscapeError — Compile-time escape detection error
 # ==============================================================================
 
-"""Per-return-point escape detail: which expression, at which line, leaks which vars."""
+"""Per-return-point escape detail: which expression, at which line, leaks which vars.
+
+`incidental` carries the `(kind, detail)` pair for a Stage-2 incidental-tail escape
+(a direct acquire call / broadcast-assign / assignment tail — see `_incidental_exposure`)
+and is `nothing` for a Stage-1 intentional-return escape. Storing it at throw time
+lets `showerror` render the message without re-classifying the expression, and is
+what distinguishes the two error layouts (no `vars`-emptiness sentinel)."""
 struct EscapePoint
     expr::Any
     line::Union{Int, Nothing}
     vars::Vector{Symbol}
+    incidental::Union{Nothing, Tuple{Symbol, Any}}
 end
+
+# Stage-1 points carry no incidental classification.
+EscapePoint(expr, line, vars) = EscapePoint(expr, line, vars, nothing)
 
 """Per-variable declaration site: where an escaping variable was assigned."""
 struct DeclarationSite
@@ -83,7 +99,44 @@ function _render_return_expr(io::IO, expr, escaped::Set{Symbol})
     end
 end
 
+"""Render a `PoolEscapeError` that came from an incidental-tail pattern: the escaping
+thing is a tail *expression* (an acquire call, a broadcast-assign, or an assignment),
+not a directly-returned named variable — see `_incidental_exposure`. Each point's
+`incidental` field carries the `(kind, detail)` classified at throw time; reuses
+`_lint_message` so the wording matches the `escape_lint = \"warn\"` path exactly."""
+function _showerror_incidental_tail(io::IO, e::PoolEscapeError)
+    printstyled(io, "PoolEscapeError"; color = :red, bold = true)
+    printstyled(io, " (compile-time)"; color = :light_black)
+    println(io)
+    println(io)
+    for pt in e.points
+        kind, detail = pt.incidental
+        printstyled(io, "  "; color = :normal)
+        print(io, _lint_message(kind, detail, pt.expr))
+        println(io)
+        loc = _format_point_location(e.file, pt.line)
+        if loc !== nothing
+            printstyled(io, "  ["; color = :magenta, bold = true)
+            printstyled(io, loc; color = :magenta, bold = true)
+            printstyled(io, "] "; color = :magenta, bold = true)
+            println(io)
+        end
+    end
+    println(io)
+    printstyled(io, "  False positive?\n"; bold = true)
+    printstyled(io, "    Please file an issue at "; color = :light_black)
+    printstyled(io, "https://github.com/ProjectTorreyPines/AdaptiveArrayPools.jl/issues"; bold = true)
+    return printstyled(io, "\n    with a minimal reproducer so we can improve the escape detector.\n"; color = :light_black)
+end
+
 function Base.showerror(io::IO, e::PoolEscapeError)
+    # Incidental-tail escapes carry a classified `incidental` on their points and no
+    # named variable — render separately. Stage-1 and Stage-2 points never mix in a
+    # single error (Stage 1 throws before Stage 2 runs), so the first point decides.
+    if !isempty(e.points) && e.points[1].incidental !== nothing
+        return _showerror_incidental_tail(io, e)
+    end
+
     # Header
     printstyled(io, "PoolEscapeError"; color = :red, bold = true)
     printstyled(io, " (compile-time)"; color = :light_black)
@@ -324,6 +377,60 @@ Nested `@with_pool` blocks work correctly - each maintains its own checkpoint.
     sum(v1) + inner
 end
 ```
+
+## Escape Detection
+
+`@with_pool` statically analyzes the scope body at macro-expansion time and
+rejects code whose return value would be a pool-backed array — a
+[`PoolEscapeError`](@ref), thrown at expansion time (zero runtime cost). This
+always covers the direct-return patterns (a bare variable, `return v`,
+container literals like `(v, w)` / `[v]`), and three additional "incidental"
+tail patterns that don't *look* like a `return` but still expose a pool-backed
+array as the scope's value:
+
+```julia
+@with_pool pool begin
+    v = acquire!(pool, Float64, 100)
+    acquire!(pool, Float64, 100)   # ← direct acquire-call tail
+end
+
+@with_pool pool begin
+    v = acquire!(pool, Float64, 100)
+    v .= 0.0                        # ← broadcast-assign tail (evaluates to `v`, the LHS)
+end
+
+@with_pool pool begin
+    v = acquire!(pool, Float64, 100)
+    y = v                           # ← assignment tail (evaluates to its RHS)
+end
+```
+
+If the scope's last expression is meant to be discarded (a "run it for its
+side effects" scope), end the block with `nothing`:
+
+```julia
+@with_pool pool begin
+    v = acquire!(pool, Float64, 100)
+    v .= 0.0
+    nothing   # ← fixed: block no longer returns a pool-backed value
+end
+```
+
+Severity for these three incidental-tail patterns is controlled by the
+`escape_lint` preference (via `Preferences.jl`, read once at package load as
+the `ESCAPE_LINT` compile-time constant):
+- `"error"` (default) — throws `PoolEscapeError`, same as the direct-return patterns.
+- `"warn"` — prints the same diagnostic via `@warn` and continues (migration escape hatch).
+- `"off"` — disables Stage-2 (incidental-tail) checking; direct-return patterns still always error.
+
+```julia
+using Preferences
+Preferences.set_preferences!("AdaptiveArrayPools", "escape_lint" => "warn")
+```
+
+See also the "Compile-Time Detection" page in the manual for full error-message
+examples and known static-analysis limitations (opaque function calls, `let`
+blocks).
 
 ## Exception Behavior
 
@@ -738,6 +845,13 @@ function _generate_block_inner(pool_name, expr, safe::Bool, source)
     end
 
     transformed_expr = use_typed ? _transform_acquire_calls(expr, pool_name) : expr
+    tp_bindings = Expr[]
+    if use_typed && _MACRO_TYPED_UPGRADES
+        tp_vars, transformed_expr = _hoist_typed_pools(transformed_expr, static_types)
+        for (t, v) in tp_vars
+            push!(tp_bindings, :(local $(esc(v)) = $get_typed_pool!($(esc(pool_name)), $(esc(t)))))
+        end
+    end
     transformed_expr = _inject_pending_callsite(transformed_expr, pool_name, expr)
 
     if safe
@@ -745,7 +859,12 @@ function _generate_block_inner(pool_name, expr, safe::Bool, source)
         return quote
             $(_auto_manage_hook(pool_name))
             $checkpoint_call
+            # Hoisted tp bindings live INSIDE the try: get_typed_pool! can allocate
+            # (fallback slow path) and thus throw, and the whole point of the safe
+            # form is that the finally rewind runs after the checkpoint no matter
+            # what. Emitting them before the try would leak the checkpoint on throw.
             try
+                $(tp_bindings...)
                 local _result = $(esc(transformed_expr))
                 if $_RUNTIME_CHECK_REF($(esc(pool_name)))
                     $_validate_pool_return(_result, $(esc(pool_name)))
@@ -771,6 +890,7 @@ function _generate_block_inner(pool_name, expr, safe::Bool, source)
             local $(esc(entry_depth_var)) = $(esc(pool_name))._current_depth
             $(_auto_manage_hook(pool_name))
             $checkpoint_call
+            $(tp_bindings...)
             local _result = $(esc(transformed_expr))
             # Leaked scope cleanup BEFORE validation: if an inner @with_pool threw
             # without rewind, _current_depth is still the inner depth. Validation
@@ -818,6 +938,13 @@ function _generate_function_inner(pool_name, expr, safe::Bool, source)
     end
 
     transformed_expr = use_typed ? _transform_acquire_calls(expr, pool_name) : expr
+    tp_bindings = Expr[]
+    if use_typed && _MACRO_TYPED_UPGRADES
+        tp_vars, transformed_expr = _hoist_typed_pools(transformed_expr, static_types)
+        for (t, v) in tp_vars
+            push!(tp_bindings, :(local $(esc(v)) = $get_typed_pool!($(esc(pool_name)), $(esc(t)))))
+        end
+    end
     transformed_expr = _inject_pending_callsite(transformed_expr, pool_name, expr)
 
     if safe
@@ -825,7 +952,11 @@ function _generate_function_inner(pool_name, expr, safe::Bool, source)
         return quote
             $(_auto_manage_hook(pool_name))
             $checkpoint_call
+            # Hoisted tp bindings live INSIDE the try (see _generate_block_inner):
+            # get_typed_pool! can throw on the fallback slow path, and the finally
+            # rewind must run after the checkpoint regardless.
             try
+                $(tp_bindings...)
                 local _result = $(esc(transformed_expr))
                 if $_RUNTIME_CHECK_REF($(esc(pool_name)))
                     $_validate_pool_return(_result, $(esc(pool_name)))
@@ -851,6 +982,7 @@ function _generate_function_inner(pool_name, expr, safe::Bool, source)
             local $(esc(entry_depth_var)) = $(esc(pool_name))._current_depth
             $(_auto_manage_hook(pool_name))
             $checkpoint_call
+            $(tp_bindings...)
             local _result = $(esc(transformed_expr))
             # Leaked scope cleanup BEFORE validation: if an inner @with_pool threw
             # without rewind, _current_depth is still the inner depth. Validation
@@ -1291,7 +1423,9 @@ Filter types for typed checkpoint/rewind generation.
 
 - Symbols NOT in local_vars are passed through (type parameters, global types)
 - Symbols IN local_vars trigger fallback (defined after checkpoint!)
-- Parametric types like Vector{T} trigger fallback
+- Parametric types like `Vector{Float64}` are static iff every free name inside
+  the curly resolves outside the block (global type or `where` param); a curly
+  over a local name (e.g. `Vector{T}` with `T` assigned in-block) triggers fallback
 - `eltype(x)` expressions: usable if `x` does NOT reference a local variable
 
 Type parameters (T, S from `where` clause) resolve to concrete types at runtime.
@@ -1313,8 +1447,18 @@ function _filter_static_types(types, local_vars = Set{Symbol}())
             end
         elseif t isa Expr
             if t.head == :curly
-                # Parametric type like Vector{Float64} - can't use as Type argument
-                has_dynamic = true
+                # Parametric type literal like Vector{Float64} / Foo{T}.
+                # Static iff every free name resolves outside the block
+                # (global type or `where` param) — same rule as eltype(x) below.
+                # Legacy tree (< 1.12): keep the pre-existing conservative behavior
+                # of always falling back to dynamic for curly type literals.
+                if !_MACRO_TYPED_UPGRADES
+                    has_dynamic = true
+                elseif _uses_local_var(t, local_vars)
+                    has_dynamic = true
+                else
+                    push!(static_types, t)
+                end
             elseif t.head == :call && length(t.args) >= 2 && t.args[1] == :eltype
                 # eltype(x) expression from acquire!(pool, x) form
                 inner_arg = t.args[2]
@@ -1505,8 +1649,39 @@ const _RESHAPE_IMPL_REF = GlobalRef(@__MODULE__, :_reshape_impl!)
 const _RAND_IMPL_REF = GlobalRef(@__MODULE__, :_rand_impl!)
 const _RANDN_IMPL_REF = GlobalRef(@__MODULE__, :_randn_impl!)
 
+# `@with_pool`/`@maybe_with_pool`/`@safe_with_pool`/`@safe_maybe_with_pool` each
+# establish their own independent checkpoint/rewind scope and will run this same
+# transform on their own body once Julia expands them. `_transform_acquire_calls`
+# must not recurse into a nested macrocall for one of these: doing so renames the
+# inner scope's `acquire!` to `_acquire_impl!` before the inner macro ever sees it,
+# so the inner macro's own (unrelated) type-extraction pass finds no `acquire!`
+# calls and silently demotes to the dynamic/lazy path (bypassing its own typed
+# checkpoint/rewind for the type it actually uses).
+const _WITH_POOL_FAMILY_MACROS = (
+    Symbol("@with_pool"), Symbol("@maybe_with_pool"),
+    Symbol("@safe_with_pool"), Symbol("@safe_maybe_with_pool"),
+)
+
+function _is_nested_with_pool_macrocall(expr)
+    # Legacy tree (< 1.12): keep the old recurse-into-nested-macrocall expansion,
+    # byte-identical to what shipped before the typed-path macro upgrades.
+    _MACRO_TYPED_UPGRADES || return false
+    expr isa Expr && expr.head === :macrocall && !isempty(expr.args) || return false
+    fn = expr.args[1]
+    fn isa Symbol && return fn in _WITH_POOL_FAMILY_MACROS
+    # Module-qualified form: `AdaptiveArrayPools.@with_pool ...` etc.
+    # Match on the FINAL name regardless of the module path prefix — same policy
+    # as the qualified-name handling for acquire!/zeros!/etc. below.
+    fn isa Expr && fn.head === :. && length(fn.args) >= 2 || return false
+    qn = fn.args[end]
+    return qn isa QuoteNode && qn.value in _WITH_POOL_FAMILY_MACROS
+end
+
 function _transform_acquire_calls(expr, pool_name)
     if expr isa Expr
+        # Independent nested scope — leave untouched, it transforms its own body.
+        _is_nested_with_pool_macrocall(expr) && return expr
+
         # Handle call expressions
         if expr.head == :call && length(expr.args) >= 2
             fn = expr.args[1]
@@ -1569,6 +1744,58 @@ function _transform_acquire_calls(expr, pool_name)
         return Expr(expr.head, new_args...)
     end
     return expr
+end
+
+# ==============================================================================
+# Internal: Per-Scope Typed-Pool Hoisting
+# ==============================================================================
+#
+# After `_transform_acquire_calls` rewrites `acquire!`/`zeros!`/etc. to their
+# `_*_impl!` GlobalRef forms, this pass replaces the literal type argument of
+# each such call with a per-scope local variable bound to the looked-up
+# `AbstractTypedPool`, so `get_typed_pool!` runs once per static type per scope
+# instead of once per acquire call.
+
+# Impl refs whose 2nd argument is a type literal replaceable by a hoisted tp.
+const _HOISTABLE_IMPL_REFS = (
+    _ACQUIRE_IMPL_REF, _ACQUIRE_VIEW_IMPL_REF,
+    _ZEROS_IMPL_REF, _ONES_IMPL_REF, _RAND_IMPL_REF, _RANDN_IMPL_REF,
+)
+
+"""
+    _hoist_typed_pools(expr, static_types) -> (tp_vars, rewritten_expr)
+
+For each static type expression, allocate a gensym and replace the type argument
+of transformed `_*_impl!` calls (structural `==` match) with that variable.
+Returns the type→gensym map (ordered as `static_types`) and the rewritten body.
+The caller emits `local var = get_typed_pool!(pool, T)` bindings after checkpoint.
+
+Only types actually substituted into a hoistable call get a binding: a static type
+reached solely through a non-hoistable wrapper (`similar!`/`reshape!`/`trues!`/
+`falses!`, absent from `_HOISTABLE_IMPL_REFS`) would otherwise produce a dead
+`local tp = get_typed_pool!(...)` binding.
+"""
+function _hoist_typed_pools(expr, static_types)
+    lookup = Dict{Any, Symbol}()
+    for t in static_types
+        lookup[t] = gensym(:_aap_tp)
+    end
+    used = Set{Any}()
+    rewritten = _rewrite_hoisted_calls(expr, lookup, used)
+    tp_vars = Pair{Any, Symbol}[t => lookup[t] for t in static_types if t in used]
+    return tp_vars, rewritten
+end
+
+function _rewrite_hoisted_calls(expr, lookup, used)
+    expr isa Expr || return expr
+    if expr.head == :call && length(expr.args) >= 3 &&
+            (expr.args[1] in _HOISTABLE_IMPL_REFS) && haskey(lookup, expr.args[3])
+        t = expr.args[3]
+        push!(used, t)
+        rest = Any[_rewrite_hoisted_calls(a, lookup, used) for a in expr.args[4:end]]
+        return Expr(:call, expr.args[1], expr.args[2], lookup[t], rest...)
+    end
+    return Expr(expr.head, Any[_rewrite_hoisted_calls(a, lookup, used) for a in expr.args]...)
 end
 
 # ==============================================================================
@@ -2366,6 +2593,93 @@ function _find_direct_exposure(expr, acquired)
     return found
 end
 
+"""Dotted (broadcast) assignment head: :.=, :.+=, :.*=, …"""
+function _is_dotted_assign_head(h)
+    h isa Symbol || return false
+    s = String(h)
+    return length(s) >= 2 && startswith(s, ".") && endswith(s, "=")
+end
+
+"""
+    _incidental_exposure(expr, tainted, pool_name) -> Union{Nothing, Tuple{Symbol, Any}}
+
+Detect the three incidental pool-backed tail patterns the direct-exposure ERROR
+does not cover (their value escapes as the block's return value, but the syntax
+does not *look* like a return):
+
+- `(:acquire_call, expr)`     — tail is a direct acquire-family call
+- `(:broadcast_assign, var)`  — tail is `x .= v` / `x .op= v` with `x` acquired
+                                 (also `x[...] .= v` on an acquired base)
+- `(:assign, var)`            — tail is `x = <acquire call>` or `x = <acquired var>`
+                                 (assignment evaluates to its RHS value)
+
+`ret_expr` values arrive here either as the bare tail expression (implicit
+return) or as the whole `Expr(:return, ...)` node (explicit `return`, per
+`_collect_all_return_values`). An explicit `return` is unwrapped first — one
+recursion into `expr.args[1]` — mirroring `_find_direct_exposure`'s handling
+of `:return`, so `return acquire!(...)`, `return (v .= 0.0)`, etc. are caught
+exactly like their implicit-tail equivalents. A bare `return` (no value) is
+safe and falls through untouched.
+"""
+function _incidental_exposure(expr, tainted, pool_name)
+    expr isa Expr || return nothing
+    if expr.head == :return && !isempty(expr.args)
+        return _incidental_exposure(expr.args[1], tainted, pool_name)
+    end
+    if _is_acquire_call(expr, pool_name)
+        return (:acquire_call, expr)
+    elseif _is_dotted_assign_head(expr.head) && length(expr.args) >= 1
+        lhs = expr.args[1]
+        base = Meta.isexpr(lhs, :ref) ? lhs.args[1] : lhs
+        if base isa Symbol && base in tainted
+            return (:broadcast_assign, base)
+        end
+    elseif expr.head == :(=) && length(expr.args) >= 2
+        rhs = expr.args[2]
+        if _is_acquire_call(rhs, pool_name)
+            return (:assign, expr.args[1])
+        elseif rhs isa Symbol && rhs in tainted
+            return (:assign, rhs)
+        end
+    end
+    return nothing
+end
+
+"""Report an incidental-tail escape at `severity`: `"error"` throws a `PoolEscapeError`
+(storing the classified `(kind, detail)` on the point so `showerror` renders directly),
+`"warn"` emits an expansion-time warning. Separated from the const-gated call site so
+both severities are unit-testable — `ESCAPE_LINT` is a load-time constant, so the call
+site only ever exercises one branch per session."""
+function _report_incidental_escape(severity, kind, detail, ret_expr, ret_line, file, line)
+    if severity == "error"
+        point = EscapePoint(ret_expr, ret_line, Symbol[], (kind, detail))
+        throw(PoolEscapeError(Symbol[], file, line, [point]))
+    else # "warn"
+        @warn _lint_message(kind, detail, ret_expr) _file = file _line = something(ret_line, line, 0)
+    end
+    return
+end
+
+"""Build the human-readable expansion-time lint message for an incidental-tail escape.
+Used both for the `escape_lint = "warn"` path and for rendering `PoolEscapeError`
+(via `showerror`) when the error originates from an incidental tail rather than an
+intentional-return pattern."""
+function _lint_message(kind, detail, ret_expr)
+    tail = sprint(Base.show_unquoted, ret_expr)
+    what = kind === :acquire_call ?
+        "is a direct acquire call — its pool-backed array" :
+        kind === :broadcast_assign ?
+        "evaluates to the pool-backed array `$(detail)`" :
+        "assigns a pool-backed array, and the assignment's value"
+    return string(
+        "the scope's last expression `", tail, "` ", what,
+        " becomes the scope's return value and escapes",
+        " (a pool array is invalid after the scope rewinds).",
+        " If the value is meant to be discarded, end the block with `nothing`.",
+        " [escape_lint preference: \"error\" (default) | \"warn\" | \"off\"]"
+    )
+end
+
 
 """Collect acquired variable names contained in a literal expression (symbol, tuple, vect)."""
 function _collect_acquired_in_literal(expr, acquired_keys::Set{Symbol})
@@ -2502,43 +2816,63 @@ a pool-backed variable. This catches the most common beginner mistake
 at zero runtime cost.
 
 All detected escapes are errors — bare symbol (`v`), `return v`, and
-container patterns (`(v, w)`, `[v]`, `(key=v,)`).
+container patterns (`(v, w)`, `[v]`, `(key=v,)`) (Stage 1), plus the three
+incidental-tail patterns — direct acquire-call tail, broadcast-assign tail,
+assignment tail — gated by the `ESCAPE_LINT` preference (Stage 2, default "error").
 
 Skipped when `STATIC_POOLING = false` (pooling disabled, acquire returns normal arrays).
 """
 function _check_compile_time_escape(expr, pool_name, source::Union{LineNumberNode, Nothing})
     # Order-aware extraction: single forward pass that tracks taint per statement order
     acquired = _extract_ordered_acquired(expr, pool_name)
-    isempty(acquired) && return
 
     # Collect ALL return points: explicit returns + implicit (last expr / if-else branches)
     return_values = _collect_all_return_values(expr)
     isempty(return_values) && return
 
-    # Check each return point for direct exposure of acquired vars
-    all_escaped = Set{Symbol}()
-    points = EscapePoint[]
-    seen_lines = Set{Int}()
-    for (ret_expr, ret_line) in return_values
-        # Deduplicate: explicit + implicit scanners can find the same return
-        if ret_line !== nothing && ret_line in seen_lines
-            continue
+    # ---- Stage 1: intentional-return patterns → ERROR (existing behavior) ----
+    if !isempty(acquired)
+        # Check each return point for direct exposure of acquired vars
+        all_escaped = Set{Symbol}()
+        points = EscapePoint[]
+        seen_lines = Set{Int}()
+        for (ret_expr, ret_line) in return_values
+            # Deduplicate: explicit + implicit scanners can find the same return
+            if ret_line !== nothing && ret_line in seen_lines
+                continue
+            end
+            point_escaped = _find_direct_exposure(ret_expr, acquired)
+            if !isempty(point_escaped)
+                push!(points, EscapePoint(ret_expr, ret_line, sort!(collect(point_escaped))))
+                union!(all_escaped, point_escaped)
+                ret_line !== nothing && push!(seen_lines, ret_line)
+            end
         end
-        point_escaped = _find_direct_exposure(ret_expr, acquired)
-        if !isempty(point_escaped)
-            push!(points, EscapePoint(ret_expr, ret_line, sort!(collect(point_escaped))))
-            union!(all_escaped, point_escaped)
-            ret_line !== nothing && push!(seen_lines, ret_line)
+        if !isempty(all_escaped)
+            sorted = sort!(collect(all_escaped))
+            var_info = _classify_escaped_vars(expr, pool_name, sorted, acquired)
+            declarations = _extract_declaration_sites(expr, all_escaped)
+            file = source !== nothing ? string(source.file) : nothing
+            line = source !== nothing ? source.line : nothing
+            throw(PoolEscapeError(sorted, file, line, points, var_info, declarations))
         end
     end
-    isempty(all_escaped) && return
 
-    sorted = sort!(collect(all_escaped))
-    var_info = _classify_escaped_vars(expr, pool_name, sorted, acquired)
-    declarations = _extract_declaration_sites(expr, all_escaped)
+    # ---- Stage 2: incidental-tail patterns (error by default) ----
+    # Reached whenever Stage 1 found nothing to throw on — including when
+    # `acquired` is empty (e.g. a bare `acquire!(pool, ...)` tail with no
+    # assigned variable at all: Stage 1 has nothing to track, but the call's
+    # result still escapes as the scope's return value).
+    ESCAPE_LINT == "off" && return
     file = source !== nothing ? string(source.file) : nothing
     line = source !== nothing ? source.line : nothing
-    throw(PoolEscapeError(sorted, file, line, points, var_info, declarations))
+    for (ret_expr, ret_line) in return_values
+        hit = _incidental_exposure(ret_expr, acquired, pool_name)
+        hit === nothing && continue
+        kind, detail = hit
+        _report_incidental_escape(ESCAPE_LINT, kind, detail, ret_expr, ret_line, file, line)
+    end
+    return
 end
 
 # ==============================================================================

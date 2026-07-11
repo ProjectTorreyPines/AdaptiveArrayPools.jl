@@ -41,6 +41,7 @@
                 # Use @eval to dynamically construct the macroexpand call
                 expr = @eval @macroexpand @with_pool $(QuoteNode(backend)) pool begin
                     v = acquire!(pool, Float64, 10)
+                    nothing
                 end
 
                 expr_str = string(expr)
@@ -66,6 +67,7 @@
             expr = @macroexpand @with_pool :cuda pool begin
                 v1 = acquire!(pool, Float64, 10)
                 v2 = acquire!(pool, Float32, 5)
+                nothing
             end
 
             expr_str = string(expr)
@@ -76,6 +78,7 @@
         @testset "acquire_view! type extraction" begin
             expr = @macroexpand @with_pool :cuda pool begin
                 v = acquire_view!(pool, Int64, 100)
+                nothing
             end
 
             expr_str = string(expr)
@@ -85,6 +88,7 @@
         @testset "Similar-style acquire!(pool, x)" begin
             expr = @macroexpand @with_pool :cuda pool begin
                 v = acquire!(pool, input_array)
+                nothing
             end
 
             expr_str = string(expr)
@@ -95,6 +99,7 @@
         @testset "Custom types" begin
             expr = @macroexpand @with_pool :cuda pool begin
                 v = acquire!(pool, MyCustomType, 10)
+                nothing
             end
 
             expr_str = string(expr)
@@ -104,6 +109,7 @@
         @testset "Type parameters" begin
             expr = @macroexpand @with_pool :cuda pool begin
                 v = acquire!(pool, T, 10)
+                nothing
             end
 
             expr_str = string(expr)
@@ -180,7 +186,7 @@
         end
 
         @testset "Short function syntax" begin
-            expr = @macroexpand @with_pool :cuda pool f(x) = acquire!(pool, Float64, x)
+            expr = @macroexpand @with_pool :cuda pool f(x) = (acquire!(pool, Float64, x); nothing)
 
             # Should still produce a function
             @test expr.head == :(=) || expr.head == :function
@@ -207,6 +213,7 @@
                 # Use @eval to dynamically construct the macroexpand call
                 expr = @eval @macroexpand @with_pool $(QuoteNode(backend)) pool function backend_func(n)
                     acquire!(pool, Float64, n)
+                    nothing
                 end
 
                 expr_str = string(expr)
@@ -236,6 +243,7 @@
         @testset "Block form transforms acquire!" begin
             expr = @macroexpand @with_pool :cuda pool begin
                 v = acquire!(pool, Float64, 10)
+                nothing
             end
 
             expr_str = string(expr)
@@ -246,6 +254,7 @@
         @testset "Function form transforms acquire!" begin
             expr = @macroexpand @with_pool pool function my_func(n)
                 v = acquire!(pool, Float64, n)
+                nothing
             end
 
             expr_str = string(expr)
@@ -255,6 +264,7 @@
         @testset "acquire_view! transforms" begin
             expr = @macroexpand @with_pool :cuda pool begin
                 v = acquire_view!(pool, Float64, 10)
+                nothing
             end
 
             expr_str = string(expr)
@@ -264,6 +274,7 @@
         @testset "acquire_array! transforms" begin
             expr = @macroexpand @with_pool :cuda pool begin
                 v = acquire_array!(pool, Float64, 10, 10)
+                nothing
             end
 
             expr_str = string(expr)
@@ -280,6 +291,7 @@
         @testset "Single type uses typed checkpoint" begin
             expr = @macroexpand @with_pool :cuda pool begin
                 v = acquire!(pool, Float64, 10)
+                nothing
             end
 
             expr_str = string(expr)
@@ -293,6 +305,7 @@
                 v1 = acquire!(pool, Float64, 10)
                 v2 = acquire!(pool, Int64, 5)
                 v3 = acquire!(pool, Float32, 3)
+                nothing
             end
 
             expr_str = string(expr)
@@ -305,6 +318,7 @@
             expr = @macroexpand @with_pool :cuda pool begin
                 T = eltype(some_array)
                 v = acquire!(pool, T, 10)
+                nothing
             end
 
             expr_str = string(expr)
@@ -317,6 +331,7 @@
             expr = @macroexpand @with_pool :cuda pool function typed_checkpoint_func(n)
                 v1 = acquire!(pool, Float64, n)
                 v2 = acquire!(pool, Float32, n)
+                nothing
             end
 
             body_str = string(expr.args[2])
@@ -344,6 +359,7 @@
                 v1 = acquire!(outer, Float64, 10)
                 @with_pool inner begin
                     v2 = acquire!(inner, Float32, 5)
+                    nothing
                 end
             end
 
@@ -359,6 +375,7 @@
                 v1 = acquire!(outer, Float64, 10)
                 @with_pool :cuda inner begin
                     v2 = acquire!(inner, Float32, 5)
+                    nothing
                 end
             end
 
@@ -394,10 +411,12 @@
         @testset "Block form structure matches" begin
             expr_regular = @macroexpand @with_pool pool begin
                 v = acquire!(pool, Float64, 10)
+                nothing
             end
 
             expr_backend = @macroexpand @with_pool :cuda pool begin
                 v = acquire!(pool, Float64, 10)
+                nothing
             end
 
             # Both should have checkpoint/rewind with direct-rewind path (no try-finally)
@@ -413,10 +432,12 @@
         @testset "Function form structure matches" begin
             expr_regular = @macroexpand @with_pool pool function regular_func(n)
                 v = acquire!(pool, Float64, n)
+                nothing
             end
 
             expr_backend = @macroexpand @with_pool :cuda pool function backend_func(n)
                 v = acquire!(pool, Float64, n)
+                nothing
             end
 
             # Both should be function definitions
@@ -468,7 +489,7 @@
         end
 
         @testset "Short-form function has runtime toggle check" begin
-            expr = @macroexpand @maybe_with_pool :cuda pool maybe_short(n) = acquire!(pool, Float64, n)
+            expr = @macroexpand @maybe_with_pool :cuda pool maybe_short(n) = (acquire!(pool, Float64, n); nothing)
 
             expr_str = string(expr)
             @test occursin(refvalue_pattern, expr_str)

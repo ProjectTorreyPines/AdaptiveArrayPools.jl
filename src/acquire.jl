@@ -372,6 +372,29 @@ end
 # Similar-style
 @inline _acquire_impl!(pool::AbstractArrayPool, x::AbstractArray) = _acquire_impl!(pool, eltype(x), size(x))
 
+# tp-hoisted forms: macro-transformed code binds `tp = get_typed_pool!(pool, T)`
+# once per scope and passes it here, skipping the per-acquire lookup.
+@inline function _acquire_impl!(pool::AbstractArrayPool, tp::AbstractTypedPool, n::Int)
+    result = get_array!(tp, (n,))
+    _maybe_record_borrow!(pool, tp)
+    _maybe_record_others_bounds!(pool, result)
+    return result
+end
+
+@inline function _acquire_impl!(pool::AbstractArrayPool, tp::AbstractTypedPool, dims::Vararg{Int, N}) where {N}
+    result = get_array!(tp, dims)
+    _maybe_record_borrow!(pool, tp)
+    _maybe_record_others_bounds!(pool, result)
+    return result
+end
+
+@inline function _acquire_impl!(pool::AbstractArrayPool, tp::AbstractTypedPool, dims::NTuple{N, Int}) where {N}
+    result = get_array!(tp, dims)
+    _maybe_record_borrow!(pool, tp)
+    _maybe_record_others_bounds!(pool, result)
+    return result
+end
+
 """
     _acquire_view_impl!(pool, Type{T}, n) -> SubArray{T,1,Vector{T},...}
     _acquire_view_impl!(pool, Type{T}, dims...) -> ReshapedArray{T,N,...}
@@ -401,6 +424,26 @@ end
 
 # Similar-style
 @inline _acquire_view_impl!(pool::AbstractArrayPool, x::AbstractArray) = _acquire_view_impl!(pool, eltype(x), size(x))
+
+# tp-hoisted forms: macro-transformed code binds `tp = get_typed_pool!(pool, T)`
+# once per scope and passes it here, skipping the per-acquire lookup.
+@inline function _acquire_view_impl!(pool::AbstractArrayPool, tp::AbstractTypedPool, n::Int)
+    result = get_view!(tp, n)
+    _maybe_record_borrow!(pool, tp)
+    _maybe_record_others_bounds!(pool, @inbounds tp.vectors[tp.n_active])
+    return result
+end
+
+@inline function _acquire_view_impl!(pool::AbstractArrayPool, tp::AbstractTypedPool, dims::Vararg{Int, N}) where {N}
+    result = get_view!(tp, dims)
+    _maybe_record_borrow!(pool, tp)
+    _maybe_record_others_bounds!(pool, @inbounds tp.vectors[tp.n_active])
+    return result
+end
+
+@inline function _acquire_view_impl!(pool::AbstractArrayPool, tp::AbstractTypedPool, dims::NTuple{N, Int}) where {N}
+    return _acquire_view_impl!(pool, tp, dims...)
+end
 
 # ==============================================================================
 # Acquisition API (User-facing with type touch recording)

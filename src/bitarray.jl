@@ -141,6 +141,37 @@ end
 @inline _acquire_view_impl!(pool::AbstractArrayPool, ::Type{Bit}, dims::Vararg{Int, N}) where {N} = _acquire_impl!(pool, Bit, dims...)
 @inline _acquire_view_impl!(pool::AbstractArrayPool, ::Type{Bit}, dims::NTuple{N, Int}) where {N} = _acquire_impl!(pool, Bit, dims...)
 
+# tp-hoisted forms: macro-transformed code binds `tp = get_typed_pool!(pool, Bit)`
+# once per scope and passes it here, skipping the per-acquire lookup. `pool` is
+# narrowed to `AdaptiveArrayPool` (not `AbstractArrayPool`): `BitTypedPool` is
+# only ever produced by `get_typed_pool!(pool, Bit)`, which is only defined for
+# `pool::AdaptiveArrayPool` (see src/types.jl) — a `BitTypedPool` can never be
+# paired with a GPU pool. Narrowing keeps these disjoint from the GPU
+# extensions' `_acquire_impl!(pool::{Cu,Metal}AdaptiveArrayPool, tp::AbstractTypedPool, ...)`
+# tp-variants, avoiding a first-arg/second-arg cross ambiguity with no stub
+# methods needed.
+@inline function _acquire_impl!(pool::AdaptiveArrayPool, tp::BitTypedPool, n::Int)
+    result = get_bitarray!(tp, n)
+    _maybe_record_borrow!(pool, tp)
+    return result
+end
+
+@inline function _acquire_impl!(pool::AdaptiveArrayPool, tp::BitTypedPool, dims::Vararg{Int, N}) where {N}
+    result = get_bitarray!(tp, dims)
+    _maybe_record_borrow!(pool, tp)
+    return result
+end
+
+@inline function _acquire_impl!(pool::AdaptiveArrayPool, tp::BitTypedPool, dims::NTuple{N, Int}) where {N}
+    result = get_bitarray!(tp, dims)
+    _maybe_record_borrow!(pool, tp)
+    return result
+end
+
+@inline _acquire_view_impl!(pool::AdaptiveArrayPool, tp::BitTypedPool, n::Int) = _acquire_impl!(pool, tp, n)
+@inline _acquire_view_impl!(pool::AdaptiveArrayPool, tp::BitTypedPool, dims::Vararg{Int, N}) where {N} = _acquire_impl!(pool, tp, dims...)
+@inline _acquire_view_impl!(pool::AdaptiveArrayPool, tp::BitTypedPool, dims::NTuple{N, Int}) where {N} = _acquire_impl!(pool, tp, dims...)
+
 # ==============================================================================
 # DisabledPool Fallbacks (Bit type)
 # ==============================================================================

@@ -458,6 +458,7 @@ const Dual_f2_11 = FakeDual{FakeTag{:f2}, Float64, 11}
         for _ in 1:100
             @with_pool pool begin
                 acquire!(pool, UInt8, 10)
+                nothing
             end
         end
 
@@ -523,6 +524,7 @@ const Dual_f2_11 = FakeDual{FakeTag{:f2}, Float64, 11}
             @with_pool pool begin
                 acquire!(pool, UInt8, 10)
                 acquire!(pool, Float16, 20)
+                nothing
             end
         end
 
@@ -878,6 +880,7 @@ const Dual_f2_11 = FakeDual{FakeTag{:f2}, Float64, 11}
             acquire!(pool, UInt8, 10)
             acquire!(pool, Float16, 20)
             acquire!(pool, Int16, 30)
+            nothing
         end
 
         pool = AdaptiveArrayPools.get_task_local_pool()
@@ -890,6 +893,7 @@ const Dual_f2_11 = FakeDual{FakeTag{:f2}, Float64, 11}
                 acquire!(pool, UInt8, 10)
                 acquire!(pool, Float16, 20)
                 acquire!(pool, Int16, 30)
+                nothing
             end
         end
 
@@ -1267,6 +1271,7 @@ const Dual_f2_11 = FakeDual{FakeTag{:f2}, Float64, 11}
         # Warmup
         @with_pool pool begin
             acquire!(pool, Dual_f1_11, 44)
+            nothing
         end
 
         tl_pool = AdaptiveArrayPools.get_task_local_pool()
@@ -1276,6 +1281,7 @@ const Dual_f2_11 = FakeDual{FakeTag{:f2}, Float64, 11}
             @with_pool pool begin
                 acquire!(pool, Dual_f1_11, 44)
                 acquire!(pool, Dual_f1_11, 11)
+                nothing
             end
         end
 
