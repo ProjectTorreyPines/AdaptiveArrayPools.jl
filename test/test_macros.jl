@@ -2,6 +2,11 @@
 import AdaptiveArrayPools: checkpoint!, rewind!
 
 @testset "Macro System" begin
+    # File-wide guard: several testsets below toggle the process-global
+    # MAYBE_POOLING flag (and some legacy ones hard-reset to `true` rather than
+    # preserving the entry value). Capture it here and restore it at the end so a
+    # run of this file cannot contaminate later test files.
+    _macro_system_entry_maybe = MAYBE_POOLING[]
 
     @testset "Explicit pool with checkpoint!/rewind!" begin
         pool = AdaptiveArrayPool()
@@ -712,31 +717,36 @@ import AdaptiveArrayPools: checkpoint!, rewind!
         all(tp -> tp.n_active == 0, pool._others_values)
 
     @testset "divergence matrix: all 4 macros agree (result + no leak)" begin
-        old_maybe = MAYBE_POOLING[]
-        MAYBE_POOLING[] = true            # @maybe_* take the pooled branch
-        try
-            reset!(get_task_local_pool())
+        # Only meaningful when pooling is compile-time enabled. With
+        # STATIC_POOLING = false every macro takes the DisabledPool path, so the
+        # guard would pass vacuously (no typed pool is ever touched).
+        if AdaptiveArrayPools.STATIC_POOLING
+            old_maybe = MAYBE_POOLING[]
+            MAYBE_POOLING[] = true            # @maybe_* take the pooled branch
+            try
+                reset!(get_task_local_pool())
 
-            runners = (
-                ("@with_pool", _divmat_with_pool),
-                ("@maybe_with_pool", _divmat_maybe_with_pool),
-                ("@safe_with_pool", _divmat_safe_with_pool),
-                ("@safe_maybe_with_pool", _divmat_safe_maybe_with_pool),
-            )
-            baseline = nothing
-            for (label, f) in runners
-                r = f()
-                pool = get_task_local_pool()
-                @test pool._current_depth == 1        # no depth leak ($label)
-                @test _divmat_clean(pool)              # all touched pools reclaimed ($label)
-                if baseline === nothing
-                    baseline = r
-                else
-                    @test r == baseline                # identical result ($label)
+                # Known-good results. Asserting these exact values (not just mutual
+                # agreement) means a shared regression that makes all four return
+                # the same WRONG tuple still fails: typed sum(1..8)=36.0,
+                # fallback length=4, nested 10+20=30.0, mixed 1+2=3.0.
+                expected = (36.0, 4, 30.0, 3.0)
+                runners = (
+                    ("@with_pool", _divmat_with_pool),
+                    ("@maybe_with_pool", _divmat_maybe_with_pool),
+                    ("@safe_with_pool", _divmat_safe_with_pool),
+                    ("@safe_maybe_with_pool", _divmat_safe_maybe_with_pool),
+                )
+                for (label, f) in runners
+                    r = f()
+                    pool = get_task_local_pool()
+                    @test pool._current_depth == 1        # no depth leak ($label)
+                    @test _divmat_clean(pool)              # all touched pools reclaimed ($label)
+                    @test r == expected                    # exact known result ($label)
                 end
+            finally
+                MAYBE_POOLING[] = old_maybe
             end
-        finally
-            MAYBE_POOLING[] = old_maybe
         end
     end
 
@@ -814,5 +824,9 @@ import AdaptiveArrayPools: checkpoint!, rewind!
         @test pool._current_depth == 1             # outer cleanup normalized the leak
         @test _divmat_clean(pool)
     end
+
+    # Restore the file-entry MAYBE_POOLING value (see capture at top). @testset
+    # continues past inner failures, so this runs even if a testset above failed.
+    MAYBE_POOLING[] = _macro_system_entry_maybe
 
 end # Macro System
