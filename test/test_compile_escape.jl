@@ -2581,6 +2581,110 @@ end
             @test !occursin("direct acquire call", msg)
         end
 
+        @testset "incidental tail inside if/else implicit branch errors" begin
+            # A common Julia idiom: the block's last expression is an if/else
+            # whose branch tail is an incidental escape. `_collect_all_return_values`
+            # expands into both branch tails, and Stage 2 must flag the escaping one.
+            # w2 — broadcast-assign branch tail
+            @test _expansion_escape_error(
+                :(
+                    @with_pool pool begin
+                        v = acquire!(pool, Float64, 4)
+                        if true
+                            v .= 0.0
+                        else
+                            nothing
+                        end
+                    end
+                )
+            )
+            # w1 — direct acquire-call branch tail
+            @test _expansion_escape_error(
+                :(
+                    @with_pool pool begin
+                        if true
+                            acquire!(pool, Float64, 4)
+                        else
+                            nothing
+                        end
+                    end
+                )
+            )
+            # w3 — assignment branch tail
+            @test _expansion_escape_error(
+                :(
+                    @with_pool pool begin
+                        if true
+                            v = acquire!(pool, Float64, 4)
+                        else
+                            nothing
+                        end
+                    end
+                )
+            )
+            # Safe: both branch tails are `nothing` — must NOT error
+            @test macroexpand(
+                @__MODULE__, :(
+                    @with_pool pool begin
+                        v = acquire!(pool, Float64, 4)
+                        if true
+                            v .= 0.0
+                            nothing
+                        else
+                            nothing
+                        end
+                    end
+                )
+            ) isa Expr
+        end
+
+        @testset "incidental-tail showerror uses the stored (kind, detail) label" begin
+            # After the classification is stored on the EscapePoint at throw time,
+            # showerror renders each pattern's own label without re-deriving it.
+            function _escape_err(ex)
+                try
+                    macroexpand(@__MODULE__, ex)
+                    return nothing
+                catch e
+                    return e isa LoadError ? e.error : e
+                end
+            end
+
+            # w1 — acquire-call tail
+            e1 = _escape_err(
+                :(
+                    @with_pool pool begin
+                        acquire!(pool, Float64, 4)
+                    end
+                )
+            )
+            @test e1 isa AdaptiveArrayPools.PoolEscapeError
+            @test occursin("direct acquire call", sprint(showerror, e1))
+
+            # w2 — broadcast-assign tail names the array
+            e2 = _escape_err(
+                :(
+                    @with_pool pool begin
+                        v = acquire!(pool, Float64, 4)
+                        v .= 0.0
+                    end
+                )
+            )
+            @test e2 isa AdaptiveArrayPools.PoolEscapeError
+            @test occursin("pool-backed array `v`", sprint(showerror, e2))
+
+            # w3 — assignment tail
+            e3 = _escape_err(
+                :(
+                    @with_pool pool begin
+                        v = acquire!(pool, Float64, 4)
+                    end
+                )
+            )
+            @test e3 isa AdaptiveArrayPools.PoolEscapeError
+            @test occursin("assigns a pool-backed array", sprint(showerror, e3))
+        end
+
         @testset "existing intentional-return errors unchanged" begin
             @test _expansion_escape_error(
                 :(

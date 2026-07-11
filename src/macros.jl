@@ -12,12 +12,22 @@ const _MACRO_TYPED_UPGRADES = VERSION >= v"1.12-"
 # PoolEscapeError — Compile-time escape detection error
 # ==============================================================================
 
-"""Per-return-point escape detail: which expression, at which line, leaks which vars."""
+"""Per-return-point escape detail: which expression, at which line, leaks which vars.
+
+`incidental` carries the `(kind, detail)` pair for a Stage-2 incidental-tail escape
+(a direct acquire call / broadcast-assign / assignment tail — see `_incidental_exposure`)
+and is `nothing` for a Stage-1 intentional-return escape. Storing it at throw time
+lets `showerror` render the message without re-classifying the expression, and is
+what distinguishes the two error layouts (no `vars`-emptiness sentinel)."""
 struct EscapePoint
     expr::Any
     line::Union{Int, Nothing}
     vars::Vector{Symbol}
+    incidental::Union{Nothing, Tuple{Symbol, Any}}
 end
+
+# Stage-1 points carry no incidental classification.
+EscapePoint(expr, line, vars) = EscapePoint(expr, line, vars, nothing)
 
 """Per-variable declaration site: where an escaping variable was assigned."""
 struct DeclarationSite
@@ -89,37 +99,18 @@ function _render_return_expr(io::IO, expr, escaped::Set{Symbol})
     end
 end
 
-"""Recover the incidental-tail `(kind, detail)` pair from a stored return expression,
-for `showerror` rendering. No `tainted`/`pool_name` context is available at render
-time, but the expression's own shape is enough to tell which of the three Stage-2
-patterns produced it — that is exactly how `_incidental_exposure` decided in the
-first place, and a `PoolEscapeError` with empty `vars` only ever comes from there."""
-function _incidental_kind_detail_from_expr(expr)
-    if expr isa Expr && expr.head == :return && !isempty(expr.args)
-        return _incidental_kind_detail_from_expr(expr.args[1])
-    elseif expr isa Expr && _is_dotted_assign_head(expr.head) && length(expr.args) >= 1
-        lhs = expr.args[1]
-        base = Meta.isexpr(lhs, :ref) ? lhs.args[1] : lhs
-        return (:broadcast_assign, base isa Symbol ? base : "the assigned array")
-    elseif Meta.isexpr(expr, :(=))
-        return (:assign, nothing)
-    else
-        return (:acquire_call, nothing)
-    end
-end
-
-"""Render a `PoolEscapeError` that came from an incidental-tail pattern (Task 3):
-`e.vars` is empty because the escaping thing is a tail *expression* (an acquire call,
-a broadcast-assign, or an assignment), not a directly-returned named variable — see
-`_incidental_exposure`. Reuses `_lint_message` so the wording matches the
-`escape_lint = "warn"` path exactly."""
+"""Render a `PoolEscapeError` that came from an incidental-tail pattern: the escaping
+thing is a tail *expression* (an acquire call, a broadcast-assign, or an assignment),
+not a directly-returned named variable — see `_incidental_exposure`. Each point's
+`incidental` field carries the `(kind, detail)` classified at throw time; reuses
+`_lint_message` so the wording matches the `escape_lint = \"warn\"` path exactly."""
 function _showerror_incidental_tail(io::IO, e::PoolEscapeError)
     printstyled(io, "PoolEscapeError"; color = :red, bold = true)
     printstyled(io, " (compile-time)"; color = :light_black)
     println(io)
     println(io)
     for pt in e.points
-        kind, detail = _incidental_kind_detail_from_expr(pt.expr)
+        kind, detail = pt.incidental
         printstyled(io, "  "; color = :normal)
         print(io, _lint_message(kind, detail, pt.expr))
         println(io)
@@ -139,8 +130,10 @@ function _showerror_incidental_tail(io::IO, e::PoolEscapeError)
 end
 
 function Base.showerror(io::IO, e::PoolEscapeError)
-    # Incidental-tail escapes (Task 3) carry no named variable — render separately.
-    if isempty(e.vars) && !isempty(e.points)
+    # Incidental-tail escapes carry a classified `incidental` on their points and no
+    # named variable — render separately. Stage-1 and Stage-2 points never mix in a
+    # single error (Stage 1 throws before Stage 2 runs), so the first point decides.
+    if !isempty(e.points) && e.points[1].incidental !== nothing
         return _showerror_incidental_tail(io, e)
     end
 
@@ -391,9 +384,9 @@ end
 rejects code whose return value would be a pool-backed array — a
 [`PoolEscapeError`](@ref), thrown at expansion time (zero runtime cost). This
 always covers the direct-return patterns (a bare variable, `return v`,
-container literals like `(v, w)` / `[v]`), and — as of this release — three
-additional "incidental" tail patterns that don't *look* like a `return` but
-still expose a pool-backed array as the scope's value:
+container literals like `(v, w)` / `[v]`), and three additional "incidental"
+tail patterns that don't *look* like a `return` but still expose a pool-backed
+array as the scope's value:
 
 ```julia
 @with_pool pool begin
@@ -1776,26 +1769,33 @@ For each static type expression, allocate a gensym and replace the type argument
 of transformed `_*_impl!` calls (structural `==` match) with that variable.
 Returns the type→gensym map (ordered as `static_types`) and the rewritten body.
 The caller emits `local var = get_typed_pool!(pool, T)` bindings after checkpoint.
+
+Only types actually substituted into a hoistable call get a binding: a static type
+reached solely through a non-hoistable wrapper (`similar!`/`reshape!`/`trues!`/
+`falses!`, absent from `_HOISTABLE_IMPL_REFS`) would otherwise produce a dead
+`local tp = get_typed_pool!(...)` binding.
 """
 function _hoist_typed_pools(expr, static_types)
-    tp_vars = Vector{Pair{Any, Symbol}}()
     lookup = Dict{Any, Symbol}()
     for t in static_types
-        v = gensym(:_aap_tp)
-        push!(tp_vars, t => v)
-        lookup[t] = v
+        lookup[t] = gensym(:_aap_tp)
     end
-    return tp_vars, _rewrite_hoisted_calls(expr, lookup)
+    used = Set{Any}()
+    rewritten = _rewrite_hoisted_calls(expr, lookup, used)
+    tp_vars = Pair{Any, Symbol}[t => lookup[t] for t in static_types if t in used]
+    return tp_vars, rewritten
 end
 
-function _rewrite_hoisted_calls(expr, lookup)
+function _rewrite_hoisted_calls(expr, lookup, used)
     expr isa Expr || return expr
     if expr.head == :call && length(expr.args) >= 3 &&
             (expr.args[1] in _HOISTABLE_IMPL_REFS) && haskey(lookup, expr.args[3])
-        rest = Any[_rewrite_hoisted_calls(a, lookup) for a in expr.args[4:end]]
-        return Expr(:call, expr.args[1], expr.args[2], lookup[expr.args[3]], rest...)
+        t = expr.args[3]
+        push!(used, t)
+        rest = Any[_rewrite_hoisted_calls(a, lookup, used) for a in expr.args[4:end]]
+        return Expr(:call, expr.args[1], expr.args[2], lookup[t], rest...)
     end
-    return Expr(expr.head, Any[_rewrite_hoisted_calls(a, lookup) for a in expr.args]...)
+    return Expr(expr.head, Any[_rewrite_hoisted_calls(a, lookup, used) for a in expr.args]...)
 end
 
 # ==============================================================================
@@ -2843,7 +2843,7 @@ function _check_compile_time_escape(expr, pool_name, source::Union{LineNumberNod
         end
     end
 
-    # ---- Stage 2: incidental-tail patterns (NEW, error by default) ----
+    # ---- Stage 2: incidental-tail patterns (error by default) ----
     # Reached whenever Stage 1 found nothing to throw on — including when
     # `acquired` is empty (e.g. a bare `acquire!(pool, ...)` tail with no
     # assigned variable at all: Stage 1 has nothing to track, but the call's
@@ -2856,12 +2856,12 @@ function _check_compile_time_escape(expr, pool_name, source::Union{LineNumberNod
         hit === nothing && continue
         kind, detail = hit
         if ESCAPE_LINT == "error"
-            # No named variable directly escapes here (the tail is an acquire
-            # call / broadcast-assign / assignment expression, not a returned
-            # variable) — `vars` stays empty so `showerror` renders the
-            # incidental-tail message (`_showerror_incidental_tail`) instead
-            # of the Stage-1 variable-listing layout.
-            throw(PoolEscapeError(Symbol[], file, line, [EscapePoint(ret_expr, ret_line, Symbol[])]))
+            # The tail is an acquire call / broadcast-assign / assignment
+            # expression, not a returned variable — so there is no named `vars`.
+            # Store the classified `(kind, detail)` on the point so `showerror`
+            # renders the incidental-tail message directly (no re-derivation).
+            point = EscapePoint(ret_expr, ret_line, Symbol[], (kind, detail))
+            throw(PoolEscapeError(Symbol[], file, line, [point]))
         else # "warn"
             @warn _lint_message(kind, detail, ret_expr) _file = file _line = something(ret_line, line, 0)
         end

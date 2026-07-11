@@ -1632,6 +1632,21 @@ import AdaptiveArrayPools: _is_nested_with_pool_macrocall
                 end
                 @test count("_can_use_typed_path", string(ex)) == 4
             end
+
+            @testset "integration: bare nested @with_pool stays typed on both sides" begin
+                # The plain (unqualified) spelling is the common form that actually
+                # regressed; assert both scopes keep the typed path (count == 4), the
+                # same guarantee the qualified case checks above.
+                ex = @macroexpand @with_pool pool begin
+                    acquire!(pool, Float64, 2)
+                    @with_pool pool begin
+                        acquire!(pool, Float64, 5)
+                        nothing
+                    end
+                    nothing
+                end
+                @test count("_can_use_typed_path", string(ex)) == 4
+            end
         end
     end
 
@@ -1666,6 +1681,20 @@ import AdaptiveArrayPools: _is_nested_with_pool_macrocall
             @test AdaptiveArrayPools.get_typed_pool!(tlp, UInt16).n_active == 0
             g!(true)
             @test AdaptiveArrayPools.get_typed_pool!(tlp, UInt16).n_active == 0
+        end
+
+        @testset "tp hoisting: only substituted types get a binding" begin
+            # `_hoist_typed_pools` must NOT emit a `local tp = get_typed_pool!(...)`
+            # binding for a static type that never lands in a hoistable `_*_impl!`
+            # call — otherwise a type reached solely via a non-hoistable wrapper
+            # (similar!/reshape!/trues!/falses!) gets a dead binding.
+            AAP = AdaptiveArrayPools
+            body = Expr(:block, Expr(:call, AAP._ACQUIRE_IMPL_REF, :pool, :Float64, 4))
+            tp_vars, rewritten = AAP._hoist_typed_pools(body, Any[:Float64, :Int32])
+            bound = [p.first for p in tp_vars]
+            @test :Float64 in bound          # substituted → bound
+            @test !(:Int32 in bound)         # never substituted → no dead binding
+            @test occursin("_aap_tp", string(rewritten))  # the call was rewritten
         end
     end
 
