@@ -786,7 +786,12 @@ function _generate_pool_code(pool_name, expr, force_enable; safe::Bool = false, 
     # Compile-time structural mutation detection (zero runtime cost)
     _check_structural_mutation(expr, pool_name, source)
 
-    # Block logic — shared with backend-specific code generation
+    # Block logic — shared with backend-specific code generation.
+    # NOTE: `@with_pool` (force_enable) and `@maybe_with_pool` (!force_enable) reuse
+    # this single `inner`; the only difference below is the runtime MAYBE_POOLING[]
+    # gate. So they never need manual syncing — any change to _generate_block_inner
+    # (or the escape/mutation checks above, which run before this branch) applies to
+    # both. The axis that DOES diverge is safe ↔ non-safe (see _generate_block_inner).
     inner = _generate_block_inner(pool_name, expr, safe, source)
 
     if force_enable
@@ -854,6 +859,21 @@ function _generate_block_inner(pool_name, expr, safe::Bool, source)
     end
     transformed_expr = _inject_pending_callsite(transformed_expr, pool_name, expr)
 
+    # ── safe ↔ non-safe divergence (the axis that MUST be kept in sync) ──────────
+    # These two branches are fundamentally different control flow, NOT a shared body
+    # with a flag: `safe` wraps the work in try/finally (rewind guaranteed even when
+    # an exception escapes the outermost scope); non-safe uses a direct rewind +
+    # entry-depth guard + leaked-scope cleanup + break/continue injection.
+    #
+    # The split is deliberate and measurement-justified: try/finally costs a fixed
+    # ~4–11 ns/scope on Julia 1.12+ (≈20% on a hot typed scope, persists with real
+    # work) — unacceptable for the zero-overhead default, so `safe` stays opt-in.
+    #
+    # ⚠️ Any change to the checkpoint/rewind/tp-hoisting contract above MUST be
+    # verified on BOTH branches — the parametrized divergence matrix in
+    # test/test_macros.jl ("divergence matrix") is the mechanical guard. In
+    # particular, tp bindings must stay inside the try (see below): emitting them
+    # before it would leak the checkpoint if get_typed_pool! throws.
     if safe
         transformed_expr = _transform_return_stmts(transformed_expr, pool_name)
         return quote

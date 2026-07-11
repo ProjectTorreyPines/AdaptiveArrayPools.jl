@@ -287,9 +287,11 @@ function Base.showerror(io::IO, e::PoolRuntimeEscapeError)
 
     println(io)
     printstyled(io, "  Fix: "; bold = true)
-    printstyled(io, "Wrap with "; color = :light_black)
+    printstyled(io, "end the block with "; color = :light_black)
+    printstyled(io, "nothing"; bold = true)
+    printstyled(io, " if the value is discarded, "; color = :light_black)
     printstyled(io, "collect()"; bold = true)
-    printstyled(io, " to return an owned copy, or compute a scalar result.\n"; color = :light_black)
+    printstyled(io, " to return an owned copy, or compute a scalar.\n"; color = :light_black)
 
     return nothing
 end

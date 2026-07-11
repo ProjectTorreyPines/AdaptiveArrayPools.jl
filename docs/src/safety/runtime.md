@@ -71,8 +71,10 @@ PoolEscapeError (runtime, RUNTIME_CHECK >= 1)
       ← acquired at src/solver.jl:42
         v = acquire!(pool, Float64, n)
 
-  Fix: Wrap with collect() to return an owned copy, or compute a scalar result.
+  Fix: end the block with nothing if the value is discarded, collect() to return an owned copy, or compute a scalar.
 ```
+
+The `nothing` ending is the most common fix: a scope's **last expression is its return value**, so a block that ends on a pool-backed array leaks it by accident. End with `nothing` (or a scalar) when the array is only used for side effects.
 
 ### 5. Mutation Detection
 
@@ -85,6 +87,32 @@ Detects structural mutations that escaped compile-time analysis by comparing wra
 | Metal | `DataRef` identity + length divergence |
 
 Emits a one-time advisory `@warn` (`maxlog=1`). The pool **self-heals** on next `acquire!` — no data corruption, only pooling benefits are temporarily lost.
+
+## Guarantees & Limitations
+
+**Capacity is retained.** Poisoning and structural invalidation mark a slot's
+*current* contents as stale — they do **not** shrink the pool. The slot keeps its
+allocated capacity and is reused on the next `acquire!`; `compact!` skips
+still-poisoned slots. So `RUNTIME_CHECK=1` never trades away pooling's memory
+reuse — it only makes stale references fail loudly.
+
+**Allocation.** `S=0` (the production default) is zero-allocation — the checks
+are dead-code-eliminated. `S=1` is a development tool and *does* allocate: borrow
+tracking lazily builds an `IdDict` and records a callsite string per `acquire!`
+so escape/mutation errors can name the source. The poison fills and rewind
+comparisons overwrite existing buffers without allocating, but don't measure a
+zero-GC hot path under `S=1` — use `S=0`.
+
+**What it cannot catch.** Escape detection inspects the *return value* at scope
+exit — it cannot prove ownership through arrays captured by closures, stored in
+globals that outlive the scope, or aliased behind opaque calls that never surface
+in the return value. These are undecidable statically; `S=1` catches the
+return-position cases, and the [compile-time lint](compile-time.md) catches the
+common syntactic ones.
+
+**Test hygiene.** For tests that run under both `S=0` and `S=1`: keep asserts
+S-adaptive (don't assert poison values unless `S≥1`), and end `@with_pool` blocks
+with `nothing` unless you deliberately return an owned value.
 
 ## Recommended Workflow
 
