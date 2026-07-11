@@ -71,7 +71,7 @@ PoolEscapeError (runtime, RUNTIME_CHECK >= 1)
       ← acquired at src/solver.jl:42
         v = acquire!(pool, Float64, n)
 
-  Fix: end the block with nothing if the value is discarded, collect() it for an owned copy, or return a scalar.
+  Fix: end the block with nothing if the value is discarded, collect() to return an owned copy, or compute a scalar.
 ```
 
 The `nothing` ending is the most common fix: a scope's **last expression is its return value**, so a block that ends on a pool-backed array leaks it by accident. End with `nothing` (or a scalar) when the array is only used for side effects.

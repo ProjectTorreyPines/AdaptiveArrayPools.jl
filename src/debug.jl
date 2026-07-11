@@ -291,7 +291,7 @@ function Base.showerror(io::IO, e::PoolRuntimeEscapeError)
     printstyled(io, "nothing"; bold = true)
     printstyled(io, " if the value is discarded, "; color = :light_black)
     printstyled(io, "collect()"; bold = true)
-    printstyled(io, " it for an owned copy, or return a scalar.\n"; color = :light_black)
+    printstyled(io, " to return an owned copy, or compute a scalar.\n"; color = :light_black)
 
     return nothing
 end
