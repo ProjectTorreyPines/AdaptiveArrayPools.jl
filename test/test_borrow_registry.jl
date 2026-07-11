@@ -256,9 +256,9 @@ _test_leak(x) = x
     end
 
     @testset "showerror: Fix line teaches nothing/collect/scalar" begin
-        # A1 (PR5): the runtime Fix suggestion must match the compile-time
-        # `_lint_message` wording — offer the `nothing` ending (the most common
-        # accidental-escape fix) alongside collect() and scalar.
+        # The runtime Fix suggestion must match the compile-time `_lint_message`
+        # wording — offer the `nothing` ending (the most common accidental-escape
+        # fix) alongside collect() and scalar.
         err = PoolRuntimeEscapeError("Vector{Float64}", "Float64", "test.jl:42", nothing)
         io = IOBuffer()
         showerror(io, err)

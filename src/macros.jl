@@ -866,14 +866,14 @@ function _generate_block_inner(pool_name, expr, safe::Bool, source)
     # entry-depth guard + leaked-scope cleanup + break/continue injection.
     #
     # The split is deliberate and measurement-justified: try/finally costs a fixed
-    # ~4–11 ns/scope on Julia 1.12.6 (≈20% on a hot typed scope, persists with real
+    # ~4–11 ns/scope on Julia 1.12+ (≈20% on a hot typed scope, persists with real
     # work) — unacceptable for the zero-overhead default, so `safe` stays opt-in.
-    # See docs/plans/DESIGN_fallback_touch_tracking.md §5.1-B for the numbers.
     #
     # ⚠️ Any change to the checkpoint/rewind/tp-hoisting contract above MUST be
     # verified on BOTH branches — the parametrized divergence matrix in
-    # test/test_macros.jl ("safe/non-safe divergence") is the mechanical guard
-    # (PR4's tp_bindings-inside-try leak bug slipped precisely because it wasn't).
+    # test/test_macros.jl ("divergence matrix") is the mechanical guard. In
+    # particular, tp bindings must stay inside the try (see below): emitting them
+    # before it would leak the checkpoint if get_typed_pool! throws.
     if safe
         transformed_expr = _transform_return_stmts(transformed_expr, pool_name)
         return quote

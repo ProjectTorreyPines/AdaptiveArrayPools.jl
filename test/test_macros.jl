@@ -625,14 +625,15 @@ import AdaptiveArrayPools: checkpoint!, rewind!
     end
 
     # ==========================================================================
-    # safe/non-safe divergence guard (PR5)
+    # safe/non-safe divergence guard
     # ==========================================================================
     # `@with_pool`/`@maybe_with_pool` (non-safe) and `@safe_*` (try/finally) are
     # two fundamentally different generator branches. This matrix runs identical
     # scenarios through ALL FOUR macros and asserts they agree on result AND leave
     # no depth/active leak — the mechanical guard that a change to one branch
-    # (checkpoint/rewind/tp-hoisting) must not silently break the other. PR4's
-    # tp_bindings-inside-try leak bug is exactly what the safe rows catch.
+    # (checkpoint/rewind/tp-hoisting) must not silently break the other. A leaked
+    # checkpoint from tp bindings emitted before the try (instead of inside it) is
+    # exactly what the safe rows catch.
 
     # Build one runner per macro at module scope (avoids 4× body duplication).
     # A macro name interpolated as `$sym pool begin … end` is not valid syntax, so
@@ -689,8 +690,8 @@ import AdaptiveArrayPools: checkpoint!, rewind!
     end
 
     # Safe-macro exception guard: an exception AFTER a typed acquire must still
-    # rewind via `finally`. If tp_bindings sat before the try (the PR4 bug), the
-    # checkpoint would leak and depth would not return to baseline.
+    # rewind via `finally`. If tp_bindings sat before the try instead of inside it,
+    # the checkpoint would leak and depth would not return to baseline.
     @eval _divmat_throw_safe() = @safe_with_pool pool begin
         a = acquire!(pool, Float64, 8)
         a[1] = 1.0
