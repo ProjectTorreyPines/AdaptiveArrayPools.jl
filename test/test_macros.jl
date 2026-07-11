@@ -689,59 +689,107 @@ import AdaptiveArrayPools: checkpoint!, rewind!
         @eval $fname() = ($typed, $fallback, $nested, $mixed)
     end
 
-    # Safe-macro exception guard: an exception AFTER a typed acquire must still
-    # rewind via `finally`. If tp_bindings sat before the try instead of inside it,
-    # the checkpoint would leak and depth would not return to baseline.
+    # These runners throw after a hoisted (fallback-type) acquire, so the safe rows
+    # verify that a scope rewinds on exception. Fixed slots aren't hoisted, so a
+    # fallback type (Vector{Float64}) is needed to actually exercise the hoisted
+    # binding. Note this alone does NOT pin the binding's position — the structural
+    # expansion test below is what guards "binding stays inside the try".
     @eval _divmat_throw_safe() = @safe_with_pool pool begin
-        a = acquire!(pool, Float64, 8)
-        a[1] = 1.0
+        a = acquire!(pool, Vector{Float64}, 8)
+        a[1] = Float64[]
         error("boom")
     end
     @eval _divmat_throw_safe_maybe() = @safe_maybe_with_pool pool begin
-        a = acquire!(pool, Float64, 8)
-        a[1] = 1.0
+        a = acquire!(pool, Vector{Float64}, 8)
+        a[1] = Float64[]
         error("boom")
     end
 
+    # Every pool the matrix touches (fixed float64/int32 + fallback others) must be
+    # fully rewound; checking only float64 would miss a lazy/fallback rewind bug.
+    _divmat_clean(pool) = pool.float64.n_active == 0 &&
+        pool.int32.n_active == 0 &&
+        all(tp -> tp.n_active == 0, pool._others_values)
+
     @testset "divergence matrix: all 4 macros agree (result + no leak)" begin
+        old_maybe = MAYBE_POOLING[]
         MAYBE_POOLING[] = true            # @maybe_* take the pooled branch
-        reset!(get_task_local_pool())
+        try
+            reset!(get_task_local_pool())
 
-        runners = (
-            ("@with_pool", _divmat_with_pool),
-            ("@maybe_with_pool", _divmat_maybe_with_pool),
-            ("@safe_with_pool", _divmat_safe_with_pool),
-            ("@safe_maybe_with_pool", _divmat_safe_maybe_with_pool),
-        )
-        baseline = nothing
-        for (label, f) in runners
-            r = f()
-            pool = get_task_local_pool()
-            @test pool._current_depth == 1        # no depth leak ($label)
-            @test pool.float64.n_active == 0       # memory reclaimed ($label)
-            if baseline === nothing
-                baseline = r
-            else
-                @test r == baseline                # identical result ($label)
+            runners = (
+                ("@with_pool", _divmat_with_pool),
+                ("@maybe_with_pool", _divmat_maybe_with_pool),
+                ("@safe_with_pool", _divmat_safe_with_pool),
+                ("@safe_maybe_with_pool", _divmat_safe_maybe_with_pool),
+            )
+            baseline = nothing
+            for (label, f) in runners
+                r = f()
+                pool = get_task_local_pool()
+                @test pool._current_depth == 1        # no depth leak ($label)
+                @test _divmat_clean(pool)              # all touched pools reclaimed ($label)
+                if baseline === nothing
+                    baseline = r
+                else
+                    @test r == baseline                # identical result ($label)
+                end
             end
+        finally
+            MAYBE_POOLING[] = old_maybe
         end
-
-        MAYBE_POOLING[] = false
     end
 
-    @testset "safe macros: exception rewinds despite throw (typed scope)" begin
+    @testset "safe macros: exception rewinds despite throw" begin
+        old_maybe = MAYBE_POOLING[]
         MAYBE_POOLING[] = true
-        reset!(get_task_local_pool())
-
-        for f in (_divmat_throw_safe, _divmat_throw_safe_maybe)
-            pool = get_task_local_pool()
-            d0 = pool._current_depth
-            @test_throws ErrorException f()
-            @test pool._current_depth == d0        # finally rewound
-            @test pool.float64.n_active == 0        # no leaked capacity in use
+        try
+            reset!(get_task_local_pool())
+            for f in (_divmat_throw_safe, _divmat_throw_safe_maybe)
+                pool = get_task_local_pool()
+                d0 = pool._current_depth
+                @test_throws ErrorException f()
+                @test pool._current_depth == d0        # finally rewound
+                @test _divmat_clean(pool)               # no leaked capacity in use
+            end
+        finally
+            MAYBE_POOLING[] = old_maybe
         end
+    end
 
-        MAYBE_POOLING[] = false
+    @testset "safe+typed expansion keeps the tp binding inside the try" begin
+        # Direct structural guard for the invariant the exception test cannot see:
+        # the hoisted get_typed_pool! binding must live INSIDE the try, so a throw
+        # from it still hits the finally rewind. If the binding moved before the
+        # try, the try body would no longer reference get_typed_pool! and this
+        # fails. Only meaningful where curly types are hoisted (Julia >= 1.12).
+        if AdaptiveArrayPools._MACRO_TYPED_UPGRADES
+            # The macro splices the get_typed_pool! *function value* (via `$`), so
+            # match that as well as a GlobalRef/Symbol spelling.
+            gtp = AdaptiveArrayPools.get_typed_pool!
+            refs_gtp(e) =
+                e === gtp ||
+                (e isa GlobalRef && e.name === :get_typed_pool!) ||
+                (e isa Symbol && e === :get_typed_pool!) ||
+                (e isa Expr && any(refs_gtp, e.args))
+            function find_try(e)
+                e isa Expr || return nothing
+                e.head === :try && return e
+                for a in e.args
+                    t = find_try(a)
+                    t === nothing || return t
+                end
+                return nothing
+            end
+            ex = @macroexpand @safe_with_pool pool begin
+                a = acquire!(pool, Vector{Float64}, 8)
+                a[1] = Float64[]
+                nothing
+            end
+            tnode = find_try(ex)
+            @test tnode !== nothing
+            @test refs_gtp(tnode.args[1])          # binding is inside the try body
+        end
     end
 
     @testset "non-safe: parent normalizes a leaked inner scope on throw" begin
@@ -764,7 +812,7 @@ import AdaptiveArrayPools: checkpoint!, rewind!
         pool = get_task_local_pool()
         @test r == 1.0
         @test pool._current_depth == 1             # outer cleanup normalized the leak
-        @test pool.float64.n_active == 0
+        @test _divmat_clean(pool)
     end
 
 end # Macro System

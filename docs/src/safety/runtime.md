@@ -96,9 +96,12 @@ allocated capacity and is reused on the next `acquire!`; `compact!` skips
 still-poisoned slots. So `RUNTIME_CHECK=1` never trades away pooling's memory
 reuse — it only makes stale references fail loudly.
 
-**Still zero-allocation.** The checks compare against and overwrite existing
-buffers; they allocate nothing on the happy path. `S=1` adds runtime cost (the
-comparisons and poison fills) but no GC pressure.
+**Allocation.** `S=0` (the production default) is zero-allocation — the checks
+are dead-code-eliminated. `S=1` is a development tool and *does* allocate: borrow
+tracking lazily builds an `IdDict` and records a callsite string per `acquire!`
+so escape/mutation errors can name the source. The poison fills and rewind
+comparisons overwrite existing buffers without allocating, but don't measure a
+zero-GC hot path under `S=1` — use `S=0`.
 
 **What it cannot catch.** Escape detection inspects the *return value* at scope
 exit — it cannot prove ownership through arrays captured by closures, stored in
