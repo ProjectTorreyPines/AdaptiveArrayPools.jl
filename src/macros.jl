@@ -2645,6 +2645,21 @@ function _incidental_exposure(expr, tainted, pool_name)
     return nothing
 end
 
+"""Report an incidental-tail escape at `severity`: `"error"` throws a `PoolEscapeError`
+(storing the classified `(kind, detail)` on the point so `showerror` renders directly),
+`"warn"` emits an expansion-time warning. Separated from the const-gated call site so
+both severities are unit-testable — `ESCAPE_LINT` is a load-time constant, so the call
+site only ever exercises one branch per session."""
+function _report_incidental_escape(severity, kind, detail, ret_expr, ret_line, file, line)
+    if severity == "error"
+        point = EscapePoint(ret_expr, ret_line, Symbol[], (kind, detail))
+        throw(PoolEscapeError(Symbol[], file, line, [point]))
+    else # "warn"
+        @warn _lint_message(kind, detail, ret_expr) _file = file _line = something(ret_line, line, 0)
+    end
+    return
+end
+
 """Build the human-readable expansion-time lint message for an incidental-tail escape.
 Used both for the `escape_lint = "warn"` path and for rendering `PoolEscapeError`
 (via `showerror`) when the error originates from an incidental tail rather than an
@@ -2855,16 +2870,7 @@ function _check_compile_time_escape(expr, pool_name, source::Union{LineNumberNod
         hit = _incidental_exposure(ret_expr, acquired, pool_name)
         hit === nothing && continue
         kind, detail = hit
-        if ESCAPE_LINT == "error"
-            # The tail is an acquire call / broadcast-assign / assignment
-            # expression, not a returned variable — so there is no named `vars`.
-            # Store the classified `(kind, detail)` on the point so `showerror`
-            # renders the incidental-tail message directly (no re-derivation).
-            point = EscapePoint(ret_expr, ret_line, Symbol[], (kind, detail))
-            throw(PoolEscapeError(Symbol[], file, line, [point]))
-        else # "warn"
-            @warn _lint_message(kind, detail, ret_expr) _file = file _line = something(ret_line, line, 0)
-        end
+        _report_incidental_escape(ESCAPE_LINT, kind, detail, ret_expr, ret_line, file, line)
     end
     return
 end

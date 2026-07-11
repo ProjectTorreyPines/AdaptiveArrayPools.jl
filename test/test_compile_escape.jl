@@ -11,7 +11,8 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
     _extract_ordered_acquired,
     _find_reassign_maybe_tainted, _is_safe_copy_call, _rhs_call_contains_sym,
     _extract_container_vars,
-    _is_dotted_assign_head, _incidental_exposure, _lint_message, ESCAPE_LINT
+    _is_dotted_assign_head, _incidental_exposure, _lint_message, ESCAPE_LINT,
+    _report_incidental_escape, PoolEscapeError
 
 function _capture_stderr(f)
     tmpf = tempname()
@@ -2778,6 +2779,25 @@ end
             msg = _lint_message(:assign, :v, assign_expr)
             @test occursin("last expression", msg)
             @test occursin("nothing", msg)
+        end
+
+        @testset "_report_incidental_escape: both severity branches" begin
+            # ESCAPE_LINT is a load-time constant so the call site only ever
+            # exercises one branch per session — test both directly here.
+            ax = :(acquire!(pool, Float64, 4))
+            # "error" throws PoolEscapeError carrying the incidental point
+            err = try
+                _report_incidental_escape("error", :acquire_call, ax, ax, 10, "f.jl", 1)
+                nothing
+            catch e
+                e
+            end
+            @test err isa PoolEscapeError
+            @test occursin("direct acquire call", sprint(showerror, err))
+
+            # "warn" emits an expansion-time warning (no throw)
+            bx = :(v .= 0.0)
+            @test_logs (:warn,) _report_incidental_escape("warn", :broadcast_assign, :v, bx, 12, "f.jl", 1)
         end
     end
 

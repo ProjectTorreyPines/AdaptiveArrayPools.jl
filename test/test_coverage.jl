@@ -428,4 +428,87 @@
 
         empty!(pool)
     end
+
+    # tp-hoisted `_*_impl!(pool, tp, ...)` variants are reached only through the
+    # macro's typed/hoisted path. The suite already exercised the single-`n` form;
+    # this covers the Vararg / NTuple / view forms (and the Bit + convenience
+    # variants) that were otherwise never called. Modern tree only — the legacy
+    # tree has no tp-variant methods (gated by `_MACRO_TYPED_UPGRADES`).
+    @static if VERSION >= v"1.12-"
+        @testset "tp-hoisted impl variants: all dims/view/Bit forms" begin
+            tlp = get_task_local_pool()
+            reset!(tlp)
+
+            # Fallback type (UInt8) — every hoisted tp-variant form.
+            @with_pool pool begin
+                a = acquire!(pool, UInt8, 4)            # _acquire_impl!(pool, tp, n)
+                b = acquire!(pool, UInt8, 2, 3)         # Vararg
+                c = acquire!(pool, UInt8, (2, 2))       # NTuple
+                d = acquire_view!(pool, UInt8, 4)       # view n
+                e = acquire_view!(pool, UInt8, 2, 3)    # view Vararg
+                g = acquire_view!(pool, UInt8, (2, 2))  # view NTuple
+                a[1] = 0x01
+                b[1] = 0x02
+                c[1] = 0x03
+                d[1] = 0x04
+                e[1] = 0x05
+                g[1] = 0x06
+                nothing
+            end
+            @test AdaptiveArrayPools.get_typed_pool!(tlp, UInt8).n_active == 0
+
+            # Convenience tp-variants: Vararg + NTuple for zeros!/ones!/rand!/randn!.
+            @with_pool pool begin
+                z1 = zeros!(pool, UInt8, 2, 3)
+                z2 = zeros!(pool, UInt8, (2, 2))
+                o1 = ones!(pool, UInt8, 2, 3)
+                o2 = ones!(pool, UInt8, (2, 2))
+                r1 = rand!(pool, Float64, 2, 3)
+                r2 = rand!(pool, Float64, (2, 2))
+                q1 = randn!(pool, Float64, 2, 3)
+                q2 = randn!(pool, Float64, (2, 2))
+                z1[1] = 0x00
+                z2[1] = 0x00
+                o1[1] = 0x01
+                o2[1] = 0x01
+                r1[1] = 0.0
+                r2[1] = 0.0
+                q1[1] = 0.0
+                q2[1] = 0.0
+                nothing
+            end
+
+            # Bit tp-variants: acquire + view (n/Vararg/NTuple) + zeros.
+            @with_pool pool begin
+                b1 = acquire!(pool, Bit, 8)
+                b2 = acquire!(pool, Bit, 2, 3)
+                b3 = acquire!(pool, Bit, (2, 2))
+                v1 = acquire_view!(pool, Bit, 8)
+                v2 = acquire_view!(pool, Bit, 2, 3)
+                v3 = acquire_view!(pool, Bit, (2, 2))
+                zb = zeros!(pool, Bit, 4)
+                b1[1] = true
+                b2[1] = false
+                b3[1] = true
+                v1[1] = false
+                v2[1] = true
+                v3[1] = false
+                zb[1] = true
+                nothing
+            end
+            @test AdaptiveArrayPools.get_typed_pool!(tlp, Bit).n_active == 0
+
+            # Pre-existing Type-form NTuple/view paths via direct (non-macro) calls.
+            dp = get_task_local_pool()
+            reset!(dp)
+            @test size(acquire!(dp, UInt8, (2, 2))) == (2, 2)      # _acquire_impl!(::Type, NTuple)
+            @test length(acquire_view!(dp, UInt8, 6)) == 6         # view Type-form n
+            @test size(acquire_view!(dp, UInt8, 2, 3)) == (2, 3)   # view Type-form Vararg
+            @test size(acquire_view!(dp, UInt8, (2, 3))) == (2, 3) # view Type-form NTuple
+            @test size(acquire!(dp, Bit, (2, 3))) == (2, 3)        # Bit NTuple
+            @test size(acquire_view!(dp, Bit, 2, 3)) == (2, 3)     # Bit view Vararg
+            @test size(acquire_view!(dp, Bit, (2, 3))) == (2, 3)   # Bit view NTuple
+            reset!(dp)
+        end
+    end
 end
