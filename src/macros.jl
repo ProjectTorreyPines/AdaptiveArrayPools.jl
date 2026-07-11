@@ -866,8 +866,12 @@ function _generate_block_inner(pool_name, expr, safe::Bool, source)
         return quote
             $(_auto_manage_hook(pool_name))
             $checkpoint_call
-            $(tp_bindings...)
+            # Hoisted tp bindings live INSIDE the try: get_typed_pool! can allocate
+            # (fallback slow path) and thus throw, and the whole point of the safe
+            # form is that the finally rewind runs after the checkpoint no matter
+            # what. Emitting them before the try would leak the checkpoint on throw.
             try
+                $(tp_bindings...)
                 local _result = $(esc(transformed_expr))
                 if $_RUNTIME_CHECK_REF($(esc(pool_name)))
                     $_validate_pool_return(_result, $(esc(pool_name)))
@@ -955,8 +959,11 @@ function _generate_function_inner(pool_name, expr, safe::Bool, source)
         return quote
             $(_auto_manage_hook(pool_name))
             $checkpoint_call
-            $(tp_bindings...)
+            # Hoisted tp bindings live INSIDE the try (see _generate_block_inner):
+            # get_typed_pool! can throw on the fallback slow path, and the finally
+            # rewind must run after the checkpoint regardless.
             try
+                $(tp_bindings...)
                 local _result = $(esc(transformed_expr))
                 if $_RUNTIME_CHECK_REF($(esc(pool_name)))
                     $_validate_pool_return(_result, $(esc(pool_name)))

@@ -1011,4 +1011,57 @@ end # Dynamic selective mode expansion
         # Exactly one hoisted lookup for Float64 in the emitted scope body
         @test count("get_typed_pool!", s) == 1
     end
+
+    # Regression: the hoisted get_typed_pool! binding may throw (fallback slow
+    # path allocates); in the safe (try/finally) forms it MUST sit inside the
+    # try so the finally rewind still runs after the checkpoint. Otherwise a
+    # throw between checkpoint and try leaks the checkpoint depth.
+    @testset "safe forms hoist get_typed_pool! inside the try" begin
+        # Walk to the first :try node; return (statements-before-it, try-node).
+        function _find_try(ex)
+            found = Ref{Any}(nothing)
+            pre = Ref{Vector{Any}}(Any[])
+            walk(x) = begin
+                found[] === nothing || return
+                x isa Expr || return
+                if x.head === :block
+                    for (i, a) in enumerate(x.args)
+                        if a isa Expr && a.head === :try
+                            found[] = a
+                            pre[] = x.args[1:(i - 1)]
+                            return
+                        end
+                        walk(a)
+                        found[] === nothing || return
+                    end
+                else
+                    foreach(walk, x.args)
+                end
+            end
+            walk(ex)
+            return pre[], found[]
+        end
+
+        # Safe block form
+        ex_block = @macroexpand @safe_with_pool pool begin
+            a = acquire!(pool, Float64, 4)
+            a[1] = 1.0
+            nothing
+        end
+        pre_b, try_b = _find_try(ex_block)
+        @test try_b !== nothing
+        @test occursin("get_typed_pool!", string(try_b.args[1]))       # inside the try body
+        @test !occursin("get_typed_pool!", string(Expr(:block, pre_b...)))  # not before the try
+
+        # Safe function form
+        ex_fn = @macroexpand @safe_with_pool pool function _safe_hoist_fn()
+            a = acquire!(pool, Float64, 4)
+            a[1] = 1.0
+            nothing
+        end
+        pre_f, try_f = _find_try(ex_fn)
+        @test try_f !== nothing
+        @test occursin("get_typed_pool!", string(try_f.args[1]))
+        @test !occursin("get_typed_pool!", string(Expr(:block, pre_f...)))
+    end
 end
