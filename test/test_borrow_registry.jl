@@ -255,6 +255,21 @@ _test_leak(x) = x
         @test contains(msg, "RUNTIME_CHECK >= 1")
     end
 
+    @testset "showerror: Fix line teaches nothing/collect/scalar" begin
+        # A1 (PR5): the runtime Fix suggestion must match the compile-time
+        # `_lint_message` wording — offer the `nothing` ending (the most common
+        # accidental-escape fix) alongside collect() and scalar.
+        err = PoolRuntimeEscapeError("Vector{Float64}", "Float64", "test.jl:42", nothing)
+        io = IOBuffer()
+        showerror(io, err)
+        msg = String(take!(io))
+
+        @test contains(msg, "Fix:")
+        @test contains(msg, "nothing")      # discard-value ending
+        @test contains(msg, "collect()")    # owned copy
+        @test contains(msg, "scalar")       # scalar result
+    end
+
     # ==============================================================================
     # Multiple types: each gets correct callsite
     # ==============================================================================
