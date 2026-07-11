@@ -2,6 +2,12 @@
 # Macros for AdaptiveArrayPools
 # ==============================================================================
 
+# The typed-path macro upgrades (parametric static types, per-scope tp hoisting,
+# nested-macrocall transform guard) target the modern (Julia >= 1.12) tree only.
+# The legacy tree keeps its pre-existing expansion byte-for-byte; the escape
+# lint below is version-independent and stays active everywhere.
+const _MACRO_TYPED_UPGRADES = VERSION >= v"1.12-"
+
 # ==============================================================================
 # PoolEscapeError — Compile-time escape detection error
 # ==============================================================================
@@ -847,7 +853,7 @@ function _generate_block_inner(pool_name, expr, safe::Bool, source)
 
     transformed_expr = use_typed ? _transform_acquire_calls(expr, pool_name) : expr
     tp_bindings = Expr[]
-    if use_typed
+    if use_typed && _MACRO_TYPED_UPGRADES
         tp_vars, transformed_expr = _hoist_typed_pools(transformed_expr, static_types)
         for (t, v) in tp_vars
             push!(tp_bindings, :(local $(esc(v)) = $get_typed_pool!($(esc(pool_name)), $(esc(t)))))
@@ -936,7 +942,7 @@ function _generate_function_inner(pool_name, expr, safe::Bool, source)
 
     transformed_expr = use_typed ? _transform_acquire_calls(expr, pool_name) : expr
     tp_bindings = Expr[]
-    if use_typed
+    if use_typed && _MACRO_TYPED_UPGRADES
         tp_vars, transformed_expr = _hoist_typed_pools(transformed_expr, static_types)
         for (t, v) in tp_vars
             push!(tp_bindings, :(local $(esc(v)) = $get_typed_pool!($(esc(pool_name)), $(esc(t)))))
@@ -1444,7 +1450,11 @@ function _filter_static_types(types, local_vars = Set{Symbol}())
                 # Parametric type literal like Vector{Float64} / Foo{T}.
                 # Static iff every free name resolves outside the block
                 # (global type or `where` param) — same rule as eltype(x) below.
-                if _uses_local_var(t, local_vars)
+                # Legacy tree (< 1.12): keep the pre-existing conservative behavior
+                # of always falling back to dynamic for curly type literals.
+                if !_MACRO_TYPED_UPGRADES
+                    has_dynamic = true
+                elseif _uses_local_var(t, local_vars)
                     has_dynamic = true
                 else
                     push!(static_types, t)
@@ -1653,6 +1663,9 @@ const _WITH_POOL_FAMILY_MACROS = (
 )
 
 function _is_nested_with_pool_macrocall(expr)
+    # Legacy tree (< 1.12): keep the old recurse-into-nested-macrocall expansion,
+    # byte-identical to what shipped before the typed-path macro upgrades.
+    _MACRO_TYPED_UPGRADES || return false
     expr isa Expr && expr.head === :macrocall && !isempty(expr.args) || return false
     fn = expr.args[1]
     fn isa Symbol && return fn in _WITH_POOL_FAMILY_MACROS

@@ -8,6 +8,11 @@ version numbers below indicate scope of change, not a stability contract.
 
 ## [0.4.0] — 2026-07-10
 
+> **Version note:** the three new escape-error patterns below apply on all
+> supported Julia versions; the parametric-static-type and tp-hoisting
+> performance improvements apply on Julia >= 1.12 only (the legacy tree
+> keeps its previous expansion).
+
 ### BREAKING
 
 `@with_pool` (and its `@maybe_with_pool` / `@safe_with_pool` /

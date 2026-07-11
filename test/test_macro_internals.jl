@@ -220,12 +220,19 @@ import AdaptiveArrayPools: _is_nested_with_pool_macrocall
 
             # Parametric type: Vector{Float64} with no free local names → static
             # (curly widening: Task 1 of the macro-static-lint plan)
+            # Legacy tree (< 1.12) keeps the old unconditional-fallback behavior
+            # for curly type literals (gated by `_MACRO_TYPED_UPGRADES`).
             @testset "parametric type" begin
                 types = Set{Any}([:(Vector{Float64})])
                 local_vars = Set{Symbol}()
                 static_types, has_dynamic = _filter_static_types(types, local_vars)
-                @test :(Vector{Float64}) in static_types
-                @test !has_dynamic
+                @static if VERSION >= v"1.12-"
+                    @test :(Vector{Float64}) in static_types
+                    @test !has_dynamic
+                else
+                    @test isempty(static_types)
+                    @test has_dynamic
+                end
             end
 
             # GlobalRef or other concrete types → static
@@ -248,24 +255,35 @@ import AdaptiveArrayPools: _is_nested_with_pool_macrocall
             end
 
             # Locals dynamic, but a parametric type with no free local names is still static
+            # (legacy: curly always demotes, see `_MACRO_TYPED_UPGRADES`)
             @testset "locals dynamic, curly with no free local names static" begin
                 types = Set{Any}([:T, :S, :(Vector{Int})])
                 local_vars = Set{Symbol}([:T, :S])
                 static_types, has_dynamic = _filter_static_types(types, local_vars)
-                @test :(Vector{Int}) in static_types
+                @static if VERSION >= v"1.12-"
+                    @test :(Vector{Int}) in static_types
+                else
+                    @test :(Vector{Int}) ∉ static_types
+                end
                 @test :T ∉ static_types
                 @test :S ∉ static_types
                 @test has_dynamic  # T and S are still local → whole scope demotes
             end
 
             # Curly expression detection: static when no free name is local
+            # (legacy: curly always demotes, see `_MACRO_TYPED_UPGRADES`)
             @testset "curly expression" begin
                 curly_expr = Expr(:curly, :Vector, :Float64)
                 types = Set{Any}([curly_expr])
                 local_vars = Set{Symbol}()
                 static_types, has_dynamic = _filter_static_types(types, local_vars)
-                @test curly_expr in static_types
-                @test !has_dynamic
+                @static if VERSION >= v"1.12-"
+                    @test curly_expr in static_types
+                    @test !has_dynamic
+                else
+                    @test curly_expr ∉ static_types
+                    @test has_dynamic
+                end
             end
 
             # Curly expression over a local name still demotes to dynamic
