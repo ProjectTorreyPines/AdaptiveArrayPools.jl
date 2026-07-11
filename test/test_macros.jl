@@ -624,4 +624,146 @@ import AdaptiveArrayPools: checkpoint!, rewind!
         end
     end
 
+    # ==========================================================================
+    # safe/non-safe divergence guard (PR5)
+    # ==========================================================================
+    # `@with_pool`/`@maybe_with_pool` (non-safe) and `@safe_*` (try/finally) are
+    # two fundamentally different generator branches. This matrix runs identical
+    # scenarios through ALL FOUR macros and asserts they agree on result AND leave
+    # no depth/active leak — the mechanical guard that a change to one branch
+    # (checkpoint/rewind/tp-hoisting) must not silently break the other. PR4's
+    # tp_bindings-inside-try leak bug is exactly what the safe rows catch.
+
+    # Build one runner per macro at module scope (avoids 4× body duplication).
+    # A macro name interpolated as `$sym pool begin … end` is not valid syntax, so
+    # each scope is assembled as an explicit `Expr(:macrocall, …)`. Each runner runs
+    # 4 scenarios exercising the divergent paths: typed fixed-slot (tp hoisting),
+    # fallback/lazy (local-var demotion), nested, mixed (2 fixed slots).
+    _divmat_mc(m, body) = Expr(:macrocall, m, LineNumberNode(0, :divmat), :pool, body)
+    for macname in (:with_pool, :maybe_with_pool, :safe_with_pool, :safe_maybe_with_pool)
+        fname = Symbol("_divmat_", macname)
+        m = Symbol("@", macname)
+        typed = _divmat_mc(
+            m, quote
+                a = acquire!(pool, Float64, 8)
+                @inbounds for i in 1:8
+                    a[i] = Float64(i)
+                end
+                sum(a)
+            end
+        )
+        fallback = _divmat_mc(
+            m, quote
+                T = Vector{Float64}          # local var → macro demotes to lazy path
+                a = acquire!(pool, T, 4)
+                a[1] = Float64[1.0]
+                length(a)
+            end
+        )
+        nested = _divmat_mc(
+            m, quote
+                a = acquire!(pool, Float64, 4)
+                a[1] = 10.0
+                inner = $(
+                    _divmat_mc(
+                        m, quote
+                            b = acquire!(pool, Float64, 4)
+                            b[1] = 20.0
+                            b[1]
+                        end
+                    )
+                )
+                a[1] + inner
+            end
+        )
+        mixed = _divmat_mc(
+            m, quote
+                a = acquire!(pool, Float64, 4)
+                a[1] = 1.0
+                c = acquire!(pool, Int32, 2)
+                c[1] = Int32(2)
+                Float64(a[1]) + c[1]
+            end
+        )
+        @eval $fname() = ($typed, $fallback, $nested, $mixed)
+    end
+
+    # Safe-macro exception guard: an exception AFTER a typed acquire must still
+    # rewind via `finally`. If tp_bindings sat before the try (the PR4 bug), the
+    # checkpoint would leak and depth would not return to baseline.
+    @eval _divmat_throw_safe() = @safe_with_pool pool begin
+        a = acquire!(pool, Float64, 8)
+        a[1] = 1.0
+        error("boom")
+    end
+    @eval _divmat_throw_safe_maybe() = @safe_maybe_with_pool pool begin
+        a = acquire!(pool, Float64, 8)
+        a[1] = 1.0
+        error("boom")
+    end
+
+    @testset "divergence matrix: all 4 macros agree (result + no leak)" begin
+        MAYBE_POOLING[] = true            # @maybe_* take the pooled branch
+        reset!(get_task_local_pool())
+
+        runners = (
+            ("@with_pool", _divmat_with_pool),
+            ("@maybe_with_pool", _divmat_maybe_with_pool),
+            ("@safe_with_pool", _divmat_safe_with_pool),
+            ("@safe_maybe_with_pool", _divmat_safe_maybe_with_pool),
+        )
+        baseline = nothing
+        for (label, f) in runners
+            r = f()
+            pool = get_task_local_pool()
+            @test pool._current_depth == 1        # no depth leak ($label)
+            @test pool.float64.n_active == 0       # memory reclaimed ($label)
+            if baseline === nothing
+                baseline = r
+            else
+                @test r == baseline                # identical result ($label)
+            end
+        end
+
+        MAYBE_POOLING[] = false
+    end
+
+    @testset "safe macros: exception rewinds despite throw (typed scope)" begin
+        MAYBE_POOLING[] = true
+        reset!(get_task_local_pool())
+
+        for f in (_divmat_throw_safe, _divmat_throw_safe_maybe)
+            pool = get_task_local_pool()
+            d0 = pool._current_depth
+            @test_throws ErrorException f()
+            @test pool._current_depth == d0        # finally rewound
+            @test pool.float64.n_active == 0        # no leaked capacity in use
+        end
+
+        MAYBE_POOLING[] = false
+    end
+
+    @testset "non-safe: parent normalizes a leaked inner scope on throw" begin
+        reset!(get_task_local_pool())
+        # Inner @with_pool throws without rewinding; the outer scope's leaked-scope
+        # cleanup loop (the non-safe counterpart of the safe finally) restores depth.
+        f() = @with_pool pool begin
+            a = acquire!(pool, Float64, 4)
+            a[1] = 1.0
+            try
+                @with_pool pool begin
+                    b = acquire!(pool, Float64, 4)
+                    error("inner boom")
+                end
+            catch
+            end
+            a[1]
+        end
+        r = f()
+        pool = get_task_local_pool()
+        @test r == 1.0
+        @test pool._current_depth == 1             # outer cleanup normalized the leak
+        @test pool.float64.n_active == 0
+    end
+
 end # Macro System

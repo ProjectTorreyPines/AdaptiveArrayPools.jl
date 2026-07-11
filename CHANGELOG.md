@@ -74,6 +74,11 @@ opaque function calls, closures, conditional tails).
 - `escape_lint` preference (`"error"` default | `"warn"` | `"off"`), loaded
   once at package load as the compile-time constant `ESCAPE_LINT`, controlling
   the severity of the three new incidental-tail patterns above.
+- The runtime `PoolEscapeError` (`RUNTIME_CHECK >= 1`) fix hint now teaches the
+  `nothing` ending (the most common accidental-escape fix) alongside `collect()`
+  and returning a scalar, matching the compile-time lint wording. Expanded the
+  runtime-safety docs with capacity-retention, zero-allocation, and
+  what-it-cannot-catch guarantees.
 
 ### Performance
 
