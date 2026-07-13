@@ -4,18 +4,43 @@ The `@with_pool` macro statically analyzes your code at macro expansion time —
 
 ## Escape Analysis (`PoolEscapeError`)
 
-Rejects any expression that would return a pool-backed array. Tracks aliases, containers, and convenience wrappers:
+Detects any tail expression that would deliver a pool-backed array out of the
+scope. Tracks aliases, containers, and convenience wrappers. **Severity is
+form-based**, because the two forms differ in what the macro can know:
+
+- **Function form** and **explicit `return`** (either form): the value
+  definitively reaches the enclosing function's caller — a `begin` block is
+  not a function boundary, so `return` inside a block form returns from the
+  *enclosing function*. These always throw `PoolEscapeError` at expansion.
+- **Block form, implicit last expression**: the macro cannot see its own call
+  site, so whether the block's value is used (`out = @with_pool ...`) or
+  discarded (a loop body, a bare statement) is undecidable. These emit a
+  `@warn` and the expansion **replaces the escaping value with an inert
+  `EscapedPoolArray` guard**: discarded → completely silent; used → the first
+  operation throws `EscapedPoolUseError` with the variable name, shape, and
+  scope location.
 
 ```julia
-@with_pool pool begin
-    v = acquire!(pool, Float64, 100)
-    w = v            # alias tracked
-    w                # ← PoolEscapeError: w escapes
-end
-
 @with_pool pool function bad()
     A = acquire!(pool, Float64, 3, 3)
-    return A         # ← PoolEscapeError: explicit return
+    return A         # ← PoolEscapeError: function return, always an error
+end
+
+out = @with_pool pool begin
+    v = acquire!(pool, Float64, 100)
+    w = v            # alias tracked
+    w                # ← @warn + guard: `out` is an EscapedPoolArray
+end
+out[1]               # ← EscapedPoolUseError: names `w`, its shape, and the scope
+
+# The guard is inert when the value is never used — this common
+# copy-out-and-discard shape runs silently and correctly:
+Threads.@threads for k in 1:nmodels
+    @with_pool pool begin
+        y = acquire!(pool, Float64, m, n)
+        compute!(y, k)
+        results[:, :, k] = y   # copy runs; the yielded `y` is guarded; @threads discards it
+    end
 end
 ```
 
@@ -64,7 +89,8 @@ end
 end
 ```
 
-Fix: end the block with `nothing` if the value is meant to be discarded:
+Fix: end the block with `nothing` if the value is meant to be discarded —
+this also silences the warning:
 
 ```julia
 @with_pool pool begin
@@ -74,14 +100,20 @@ Fix: end the block with `nothing` if the value is meant to be discarded:
 end
 ```
 
-These three patterns are gated by the `escape_lint` preference (default
-`"error"`, matching the direct-return patterns above). Set `"warn"` to
-downgrade to a `@warn` diagnostic (migration escape hatch), or `"off"` to
-disable this stage of checking entirely:
+In block form these follow the same warn + `EscapedPoolArray`-guard treatment
+as all implicit tails; in function form or under an explicit `return`, they
+throw. The `escape_lint` preference tunes the **block-form** severity:
+
+- `"warn"` (default) — `@warn` diagnostic + the guard rewrite described above.
+- `"error"` — block-form implicit tails also throw `PoolEscapeError`
+  (the strict pre-guard behavior; no guard rewrite needed).
+- `"off"` — no warning and no guard rewrite (the block tail escapes the raw
+  pool array, as before this feature). Function-form and explicit-`return`
+  direct escapes still always error.
 
 ```julia
 using Preferences
-Preferences.set_preferences!("AdaptiveArrayPools", "escape_lint" => "warn")
+Preferences.set_preferences!("AdaptiveArrayPools", "escape_lint" => "error")
 ```
 
 ## Mutation Analysis (`PoolMutationError`)

@@ -19,3 +19,6 @@ LocalPreferences.toml
 
 # Auto-generated docs (created by make.jl)
 /docs/src/index.md
+
+# Release changelog — maintained manually outside version control
+/CHANGELOG.md

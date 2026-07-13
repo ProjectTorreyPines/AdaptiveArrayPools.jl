@@ -27,13 +27,19 @@ export AbstractTypedPool, AbstractArrayPool  # For subtyping
 export DisabledPool, DISABLED_CPU, pooling_enabled  # Disabled pool support
 # Note: Extensions add methods to _get_pool_for_backend(::Val{:backend}) directly
 
-# Expansion-time incidental-tail escape severity: "error" (default) | "warn" | "off".
+# Expansion-time block-form escape severity: "warn" (default) | "error" | "off".
+# Under "warn", block-form implicit-tail escapes warn AND the escaping value is
+# replaced by an EscapedPoolArray guard (see src/escape_guard.jl); function-form
+# and explicit-return escapes always error regardless of this setting.
 # Read once at package load; a compile-time constant like RUNTIME_CHECK.
-const ESCAPE_LINT = let v = @load_preference("escape_lint", "error")
+const ESCAPE_LINT = let v = @load_preference("escape_lint", "warn")
     v in ("error", "warn", "off") ||
         error("escape_lint preference must be \"error\", \"warn\", or \"off\" (got \"$v\")")
     v
 end
+
+# Version-independent escape guard (used by macro expansion on both trees)
+include("escape_guard.jl")
 
 # All includes grouped under a single version branch
 @static if VERSION >= v"1.12-"
