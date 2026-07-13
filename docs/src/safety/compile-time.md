@@ -75,9 +75,10 @@ end
 ```
 
 These three patterns are gated by the `escape_lint` preference (default
-`"error"`, matching the direct-return patterns above). Set `"warn"` to
-downgrade to a `@warn` diagnostic (migration escape hatch), or `"off"` to
-disable this stage of checking entirely:
+`"warn"` — a `@warn` diagnostic, because whether the incidental tail value is
+actually used cannot be determined at compile time). Set `"error"` to promote
+them to a hard `PoolEscapeError` (matching the direct-return patterns above),
+or `"off"` to disable this stage of checking entirely:
 
 ```julia
 using Preferences

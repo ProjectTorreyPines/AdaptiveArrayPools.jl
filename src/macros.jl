@@ -419,9 +419,14 @@ end
 Severity for these three incidental-tail patterns is controlled by the
 `escape_lint` preference (via `Preferences.jl`, read once at package load as
 the `ESCAPE_LINT` compile-time constant):
-- `"error"` (default) — throws `PoolEscapeError`, same as the direct-return patterns.
-- `"warn"` — prints the same diagnostic via `@warn` and continues (migration escape hatch).
-- `"off"` — disables Stage-2 (incidental-tail) checking; direct-return patterns still always error.
+- `"warn"` (default) — a **block-form implicit tail** emits a `@warn` diagnostic and
+  continues, since whether the block's value is actually used cannot be determined
+  at compile time. A **function-form** scope's tail and an **explicit `return`**
+  (either form) always throw `PoolEscapeError` regardless of this setting — they
+  deliver the value to the enclosing function's caller, a definite escape.
+- `"error"` — block-form implicit tails also throw `PoolEscapeError`.
+- `"off"` — disables Stage-2 (incidental-tail) checking entirely; direct-return
+  (Stage-1) patterns still always error.
 
 ```julia
 using Preferences
@@ -1135,7 +1140,7 @@ function _generate_function_pool_code_with_backend(backend::Symbol, pool_name, f
     end
 
     # Compile-time escape detection (zero runtime cost)
-    _esc = _check_compile_time_escape(body, pool_name, source)
+    _esc = _check_compile_time_escape(body, pool_name, source; function_form = true)
     _esc !== nothing && return :(throw($_esc))
 
     # Compile-time container-escape warning (conservative, may have false positives)
@@ -1194,7 +1199,7 @@ function _generate_function_pool_code(pool_name, func_def, force_enable, disable
     end
 
     # Compile-time escape detection (zero runtime cost)
-    _esc = _check_compile_time_escape(body, pool_name, source)
+    _esc = _check_compile_time_escape(body, pool_name, source; function_form = true)
     _esc !== nothing && return :(throw($_esc))
 
     # Compile-time container-escape warning (conservative, may have false positives)
@@ -2687,16 +2692,19 @@ intentional-return pattern."""
 function _lint_message(kind, detail, ret_expr)
     tail = sprint(Base.show_unquoted, ret_expr)
     what = kind === :acquire_call ?
-        "is a direct acquire call — its pool-backed array" :
+        "is a direct acquire call whose pool-backed array" :
         kind === :broadcast_assign ?
-        "evaluates to the pool-backed array `$(detail)`" :
+        "writes into the pool-backed array `$(detail)`, whose value" :
         "assigns a pool-backed array, and the assignment's value"
     return string(
         "the scope's last expression `", tail, "` ", what,
-        " becomes the scope's return value and escapes",
-        " (a pool array is invalid after the scope rewinds).",
-        " If the value is meant to be discarded, end the block with `nothing`.",
-        " [escape_lint preference: \"error\" (default) | \"warn\" | \"off\"]"
+        " becomes the scope's return value.",
+        " A pool-backed array is invalid after the scope rewinds, and whether this",
+        " return value is actually used cannot be determined at compile time.",
+        " If it is not meant to escape, end the block with `nothing`.",
+        " See https://projecttorreypines.github.io/AdaptiveArrayPools.jl/stable/safety/compile-time/",
+        " [escape_lint: \"warn\" (default) | \"error\" | \"off\";",
+        " function-form and explicit-return tails always error]"
     )
 end
 
@@ -2835,14 +2843,24 @@ Checks if the block/function body's return expression directly contains
 a pool-backed variable. This catches the most common beginner mistake
 at zero runtime cost.
 
-All detected escapes are errors — bare symbol (`v`), `return v`, and
-container patterns (`(v, w)`, `[v]`, `(key=v,)`) (Stage 1), plus the three
-incidental-tail patterns — direct acquire-call tail, broadcast-assign tail,
-assignment tail — gated by the `ESCAPE_LINT` preference (Stage 2, default "error").
+Stage 1 — bare symbol (`v`), `return v`, and container patterns (`(v, w)`,
+`[v]`, `(key=v,)`) — always throws `PoolEscapeError`. Stage 2 — the three
+incidental-tail patterns (direct acquire-call tail, broadcast-assign tail,
+assignment tail) — resolves severity by form: with `function_form = true`
+(the scope is a function definition, so the tail IS the function's return
+value), or when the tail is an explicit `return` (which returns from the
+enclosing function even in block form — a `begin` block is not a function
+boundary), the escape is definite and always throws. A block-form implicit
+tail — whose value may simply be discarded by the surrounding code — is
+reported at the `ESCAPE_LINT` severity instead (default `"warn"`; `"error"`
+promotes it, `"off"` disables Stage 2 entirely).
 
 Skipped when `STATIC_POOLING = false` (pooling disabled, acquire returns normal arrays).
 """
-function _check_compile_time_escape(expr, pool_name, source::Union{LineNumberNode, Nothing})
+function _check_compile_time_escape(
+        expr, pool_name, source::Union{LineNumberNode, Nothing};
+        function_form::Bool = false,
+    )
     # Order-aware extraction: single forward pass that tracks taint per statement order
     acquired = _extract_ordered_acquired(expr, pool_name)
 
@@ -2878,7 +2896,7 @@ function _check_compile_time_escape(expr, pool_name, source::Union{LineNumberNod
         end
     end
 
-    # ---- Stage 2: incidental-tail patterns (error by default) ----
+    # ---- Stage 2: incidental-tail patterns (form-based severity) ----
     # Reached whenever Stage 1 found nothing to throw on — including when
     # `acquired` is empty (e.g. a bare `acquire!(pool, ...)` tail with no
     # assigned variable at all: Stage 1 has nothing to track, but the call's
@@ -2890,7 +2908,12 @@ function _check_compile_time_escape(expr, pool_name, source::Union{LineNumberNod
         hit = _incidental_exposure(ret_expr, acquired, pool_name)
         hit === nothing && continue
         kind, detail = hit
-        _report_incidental_escape(ESCAPE_LINT, kind, detail, ret_expr, ret_line, file, line)
+        # Form-based severity: a function-form tail and an explicit `return` both
+        # deliver the value to the enclosing function's caller — definite escape,
+        # always an error. Only the block-form implicit tail (value may be
+        # discarded) is soft, at the ESCAPE_LINT severity ("warn" by default).
+        severity = (function_form || Meta.isexpr(ret_expr, :return)) ? "error" : ESCAPE_LINT
+        _report_incidental_escape(severity, kind, detail, ret_expr, ret_line, file, line)
     end
     return
 end

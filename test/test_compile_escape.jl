@@ -2355,8 +2355,11 @@ end
     end
 
     # ==============================================================================
-    # Incidental-tail escape detection (Task 3): direct acquire-call tails,
-    # broadcast-assign tails, and assignment tails — error by default via ESCAPE_LINT.
+    # Incidental-tail escape detection: direct acquire-call tails, broadcast-assign
+    # tails, and assignment tails. Form-based severity: a function-form tail or an
+    # explicit `return` (definite escape to the enclosing function's caller) always
+    # errors; a block-form implicit tail (value may be discarded) reports at the
+    # ESCAPE_LINT severity — "warn" by default.
     # ==============================================================================
 
     @static if VERSION >= v"1.12-"
@@ -2371,9 +2374,20 @@ end
             end
         end
 
-        @testset "incidental tails error at expansion" begin
+        # Helper: block-form expansion succeeds AND emits the incidental-tail @warn
+        function _expansion_incidental_warns(ex)
+            expanded = @test_logs (:warn, r"becomes the scope's return value") match_mode = :any macroexpand(
+                @__MODULE__, ex
+            )
+            return expanded isa Expr
+        end
+
+        @testset "block-form incidental tails warn at expansion (default)" begin
+            # A block's value may simply be discarded by the surrounding code — the
+            # macro cannot see its own call site — so under the default
+            # escape_lint = "warn" these expand cleanly with a @warn diagnostic.
             # w2: broadcast-assign tail of an acquired var
-            @test _expansion_escape_error(
+            @test _expansion_incidental_warns(
                 :(
                     @with_pool pool begin
                         v = acquire!(pool, Float64, 4)
@@ -2383,7 +2397,7 @@ end
             )
 
             # w2': dotted op-assign
-            @test _expansion_escape_error(
+            @test _expansion_incidental_warns(
                 :(
                     @with_pool pool begin
                         v = acquire!(pool, Float64, 4)
@@ -2393,8 +2407,8 @@ end
             )
 
             # w1: direct acquire-family call tail (no acquired vars at all —
-            # regression for the early-return trap at macros.jl:2512)
-            @test _expansion_escape_error(
+            # regression for the early-return trap in the Stage-2 reachability)
+            @test _expansion_incidental_warns(
                 :(
                     @with_pool pool begin
                         acquire!(pool, Float64, 4)
@@ -2403,7 +2417,7 @@ end
             )
 
             # w1 via convenience wrapper
-            @test _expansion_escape_error(
+            @test _expansion_incidental_warns(
                 :(
                     @with_pool pool begin
                         zeros!(pool, Float64, 4)
@@ -2412,7 +2426,7 @@ end
             )
 
             # w3: assignment tail whose RHS is an acquire call
-            @test _expansion_escape_error(
+            @test _expansion_incidental_warns(
                 :(
                     @with_pool pool begin
                         v = acquire!(pool, Float64, 4)
@@ -2420,6 +2434,23 @@ end
                 )
             )
 
+            # safe variant shares the same block-form severity (kwarg plumbing)
+            @test _expansion_incidental_warns(
+                :(
+                    @safe_with_pool pool begin
+                        v = acquire!(pool, Float64, 4)
+                        v .= 0.0
+                    end
+                )
+            )
+        end
+
+        @testset "function-form and explicit-return incidental tails always error" begin
+            # A function-form tail IS the function's return value, and an explicit
+            # `return` returns from the ENCLOSING function even in block form (a
+            # `begin` block is not a function boundary) — definite escapes to a
+            # caller, hard errors regardless of the escape_lint severity.
+            #
             # function form: implicit x .= v tail is the function's return value.
             # NOTE: uses the 2-arg `@with_pool pool function ... end` form (pool
             # captured via closure) — `@with_pool function f(pool) ... end` (pool as
@@ -2431,6 +2462,34 @@ end
             @test _expansion_escape_error(
                 :(
                     @with_pool pool function f()
+                        v = acquire!(pool, Float64, 4)
+                        v .= 0.0
+                    end
+                )
+            )
+
+            # function form, w1: bare acquire-call tail
+            @test _expansion_escape_error(
+                :(
+                    @with_pool pool function f()
+                        acquire!(pool, Float64, 4)
+                    end
+                )
+            )
+
+            # function form, w3: assignment tail
+            @test _expansion_escape_error(
+                :(
+                    @with_pool pool function f()
+                        v = acquire!(pool, Float64, 4)
+                    end
+                )
+            )
+
+            # safe function form shares the always-error severity
+            @test _expansion_escape_error(
+                :(
+                    @safe_with_pool pool function f()
                         v = acquire!(pool, Float64, 4)
                         v .= 0.0
                     end
@@ -2480,11 +2539,12 @@ end
             )
         end
 
-        @testset "incidental-tail error message teaches the fix" begin
+        @testset "incidental-tail diagnostics teach the fix" begin
+            # Error path (function form): showerror carries the fix hint
             err = try
                 macroexpand(
                     @__MODULE__, :(
-                        @with_pool pool begin
+                        @with_pool pool function f()
                             v = acquire!(pool, Float64, 4)
                             v .= 0.0
                         end
@@ -2498,6 +2558,16 @@ end
             msg = sprint(showerror, err)
             @test occursin("nothing", msg)          # suggests the one-line fix
             @test occursin("last expression", msg)  # explains block-tail semantics
+
+            # Warn path (block form): the @warn diagnostic carries the same hint
+            @test_logs (:warn, r"end the block with `nothing`") match_mode = :any macroexpand(
+                @__MODULE__, :(
+                    @with_pool pool begin
+                        v = acquire!(pool, Float64, 4)
+                        v .= 0.0
+                    end
+                )
+            )
         end
 
         @testset "safe tails do not error" begin
@@ -2582,12 +2652,14 @@ end
             @test !occursin("direct acquire call", msg)
         end
 
-        @testset "incidental tail inside if/else implicit branch errors" begin
+        @testset "incidental tail inside if/else implicit branch warns (block form)" begin
             # A common Julia idiom: the block's last expression is an if/else
             # whose branch tail is an incidental escape. `_collect_all_return_values`
-            # expands into both branch tails, and Stage 2 must flag the escaping one.
+            # expands into both branch tails, and Stage 2 must flag the escaping one
+            # — at block-form severity (warn), since the branch tail is still an
+            # implicit block tail, not an explicit `return`.
             # w2 — broadcast-assign branch tail
-            @test _expansion_escape_error(
+            @test _expansion_incidental_warns(
                 :(
                     @with_pool pool begin
                         v = acquire!(pool, Float64, 4)
@@ -2600,7 +2672,7 @@ end
                 )
             )
             # w1 — direct acquire-call branch tail
-            @test _expansion_escape_error(
+            @test _expansion_incidental_warns(
                 :(
                     @with_pool pool begin
                         if true
@@ -2612,11 +2684,25 @@ end
                 )
             )
             # w3 — assignment branch tail
-            @test _expansion_escape_error(
+            @test _expansion_incidental_warns(
                 :(
                     @with_pool pool begin
                         if true
                             v = acquire!(pool, Float64, 4)
+                        else
+                            nothing
+                        end
+                    end
+                )
+            )
+            # Same branch-tail shape in FUNCTION form is the function's return
+            # value — always an error.
+            @test _expansion_escape_error(
+                :(
+                    @with_pool pool function f()
+                        v = acquire!(pool, Float64, 4)
+                        if true
+                            v .= 0.0
                         else
                             nothing
                         end
@@ -2642,6 +2728,8 @@ end
         @testset "incidental-tail showerror uses the stored (kind, detail) label" begin
             # After the classification is stored on the EscapePoint at throw time,
             # showerror renders each pattern's own label without re-deriving it.
+            # Uses FUNCTION form so the incidental tail still throws (block form
+            # only warns under the default severity).
             function _escape_err(ex)
                 try
                     macroexpand(@__MODULE__, ex)
@@ -2654,7 +2742,7 @@ end
             # w1 — acquire-call tail
             e1 = _escape_err(
                 :(
-                    @with_pool pool begin
+                    @with_pool pool function f()
                         acquire!(pool, Float64, 4)
                     end
                 )
@@ -2665,7 +2753,7 @@ end
             # w2 — broadcast-assign tail names the array
             e2 = _escape_err(
                 :(
-                    @with_pool pool begin
+                    @with_pool pool function f()
                         v = acquire!(pool, Float64, 4)
                         v .= 0.0
                     end
@@ -2677,7 +2765,7 @@ end
             # w3 — assignment tail
             e3 = _escape_err(
                 :(
-                    @with_pool pool begin
+                    @with_pool pool function f()
                         v = acquire!(pool, Float64, 4)
                     end
                 )
@@ -2700,11 +2788,12 @@ end
         # ==========================================================================
         # Direct unit tests for _incidental_exposure and _lint_message.
         #
-        # ESCAPE_LINT is a load-time constant (like RUNTIME_CHECK) — the "warn"/"off"
-        # severity branches cannot be integration-tested in-process, since the test
-        # session always runs under the default "error" preference. These unit tests
-        # exercise the detection helper and message builder directly instead, so the
-        # "warn"/"off" code paths (which call the same helpers) are covered by proxy.
+        # ESCAPE_LINT is a load-time constant (like RUNTIME_CHECK); the test session
+        # runs under the default "warn". The block-form warn path is integration-
+        # tested above; the "error" severity is integration-tested via the
+        # function-form / explicit-return paths (always error). The "error"-pref-on-
+        # block-tails and "off" branches cannot be flipped in-process, so these unit
+        # tests exercise the detection helper and message builder directly instead.
         # ==========================================================================
 
         @testset "_is_dotted_assign_head" begin
@@ -2768,6 +2857,9 @@ end
             @test occursin("last expression", msg)
             @test occursin("nothing", msg)
             @test occursin("escape_lint", msg)
+            @test occursin("safety/compile-time", msg)     # docs pointer
+            @test occursin("\"warn\" (default)", msg)       # warn is now the default severity
+            @test occursin("compile time", msg)             # "can't tell if the value is used" framing
 
             broadcast_expr = :(v .= 0.0)
             msg = _lint_message(:broadcast_assign, :v, broadcast_expr)
