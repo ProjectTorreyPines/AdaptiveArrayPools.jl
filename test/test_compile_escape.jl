@@ -3038,7 +3038,7 @@ end
     # EscapedPoolArray guard: type behavior, tail rewriting, runtime integration
     # ==============================================================================
 
-    @testset "EscapedPoolArray guard type" begin
+    @testset "EscapedPoolArray guard type (traps, show, provenance)" begin
         x = rand(3, 2)
         g = EscapedPoolArray(x, :x, "f.jl", 12)
         @test g isa EscapedPoolArray
