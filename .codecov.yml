@@ -1,3 +1,10 @@
+# Exactly 2 coverage uploads per commit (CI.yml: ubuntu × {lts, 1.x} — the
+# two version trees). Wait for both before posting statuses/comments, so a
+# partially-merged report can never surface as a phantom coverage drop.
+codecov:
+  notify:
+    after_n_builds: 2
+
 coverage:
   status:
     project:
@@ -16,3 +23,4 @@ comment:
   layout: "reach,diff,flags,files"
   behavior: default
   require_changes: true
+  after_n_builds: 2
