@@ -3148,6 +3148,23 @@ end
         )
         @test lastexpr(out) == :(return v)
 
+        # `_ = acquire!(...)` tail: `_` is write-only, so the rewrite must wrap
+        # the WHOLE assignment (which evaluates to its RHS) instead of reading
+        # `_` back — regression for the all-underscore rvalue syntax error
+        out = _poison_block_tails(
+            :(
+                begin
+                    _ = acquire!(pool, Float64, 4)
+                end
+            ), :pool, lnn
+        )
+        tail = lastexpr(out)
+        @test guard_call(tail)
+        @test Meta.isexpr(tail.args[2], :(=))          # ctor arg IS the assignment
+        @test tail.args[3] isa QuoteNode && tail.args[3].value === :expression
+        # and no bare `_` appears as a ctor value argument
+        @test tail.args[2] !== :_
+
         # if/else: only the escaping branch tail rewritten
         out = _poison_block_tails(
             :(
@@ -3250,6 +3267,19 @@ end
         dst = zeros(4)
         @test f(dst) == ones(4)     # no error, no warn at runtime
         @test f(dst) == ones(4)     # repeated runs stay silent
+
+        # `_ = acquire!(...)` tail: the canonical discard spelling must expand
+        # AND run (regression: the rewrite used to read the write-only `_`)
+        u = @test_logs (:warn, r"becomes the scope's return value") match_mode = :any Core.eval(
+            @__MODULE__, :(
+                @with_pool pool begin
+                    _ = acquire!(pool, Float64, 3)
+                end
+            )
+        )
+        @test u isa EscapedPoolArray
+        @test u.var === :expression
+        @test u.dims == (3,)
     end
 
 end # Compile-Time Escape Detection

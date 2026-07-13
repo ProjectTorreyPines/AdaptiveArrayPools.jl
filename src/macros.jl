@@ -2762,6 +2762,10 @@ function _guard_expr(valexpr, name::Symbol, file, line)
     return Expr(:call, EscapedPoolArray, valexpr, QuoteNode(name), file, line)
 end
 
+# `_`, `__`, … are write-only identifiers: they can be assigned but never read
+# back, so the poison rewrite must not emit `EscapedPoolArray(_, …)`.
+_all_underscore(s::Symbol) = all(==('_'), string(s))
+
 """
     _poison_block_tails(expr, pool_name, source) -> expr′
 
@@ -2833,12 +2837,14 @@ function _poison_leaf(expr, acquired, pool_name, file, line)
     elseif expr.head == :(=) && length(expr.args) >= 2
         lhs, rhs = expr.args[1], expr.args[2]
         if _is_acquire_call(rhs, pool_name)
-            if lhs isa Symbol
+            if lhs isa Symbol && !_all_underscore(lhs)
                 # run the assignment, then yield the guard for the fresh binding
                 return Expr(:block, expr, _guard_expr(lhs, lhs, file, line))
             else
-                # e.g. dest[i] = acquire!(...): execute inside the guard ctor
-                # (an assignment expression evaluates to its RHS), discard
+                # e.g. dest[i] = acquire!(...), or `_ = acquire!(...)` (an
+                # all-underscore identifier is write-only — reading it back is
+                # a syntax error): execute the assignment inside the guard ctor
+                # (an assignment expression evaluates to its RHS), record, discard
                 return _guard_expr(expr, :expression, file, line)
             end
         elseif rhs isa Symbol && rhs in acquired
