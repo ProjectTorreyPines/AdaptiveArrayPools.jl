@@ -3165,6 +3165,39 @@ end
         # and no bare `_` appears as a ctor value argument
         @test tail.args[2] !== :_
 
+        # identity(v) tail: unwrapped like _find_direct_exposure does
+        out = _poison_block_tails(
+            :(
+                begin
+                    v = acquire!(pool, Float64, 4)
+                    identity(v)
+                end
+            ), :pool, lnn
+        )
+        tail = lastexpr(out)
+        @test Meta.isexpr(tail, :call) && tail.args[1] === :identity
+        @test guard_call(tail.args[2])                 # inner v guarded
+
+        # literal parity branches: nested tuple, identity element, acquire-call element
+        out = _poison_block_tails(
+            :(
+                begin
+                    x = 1
+                    v = acquire!(pool, Float64, 4)
+                    (x, (x, v), identity(v), acquire!(pool, Float64, 2))
+                end
+            ), :pool, lnn
+        )
+        tail = lastexpr(out)
+        @test Meta.isexpr(tail, :tuple)
+        @test tail.args[1] === :x                      # untouched
+        nested = tail.args[2]                          # (x, v) → (x, guard(v))
+        @test Meta.isexpr(nested, :tuple) && nested.args[1] === :x && guard_call(nested.args[2])
+        ident = tail.args[3]                           # identity(v) → identity(guard(v))
+        @test Meta.isexpr(ident, :call) && ident.args[1] === :identity && guard_call(ident.args[2])
+        @test guard_call(tail.args[4])                 # acquire-call element ctor-wrapped
+        @test tail.args[4].args[3].value === :expression
+
         # if/else: only the escaping branch tail rewritten
         out = _poison_block_tails(
             :(
