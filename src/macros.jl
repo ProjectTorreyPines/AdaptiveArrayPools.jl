@@ -380,10 +380,19 @@ end
 
 ## Escape Detection
 
-`@with_pool` statically analyzes the scope body at macro-expansion time and
-rejects code whose return value would be a pool-backed array — a
-[`PoolEscapeError`](@ref), thrown at expansion time (zero runtime cost). This
-always covers the direct-return patterns (a bare variable, `return v`,
+`@with_pool` statically analyzes the scope body at macro-expansion time for
+tail expressions whose value would be a pool-backed array. **Severity is
+form-based.** A **function-form** scope's tail and an **explicit `return`**
+(either form — `return` inside a `begin` block returns from the *enclosing
+function*) deliver the value to a caller: these throw [`PoolEscapeError`](@ref)
+at expansion time. A **block-form implicit tail** may simply be discarded by
+the surrounding code, which the macro cannot see — so by default it emits a
+`@warn` and the expansion replaces the escaping value with an inert
+`EscapedPoolArray` guard: harmless if the block's value is discarded, and the
+first actual use throws an `EscapedPoolUseError` carrying the variable name,
+shape, and scope location.
+
+Detected patterns cover the direct-return shapes (a bare variable, `return v`,
 container literals like `(v, w)` / `[v]`), and three additional "incidental"
 tail patterns that don't *look* like a `return` but still expose a pool-backed
 array as the scope's value:
@@ -416,21 +425,22 @@ side effects" scope), end the block with `nothing`:
 end
 ```
 
-Severity for these three incidental-tail patterns is controlled by the
-`escape_lint` preference (via `Preferences.jl`, read once at package load as
-the `ESCAPE_LINT` compile-time constant):
-- `"warn"` (default) — a **block-form implicit tail** emits a `@warn` diagnostic and
-  continues, since whether the block's value is actually used cannot be determined
-  at compile time. A **function-form** scope's tail and an **explicit `return`**
-  (either form) always throw `PoolEscapeError` regardless of this setting — they
-  deliver the value to the enclosing function's caller, a definite escape.
-- `"error"` — block-form implicit tails also throw `PoolEscapeError`.
-- `"off"` — disables Stage-2 (incidental-tail) checking entirely; direct-return
-  (Stage-1) patterns still always error.
+The block-form severity is controlled by the `escape_lint` preference (via
+`Preferences.jl`, read once at package load as the `ESCAPE_LINT` compile-time
+constant):
+- `"warn"` (default) — block-form implicit tails warn, and the escaping value
+  is replaced by the `EscapedPoolArray` guard described above.
+- `"error"` — block-form implicit tails throw `PoolEscapeError` instead
+  (strict mode; no guard rewrite).
+- `"off"` — no warning and no guard rewrite for block-form tails (the raw
+  pool array escapes, as before this feature).
+
+Function-form and explicit-`return` escapes always throw regardless of the
+preference.
 
 ```julia
 using Preferences
-Preferences.set_preferences!("AdaptiveArrayPools", "escape_lint" => "warn")
+Preferences.set_preferences!("AdaptiveArrayPools", "escape_lint" => "error")
 ```
 
 See also the "Compile-Time Detection" page in the manual for full error-message
@@ -797,7 +807,12 @@ function _generate_pool_code(pool_name, expr, force_enable; safe::Bool = false, 
     # gate. So they never need manual syncing — any change to _generate_block_inner
     # (or the escape/mutation checks above, which run before this branch) applies to
     # both. The axis that DOES diverge is safe ↔ non-safe (see _generate_block_inner).
-    inner = _generate_block_inner(pool_name, expr, safe, source)
+    # Under "warn", statically-detected escaping tails are rewritten so the
+    # escaping value is replaced by an EscapedPoolArray guard (runtime trap on
+    # first use). The disabled/else branches below keep the ORIGINAL `expr`:
+    # with pooling off, acquire returns plain arrays and nothing escapes.
+    pooled_expr = ESCAPE_LINT == "warn" ? _poison_block_tails(expr, pool_name, source) : expr
+    inner = _generate_block_inner(pool_name, pooled_expr, safe, source)
 
     if force_enable
         return _wrap_with_dispatch(esc(pool_name), :(get_task_local_pool()), inner)
@@ -1075,7 +1090,13 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, forc
         _check_structural_mutation(expr, pool_name, source)
 
         # Block logic with runtime check
-        inner = _generate_block_inner(pool_name, expr, safe, source)
+        # Under "warn", statically-detected escaping tails are rewritten so the
+        # escaping value is replaced by an EscapedPoolArray guard (runtime trap
+        # on first use). The MAYBE_POOLING[] == false branch below keeps the
+        # ORIGINAL `expr`: with pooling off, acquire returns plain arrays and
+        # nothing escapes.
+        pooled_expr = ESCAPE_LINT == "warn" ? _poison_block_tails(expr, pool_name, source) : expr
+        inner = _generate_block_inner(pool_name, pooled_expr, safe, source)
         pool_getter = :($_get_pool_for_backend($(Val{backend}())))
         enabled_branch = _wrap_with_dispatch(esc(pool_name), pool_getter, inner; backend)
         return quote
@@ -1108,7 +1129,12 @@ function _generate_pool_code_with_backend(backend::Symbol, pool_name, expr, forc
     _check_structural_mutation(expr, pool_name, source)
 
     # Block logic (force_enable=true path)
-    inner = _generate_block_inner(pool_name, expr, safe, source)
+    # Under "warn", statically-detected escaping tails are rewritten so the
+    # escaping value is replaced by an EscapedPoolArray guard (runtime trap on
+    # first use). The disabled/else branches below keep the ORIGINAL `expr`:
+    # with pooling off, acquire returns plain arrays and nothing escapes.
+    pooled_expr = ESCAPE_LINT == "warn" ? _poison_block_tails(expr, pool_name, source) : expr
+    inner = _generate_block_inner(pool_name, pooled_expr, safe, source)
     pool_getter = :($_get_pool_for_backend($(Val{backend}())))
     return _wrap_with_dispatch(esc(pool_name), pool_getter, inner; backend)
 end
@@ -2672,15 +2698,17 @@ end
 
 """Report an incidental-tail escape at `severity`: `"error"` throws a `PoolEscapeError`
 (storing the classified `(kind, detail)` on the point so `showerror` renders directly),
-`"warn"` emits an expansion-time warning. Separated from the const-gated call site so
-both severities are unit-testable — `ESCAPE_LINT` is a load-time constant, so the call
-site only ever exercises one branch per session."""
+`"warn"` emits an expansion-time warning. The warn path sets `guarded = true` in the
+message: under `"warn"` the block codegen also rewrites the tail so the escaping value
+is replaced by an [`EscapedPoolArray`](@ref) guard (see `_poison_block_tails`).
+Separated from the severity-resolving call site so both branches are unit-testable —
+`ESCAPE_LINT` is a load-time constant, so a session's call site exercises one default."""
 function _report_incidental_escape(severity, kind, detail, ret_expr, ret_line, file, line)
     if severity == "error"
         point = EscapePoint(ret_expr, ret_line, Symbol[], (kind, detail))
         throw(PoolEscapeError(Symbol[], file, line, [point]))
     else # "warn"
-        @warn _lint_message(kind, detail, ret_expr) _file = file _line = something(ret_line, line, 0)
+        @warn _lint_message(kind, detail, ret_expr; guarded = true) _file = file _line = something(ret_line, line, 0)
     end
     return
 end
@@ -2689,23 +2717,170 @@ end
 Used both for the `escape_lint = "warn"` path and for rendering `PoolEscapeError`
 (via `showerror`) when the error originates from an incidental tail rather than an
 intentional-return pattern."""
-function _lint_message(kind, detail, ret_expr)
+function _lint_message(kind, detail, ret_expr; guarded::Bool = false)
     tail = sprint(Base.show_unquoted, ret_expr)
-    what = kind === :acquire_call ?
-        "is a direct acquire call whose pool-backed array" :
-        kind === :broadcast_assign ?
-        "writes into the pool-backed array `$(detail)`, whose value" :
+    what = if kind === :acquire_call
+        "is a direct acquire call whose pool-backed array"
+    elseif kind === :broadcast_assign
+        "writes into the pool-backed array `$(detail)`, whose value"
+    elseif kind === :bare_var
+        "is the pool-backed array `$(detail)` itself, which"
+    elseif kind === :literal
+        vars = detail isa AbstractVector ? detail : [detail]
+        string(
+            "is a container literal exposing the pool-backed array",
+            length(vars) == 1 ? " " : "s ",
+            join(("`$v`" for v in vars), ", "), ", which"
+        )
+    else # :assign
         "assigns a pool-backed array, and the assignment's value"
+    end
     return string(
         "the scope's last expression `", tail, "` ", what,
         " becomes the scope's return value.",
         " A pool-backed array is invalid after the scope rewinds, and whether this",
         " return value is actually used cannot be determined at compile time.",
+        guarded ?
+            " The escaping value has been replaced by an inert guard (EscapedPoolArray) that throws on first use." :
+            "",
         " If it is not meant to escape, end the block with `nothing`.",
         " See https://projecttorreypines.github.io/AdaptiveArrayPools.jl/stable/safety/compile-time/",
         " [escape_lint: \"warn\" (default) | \"error\" | \"off\";",
         " function-form and explicit-return tails always error]"
     )
+end
+
+# ==============================================================================
+# Block-tail poisoning: replace a statically-detected escaping tail value with
+# an EscapedPoolArray guard (see src/escape_guard.jl for the rationale).
+# ==============================================================================
+
+# Guard constructor call as AST. The type object itself is spliced in as a
+# value (the house hygiene pattern, cf. `$_get_pool_for_backend`), so the
+# reference survives `esc()` of the user block unchanged.
+function _guard_expr(valexpr, name::Symbol, file, line)
+    return Expr(:call, EscapedPoolArray, valexpr, QuoteNode(name), file, line)
+end
+
+"""
+    _poison_block_tails(expr, pool_name, source) -> expr′
+
+Rewrite every implicit tail of a block-form `@with_pool` body whose value is a
+statically-detected pool-backed escape, replacing the escaping value with an
+[`EscapedPoolArray`](@ref) guard. The original tail's side effects (broadcast,
+assignment, acquire) still execute; only the *yielded value* changes. Explicit
+`return` nodes are never rewritten (they are hard errors in
+`_check_compile_time_escape`). Applied only under `ESCAPE_LINT == "warn"`, in
+lockstep with the checker's warn diagnostics: the tail shapes rewritten here
+mirror `_find_direct_exposure` (bare var, tuple/vect/NamedTuple literals,
+`identity` unwrap) and `_incidental_exposure` (acquire-call tail,
+broadcast-assign tail, assignment tail).
+"""
+function _poison_block_tails(expr, pool_name, source::Union{LineNumberNode, Nothing})
+    acquired = _extract_ordered_acquired(expr, pool_name)
+    file = source !== nothing ? string(source.file) : nothing
+    line = source !== nothing ? source.line : nothing
+    return _poison_tail(expr, acquired, pool_name, file, line)
+end
+
+# Recursive tail walk mirroring `_get_last_expression_with_line` (blocks) and
+# `_collect_implicit_return_values!` (if/elseif branches).
+function _poison_tail(expr, acquired, pool_name, file, line)
+    if expr isa Expr
+        if expr.head == :block
+            for i in length(expr.args):-1:1
+                expr.args[i] isa LineNumberNode && continue
+                args = copy(expr.args)
+                args[i] = _poison_tail(args[i], acquired, pool_name, file, line)
+                return Expr(:block, args...)
+            end
+            return expr
+        elseif expr.head in (:if, :elseif)
+            args = copy(expr.args)
+            for i in 2:length(args)  # args[1] is the condition
+                args[i] = _poison_tail(args[i], acquired, pool_name, file, line)
+            end
+            return Expr(expr.head, args...)
+        end
+    end
+    return _poison_leaf(expr, acquired, pool_name, file, line)
+end
+
+# Leaf rewrite: classify the tail expression and substitute the guard.
+function _poison_leaf(expr, acquired, pool_name, file, line)
+    if expr isa Symbol
+        return expr in acquired ? _guard_expr(expr, expr, file, line) : expr
+    end
+    expr isa Expr || return expr
+    if expr.head == :return
+        return expr                       # explicit returns are hard errors, never poisoned
+    elseif expr.head in (:tuple, :vect, :parameters)
+        return _poison_literal(expr, acquired, pool_name, file, line)
+    elseif expr.head == :call && length(expr.args) >= 2 && _is_identity_call(expr.args[1])
+        args = copy(expr.args)
+        args[2] = _poison_leaf(args[2], acquired, pool_name, file, line)
+        return Expr(:call, args...)
+    elseif _is_acquire_call(expr, pool_name)
+        return _guard_expr(expr, :expression, file, line)
+    elseif _is_dotted_assign_head(expr.head) && length(expr.args) >= 1
+        lhs = expr.args[1]
+        base = Meta.isexpr(lhs, :ref) ? lhs.args[1] : lhs
+        if base isa Symbol && base in acquired
+            # run the broadcast, then yield the guard instead of the array
+            return Expr(:block, expr, _guard_expr(base, base, file, line))
+        end
+        return expr
+    elseif expr.head == :(=) && length(expr.args) >= 2
+        lhs, rhs = expr.args[1], expr.args[2]
+        if _is_acquire_call(rhs, pool_name)
+            if lhs isa Symbol
+                # run the assignment, then yield the guard for the fresh binding
+                return Expr(:block, expr, _guard_expr(lhs, lhs, file, line))
+            else
+                # e.g. dest[i] = acquire!(...): execute inside the guard ctor
+                # (an assignment expression evaluates to its RHS), discard
+                return _guard_expr(expr, :expression, file, line)
+            end
+        elseif rhs isa Symbol && rhs in acquired
+            # e.g. dest[:, :, k] = v — the copy still runs; the yielded `v` is guarded
+            return Expr(:block, expr, _guard_expr(rhs, rhs, file, line))
+        end
+        return expr
+    end
+    return expr
+end
+
+# Element-wise poisoning of tuple/vect/NamedTuple literals: only pool-backed
+# elements are replaced, so `(x, v)` keeps `x` fully usable.
+function _poison_literal(expr, acquired, pool_name, file, line)
+    args = map(expr.args) do arg
+        if (Meta.isexpr(arg, :(=)) || Meta.isexpr(arg, :kw)) && length(arg.args) >= 2
+            Expr(
+                arg.head, arg.args[1],
+                _poison_literal_value(arg.args[2], acquired, pool_name, file, line)
+            )
+        else
+            _poison_literal_value(arg, acquired, pool_name, file, line)
+        end
+    end
+    return Expr(expr.head, args...)
+end
+
+function _poison_literal_value(arg, acquired, pool_name, file, line)
+    if arg isa Symbol
+        return arg in acquired ? _guard_expr(arg, arg, file, line) : arg
+    elseif arg isa Expr
+        if arg.head in (:tuple, :vect, :parameters)
+            return _poison_literal(arg, acquired, pool_name, file, line)
+        elseif arg.head == :call && length(arg.args) >= 2 && _is_identity_call(arg.args[1])
+            args = copy(arg.args)
+            args[2] = _poison_literal_value(args[2], acquired, pool_name, file, line)
+            return Expr(:call, args...)
+        elseif _is_acquire_call(arg, pool_name)
+            return _guard_expr(arg, :expression, file, line)
+        end
+    end
+    return arg
 end
 
 
@@ -2868,9 +3043,15 @@ function _check_compile_time_escape(
     return_values = _collect_all_return_values(expr)
     isempty(return_values) && return
 
-    # ---- Stage 1: intentional-return patterns → ERROR (existing behavior) ----
+    # ---- Stage 1: direct-exposure patterns, form-based severity ----
+    # Function-form tails and explicit `return`s deliver the value to the
+    # enclosing function's caller — definite escapes, always PoolEscapeError
+    # (also under ESCAPE_LINT == "error", the strict mode, for block tails).
+    # A block-form implicit tail (bare `v`, `(x, v)` literals) may simply be
+    # discarded by the surrounding code, so under the default "warn" it gets
+    # the same warn + EscapedPoolArray-guard treatment as the Stage-2
+    # incidental tails; under "off" it is skipped entirely.
     if !isempty(acquired)
-        # Check each return point for direct exposure of acquired vars
         all_escaped = Set{Symbol}()
         points = EscapePoint[]
         seen_lines = Set{Int}()
@@ -2880,11 +3061,19 @@ function _check_compile_time_escape(
                 continue
             end
             point_escaped = _find_direct_exposure(ret_expr, acquired)
-            if !isempty(point_escaped)
+            isempty(point_escaped) && continue
+            if function_form || Meta.isexpr(ret_expr, :return) || ESCAPE_LINT == "error"
                 push!(points, EscapePoint(ret_expr, ret_line, sort!(collect(point_escaped))))
                 union!(all_escaped, point_escaped)
-                ret_line !== nothing && push!(seen_lines, ret_line)
-            end
+            elseif ESCAPE_LINT == "warn"
+                vars = sort!(collect(point_escaped))
+                kind = ret_expr isa Symbol ? :bare_var : :literal
+                detail = length(vars) == 1 ? vars[1] : vars
+                wfile = source !== nothing ? string(source.file) : nothing
+                wline = source !== nothing ? source.line : nothing
+                _report_incidental_escape("warn", kind, detail, ret_expr, ret_line, wfile, wline)
+            end # ESCAPE_LINT == "off" → skip block-form implicit tails
+            ret_line !== nothing && push!(seen_lines, ret_line)
         end
         if !isempty(all_escaped)
             sorted = sort!(collect(all_escaped))

@@ -371,11 +371,12 @@ _metal_test_leak(x) = x
     # Compile-time escape detection (@with_pool :metal)
     # ==============================================================================
 
-    @testset "Compile-time: direct MtlArray escape caught at macro expansion" begin
-        @test_throws PoolEscapeError @macroexpand @with_pool :metal pool begin
+    @testset "Compile-time: direct MtlArray escape warns + guards (block form)" begin
+        expanded = @test_logs (:warn, r"becomes the scope's return value") match_mode = :any @macroexpand @with_pool :metal pool begin
             v = acquire!(pool, Float32, 10)
-            v
+            v  # implicit tail — warn + EscapedPoolArray guard
         end
+        @test expanded isa Expr
     end
 
     @testset "Compile-time: safe scalar return passes" begin
@@ -386,11 +387,12 @@ _metal_test_leak(x) = x
         @test ex isa Expr
     end
 
-    @testset "Compile-time: zeros!/ones! escape caught" begin
-        @test_throws PoolEscapeError @macroexpand @with_pool :metal pool begin
+    @testset "Compile-time: zeros!/ones! escape warns + guards (block form)" begin
+        expanded = @test_logs (:warn, r"becomes the scope's return value") match_mode = :any @macroexpand @with_pool :metal pool begin
             v = zeros!(pool, Float32, 10)
             v
         end
+        @test expanded isa Expr
     end
 
     # ==============================================================================

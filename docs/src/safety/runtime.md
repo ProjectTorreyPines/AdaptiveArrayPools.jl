@@ -107,8 +107,10 @@ zero-GC hot path under `S=1` — use `S=0`.
 exit — it cannot prove ownership through arrays captured by closures, stored in
 globals that outlive the scope, or aliased behind opaque calls that never surface
 in the return value. These are undecidable statically; `S=1` catches the
-return-position cases, and the [compile-time lint](compile-time.md) catches the
-common syntactic ones.
+return-position cases, and the [compile-time analysis](compile-time.md) handles
+the common syntactic ones (function-form/`return` escapes error at expansion;
+block-tail escapes are replaced by an `EscapedPoolArray` guard that traps on
+first use even at `S=0`).
 
 **Test hygiene.** For tests that run under both `S=0` and `S=1`: keep asserts
 S-adaptive (don't assert poison values unless `S≥1`), and end `@with_pool` blocks

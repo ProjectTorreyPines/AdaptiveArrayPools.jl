@@ -12,7 +12,30 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
     _find_reassign_maybe_tainted, _is_safe_copy_call, _rhs_call_contains_sym,
     _extract_container_vars,
     _is_dotted_assign_head, _incidental_exposure, _lint_message, ESCAPE_LINT,
-    _report_incidental_escape, PoolEscapeError
+    _report_incidental_escape, PoolEscapeError,
+    _poison_block_tails, EscapedPoolArray, EscapedPoolUseError
+
+# Helper: expansion must throw PoolEscapeError (possibly LoadError-wrapped) —
+# the severity of function-form and explicit-return escapes.
+function _expansion_escape_error(ex)
+    try
+        macroexpand(@__MODULE__, ex)
+        return false
+    catch err
+        err isa LoadError && (err = err.error)
+        return err isa AdaptiveArrayPools.PoolEscapeError
+    end
+end
+
+# Helper: block-form expansion succeeds AND emits the escape @warn — the
+# default severity of block-form implicit tails (the escaping value is
+# additionally replaced by an EscapedPoolArray guard in the expansion).
+function _expansion_incidental_warns(ex)
+    expanded = @test_logs (:warn, r"becomes the scope's return value") match_mode = :any macroexpand(
+        @__MODULE__, ex
+    )
+    return expanded isa Expr
+end
 
 function _capture_stderr(f)
     tmpf = tempname()
@@ -232,6 +255,9 @@ end
 
     @testset "_check_compile_time_escape" begin
         src = LineNumberNode(1, :test)
+        # Detection tests below run with `function_form = true` (the always-
+        # error severity) so a throw signature pins the DETECTION logic; the
+        # block-form default severity (warn + guard) is covered separately.
 
         # Bare variable return → error "Pool escape"
         @test_throws PoolEscapeError _check_compile_time_escape(
@@ -239,7 +265,7 @@ end
                 v = acquire!(pool, Float64, 10)
                 v
             end,
-            :pool, src
+            :pool, src; function_form = true
         )
 
         # Tuple containing acquired var → error
@@ -249,7 +275,7 @@ end
                 w = acquire!(pool, Float64, 5)
                 (sum(v), w)
             end,
-            :pool, src
+            :pool, src; function_form = true
         )
 
         # Safe: scalar return → no warning
@@ -306,7 +332,7 @@ end
                 v = zeros!(pool, 10)
                 v
             end,
-            :pool, src
+            :pool, src; function_form = true
         )
 
         @test_throws PoolEscapeError _check_compile_time_escape(
@@ -314,7 +340,7 @@ end
                 v = ones!(pool, Float32, 10)
                 v
             end,
-            :pool, src
+            :pool, src; function_form = true
         )
 
         @test_throws PoolEscapeError _check_compile_time_escape(
@@ -322,7 +348,7 @@ end
                 v = similar!(pool, some_array)
                 v
             end,
-            :pool, src
+            :pool, src; function_form = true
         )
 
         # trues!/falses! also detected
@@ -331,7 +357,7 @@ end
                 bv = trues!(pool, 100)
                 bv
             end,
-            :pool, src
+            :pool, src; function_form = true
         )
 
         # Different pool name → no warning (not our pool)
@@ -349,7 +375,7 @@ end
                 v = acquire!(pool, Float64, 10)
                 v
             end,
-            :pool, nothing
+            :pool, nothing; function_form = true
         )
 
         # `return v` is also a definite escape (error)
@@ -366,6 +392,35 @@ end
             quote
                 v = acquire!(pool, Float64, 10)
                 return (v, sum(v))
+            end,
+            :pool, src
+        )
+    end
+
+    @testset "_check_compile_time_escape: block-form implicit-tail severity" begin
+        src = LineNumberNode(1, :test)
+        # Under the default escape_lint = "warn", a block-form implicit tail
+        # WARNS instead of throwing (form-based severity). The guard rewrite
+        # itself happens in block codegen (`_poison_block_tails`), not here.
+        @test_logs (:warn, r"pool-backed array `v` itself") _check_compile_time_escape(
+            quote
+                v = acquire!(pool, Float64, 10)
+                v
+            end,
+            :pool, src
+        )
+        @test_logs (:warn, r"container literal") _check_compile_time_escape(
+            quote
+                v = acquire!(pool, Float64, 10)
+                (sum(v), v)
+            end,
+            :pool, src
+        )
+        # Explicit `return` stays an error even in block-form checking
+        @test_throws PoolEscapeError _check_compile_time_escape(
+            quote
+                v = acquire!(pool, Float64, 10)
+                return v
             end,
             :pool, src
         )
@@ -555,7 +610,7 @@ end
             :pool, src
         )
 
-        # Implicit return from if/else branches — caught
+        # Implicit return from if/else branches — caught (function-form severity)
         @test_throws PoolEscapeError _check_compile_time_escape(
             quote
                 v = acquire!(pool, Float64, 10)
@@ -565,10 +620,10 @@ end
                     v
                 end
             end,
-            :pool, src
+            :pool, src; function_form = true
         )
 
-        # elseif branch — caught
+        # elseif branch — caught (function-form severity)
         @test_throws PoolEscapeError _check_compile_time_escape(
             quote
                 v = acquire!(pool, Float64, 10)
@@ -580,16 +635,16 @@ end
                     length(v)
                 end
             end,
-            :pool, src
+            :pool, src; function_form = true
         )
 
-        # Ternary with escape — caught
+        # Ternary with escape — caught (function-form severity)
         @test_throws PoolEscapeError _check_compile_time_escape(
             quote
                 v = acquire!(pool, Float64, 10)
                 cond ? v : sum(v)
             end,
-            :pool, src
+            :pool, src; function_form = true
         )
 
         # Early return in loop — caught
@@ -654,11 +709,15 @@ end
             end
         end
 
-        # Ternary — caught
-        @test_throws PoolEscapeError @macroexpand @with_pool pool begin
-            v = acquire!(pool, Float64, 10)
-            rand() > 0.5 ? sum(v) : v
-        end
+        # Ternary — block form: warns + guard (implicit tail)
+        @test _expansion_incidental_warns(
+            :(
+                @with_pool pool begin
+                    v = acquire!(pool, Float64, 10)
+                    rand() > 0.5 ? sum(v) : v
+                end
+            )
+        )
 
         # All branches safe — no error
         expanded = @macroexpand @with_pool pool begin
@@ -688,11 +747,15 @@ end
     # ==============================================================================
 
     @testset "Compile-time error through macro pipeline" begin
-        # Bare variable: macro expansion itself throws
-        @test_throws PoolEscapeError @macroexpand @with_pool pool begin
-            v = acquire!(pool, Float64, 10)
-            v
-        end
+        # Bare variable, block form: warns + guard (implicit tail)
+        @test _expansion_incidental_warns(
+            :(
+                @with_pool pool begin
+                    v = acquire!(pool, Float64, 10)
+                    v
+                end
+            )
+        )
 
         # Safe return: macro expansion succeeds
         expanded = @macroexpand @with_pool pool begin
@@ -958,84 +1021,128 @@ end
         end
 
         # IMPORTANT: acquire in if/for/while body IS outer scope (no new scope)
-        # These SHOULD still be caught as escapes
-        @test_throws PoolEscapeError @macroexpand @with_pool pool begin
-            if true
-                v = acquire!(pool, Float64, 10)
-            end
-            v
-        end
+        # These are still detected — block-form implicit tail → warn + guard
+        @test _expansion_incidental_warns(
+            :(
+                @with_pool pool begin
+                    if true
+                        v = acquire!(pool, Float64, 10)
+                    end
+                    v
+                end
+            )
+        )
     end
 
-    @testset "Block form: additional escape scenarios" begin
-        # zeros! — definite escape
-        @test_throws PoolEscapeError @macroexpand @with_pool pool begin
-            v = zeros!(pool, 10)
-            v
-        end
+    @testset "Block form: additional escape scenarios (warn + guard)" begin
+        # Detection coverage across the acquire family and literal shapes.
+        # Block-form implicit tails → warn (the escaping value is guarded);
+        # explicit `return`s remain hard errors.
 
-        # trues! — definite escape
-        @test_throws PoolEscapeError @macroexpand @with_pool pool begin
-            bv = trues!(pool, 100)
-            bv
-        end
+        # zeros! — detected
+        @test _expansion_incidental_warns(
+            :(
+                @with_pool pool begin
+                    v = zeros!(pool, 10)
+                    v
+                end
+            )
+        )
 
-        # Explicit return — definite escape
+        # trues! — detected
+        @test _expansion_incidental_warns(
+            :(
+                @with_pool pool begin
+                    bv = trues!(pool, 100)
+                    bv
+                end
+            )
+        )
+
+        # Explicit return — definite escape, still an error
         @test_throws PoolEscapeError @macroexpand @with_pool pool begin
             v = acquire!(pool, Float64, 10)
             return v
         end
 
-        # Tuple with acquired var → escape
-        @test_throws PoolEscapeError @macroexpand @with_pool pool begin
-            v = acquire!(pool, Float64, 10)
-            (v, 42)
-        end
+        # Tuple with acquired var — detected
+        @test _expansion_incidental_warns(
+            :(
+                @with_pool pool begin
+                    v = acquire!(pool, Float64, 10)
+                    (v, 42)
+                end
+            )
+        )
 
-        # Array literal → escape
-        @test_throws PoolEscapeError @macroexpand @with_pool pool begin
-            v = acquire!(pool, Float64, 10)
-            [v, nothing]
-        end
+        # Array literal — detected
+        @test _expansion_incidental_warns(
+            :(
+                @with_pool pool begin
+                    v = acquire!(pool, Float64, 10)
+                    [v, nothing]
+                end
+            )
+        )
 
-        # return (v, scalar) → escape
+        # return (v, scalar) → definite escape, still an error
         @test_throws PoolEscapeError @macroexpand @with_pool pool begin
             v = acquire!(pool, Float64, 10)
             return (v, sum(v))
         end
 
         # Re-acquire reassignment: v still tracked after v = zeros!(pool, ...)
-        @test_throws PoolEscapeError @macroexpand @with_pool pool begin
-            v = acquire!(pool, Float64, 10)
-            v = zeros!(pool, 20)
-            v
-        end
+        @test _expansion_incidental_warns(
+            :(
+                @with_pool pool begin
+                    v = acquire!(pool, Float64, 10)
+                    v = zeros!(pool, 20)
+                    v
+                end
+            )
+        )
 
-        # NamedTuple with acquired var as VALUE → escape
-        @test_throws PoolEscapeError @macroexpand @with_pool pool begin
-            v = acquire!(pool, Float64, 10)
-            (result = v, n = 42)
-        end
+        # NamedTuple with acquired var as VALUE — detected
+        @test _expansion_incidental_warns(
+            :(
+                @with_pool pool begin
+                    v = acquire!(pool, Float64, 10)
+                    (result = v, n = 42)
+                end
+            )
+        )
 
-        # NamedTuple shorthand (v = v) → value IS acquired → escape
+        # NamedTuple shorthand (v = v) → value IS acquired — detected
         # (key name coincidentally matches, but VALUE is the acquired var)
-        @test_throws PoolEscapeError @macroexpand @with_pool pool begin
-            v = acquire!(pool, Float64, 10)
-            (v = v,)
-        end
+        @test _expansion_incidental_warns(
+            :(
+                @with_pool pool begin
+                    v = acquire!(pool, Float64, 10)
+                    (v = v,)
+                end
+            )
+        )
 
-        # Destructuring with acquire RHS: v still tracked → escape
-        @test_throws PoolEscapeError @macroexpand @with_pool pool begin
-            (v, w) = (acquire!(pool, Float64, 10), safe())
-            v
-        end
+        # Destructuring with acquire RHS: v still tracked — detected
+        @test _expansion_incidental_warns(
+            :(
+                @with_pool pool begin
+                    (v, w) = (acquire!(pool, Float64, 10), safe())
+                    v
+                end
+            )
+        )
 
         # Destructuring doesn't protect if RHS element IS acquire
-        @test_throws PoolEscapeError @macroexpand @with_pool pool begin
-            v = acquire!(pool, Float64, 10)
-            (v, w) = (zeros!(pool, 5), safe())
-            v
-        end
+        @test _expansion_incidental_warns(
+            :(
+                @with_pool pool begin
+                    v = acquire!(pool, Float64, 10)
+                    (v, w) = (zeros!(pool, 5), safe())
+                    v
+                end
+            )
+        )
     end
 
     # ==============================================================================
@@ -1145,12 +1252,16 @@ end
             return wrapper
         end
 
-        # Bare variable with pre-assignment — still escapes
-        @test_throws PoolEscapeError @macroexpand @with_pool pool begin
-            v = 1
-            v = acquire!(pool, Float64, 10)
-            v
-        end
+        # Bare variable with pre-assignment — still detected (block → warn)
+        @test _expansion_incidental_warns(
+            :(
+                @with_pool pool begin
+                    v = 1
+                    v = acquire!(pool, Float64, 10)
+                    v
+                end
+            )
+        )
 
         # Control: post-acquire reassignment IS safe (no regression)
         @test_nowarn @macroexpand @with_pool pool begin
@@ -1292,17 +1403,25 @@ end
     # ==============================================================================
 
     @testset "@maybe_with_pool block form" begin
-        # Definite escape → error
-        @test_throws PoolEscapeError @macroexpand @maybe_with_pool pool begin
-            v = acquire!(pool, Float64, 10)
-            v
-        end
+        # Implicit tail escape → warn + guard (block form)
+        @test _expansion_incidental_warns(
+            :(
+                @maybe_with_pool pool begin
+                    v = acquire!(pool, Float64, 10)
+                    v
+                end
+            )
+        )
 
-        # Container escape → error
-        @test_throws PoolEscapeError @macroexpand @maybe_with_pool pool begin
-            v = acquire!(pool, Float64, 10)
-            (v, sum(v))
-        end
+        # Container escape → warn + guard (block form)
+        @test _expansion_incidental_warns(
+            :(
+                @maybe_with_pool pool begin
+                    v = acquire!(pool, Float64, 10)
+                    (v, sum(v))
+                end
+            )
+        )
 
         # Safe → no warning
         @test_nowarn @macroexpand @maybe_with_pool pool begin
@@ -1330,10 +1449,14 @@ end
     # ==============================================================================
 
     @testset "@with_pool :cpu block form" begin
-        @test_throws PoolEscapeError @macroexpand @with_pool :cpu pool begin
-            v = acquire!(pool, Float64, 10)
-            v
-        end
+        @test _expansion_incidental_warns(
+            :(
+                @with_pool :cpu pool begin
+                    v = acquire!(pool, Float64, 10)
+                    v
+                end
+            )
+        )
 
         @test_nowarn @macroexpand @with_pool :cpu pool begin
             v = acquire!(pool, Float64, 10)
@@ -1354,11 +1477,15 @@ end
     end
 
     @testset "@maybe_with_pool :cpu forms" begin
-        # Block — error
-        @test_throws PoolEscapeError @macroexpand @maybe_with_pool :cpu pool begin
-            v = acquire!(pool, Float64, 10)
-            v
-        end
+        # Block — warn + guard
+        @test _expansion_incidental_warns(
+            :(
+                @maybe_with_pool :cpu pool begin
+                    v = acquire!(pool, Float64, 10)
+                    v
+                end
+            )
+        )
 
         # Block — safe
         @test_nowarn @macroexpand @maybe_with_pool :cpu pool begin
@@ -1398,16 +1525,20 @@ end
             sum(v) + inner
         end
 
-        # Outer scope escape → error from outer macro check
-        @test_throws PoolEscapeError @macroexpand @with_pool pool begin
-            v = acquire!(pool, Float64, 10)
-            @with_pool pool begin
-                w = acquire!(pool, Float64, 5)
-                w .= 1.0
-                nothing
-            end
-            v  # ← outer definite escape
-        end
+        # Outer scope escape → warn + guard from outer macro check (block form)
+        @test _expansion_incidental_warns(
+            :(
+                @with_pool pool begin
+                    v = acquire!(pool, Float64, 10)
+                    @with_pool pool begin
+                        w = acquire!(pool, Float64, 5)
+                        w .= 1.0
+                        nothing
+                    end
+                    v  # ← outer implicit-tail escape
+                end
+            )
+        )
     end
 
     # ==============================================================================
@@ -1415,10 +1546,13 @@ end
     # ==============================================================================
 
     @testset "PoolEscapeError carries variable names, points, and formatted message" begin
+        # Subjects use FUNCTION form: block-form implicit tails warn + guard
+        # under the default severity, so the rich PoolEscapeError rendering is
+        # exercised via the always-error form.
         # Single variable: bare return
         err = try
             @macroexpand(
-                @with_pool pool begin
+                @with_pool pool function msg_bare_fn()
                     v = acquire!(pool, Float64, 10)
                     v
                 end
@@ -1444,7 +1578,7 @@ end
         # Different variable name
         err = try
             @macroexpand(
-                @with_pool pool begin
+                @with_pool pool function msg_data_fn()
                     data = zeros!(pool, 10)
                     data
                 end
@@ -1473,7 +1607,7 @@ end
         # Container: only w escapes, not sum(v)
         err = try
             @macroexpand(
-                @with_pool pool begin
+                @with_pool pool function msg_container_fn()
                     v = acquire!(pool, Float64, 10)
                     w = acquire!(pool, Float64, 5)
                     (sum(v), w)
@@ -1489,7 +1623,7 @@ end
         # Multi-variable: both appear, sorted
         err = try
             @macroexpand(
-                @with_pool pool begin
+                @with_pool pool function msg_multi_fn()
                     v = acquire!(pool, Float64, 10)
                     w = acquire!(pool, Float64, 5)
                     (v, w)
@@ -1609,10 +1743,13 @@ end
     end
 
     @testset "var_info classification in PoolEscapeError" begin
+        # Subjects use FUNCTION form (always-error) so the classification is
+        # exercised through a thrown PoolEscapeError; block-form implicit
+        # tails warn + guard under the default severity instead.
         # Direct pool array (acquire! now returns Array)
         err = try
             @macroexpand(
-                @with_pool pool begin
+                @with_pool pool function vi_array_fn()
                     v = acquire!(pool, Float64, 10)
                     v
                 end
@@ -1627,7 +1764,7 @@ end
         # Direct pool view (acquire_view!)
         err = try
             @macroexpand(
-                @with_pool pool begin
+                @with_pool pool function vi_view_fn()
                     v = acquire_view!(pool, Float64, 10)
                     v
                 end
@@ -1642,7 +1779,7 @@ end
         # Direct pool BitArray
         err = try
             @macroexpand(
-                @with_pool pool begin
+                @with_pool pool function vi_bit_fn()
                     bv = trues!(pool, 100)
                     bv
                 end
@@ -1657,7 +1794,7 @@ end
         # Container wrapping pool variable
         err = try
             @macroexpand(
-                @with_pool pool begin
+                @with_pool pool function vi_container_fn()
                     v = acquire!(pool, Float64, 10)
                     a = [v, 1]
                     a
@@ -1676,7 +1813,7 @@ end
         # Container with multiple pool vars
         err = try
             @macroexpand(
-                @with_pool pool begin
+                @with_pool pool function vi_container2_fn()
                     v = acquire!(pool, Float64, 10)
                     w = acquire!(pool, Float64, 5)
                     a = [v, w]
@@ -1693,7 +1830,7 @@ end
         # Alias of pool variable
         err = try
             @macroexpand(
-                @with_pool pool begin
+                @with_pool pool function vi_alias_fn()
                     v = acquire!(pool, Float64, 10)
                     d = v
                     d
@@ -1730,7 +1867,7 @@ end
         # zeros! classified as array
         err = try
             @macroexpand(
-                @with_pool pool begin
+                @with_pool pool function vi_zeros_fn()
                     data = zeros!(pool, 10)
                     data
                 end
@@ -1743,7 +1880,7 @@ end
         # Tuple container
         err = try
             @macroexpand(
-                @with_pool pool begin
+                @with_pool pool function vi_tuple_fn()
                     v = acquire!(pool, Float64, 10)
                     t = (v, 42)
                     t
@@ -1944,7 +2081,7 @@ end
     @testset "showerror backtrace suppression" begin
         err = try
             @macroexpand(
-                @with_pool pool begin
+                @with_pool pool function bts_fn()
                     v = acquire!(pool, Float64, 10)
                     v
                 end
@@ -2363,24 +2500,9 @@ end
     # ==============================================================================
 
     @static if VERSION >= v"1.12-"
-        # Helper: expansion must throw PoolEscapeError (possibly LoadError-wrapped)
-        function _expansion_escape_error(ex)
-            try
-                macroexpand(@__MODULE__, ex)
-                return false
-            catch err
-                err isa LoadError && (err = err.error)
-                return err isa AdaptiveArrayPools.PoolEscapeError
-            end
-        end
-
-        # Helper: block-form expansion succeeds AND emits the incidental-tail @warn
-        function _expansion_incidental_warns(ex)
-            expanded = @test_logs (:warn, r"becomes the scope's return value") match_mode = :any macroexpand(
-                @__MODULE__, ex
-            )
-            return expanded isa Expr
-        end
+        # (Helpers `_expansion_escape_error` / `_expansion_incidental_warns`
+        # are defined at the top of this file — they are also used by the
+        # version-independent block-form testsets above.)
 
         @testset "block-form incidental tails warn at expansion (default)" begin
             # A block's value may simply be discarded by the surrounding code — the
@@ -2774,10 +2896,29 @@ end
             @test occursin("assigns a pool-backed array", sprint(showerror, e3))
         end
 
-        @testset "existing intentional-return errors unchanged" begin
+        @testset "form-based severity boundary (regression pins)" begin
+            # block bare-var tail: warn + guard (implicit tail)
+            @test _expansion_incidental_warns(
+                :(
+                    @with_pool pool begin
+                        v = acquire!(pool, Float64, 4)
+                        v
+                    end
+                )
+            )
+            # explicit return of the same var: still a hard error
             @test _expansion_escape_error(
                 :(
                     @with_pool pool begin
+                        v = acquire!(pool, Float64, 4)
+                        return v
+                    end
+                )
+            )
+            # function form of the same shape: still a hard error
+            @test _expansion_escape_error(
+                :(
+                    @with_pool pool function f()
                         v = acquire!(pool, Float64, 4)
                         v
                     end
@@ -2891,6 +3032,224 @@ end
             bx = :(v .= 0.0)
             @test_logs (:warn,) _report_incidental_escape("warn", :broadcast_assign, :v, bx, 12, "f.jl", 1)
         end
+    end
+
+    # ==============================================================================
+    # EscapedPoolArray guard: type behavior, tail rewriting, runtime integration
+    # ==============================================================================
+
+    @testset "EscapedPoolArray guard type" begin
+        x = rand(3, 2)
+        g = EscapedPoolArray(x, :x, "f.jl", 12)
+        @test g isa EscapedPoolArray
+        @test g.var === :x
+        @test g.arraytype === Matrix{Float64}
+        @test g.dims == (3, 2)
+        # metadata-only: no field holds the array itself
+        @test fieldnames(EscapedPoolArray) == (:var, :arraytype, :dims, :file, :line)
+
+        # trapped operations throw with provenance
+        @test_throws EscapedPoolUseError g[1]
+        @test_throws EscapedPoolUseError setindex!(g, 0.0, 1)
+        @test_throws EscapedPoolUseError size(g)
+        @test_throws EscapedPoolUseError length(g)
+        @test_throws EscapedPoolUseError axes(g)
+        @test_throws EscapedPoolUseError iterate(g)
+        @test_throws EscapedPoolUseError copy(g)
+        @test_throws EscapedPoolUseError similar(g)
+        @test_throws EscapedPoolUseError sum(g)
+        @test_throws EscapedPoolUseError collect(g)
+        @test_throws EscapedPoolUseError g .+ 1
+
+        # non-throwing surfaces: identity ops and informative show
+        @test g === g
+        @test !isnothing(g)
+        shown = sprint(show, g)
+        @test occursin("escaped", shown)
+        @test occursin("`x`", shown)
+        @test occursin("3×2", shown)
+        @test occursin("f.jl:12", shown)
+
+        uerr = try
+            g[1]
+        catch e
+            e
+        end
+        @test uerr isa EscapedPoolUseError
+        m = sprint(showerror, uerr)
+        @test occursin("getindex", m)
+        @test occursin("`x`", m)
+        @test occursin("f.jl:12", m)
+        @test occursin("nothing", m)      # teaches the discard fix
+
+        # anonymous / non-array fallbacks
+        ga = EscapedPoolArray(42, :expression, nothing, nothing)
+        @test ga.dims == ()
+        @test occursin("anonymous expression", sprint(show, ga))
+    end
+
+    @testset "_poison_block_tails rewrites" begin
+        lnn = LineNumberNode(7, Symbol("poison.jl"))
+        guard_call(x) = x isa Expr && x.head == :call && x.args[1] === EscapedPoolArray
+        lastexpr(b) = last(filter(a -> !(a isa LineNumberNode), b.args))
+
+        # bare tail → guard ctor with the var name + scope location
+        out = _poison_block_tails(
+            :(
+                begin
+                    v = acquire!(pool, Float64, 4)
+                    v
+                end
+            ), :pool, lnn
+        )
+        tail = lastexpr(out)
+        @test guard_call(tail)
+        @test tail.args[2] === :v
+        @test tail.args[3] isa QuoteNode && tail.args[3].value === :v
+        @test tail.args[4] == "poison.jl" && tail.args[5] == 7
+
+        # dest[...] = v tail → (dest[...] = v; guard(v)): side effect preserved
+        out = _poison_block_tails(
+            :(
+                begin
+                    v = acquire!(pool, Float64, 4)
+                    dest[:, :, k] = v
+                end
+            ), :pool, lnn
+        )
+        tail = lastexpr(out)
+        @test tail isa Expr && tail.head == :block
+        @test Meta.isexpr(tail.args[1], :(=))     # original assignment first
+        @test guard_call(tail.args[2])
+
+        # tuple: only pool-backed elements replaced
+        out = _poison_block_tails(
+            :(
+                begin
+                    x = 1
+                    v = acquire!(pool, Float64, 4)
+                    (x, v)
+                end
+            ), :pool, lnn
+        )
+        tail = lastexpr(out)
+        @test Meta.isexpr(tail, :tuple)
+        @test tail.args[1] === :x                  # non-pool element untouched
+        @test guard_call(tail.args[2])
+
+        # explicit return: never rewritten
+        out = _poison_block_tails(
+            :(
+                begin
+                    v = acquire!(pool, Float64, 4)
+                    return v
+                end
+            ), :pool, lnn
+        )
+        @test lastexpr(out) == :(return v)
+
+        # if/else: only the escaping branch tail rewritten
+        out = _poison_block_tails(
+            :(
+                begin
+                    v = acquire!(pool, Float64, 4)
+                    if c
+                        v
+                    else
+                        nothing
+                    end
+                end
+            ), :pool, lnn
+        )
+        tail = lastexpr(out)
+        @test Meta.isexpr(tail, :if)
+        thenlast = last(filter(a -> !(a isa LineNumberNode), tail.args[2].args))
+        elselast = last(filter(a -> !(a isa LineNumberNode), tail.args[3].args))
+        @test guard_call(thenlast)
+        @test elselast === :nothing    # the identifier `nothing` is a Symbol in the AST
+
+        # safe tail: structurally unchanged
+        src = :(
+            begin
+                v = acquire!(pool, Float64, 4)
+                sum(v)
+            end
+        )
+        @test _poison_block_tails(src, :pool, lnn) == src
+    end
+
+    @testset "block-tail guard integration (runtime)" begin
+        # NOTE: subjects are eval'd at RUNTIME so the expansion-time @warn is
+        # captured by @test_logs (a literal @with_pool here would warn once at
+        # test-file load instead).
+
+        # bare tail: block value is a guard; first use throws with provenance
+        out = @test_logs (:warn, r"becomes the scope's return value") match_mode = :any Core.eval(
+            @__MODULE__, :(
+                @with_pool pool begin
+                    a = acquire!(pool, Float64, 3)
+                    a .= 7.0
+                    a
+                end
+            )
+        )
+        @test out isa EscapedPoolArray
+        @test out.var === :a
+        @test out.arraytype <: AbstractVector{Float64}
+        @test out.dims == (3,)
+        @test_throws EscapedPoolUseError out[1]
+        @test_throws EscapedPoolUseError sum(out)
+
+        # FLUX shape: dest[...] = v tail — data copied out, guard discarded, silent
+        res = @test_logs (:warn, r"becomes the scope's return value") match_mode = :any Core.eval(
+            @__MODULE__, :(
+                let dest = zeros(2, 3, 2)
+                    for k in 1:2
+                        @with_pool pool begin
+                            v = zeros!(pool, Float64, 2, 3)
+                            v .= k
+                            dest[:, :, k] = v
+                        end
+                    end
+                    dest
+                end
+            )
+        )
+        @test res[:, :, 1] == fill(1.0, 2, 3)
+        @test res[:, :, 2] == fill(2.0, 2, 3)
+
+        # partial tuple: non-pool element stays usable, pool element traps
+        r = @test_logs (:warn, r"becomes the scope's return value") match_mode = :any Core.eval(
+            @__MODULE__, :(
+                @with_pool pool begin
+                    x = 42
+                    a = acquire!(pool, Float64, 3)
+                    (x, a)
+                end
+            )
+        )
+        @test r isa Tuple
+        @test r[1] === 42
+        @test r[2] isa EscapedPoolArray
+        @test_throws EscapedPoolUseError r[2][1]
+
+        # discarded guard: silent at runtime (warn fires once, at expansion) —
+        # the FLUX pattern as a reusable function
+        f = @test_logs (:warn, r"becomes the scope's return value") match_mode = :any Core.eval(
+            @__MODULE__, :(
+                function guard_discard_fn(dest)
+                    @with_pool pool begin
+                        v = zeros!(pool, Float64, 4)
+                        v .= 1.0
+                        dest[:] = v
+                    end
+                    return dest
+                end
+            )
+        )
+        dst = zeros(4)
+        @test f(dst) == ones(4)     # no error, no warn at runtime
+        @test f(dst) == ones(4)     # repeated runs stay silent
     end
 
 end # Compile-Time Escape Detection

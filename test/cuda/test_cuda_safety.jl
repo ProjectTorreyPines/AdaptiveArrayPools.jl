@@ -391,11 +391,12 @@ _cuda_test_leak(x) = x
     # Compile-time escape detection (@with_pool :cuda)
     # ==============================================================================
 
-    @testset "Compile-time: direct CuArray escape caught at macro expansion" begin
-        @test_throws PoolEscapeError @macroexpand @with_pool :cuda pool begin
+    @testset "Compile-time: direct CuArray escape warns + guards (block form)" begin
+        expanded = @test_logs (:warn, r"becomes the scope's return value") match_mode = :any @macroexpand @with_pool :cuda pool begin
             v = acquire!(pool, Float32, 10)
-            v  # direct escape in tail position
+            v  # implicit tail — warn + EscapedPoolArray guard
         end
+        @test expanded isa Expr
     end
 
     @testset "Compile-time: safe scalar return passes" begin
@@ -407,11 +408,12 @@ _cuda_test_leak(x) = x
         @test ex isa Expr
     end
 
-    @testset "Compile-time: zeros!/ones! escape caught" begin
-        @test_throws PoolEscapeError @macroexpand @with_pool :cuda pool begin
+    @testset "Compile-time: zeros!/ones! escape warns + guards (block form)" begin
+        expanded = @test_logs (:warn, r"becomes the scope's return value") match_mode = :any @macroexpand @with_pool :cuda pool begin
             v = zeros!(pool, Float32, 10)
             v
         end
+        @test expanded isa Expr
     end
 
     # ==============================================================================
