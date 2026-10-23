@@ -2720,6 +2720,14 @@ end
             end
         end
         @test contains(warn_output, "PoolContainerEscapeWarning")
+
+        # semicolon-NamedTuple container of an acquire call is a container too
+        @test _extract_container_vars(
+            quote
+                vac = (; wv = zeros!(pool, Float64, 3))
+                vac.wv
+            end, :pool
+        ) == Set([:vac])
         @test contains(warn_output, "vac")
         @test contains(warn_output, "Declarations:")
         @test contains(warn_output, "Escaping return:")
@@ -2839,6 +2847,15 @@ end
                 :(
                     @with_pool pool function f()
                         acquire!(pool, Float64, 4)
+                    end
+                )
+            )
+
+            # function form, w4: acquire call wrapped in a container literal
+            @test _expansion_escape_error(
+                :(
+                    @with_pool pool function f()
+                        (acquire!(pool, Float64, 2),)
                     end
                 )
             )
@@ -3221,6 +3238,13 @@ end
             # w3': assignment tail whose RHS is an already-tainted var (alias)
             hit = _incidental_exposure(:(d = v), Set([:v]), :pool)
             @test hit == (:assign, :v)
+
+            # w4: container literal holding a direct acquire call
+            @test _incidental_exposure(:((acquire!(pool, Float64, 2),)), Set{Symbol}(), :pool)[1] === :literal_acquire_call
+            @test _incidental_exposure(:((; a = acquire!(pool, Float64, 2))), Set{Symbol}(), :pool)[1] === :literal_acquire_call
+            @test _incidental_exposure(:([zeros!(pool, Float64, 2)]), Set{Symbol}(), :pool)[1] === :literal_acquire_call
+            # a literal that also exposes a tainted var is Stage 1's (one warning, not two)
+            @test _incidental_exposure(:((v, acquire!(pool, Float64, 2))), Set([:v]), :pool) === nothing
         end
 
         @testset "_incidental_exposure: safe tails return nothing" begin
@@ -3241,6 +3265,9 @@ end
             msg = _lint_message(:acquire_call, acquire_expr, acquire_expr)
             @test occursin("last expression", msg)
             @test occursin("nothing", msg)
+
+            lit_expr = :((acquire!(pool, Float64, 2),))
+            @test occursin("holding a direct acquire call", _lint_message(:literal_acquire_call, lit_expr, lit_expr))
             @test occursin("escape_lint", msg)
             @test occursin("safety/compile-time", msg)     # docs pointer
             @test occursin("\"warn\" (default)", msg)       # warn is now the default severity
@@ -3525,6 +3552,9 @@ end
                     nothing
                 end
             ),
+            # acquire calls held directly in a container literal
+            :((acquire!(pool, Float64, 2),)), :((; a = acquire!(pool, Float64, 2))),
+            :([acquire!(pool, Float64, 2)]),
         ]
         safe = [:(sum(v)), :((; s)), :((; s, n = length(v))), :nothing]
         for tail in escaping
@@ -3655,6 +3685,21 @@ end
         @test r.v isa EscapedPoolArray && r.v.var === :v
         @test r.w isa EscapedPoolArray && r.w.var === :w
         @test_throws EscapedPoolUseError r.w[1]
+
+        # mixed literal (tainted var + direct acquire call): exactly ONE escape
+        # warning (Stage 1 owns it), and both elements are guarded
+        logs, r = Test.collect_test_logs() do
+            Core.eval(
+                @__MODULE__, :(
+                    @with_pool pool begin
+                        v = acquire!(pool, Float64, 2)
+                        (v, acquire!(pool, Float64, 3))
+                    end
+                )
+            )
+        end
+        @test count(l -> occursin("becomes the scope's return value", string(l.message)), logs) == 1
+        @test r[1] isa EscapedPoolArray && r[2] isa EscapedPoolArray
     end
 
     @testset "reporter shape: loop element + NamedTuple shorthand (runtime)" begin

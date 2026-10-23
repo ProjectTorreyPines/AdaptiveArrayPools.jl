@@ -2734,7 +2734,7 @@ end
 """
     _incidental_exposure(expr, tainted, pool_name) -> Union{Nothing, Tuple{Symbol, Any}}
 
-Detect the three incidental pool-backed tail patterns the direct-exposure ERROR
+Detect the incidental pool-backed tail patterns the direct-exposure ERROR
 does not cover (their value escapes as the block's return value, but the syntax
 does not *look* like a return):
 
@@ -2743,6 +2743,10 @@ does not *look* like a return):
                                  (also `x[...] .= v` on an acquired base)
 - `(:assign, var)`            — tail is `x = <acquire call>` or `x = <acquired var>`
                                  (assignment evaluates to its RHS value)
+- `(:literal_acquire_call, expr)` — tail is a tuple/vect/NamedTuple literal holding
+                                 a direct acquire call (`(acquire!(pool, T, n),)`);
+                                 a literal that also exposes an acquired var is left
+                                 to the direct-exposure stage, so it warns once
 
 `ret_expr` values arrive here either as the bare tail expression (implicit
 return) or as the whole `Expr(:return, ...)` node (explicit `return`, per
@@ -2759,6 +2763,9 @@ function _incidental_exposure(expr, tainted, pool_name)
     end
     if _is_acquire_call(expr, pool_name)
         return (:acquire_call, expr)
+    elseif expr.head in (:tuple, :vect) && _tuple_contains_acquire_call(expr, pool_name) &&
+            isempty(_find_direct_exposure(expr, tainted))
+        return (:literal_acquire_call, expr)
     elseif _is_dotted_assign_head(expr.head) && length(expr.args) >= 1
         lhs = expr.args[1]
         base = Meta.isexpr(lhs, :ref) ? lhs.args[1] : lhs
@@ -2801,6 +2808,8 @@ function _lint_message(kind, detail, ret_expr; guarded::Bool = false)
     tail = sprint(Base.show_unquoted, ret_expr)
     what = if kind === :acquire_call
         "is a direct acquire call whose pool-backed array"
+    elseif kind === :literal_acquire_call
+        "is a container literal holding a direct acquire call, whose pool-backed array"
     elseif kind === :broadcast_assign
         "writes into the pool-backed array `$(detail)`, whose value"
     elseif kind === :bare_var
@@ -3218,7 +3227,7 @@ so it works even when `vars` is empty (solves the chicken-and-egg problem).
 """
 function _tuple_contains_acquire_call(expr, target_pool)
     expr isa Expr || return false
-    if expr.head in (:tuple, :vect)
+    if expr.head in (:tuple, :vect, :parameters)
         for arg in expr.args
             if Meta.isexpr(arg, :(=)) && length(arg.args) >= 2
                 # NamedTuple value: (wv=zeros!(pool, ...), ...)
