@@ -37,6 +37,19 @@ function _expansion_incidental_warns(ex)
     return expanded isa Expr
 end
 
+# Lockstep helpers: did block-form expansion emit the escape @warn, and does the
+# block-tail poisoner change the block? The two must always agree.
+function _block_tail_warned(body)
+    logs, _ = Test.collect_test_logs() do
+        macroexpand(@__MODULE__, :(@with_pool pool $body))
+    end
+    return any(
+        l -> l.level == Base.CoreLogging.Warn &&
+            occursin("becomes the scope's return value", string(l.message)), logs
+    )
+end
+_block_tail_rewritten(body) = _poison_block_tails(body, :pool, LineNumberNode(1, :lockstep)) != body
+
 function _capture_stderr(f)
     tmpf = tempname()
     open(tmpf, "w") do io
@@ -243,6 +256,13 @@ end
         )
         @test :v in found
         @test :w in found
+
+        # NamedTuple shorthand: (; s, v) — the bare name IS the value
+        @test _find_direct_exposure(:((; s, v)), acquired) == Set([:v])
+        @test _find_direct_exposure(:((; s, v = v, w)), acquired) == Set([:v, :w])
+        # field-access shorthand and non-pool shorthand → not detected
+        @test isempty(_find_direct_exposure(:((; s, t.v)), acquired))
+        @test isempty(_find_direct_exposure(:((; s)), acquired))
 
         # Scalar literal → not detected
         @test isempty(_find_direct_exposure(42, acquired))
@@ -1313,6 +1333,20 @@ end
             v = acquire!(pool, Float64, n)
             return (v, n)
         end
+
+        # NamedTuple shorthand tail → escape
+        @test_throws PoolEscapeError @macroexpand @with_pool pool function fn_nt_short(n)
+            v = acquire!(pool, Float64, n)
+            s = 0.0
+            (; s, v)
+        end
+
+        # Semicolon-NamedTuple container, then returned → escape
+        @test_throws PoolEscapeError @macroexpand @with_pool pool function fn_nt_container(n)
+            v = acquire!(pool, Float64, n)
+            d = (; a = v)
+            d
+        end
     end
 
     @testset "Function form: safe patterns (no false positives)" begin
@@ -2182,6 +2216,11 @@ end
         @test !_literal_contains_acquired(
             Expr(:tuple, Expr(:kw, :a, :x)), acquired
         )
+
+        # Semicolon NamedTuple: shorthand (; v) and explicit (; a = v)
+        @test _literal_contains_acquired(:((; v)), acquired)
+        @test _literal_contains_acquired(:((; a = v)), acquired)
+        @test !_literal_contains_acquired(:((; a = 1, s)), acquired)
     end
 
     # ==============================================================================
@@ -2206,6 +2245,10 @@ end
             Expr(:tuple, Expr(:kw, :a, :w)), acquired
         )
         @test :w in found
+
+        # Semicolon NamedTuple: shorthand + explicit field
+        found = _collect_acquired_in_literal(:((; s, v, a = w)), acquired)
+        @test sort!(found) == [:v, :w]
 
         # Non-Expr/non-Symbol → empty
         found = _collect_acquired_in_literal(42, acquired)
@@ -3218,6 +3261,37 @@ end
         @test guard_call(thenlast)
         @test elselast === :nothing    # the identifier `nothing` is a Symbol in the AST
 
+        # NamedTuple shorthand: (; s, v) → (; s, v = guard(v)) — a guard CALL is not
+        # a legal shorthand element, so the field is expanded to explicit `kw` form
+        out = _poison_block_tails(
+            :(
+                begin
+                    v = acquire!(pool, Float64, 4)
+                    s = 1.0
+                    (; s, v)
+                end
+            ), :pool, lnn
+        )
+        tail = lastexpr(out)
+        @test Meta.isexpr(tail, :tuple)
+        p = tail.args[1]
+        @test Meta.isexpr(p, :parameters)
+        @test p.args[1] === :s                         # non-pool shorthand untouched
+        @test Meta.isexpr(p.args[2], :kw) && p.args[2].args[1] === :v && guard_call(p.args[2].args[2])
+
+        # field-access shorthand (; s, t.v) is not a bare name → untouched
+        out = _poison_block_tails(
+            :(
+                begin
+                    v = acquire!(pool, Float64, 4)
+                    t = (v = 1,)
+                    s = 1.0
+                    (; s, t.v)
+                end
+            ), :pool, lnn
+        )
+        @test lastexpr(out) == :((; s, t.v))
+
         # safe tail: structurally unchanged
         src = :(
             begin
@@ -3226,6 +3300,42 @@ end
             end
         )
         @test _poison_block_tails(src, :pool, lnn) == src
+    end
+
+    @testset "checker ⇔ poisoner lockstep (block tails)" begin
+        # Every block tail the poisoner rewrites must also be reported by the checker
+        # (and vice versa): a silent rewrite hides the escape, and a warning without a
+        # rewrite leaves the pool-backed value unguarded.
+        prelude = :(
+            begin
+                s = 1.0
+                v = acquire!(pool, Float64, 3)
+                w = acquire!(pool, Float64, 3)
+            end
+        )
+        body(tail) = Expr(:block, prelude.args..., tail)
+        escaping = [
+            :v, :((s, v)), :((; s, v)), :((; s, v = v)), :((a = v,)), :([v, w]),
+            :(identity(v)), :(acquire!(pool, Float64, 2)), :(v .= 1.0), :(dest[:] = v),
+            :(u = acquire!(pool, Float64, 2)), :(
+                if s > 0
+                    v
+                else
+                    nothing
+                end
+            ),
+        ]
+        safe = [:(sum(v)), :((; s)), :((; s, n = length(v))), :nothing]
+        for tail in escaping
+            b = body(tail)
+            @test _block_tail_warned(b)
+            @test _block_tail_warned(b) == _block_tail_rewritten(b)
+        end
+        for tail in safe
+            b = body(tail)
+            @test !_block_tail_warned(b)
+            @test _block_tail_warned(b) == _block_tail_rewritten(b)
+        end
     end
 
     @testset "block-tail guard integration (runtime)" begin
@@ -3313,6 +3423,25 @@ end
         @test u isa EscapedPoolArray
         @test u.var === :expression
         @test u.dims == (3,)
+
+        # NamedTuple shorthand tail: must expand (regression: the guard call used to
+        # land in a shorthand slot → "invalid named tuple element") with names kept
+        r = @test_logs (:warn, r"becomes the scope's return value") match_mode = :any Core.eval(
+            @__MODULE__, :(
+                @with_pool pool begin
+                    s = 1.5
+                    v = acquire!(pool, Float64, 3)
+                    w = acquire!(pool, Float64, 2)
+                    (; s, v = v, w)
+                end
+            )
+        )
+        @test r isa NamedTuple
+        @test keys(r) == (:s, :v, :w)
+        @test r.s === 1.5
+        @test r.v isa EscapedPoolArray && r.v.var === :v
+        @test r.w isa EscapedPoolArray && r.w.var === :w
+        @test_throws EscapedPoolUseError r.w[1]
     end
 
 end # Compile-Time Escape Detection

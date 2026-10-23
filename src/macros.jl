@@ -2114,9 +2114,9 @@ function _transform_return_stmts(
     # Other expressions: recurse with current_lnn
     new_args = Any[
         _transform_return_stmts(
-                arg, pool_name, current_lnn;
-                rewind_call, entry_depth_guard
-            ) for arg in expr.args
+            arg, pool_name, current_lnn;
+            rewind_call, entry_depth_guard
+        ) for arg in expr.args
     ]
     return Expr(expr.head, new_args...)
 end
@@ -2574,12 +2574,12 @@ Only catches high-confidence patterns:
 - Bare Symbol: `v`
 - Explicit return: `return v`
 - Tuple/array literal containing a var: `(v, w)`, `[v, w]`
-- NamedTuple-style kw: `(a=v,)`
+- NamedTuple-style kw: `(a=v,)`, `(; a=v)`, and the shorthand `(; v)`
 
 Does NOT recurse into function calls (can't know what `f(v)` returns).
 """
 
-"""Check if a literal expression (symbol, identity call, tuple/vect) transitively contains any acquired var."""
+"""Check if a literal expression (symbol, identity call, tuple/vect, `(; …)` parameters) transitively contains any acquired var."""
 function _literal_contains_acquired(expr, acquired)
     expr isa Symbol && return expr in acquired
     if expr isa Expr
@@ -2587,7 +2587,7 @@ function _literal_contains_acquired(expr, acquired)
         if expr.head == :call && length(expr.args) >= 2 && expr.args[1] === :identity
             return _literal_contains_acquired(expr.args[2], acquired)
         end
-        if expr.head in (:tuple, :vect)
+        if expr.head in (:tuple, :vect, :parameters)
             for arg in expr.args
                 if Meta.isexpr(arg, :(=)) && length(arg.args) >= 2
                     _literal_contains_acquired(arg.args[2], acquired) && return true
@@ -2630,10 +2630,12 @@ function _find_direct_exposure(expr, acquired)
                 end
             end
         elseif expr.head == :parameters
-            # (; a=v) style named tuple parameters
+            # (; a=v) style named tuple parameters, and the (; v) shorthand
             for arg in expr.args
                 if Meta.isexpr(arg, :kw) && length(arg.args) >= 2
                     union!(found, _find_direct_exposure(arg.args[2], acquired))
+                elseif arg isa Symbol
+                    union!(found, _find_direct_exposure(arg, acquired))
                 end
             end
         elseif expr.head == :call && length(expr.args) >= 2 && _is_identity_call(expr.args[1])
@@ -2865,6 +2867,9 @@ function _poison_literal(expr, acquired, pool_name, file, line)
                 arg.head, arg.args[1],
                 _poison_literal_value(arg.args[2], acquired, pool_name, file, line)
             )
+        elseif expr.head === :parameters && arg isa Symbol && arg in acquired
+            # `(; v)` shorthand slots accept only a name, never a call: expand to `v = guard`
+            Expr(:kw, arg, _guard_expr(arg, arg, file, line))
         else
             _poison_literal_value(arg, acquired, pool_name, file, line)
         end
@@ -2903,7 +2908,7 @@ function _collect_acquired_in_literal!(found, expr, acquired_keys)
     elseif expr isa Expr
         if expr.head == :call && length(expr.args) >= 2 && expr.args[1] === :identity
             _collect_acquired_in_literal!(found, expr.args[2], acquired_keys)
-        elseif expr.head in (:tuple, :vect)
+        elseif expr.head in (:tuple, :vect, :parameters)
             for arg in expr.args
                 if Meta.isexpr(arg, :(=)) && length(arg.args) >= 2
                     _collect_acquired_in_literal!(found, arg.args[2], acquired_keys)
