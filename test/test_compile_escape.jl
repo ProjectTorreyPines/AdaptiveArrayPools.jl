@@ -13,7 +13,7 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
     _extract_container_vars,
     _is_dotted_assign_head, _incidental_exposure, _lint_message, ESCAPE_LINT,
     _report_incidental_escape, PoolEscapeError,
-    _poison_block_tails, EscapedPoolArray, EscapedPoolUseError
+    _poison_block_tails, EscapedPoolArray, EscapedPoolUseError, _is_function_def
 
 # Helper: expansion must throw PoolEscapeError (possibly LoadError-wrapped) —
 # the severity of function-form and explicit-return escapes.
@@ -1383,6 +1383,54 @@ end
                 end
             end
         ) == [:v]
+    end
+
+    @testset "short-form nested definitions are skipped like long-form" begin
+        taint(b) = sort!(collect(_extract_ordered_acquired(b, :pool)))
+
+        # a short-form definition's body is its own scope, not the enclosing block
+        @test taint(
+            quote
+                v = acquire!(pool, Int, n); f(x) = (a = v)
+            end
+        ) == [:v]
+        @test taint(
+            quote
+                v = acquire!(pool, Int, n); f(x::T) where {T} = (a = v)
+            end
+        ) == [:v]
+        @test taint(
+            quote
+                v = acquire!(pool, Int, n); f(x)::Int = (a = v; 1)
+            end
+        ) == [:v]
+
+        # hard-error false positives removed (long-form `function g … end` already passes)
+        @test !_expansion_escape_error(
+            :(
+                @with_pool pool begin
+                    v = acquire!(pool, Float64, 3)
+                    g(x) = (return v)
+                    nothing
+                end
+            )
+        )
+        @test (
+            macroexpand(
+                @__MODULE__, :(
+                    @with_pool pool begin
+                        v = acquire!(pool, Float64, 3)
+                        g() = resize!(v, 0)
+                        nothing
+                    end
+                )
+            ); true
+        )    # no PoolMutationError
+
+        # typed / indexed assignments are not definitions
+        @test !_is_function_def(:(a::Vector{Int} = v))
+        @test !_is_function_def(:(a[i] = v))
+        @test _is_function_def(:((f::Foo)(x) = 1))
     end
 
     # ==============================================================================

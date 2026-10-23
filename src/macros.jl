@@ -2352,6 +2352,9 @@ function _extract_acquired_vars(expr, target_pool, vars = Set{Symbol}())
             for arg in expr.args
                 _extract_acquired_vars(arg, target_pool, vars)
             end
+        elseif expr.head == :(=) && _is_function_def(expr)
+            # Short-form `f(x) = …` is a nested scope, skipped like long-form below
+            return vars
         elseif expr.head == :(=) && length(expr.args) >= 2
             lhs = expr.args[1]
             rhs = expr.args[2]
@@ -2502,6 +2505,7 @@ Tracks LineNumberNodes through blocks. Skips nested function definitions."""
 function _collect_explicit_returns!(values, expr, current_line::Union{Int, Nothing})
     expr isa Expr || return
     expr.head in (:function, :(->)) && return
+    expr.head == :(=) && _is_function_def(expr) && return   # short-form `f(x) = …`
     if expr.head == :return
         push!(values, (expr, current_line))
         return
@@ -2589,6 +2593,8 @@ function _extract_ordered_acquired(expr, target_pool)
     tainted = Set{Symbol}()
     for arg in expr.args
         arg isa LineNumberNode && continue
+        # Short-form `f(x) = …` is a nested scope: its body taints nothing here
+        Meta.isexpr(arg, :(=)) && _is_function_def(arg) && continue
         if arg isa Expr && arg.head == :(=) && length(arg.args) >= 2
             lhs = arg.args[1]
             rhs = arg.args[2]
@@ -3906,8 +3912,9 @@ end
 function _find_mutation_calls!(points, expr, acquired, current_line::Union{Int, Nothing})
     expr isa Expr || return
 
-    # Skip nested function definitions (they have their own scope)
+    # Skip nested function definitions (they have their own scope), long- or short-form
     expr.head in (:function, :(->)) && return
+    expr.head == :(=) && _is_function_def(expr) && return
 
     # Track line numbers
     if expr.head == :block
