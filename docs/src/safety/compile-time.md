@@ -145,3 +145,24 @@ end
 ```
 
 That's what the [runtime layer](runtime.md) is for.
+
+Loops and comprehensions bind *elements*, not the iterable. Reading an element of
+a pool-backed array is a plain value, so this is silent and correct:
+
+```julia
+@with_pool pool begin
+    order = acquire!(pool, Int, n)
+    contact = 0
+    for k in order          # `k` is an element (e.g. an Int), not pool memory
+        k == target && (contact = k)
+    end
+    (; contact)             # fine — no warning, no guard
+end
+```
+
+Iterating a container *literal* of pool arrays (`for c in (v, w)`) is tracked:
+`c` is a pool-backed array. Iterating a container held in a *variable*
+(`t = (v, w); for c in t`) and destructuring iteration (`for (a, b) in ...`) are
+not tracked. With the default `runtime_check = 0`, nothing guards those shapes;
+with `runtime_check = 1` the [runtime layer](runtime.md) poisons released memory
+(and, on Julia ≥ 1.12, also structurally invalidates the arrays).

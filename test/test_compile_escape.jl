@@ -802,6 +802,18 @@ end
             sum(v)
         end
 
+        # Element read from a pool-array loop, then returned → safe (an element is a value)
+        @test_nowarn @macroexpand @with_pool pool begin
+            order = acquire!(pool, Int, 4)
+            contact = 0
+            for k in order
+                if k == 2
+                    contact = k
+                end
+            end
+            contact
+        end
+
         # Indexing → safe (element access, not array itself)
         @test_nowarn @macroexpand @with_pool pool begin
             v = acquire!(pool, Float64, 10)
@@ -1230,6 +1242,147 @@ end
             end, :pool,
         )
         @test :v in vars
+    end
+
+    # ==============================================================================
+    # Binding positions: `:(=)` nodes that are NOT assignments (iteration specs,
+    # NamedTuple fields) and loop variables that shadow an outer name
+    # ==============================================================================
+
+    @testset "binding positions: iteration specs, shadowing, NamedTuple fields" begin
+        taint(b) = sort!(collect(_extract_ordered_acquired(b, :pool)))
+
+        # iterating a pool array yields ELEMENTS — the loop variable is not an alias
+        @test taint(
+            quote
+                order = acquire!(pool, Int, n); for k in order
+                end
+            end
+        ) == [:order]
+        @test taint(
+            quote
+                order = acquire!(pool, Int, n); contact = 0
+                for k in order
+                    if k == 2
+                        contact = k
+                    end
+                end
+                contact
+            end
+        ) == [:order]
+        @test taint(
+            quote
+                order = acquire!(pool, Int, n); for i in 1:n, k in order
+                    c = k
+                end
+            end
+        ) == [:order]
+        # generator / filtered / typed / flattened comprehension specs
+        @test taint(
+            quote
+                order = acquire!(pool, Int, n); k = 0; ks = [k for k in order if k > 0]; k
+            end
+        ) == [:order]
+        @test taint(
+            quote
+                order = acquire!(pool, Int, n); k = 0; g = sum(k for k in order); k
+            end
+        ) == [:order]
+        @test taint(
+            quote
+                order = acquire!(pool, Int, n); k = 0; ks = Int[k for k in order]; k
+            end
+        ) == [:order]
+        @test taint(
+            quote
+                order = acquire!(pool, Int, n); k = 0; ks = [k for k in order for j in 1:2]; k
+            end
+        ) == [:order]
+        # a `name = value` child of a tuple is a NamedTuple field, not an assignment
+        @test taint(
+            quote
+                order = acquire!(pool, Int, n); k = 0; s = sum((k = order,).k); k
+            end
+        ) == [:order]
+        @test taint(
+            quote
+                v = acquire!(pool, Int, n); nt = (a = v,)
+            end
+        ) == [:nt, :v]
+        # shadowing: the loop-local `k` is a scalar; the outer `k` stays tainted
+        @test taint(
+            quote
+                v = acquire!(pool, Int, n); order = acquire!(pool, Int, n); k = v; contact = 0
+                for k in order
+                    contact = k
+                end
+            end
+        ) == [:k, :order, :v]
+        # generator specs are bound before the body runs
+        @test taint(
+            quote
+                v = acquire!(pool, Int, n); best = nothing
+                s = sum((best = c) for c in (v,))
+            end
+        ) == [:best, :c, :v]
+        # `outer` loop variable over a literal of pool arrays outlives the loop
+        @test taint(
+            quote
+                v = acquire!(pool, Int, n); for outer c in (v,)
+                end
+            end
+        ) == [:c, :v]
+        # Known limitation: iterating a container VARIABLE is treated as element
+        # iteration, so `c` is not tracked here (a container LITERAL is, below)
+        @test taint(
+            quote
+                v = acquire!(pool, Int, n); t = (v,); for c in t
+                end
+            end
+        ) == [:t, :v]
+
+        # true positives preserved
+        @test taint(
+            quote
+                v = acquire!(pool, Int, n); w = acquire!(pool, Int, n)
+                for c in (v, w)
+                    best = c
+                end
+            end
+        ) == [:best, :c, :v, :w]
+        @test taint(
+            quote
+                v = acquire!(pool, Int, n); for c in [v]
+                end
+            end
+        ) == [:c, :v]
+        @test taint(
+            quote
+                order = acquire!(pool, Int, n); for outer k in order
+                end
+            end
+        ) == [:order]
+        @test taint(
+            quote
+                v = acquire!(pool, Int, n); let a = v
+                    a
+                end
+            end
+        ) == [:a, :v]
+        @test :w in taint(
+            quote
+                for k in (w = acquire!(pool, Int, n))
+                end
+            end
+        )
+        # Known limitation (pre-existing): destructuring iteration is not tracked
+        @test taint(
+            quote
+                v = acquire!(pool, Int, n); for (c,) in ((v,),)
+                    best = c
+                end
+            end
+        ) == [:v]
     end
 
     # ==============================================================================
@@ -3336,6 +3489,18 @@ end
             @test !_block_tail_warned(b)
             @test _block_tail_warned(b) == _block_tail_rewritten(b)
         end
+
+        # reporter shape: element read from a pool-array loop, shorthand tail → safe
+        b = quote
+            order = acquire!(pool, Int, 4)
+            contact = 0
+            for k in order
+                contact = k
+            end
+            (; contact)
+        end
+        @test !_block_tail_warned(b)
+        @test _block_tail_warned(b) == _block_tail_rewritten(b)
     end
 
     @testset "block-tail guard integration (runtime)" begin
@@ -3442,6 +3607,31 @@ end
         @test r.v isa EscapedPoolArray && r.v.var === :v
         @test r.w isa EscapedPoolArray && r.w.var === :w
         @test_throws EscapedPoolUseError r.w[1]
+    end
+
+    @testset "reporter shape: loop element + NamedTuple shorthand (runtime)" begin
+        # Regression (FastInterpolations): an integer read from `for k in order` was
+        # tainted as an alias of `order`, and the `(; …)` tail then failed to compile.
+        r = @test_logs min_level = Base.CoreLogging.Warn Core.eval(
+            @__MODULE__, :(
+                let n = 4
+                    @with_pool pool begin
+                        order = acquire!(pool, Int, n)
+                        order .= (4, 2, 3, 1)
+                        s = 0.0
+                        contact = 0
+                        for k in order
+                            s += k
+                            if k == 3
+                                contact = k
+                            end
+                        end
+                        (; s, contact)
+                    end
+                end
+            )
+        )
+        @test r === (s = 10.0, contact = 3)
     end
 
 end # Compile-Time Escape Detection
