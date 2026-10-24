@@ -2031,8 +2031,9 @@ function _transform_return_stmts(
     )
     expr isa Expr || return expr
 
-    # Don't recurse into nested function definitions or quoted AST
-    if expr.head in (:function, :->, :quote)
+    # Don't recurse into nested function definitions (long- or short-form) or quoted
+    # AST — a `return` there exits the nested function, never this scope
+    if expr.head in (:function, :->, :quote) || (expr.head == :(=) && _is_function_def(expr))
         return expr
     end
 

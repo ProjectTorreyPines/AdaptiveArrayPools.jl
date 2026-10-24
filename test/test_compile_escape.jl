@@ -1427,6 +1427,53 @@ end
             ); true
         )    # no PoolMutationError
 
+        # runtime: a `return` inside a short-form nested def must NOT carry the scope's
+        # rewind (regression: calling `g` rewound the pool mid-scope, so the next
+        # acquire reused `v`'s live memory) — block form, function form, and the
+        # `g() = (return v)` shape that used to be a hard PoolEscapeError
+        r = Core.eval(
+            @__MODULE__, :(
+                @with_pool pool begin
+                    v = acquire!(pool, Float64, 3)
+                    v .= 1
+                    g(x) = (return x + 1)
+                    y = g(1)
+                    w = acquire!(pool, Float64, 3)
+                    w .= 2
+                    (sum(v), y)
+                end
+            )
+        )
+        @test r == (3.0, 2)
+        f = Core.eval(
+            @__MODULE__, :(
+                @with_pool pool function short_def_return_fn()
+                    v = acquire!(pool, Float64, 3)
+                    v .= 1
+                    g(x) = (return x + 1)
+                    y = g(1)
+                    w = acquire!(pool, Float64, 3)
+                    w .= 2
+                    sum(v) + y
+                end
+            )
+        )
+        @test Base.invokelatest(f) == 5.0
+        r = Core.eval(
+            @__MODULE__, :(
+                @with_pool pool begin
+                    v = acquire!(pool, Float64, 3)
+                    v .= 1
+                    g() = (return v)
+                    u = g()
+                    w = acquire!(pool, Float64, 3)
+                    w .= 2
+                    sum(v)
+                end
+            )
+        )
+        @test r == 3.0
+
         # typed / indexed assignments are not definitions
         @test !_is_function_def(:(a::Vector{Int} = v))
         @test !_is_function_def(:(a[i] = v))
