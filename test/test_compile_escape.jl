@@ -1318,13 +1318,39 @@ end
                 end
             end
         ) == [:k, :order, :v]
-        # generator specs are bound before the body runs
+        # generator specs are bound before the body runs (and `c` stays generator-local)
         @test taint(
             quote
                 v = acquire!(pool, Int, n); best = nothing
                 s = sum((best = c) for c in (v,))
             end
-        ) == [:best, :c, :v]
+        ) == [:best, :v]
+        # a loop variable is a fresh local: its taint does not leak into a same-named
+        # outer binding after the loop (regression: `c = 1.0` tail became a guard)
+        @test taint(
+            quote
+                v = acquire!(pool, Int, n); c = 1.0
+                for c in (v,)
+                    sum(c)
+                end
+                c
+            end
+        ) == [:v]
+        @test (
+            macroexpand(
+                @__MODULE__, :(
+                    @with_pool pool begin
+                        v = acquire!(pool, Float64, 3)
+                        c = Float64[]
+                        for c in (v,)
+                            sum(c)
+                        end
+                        push!(c, 1.0)
+                        nothing
+                    end
+                )
+            ); true
+        )    # no PoolMutationError on the outer `c`
         # `outer` loop variable over a literal of pool arrays outlives the loop
         @test taint(
             quote
@@ -1349,13 +1375,14 @@ end
                     best = c
                 end
             end
-        ) == [:best, :c, :v, :w]
+        ) == [:best, :v, :w]    # `c` is pool-backed inside the loop, loop-local after it
         @test taint(
             quote
                 v = acquire!(pool, Int, n); for c in [v]
+                    d = c
                 end
             end
-        ) == [:c, :v]
+        ) == [:d, :v]
         @test taint(
             quote
                 order = acquire!(pool, Int, n); for outer k in order
