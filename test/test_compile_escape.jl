@@ -2934,6 +2934,15 @@ end
                 )
             )
 
+            # function form: identity-wrapped acquire-call tail
+            @test _expansion_escape_error(
+                :(
+                    @with_pool pool function f()
+                        identity(acquire!(pool, Float64, 2))
+                    end
+                )
+            )
+
             # function form, w3: assignment tail
             @test _expansion_escape_error(
                 :(
@@ -3319,6 +3328,13 @@ end
             @test _incidental_exposure(:([zeros!(pool, Float64, 2)]), Set{Symbol}(), :pool)[1] === :literal_acquire_call
             # a literal that also exposes a tainted var is Stage 1's (one warning, not two)
             @test _incidental_exposure(:((v, acquire!(pool, Float64, 2))), Set([:v]), :pool) === nothing
+
+            # identity(x) is transparent, as in the direct-exposure stage and the poisoner
+            @test _incidental_exposure(:(identity(acquire!(pool, Float64, 2))), Set{Symbol}(), :pool)[1] === :acquire_call
+            @test _incidental_exposure(:(Base.identity(v .= 1.0)), Set([:v]), :pool) == (:broadcast_assign, :v)
+            @test _incidental_exposure(:((identity(acquire!(pool, Float64, 2)),)), Set{Symbol}(), :pool)[1] === :literal_acquire_call
+            @test _incidental_exposure(:(identity((acquire!(pool, Float64, 2),))), Set{Symbol}(), :pool)[1] === :literal_acquire_call
+            @test _incidental_exposure(:(identity(v)), Set([:v]), :pool) === nothing   # Stage 1's
         end
 
         @testset "_incidental_exposure: safe tails return nothing" begin
@@ -3629,6 +3645,9 @@ end
             # acquire calls held directly in a container literal
             :((acquire!(pool, Float64, 2),)), :((; a = acquire!(pool, Float64, 2))),
             :([acquire!(pool, Float64, 2)]),
+            # identity(...) wrappers are transparent to both checker and poisoner
+            :(identity(acquire!(pool, Float64, 2))), :((identity(acquire!(pool, Float64, 2)),)),
+            :(identity((acquire!(pool, Float64, 2),))), :(identity(v .= 1.0)),
         ]
         safe = [:(sum(v)), :((; s)), :((; s, n = length(v))), :nothing]
         for tail in escaping

@@ -2696,6 +2696,14 @@ end
 _is_identity_call(x) = x === :identity ||
     (x isa Expr && x.head == :. && x.args == [:Base, QuoteNode(:identity)])
 
+"""Strip any `identity(...)` / `Base.identity(...)` wrappers — they are transparent."""
+function _unwrap_identity(x)
+    while x isa Expr && x.head == :call && length(x.args) >= 2 && _is_identity_call(x.args[1])
+        x = x.args[2]
+    end
+    return x
+end
+
 function _find_direct_exposure(expr, acquired)
     found = Set{Symbol}()
     if expr isa Symbol
@@ -2773,6 +2781,9 @@ function _incidental_exposure(expr, tainted, pool_name)
     if expr.head == :return && !isempty(expr.args)
         return _incidental_exposure(expr.args[1], tainted, pool_name)
     end
+    # identity(x) is transparent (as in `_find_direct_exposure` and the poisoner)
+    unwrapped = _unwrap_identity(expr)
+    unwrapped !== expr && return _incidental_exposure(unwrapped, tainted, pool_name)
     if _is_acquire_call(expr, pool_name)
         return (:acquire_call, expr)
     elseif expr.head in (:tuple, :vect) && _tuple_contains_acquire_call(expr, pool_name) &&
@@ -3233,25 +3244,21 @@ end
 """
     _tuple_contains_acquire_call(expr, target_pool) -> Bool
 
-Check if a tuple/vect literal contains any acquire calls as values.
-Unlike `_literal_contains_acquired`, this checks the RHS calls directly,
-so it works even when `vars` is empty (solves the chicken-and-egg problem).
+Check if a tuple/vect/NamedTuple literal (`(a, b)`, `[a]`, `(k = a,)`, `(; k = a)`)
+contains any direct acquire call as an element, looking through `identity(...)`
+and nested literals. Unlike `_literal_contains_acquired`, this checks the RHS
+calls directly, so it works even when `vars` is empty (solves the
+chicken-and-egg problem).
 """
 function _tuple_contains_acquire_call(expr, target_pool)
     expr isa Expr || return false
     if expr.head in (:tuple, :vect, :parameters)
         for arg in expr.args
-            if Meta.isexpr(arg, :(=)) && length(arg.args) >= 2
-                # NamedTuple value: (wv=zeros!(pool, ...), ...)
-                _is_acquire_call(arg.args[2], target_pool) && return true
-                _tuple_contains_acquire_call(arg.args[2], target_pool) && return true
-            elseif Meta.isexpr(arg, :kw) && length(arg.args) >= 2
-                _is_acquire_call(arg.args[2], target_pool) && return true
-                _tuple_contains_acquire_call(arg.args[2], target_pool) && return true
-            else
-                _is_acquire_call(arg, target_pool) && return true
-                _tuple_contains_acquire_call(arg, target_pool) && return true
-            end
+            # NamedTuple value: (wv=zeros!(pool, ...), ...) / (; wv=zeros!(pool, ...))
+            val = Meta.isexpr(arg, (:(=), :kw)) && length(arg.args) >= 2 ? arg.args[2] : arg
+            val = _unwrap_identity(val)
+            _is_acquire_call(val, target_pool) && return true
+            _tuple_contains_acquire_call(val, target_pool) && return true
         end
     end
     return false
