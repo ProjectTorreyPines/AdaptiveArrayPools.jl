@@ -2794,14 +2794,6 @@ end
             end
         end
         @test contains(warn_output, "PoolContainerEscapeWarning")
-
-        # semicolon-NamedTuple container of an acquire call is a container too
-        @test _extract_container_vars(
-            quote
-                vac = (; wv = zeros!(pool, Float64, 3))
-                vac.wv
-            end, :pool
-        ) == Set([:vac])
         @test contains(warn_output, "vac")
         @test contains(warn_output, "Declarations:")
         @test contains(warn_output, "Escaping return:")
@@ -2815,11 +2807,20 @@ end
             end
         end
         @test !contains(warn_output2, "PoolContainerEscapeWarning")
+
+        # semicolon-NamedTuple container of an acquire call is a container too
+        @test _extract_container_vars(
+            quote
+                vac = (; wv = zeros!(pool, Float64, 3))
+                vac.wv
+            end, :pool
+        ) == Set([:vac])
     end
 
     # ==============================================================================
     # Incidental-tail escape detection: direct acquire-call tails, broadcast-assign
-    # tails, and assignment tails. Form-based severity: a function-form tail or an
+    # tails, assignment tails, and literals holding a direct acquire call.
+    # Form-based severity: a function-form tail or an
     # explicit `return` (definite escape to the enclosing function's caller) always
     # errors; a block-form implicit tail (value may be discarded) reports at the
     # ESCAPE_LINT severity — "warn" by default.
@@ -3291,7 +3292,7 @@ end
             @test !_is_dotted_assign_head(1)  # non-Symbol head
         end
 
-        @testset "_incidental_exposure: detects the three incidental patterns" begin
+        @testset "_incidental_exposure: detects the incidental patterns" begin
             # w1: direct acquire-family call tail — no tainted vars needed at all
             hit = _incidental_exposure(:(acquire!(pool, Float64, 4)), Set{Symbol}(), :pool)
             @test hit !== nothing
@@ -3355,9 +3356,6 @@ end
             msg = _lint_message(:acquire_call, acquire_expr, acquire_expr)
             @test occursin("last expression", msg)
             @test occursin("nothing", msg)
-
-            lit_expr = :((acquire!(pool, Float64, 2),))
-            @test occursin("holding a direct acquire call", _lint_message(:literal_acquire_call, lit_expr, lit_expr))
             @test occursin("escape_lint", msg)
             @test occursin("safety/compile-time", msg)     # docs pointer
             @test occursin("\"warn\" (default)", msg)       # warn is now the default severity
@@ -3371,6 +3369,12 @@ end
 
             assign_expr = :(v = acquire!(pool, Float64, 4))
             msg = _lint_message(:assign, :v, assign_expr)
+            @test occursin("last expression", msg)
+            @test occursin("nothing", msg)
+
+            lit_expr = :((acquire!(pool, Float64, 2),))
+            msg = _lint_message(:literal_acquire_call, lit_expr, lit_expr)
+            @test occursin("holding a direct acquire call", msg)
             @test occursin("last expression", msg)
             @test occursin("nothing", msg)
         end

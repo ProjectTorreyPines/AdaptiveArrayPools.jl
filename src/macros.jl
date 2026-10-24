@@ -15,7 +15,8 @@ const _MACRO_TYPED_UPGRADES = VERSION >= v"1.12-"
 """Per-return-point escape detail: which expression, at which line, leaks which vars.
 
 `incidental` carries the `(kind, detail)` pair for a Stage-2 incidental-tail escape
-(a direct acquire call / broadcast-assign / assignment tail — see `_incidental_exposure`)
+(a direct acquire call / broadcast-assign / assignment tail, or a literal holding a
+direct acquire call — see `_incidental_exposure`)
 and is `nothing` for a Stage-1 intentional-return escape. Storing it at throw time
 lets `showerror` render the message without re-classifying the expression, and is
 what distinguishes the two error layouts (no `vars`-emptiness sentinel)."""
@@ -393,9 +394,9 @@ first actual use throws an `EscapedPoolUseError` carrying the variable name,
 shape, and scope location.
 
 Detected patterns cover the direct-return shapes (a bare variable, `return v`,
-container literals like `(v, w)` / `[v]`), and three additional "incidental"
-tail patterns that don't *look* like a `return` but still expose a pool-backed
-array as the scope's value:
+container literals like `(v, w)` / `[v]` / `(; v)`), and four additional
+"incidental" tail patterns that don't *look* like a `return` but still expose a
+pool-backed array as the scope's value (also when wrapped in `identity(...)`):
 
 ```julia
 @with_pool pool begin
@@ -411,6 +412,10 @@ end
 @with_pool pool begin
     v = acquire!(pool, Float64, 100)
     y = v                           # ← assignment tail (evaluates to its RHS)
+end
+
+@with_pool pool begin
+    (acquire!(pool, Float64, 100), 1)   # ← literal holding a direct acquire call
 end
 ```
 
@@ -2888,9 +2893,10 @@ assignment, acquire) still execute; only the *yielded value* changes. Explicit
 `return` nodes are never rewritten (they are hard errors in
 `_check_compile_time_escape`). Applied only under `ESCAPE_LINT == "warn"`, in
 lockstep with the checker's warn diagnostics: the tail shapes rewritten here
-mirror `_find_direct_exposure` (bare var, tuple/vect/NamedTuple literals,
-`identity` unwrap) and `_incidental_exposure` (acquire-call tail,
-broadcast-assign tail, assignment tail).
+mirror `_find_direct_exposure` (bare var, tuple/vect/NamedTuple literals incl.
+the `(; v)` shorthand, `identity` unwrap) and `_incidental_exposure` (acquire-call
+tail, broadcast-assign tail, assignment tail, literal holding an acquire call,
+`identity` unwrap). The "checker ⇔ poisoner lockstep" test pins this agreement.
 """
 function _poison_block_tails(expr, pool_name, source::Union{LineNumberNode, Nothing})
     acquired = _extract_ordered_acquired(expr, pool_name)
@@ -3139,17 +3145,19 @@ Checks if the block/function body's return expression directly contains
 a pool-backed variable. This catches the most common beginner mistake
 at zero runtime cost.
 
-Stage 1 — bare symbol (`v`), `return v`, and container patterns (`(v, w)`,
-`[v]`, `(key=v,)`) — always throws `PoolEscapeError`. Stage 2 — the three
-incidental-tail patterns (direct acquire-call tail, broadcast-assign tail,
-assignment tail) — resolves severity by form: with `function_form = true`
-(the scope is a function definition, so the tail IS the function's return
-value), or when the tail is an explicit `return` (which returns from the
-enclosing function even in block form — a `begin` block is not a function
-boundary), the escape is definite and always throws. A block-form implicit
-tail — whose value may simply be discarded by the surrounding code — is
-reported at the `ESCAPE_LINT` severity instead (default `"warn"`; `"error"`
-promotes it, `"off"` disables Stage 2 entirely).
+Stage 1 — direct exposure: bare symbol (`v`), `return v`, and container
+patterns (`(v, w)`, `[v]`, `(key=v,)`, `(; v)`). Stage 2 — the incidental-tail
+patterns (direct acquire-call tail, broadcast-assign tail, assignment tail,
+literal holding a direct acquire call). Both stages look through `identity(...)`
+and resolve severity by form: with `function_form = true` (the scope is a
+function definition, so the tail IS the function's return value), or when the
+tail is an explicit `return` (which returns from the enclosing function even in
+block form — a `begin` block is not a function boundary), the escape is definite
+and always throws `PoolEscapeError`. A block-form implicit tail — whose value
+may simply be discarded by the surrounding code — is reported at the
+`ESCAPE_LINT` severity instead (default `"warn"`: `@warn` + `EscapedPoolArray`
+guard; `"error"` throws; `"off"` skips Stage-1 block tails and disables Stage 2
+entirely).
 
 Skipped when `STATIC_POOLING = false` (pooling disabled, acquire returns normal arrays).
 """

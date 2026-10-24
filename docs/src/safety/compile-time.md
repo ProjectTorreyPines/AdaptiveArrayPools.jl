@@ -67,10 +67,10 @@ in expression starting at myfile.jl:1
 
 ### Incidental Tail Patterns
 
-Beyond the direct-return patterns above, three additional tail shapes are
+Beyond the direct-return patterns above, four additional tail shapes are
 checked — they don't *look* like a `return`, but the scope's last expression
 still evaluates to a pool-backed array, which then escapes as the scope's
-value:
+value (also when wrapped in `identity(...)`):
 
 ```julia
 @with_pool pool begin
@@ -86,6 +86,10 @@ end
 @with_pool pool begin
     v = acquire!(pool, Float64, 100)
     y = v                           # ← assignment tail
+end
+
+@with_pool pool begin
+    (acquire!(pool, Float64, 100), 1)   # ← literal holding a direct acquire call
 end
 ```
 
@@ -161,8 +165,10 @@ end
 ```
 
 Iterating a container *literal* of pool arrays (`for c in (v, w)`) is tracked:
-`c` is a pool-backed array. Iterating a container held in a *variable*
-(`t = (v, w); for c in t`) and destructuring iteration (`for (a, b) in ...`) are
-not tracked. With the default `runtime_check = 0`, nothing guards those shapes;
-with `runtime_check = 1` the [runtime layer](runtime.md) poisons released memory
-(and, on Julia ≥ 1.12, also structurally invalidates the arrays).
+`c` is a pool-backed array inside the loop. Iterating a container held in a
+*variable* (`t = (v, w); for c in t`) and destructuring iteration
+(`for (a, b) in ...`) are not tracked at compile time. With the default
+`runtime_check = 0`, nothing guards those shapes. With `runtime_check = 1`, the
+[runtime layer](runtime.md) inspects the scope's return value at exit and throws
+`PoolRuntimeEscapeError` if it still references pool memory — including through
+a `Tuple` or `NamedTuple` — on every supported Julia version.
