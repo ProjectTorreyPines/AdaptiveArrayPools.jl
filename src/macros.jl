@@ -2388,25 +2388,25 @@ function _extract_acquired_vars(expr, target_pool, vars = Set{Symbol}())
         elseif expr.head == :for && length(expr.args) >= 2
             # `for k in x` parses as `Expr(:for, :(k = x), body)` — the spec binds
             # an element, it is not an alias assignment
-            saved = _bind_iteration_spec!(vars, expr.args[1], target_pool)
+            shadowed = _bind_iteration_spec!(vars, expr.args[1], target_pool)
             _extract_acquired_vars(expr.args[2], target_pool, vars)
-            _restore_loop_bindings!(vars, saved)
+            union!(vars, shadowed)
         elseif expr.head == :generator && length(expr.args) >= 2
             # Specs first (they bind before the body runs; for `:flatten` the inner
             # generator IS this body), then filter conditions, then the body
-            saved = Pair{Symbol, Bool}[]
+            shadowed = Symbol[]
             for spec in expr.args[2:end]
                 if Meta.isexpr(spec, :filter) && length(spec.args) >= 2
                     for s in spec.args[2:end]
-                        append!(saved, _bind_iteration_spec!(vars, s, target_pool))
+                        append!(shadowed, _bind_iteration_spec!(vars, s, target_pool))
                     end
                     _extract_acquired_vars(spec.args[1], target_pool, vars)
                 else
-                    append!(saved, _bind_iteration_spec!(vars, spec, target_pool))
+                    append!(shadowed, _bind_iteration_spec!(vars, spec, target_pool))
                 end
             end
             _extract_acquired_vars(expr.args[1], target_pool, vars)
-            _restore_loop_bindings!(vars, saved)
+            union!(vars, shadowed)
         elseif expr.head == :tuple
             # A `name = value` child of a tuple is a NamedTuple field (lowering rejects
             # `((x = 1), 2)`), never an assignment — only its value is walked
@@ -2434,7 +2434,7 @@ function _extract_acquired_vars(expr, target_pool, vars = Set{Symbol}())
 end
 
 """
-    _bind_iteration_spec!(vars, spec, target_pool) -> Vector{Pair{Symbol, Bool}}
+    _bind_iteration_spec!(vars, spec, target_pool) -> Vector{Symbol}
 
 Apply one `for`/generator iteration spec (`lhs = iter`, or a `:block` of them for
 `for a in x, b in y`) to the taint set. Iterating yields the iterable's ELEMENTS:
@@ -2442,44 +2442,39 @@ an element of a pool-backed array is a value, so a Symbol iterable never taints
 the loop variable. Only a container literal exposing a tainted var
 (`for c in (v, w)`) yields pool-backed elements and taints it.
 
-A non-`outer` loop variable is a fresh local: its taint inside the body is set
-by the spec alone, and the outer binding of the same name is untouched by the
-loop. Returns `name => was_tainted` for each such variable so the caller can
-restore the outer state after the body (`_restore_loop_bindings!`). An `outer`
-variable persists after the loop and is never un-tainted (a zero-trip loop keeps
-the old value); a destructuring `lhs` is not tracked.
+A non-`outer` loop variable is a fresh local, so an outer binding of the same
+name is un-tainted for the body and returned, for the caller to restore after
+the body. `outer` never un-taints (a zero-trip loop keeps the old value), and a
+destructuring `lhs` is not tracked.
+
+A literal-tainted loop variable deliberately stays tainted after the loop: the
+escape and mutation checkers are flow-insensitive over this one name set, so
+un-tainting it would hide a `return c` or `resize!(c, …)` INSIDE the loop. The
+cost is a conservative (loud) false positive when a same-named outer variable is
+used after the loop.
 """
 function _bind_iteration_spec!(vars, spec, target_pool)
-    saved = Pair{Symbol, Bool}[]
     if Meta.isexpr(spec, :block)
+        shadowed = Symbol[]
         for s in spec.args
             s isa LineNumberNode && continue
-            append!(saved, _bind_iteration_spec!(vars, s, target_pool))
+            append!(shadowed, _bind_iteration_spec!(vars, s, target_pool))
         end
-        return saved
+        return shadowed
     end
-    (Meta.isexpr(spec, :(=)) && length(spec.args) >= 2) || return saved
+    (Meta.isexpr(spec, :(=)) && length(spec.args) >= 2) || return Symbol[]
     lhs, iter = spec.args[1], spec.args[2]
     _extract_acquired_vars(iter, target_pool, vars)   # nested acquires in the iterable
     outer = Meta.isexpr(lhs, :outer)
     name = outer ? lhs.args[1] : lhs
-    name isa Symbol || return saved
-    outer || push!(saved, name => (name in vars))
+    name isa Symbol || return Symbol[]
     if Meta.isexpr(iter, (:tuple, :vect)) && _literal_contains_acquired(iter, vars)
         push!(vars, name)
-    elseif !outer
+    elseif !outer && name in vars
         delete!(vars, name)
+        return [name]
     end
-    return saved
-end
-
-# Undo `_bind_iteration_spec!` after the loop/generator body: each non-`outer`
-# loop variable's name goes back to its pre-loop taint state (innermost last-in).
-function _restore_loop_bindings!(vars, saved)
-    for (name, was_tainted) in Iterators.reverse(saved)
-        was_tainted ? push!(vars, name) : delete!(vars, name)
-    end
-    return vars
+    return Symbol[]
 end
 
 """

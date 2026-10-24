@@ -1318,15 +1318,16 @@ end
                 end
             end
         ) == [:k, :order, :v]
-        # generator specs are bound before the body runs (and `c` stays generator-local)
+        # generator specs are bound before the body runs
         @test taint(
             quote
                 v = acquire!(pool, Int, n); best = nothing
                 s = sum((best = c) for c in (v,))
             end
-        ) == [:best, :v]
-        # a loop variable is a fresh local: its taint does not leak into a same-named
-        # outer binding after the loop (regression: `c = 1.0` tail became a guard)
+        ) == [:best, :c, :v]
+        # Known limitation (conservative, loud): a literal-tainted loop variable stays
+        # tainted after the loop, so a same-named OUTER variable used afterwards is
+        # flagged — the price of the in-loop checks below
         @test taint(
             quote
                 v = acquire!(pool, Int, n); c = 1.0
@@ -1335,22 +1336,38 @@ end
                 end
                 c
             end
-        ) == [:v]
-        @test (
+        ) == [:c, :v]
+        # the escape/mutation checkers are flow-insensitive over one taint set, so the
+        # loop variable must stay tainted for them: a `return c` or a structural
+        # mutation of `c` INSIDE a loop over a literal of pool arrays is still caught
+        @test _expansion_escape_error(
+            :(
+                @with_pool pool begin
+                    v = acquire!(pool, Float64, 3)
+                    for c in (v,)
+                        return c
+                    end
+                    nothing
+                end
+            )
+        )
+        mut_err = try
             macroexpand(
                 @__MODULE__, :(
                     @with_pool pool begin
                         v = acquire!(pool, Float64, 3)
-                        c = Float64[]
                         for c in (v,)
-                            sum(c)
+                            resize!(c, 0)
                         end
-                        push!(c, 1.0)
                         nothing
                     end
                 )
-            ); true
-        )    # no PoolMutationError on the outer `c`
+            )
+            nothing
+        catch e
+            e isa LoadError ? e.error : e
+        end
+        @test mut_err isa AdaptiveArrayPools.PoolMutationError
         # `outer` loop variable over a literal of pool arrays outlives the loop
         @test taint(
             quote
@@ -1375,14 +1392,14 @@ end
                     best = c
                 end
             end
-        ) == [:best, :v, :w]    # `c` is pool-backed inside the loop, loop-local after it
+        ) == [:best, :c, :v, :w]
         @test taint(
             quote
                 v = acquire!(pool, Int, n); for c in [v]
                     d = c
                 end
             end
-        ) == [:d, :v]
+        ) == [:c, :d, :v]
         @test taint(
             quote
                 order = acquire!(pool, Int, n); for outer k in order
