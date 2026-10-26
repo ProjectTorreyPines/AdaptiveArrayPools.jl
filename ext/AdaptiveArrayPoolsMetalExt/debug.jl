@@ -310,11 +310,11 @@ end
     )
     calls = [
         :(
-                _check_tp_metal_overlap(
-                    getfield(pool, $(QuoteNode(f))), arr_buf, arr_off, arr_end,
-                    current_depth, pool, return_site, original_val
-                )
+            _check_tp_metal_overlap(
+                getfield(pool, $(QuoteNode(f))), arr_buf, arr_off, arr_end,
+                current_depth, pool, return_site, original_val
             )
+        )
             for f in METAL_FIXED_SLOT_FIELDS
     ]
     return quote

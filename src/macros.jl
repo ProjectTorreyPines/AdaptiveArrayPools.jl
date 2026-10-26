@@ -15,7 +15,8 @@ const _MACRO_TYPED_UPGRADES = VERSION >= v"1.12-"
 """Per-return-point escape detail: which expression, at which line, leaks which vars.
 
 `incidental` carries the `(kind, detail)` pair for a Stage-2 incidental-tail escape
-(a direct acquire call / broadcast-assign / assignment tail — see `_incidental_exposure`)
+(a direct acquire call / broadcast-assign / assignment tail, or a literal holding a
+direct acquire call — see `_incidental_exposure`)
 and is `nothing` for a Stage-1 intentional-return escape. Storing it at throw time
 lets `showerror` render the message without re-classifying the expression, and is
 what distinguishes the two error layouts (no `vars`-emptiness sentinel)."""
@@ -393,9 +394,9 @@ first actual use throws an `EscapedPoolUseError` carrying the variable name,
 shape, and scope location.
 
 Detected patterns cover the direct-return shapes (a bare variable, `return v`,
-container literals like `(v, w)` / `[v]`), and three additional "incidental"
-tail patterns that don't *look* like a `return` but still expose a pool-backed
-array as the scope's value:
+container literals like `(v, w)` / `[v]` / `(; v)`), and four additional
+"incidental" tail patterns that don't *look* like a `return` but still expose a
+pool-backed array as the scope's value (also when wrapped in `identity(...)`):
 
 ```julia
 @with_pool pool begin
@@ -411,6 +412,10 @@ end
 @with_pool pool begin
     v = acquire!(pool, Float64, 100)
     y = v                           # ← assignment tail (evaluates to its RHS)
+end
+
+@with_pool pool begin
+    (acquire!(pool, Float64, 100), 1)   # ← literal holding a direct acquire call
 end
 ```
 
@@ -2031,8 +2036,9 @@ function _transform_return_stmts(
     )
     expr isa Expr || return expr
 
-    # Don't recurse into nested function definitions or quoted AST
-    if expr.head in (:function, :->, :quote)
+    # Don't recurse into nested function definitions (long- or short-form) or quoted
+    # AST — a `return` there exits the nested function, never this scope
+    if expr.head in (:function, :->, :quote) || (expr.head == :(=) && _is_function_def(expr))
         return expr
     end
 
@@ -2114,9 +2120,9 @@ function _transform_return_stmts(
     # Other expressions: recurse with current_lnn
     new_args = Any[
         _transform_return_stmts(
-                arg, pool_name, current_lnn;
-                rewind_call, entry_depth_guard
-            ) for arg in expr.args
+            arg, pool_name, current_lnn;
+            rewind_call, entry_depth_guard
+        ) for arg in expr.args
     ]
     return Expr(expr.head, new_args...)
 end
@@ -2352,6 +2358,9 @@ function _extract_acquired_vars(expr, target_pool, vars = Set{Symbol}())
             for arg in expr.args
                 _extract_acquired_vars(arg, target_pool, vars)
             end
+        elseif expr.head == :(=) && _is_function_def(expr)
+            # Short-form `f(x) = …` is a nested scope, skipped like long-form below
+            return vars
         elseif expr.head == :(=) && length(expr.args) >= 2
             lhs = expr.args[1]
             rhs = expr.args[2]
@@ -2376,6 +2385,38 @@ function _extract_acquired_vars(expr, target_pool, vars = Set{Symbol}())
             end
             # Recurse into RHS (for nested blocks with acquire calls)
             _extract_acquired_vars(rhs, target_pool, vars)
+        elseif expr.head == :for && length(expr.args) >= 2
+            # `for k in x` parses as `Expr(:for, :(k = x), body)` — the spec binds
+            # an element, it is not an alias assignment
+            shadowed = _bind_iteration_spec!(vars, expr.args[1], target_pool)
+            _extract_acquired_vars(expr.args[2], target_pool, vars)
+            union!(vars, shadowed)
+        elseif expr.head == :generator && length(expr.args) >= 2
+            # Specs first (they bind before the body runs; for `:flatten` the inner
+            # generator IS this body), then filter conditions, then the body
+            shadowed = Symbol[]
+            for spec in expr.args[2:end]
+                if Meta.isexpr(spec, :filter) && length(spec.args) >= 2
+                    for s in spec.args[2:end]
+                        append!(shadowed, _bind_iteration_spec!(vars, s, target_pool))
+                    end
+                    _extract_acquired_vars(spec.args[1], target_pool, vars)
+                else
+                    append!(shadowed, _bind_iteration_spec!(vars, spec, target_pool))
+                end
+            end
+            _extract_acquired_vars(expr.args[1], target_pool, vars)
+            union!(vars, shadowed)
+        elseif expr.head == :tuple
+            # A `name = value` child of a tuple is a NamedTuple field (lowering rejects
+            # `((x = 1), 2)`), never an assignment — only its value is walked
+            for arg in expr.args
+                if Meta.isexpr(arg, :(=)) && length(arg.args) >= 2
+                    _extract_acquired_vars(arg.args[2], target_pool, vars)
+                else
+                    _extract_acquired_vars(arg, target_pool, vars)
+                end
+            end
         else
             # Skip scope-introducing expressions whose `return` does NOT
             # return from the enclosing function (function, ->, macro).
@@ -2390,6 +2431,50 @@ function _extract_acquired_vars(expr, target_pool, vars = Set{Symbol}())
         end
     end
     return vars
+end
+
+"""
+    _bind_iteration_spec!(vars, spec, target_pool) -> Vector{Symbol}
+
+Apply one `for`/generator iteration spec (`lhs = iter`, or a `:block` of them for
+`for a in x, b in y`) to the taint set. Iterating yields the iterable's ELEMENTS:
+an element of a pool-backed array is a value, so a Symbol iterable never taints
+the loop variable. Only a container literal exposing a tainted var
+(`for c in (v, w)`) yields pool-backed elements and taints it.
+
+A non-`outer` loop variable is a fresh local, so an outer binding of the same
+name is un-tainted for the body and returned, for the caller to restore after
+the body. `outer` never un-taints (a zero-trip loop keeps the old value), and a
+destructuring `lhs` is not tracked.
+
+A literal-tainted loop variable deliberately stays tainted after the loop: the
+escape and mutation checkers are flow-insensitive over this one name set, so
+un-tainting it would hide a `return c` or `resize!(c, …)` INSIDE the loop. The
+cost is a conservative (loud) false positive when a same-named outer variable is
+used after the loop.
+"""
+function _bind_iteration_spec!(vars, spec, target_pool)
+    if Meta.isexpr(spec, :block)
+        shadowed = Symbol[]
+        for s in spec.args
+            s isa LineNumberNode && continue
+            append!(shadowed, _bind_iteration_spec!(vars, s, target_pool))
+        end
+        return shadowed
+    end
+    (Meta.isexpr(spec, :(=)) && length(spec.args) >= 2) || return Symbol[]
+    lhs, iter = spec.args[1], spec.args[2]
+    _extract_acquired_vars(iter, target_pool, vars)   # nested acquires in the iterable
+    outer = Meta.isexpr(lhs, :outer)
+    name = outer ? lhs.args[1] : lhs
+    name isa Symbol || return Symbol[]
+    if Meta.isexpr(iter, (:tuple, :vect)) && _literal_contains_acquired(iter, vars)
+        push!(vars, name)
+    elseif !outer && name in vars
+        delete!(vars, name)
+        return [name]
+    end
+    return Symbol[]
 end
 
 """
@@ -2432,6 +2517,7 @@ Tracks LineNumberNodes through blocks. Skips nested function definitions."""
 function _collect_explicit_returns!(values, expr, current_line::Union{Int, Nothing})
     expr isa Expr || return
     expr.head in (:function, :(->)) && return
+    expr.head == :(=) && _is_function_def(expr) && return   # short-form `f(x) = …`
     if expr.head == :return
         push!(values, (expr, current_line))
         return
@@ -2504,7 +2590,9 @@ pass over top-level block statements, correctly handling statement ordering.
 
 For top-level assignments, taint is added/removed as statements are scanned
 in source order. For nested blocks (if/for/while), recursion adds taint
-conservatively (never removes inside branches — can't resolve control flow).
+conservatively (never removes inside branches — can't resolve control flow);
+`for`/generator iteration specs bind elements, not aliases (see
+`_bind_iteration_spec!`).
 
 Tuple destructuring is handled atomically: all RHS values are evaluated against
 the current taint set before any LHS updates are applied.
@@ -2517,6 +2605,8 @@ function _extract_ordered_acquired(expr, target_pool)
     tainted = Set{Symbol}()
     for arg in expr.args
         arg isa LineNumberNode && continue
+        # Short-form `f(x) = …` is a nested scope: its body taints nothing here
+        Meta.isexpr(arg, :(=)) && _is_function_def(arg) && continue
         if arg isa Expr && arg.head == :(=) && length(arg.args) >= 2
             lhs = arg.args[1]
             rhs = arg.args[2]
@@ -2574,12 +2664,12 @@ Only catches high-confidence patterns:
 - Bare Symbol: `v`
 - Explicit return: `return v`
 - Tuple/array literal containing a var: `(v, w)`, `[v, w]`
-- NamedTuple-style kw: `(a=v,)`
+- NamedTuple-style kw: `(a=v,)`, `(; a=v)`, and the shorthand `(; v)`
 
 Does NOT recurse into function calls (can't know what `f(v)` returns).
 """
 
-"""Check if a literal expression (symbol, identity call, tuple/vect) transitively contains any acquired var."""
+"""Check if a literal expression (symbol, identity call, tuple/vect, `(; …)` parameters) transitively contains any acquired var."""
 function _literal_contains_acquired(expr, acquired)
     expr isa Symbol && return expr in acquired
     if expr isa Expr
@@ -2587,7 +2677,7 @@ function _literal_contains_acquired(expr, acquired)
         if expr.head == :call && length(expr.args) >= 2 && expr.args[1] === :identity
             return _literal_contains_acquired(expr.args[2], acquired)
         end
-        if expr.head in (:tuple, :vect)
+        if expr.head in (:tuple, :vect, :parameters)
             for arg in expr.args
                 if Meta.isexpr(arg, :(=)) && length(arg.args) >= 2
                     _literal_contains_acquired(arg.args[2], acquired) && return true
@@ -2605,6 +2695,14 @@ end
 """Check if a call target is `identity` or `Base.identity`."""
 _is_identity_call(x) = x === :identity ||
     (x isa Expr && x.head == :. && x.args == [:Base, QuoteNode(:identity)])
+
+"""Strip any `identity(...)` / `Base.identity(...)` wrappers — they are transparent."""
+function _unwrap_identity(x)
+    while x isa Expr && x.head == :call && length(x.args) >= 2 && _is_identity_call(x.args[1])
+        x = x.args[2]
+    end
+    return x
+end
 
 function _find_direct_exposure(expr, acquired)
     found = Set{Symbol}()
@@ -2630,10 +2728,12 @@ function _find_direct_exposure(expr, acquired)
                 end
             end
         elseif expr.head == :parameters
-            # (; a=v) style named tuple parameters
+            # (; a=v) style named tuple parameters, and the (; v) shorthand
             for arg in expr.args
                 if Meta.isexpr(arg, :kw) && length(arg.args) >= 2
                     union!(found, _find_direct_exposure(arg.args[2], acquired))
+                elseif arg isa Symbol
+                    union!(found, _find_direct_exposure(arg, acquired))
                 end
             end
         elseif expr.head == :call && length(expr.args) >= 2 && _is_identity_call(expr.args[1])
@@ -2654,7 +2754,7 @@ end
 """
     _incidental_exposure(expr, tainted, pool_name) -> Union{Nothing, Tuple{Symbol, Any}}
 
-Detect the three incidental pool-backed tail patterns the direct-exposure ERROR
+Detect the incidental pool-backed tail patterns the direct-exposure ERROR
 does not cover (their value escapes as the block's return value, but the syntax
 does not *look* like a return):
 
@@ -2663,6 +2763,10 @@ does not *look* like a return):
                                  (also `x[...] .= v` on an acquired base)
 - `(:assign, var)`            — tail is `x = <acquire call>` or `x = <acquired var>`
                                  (assignment evaluates to its RHS value)
+- `(:literal_acquire_call, expr)` — tail is a tuple/vect/NamedTuple literal holding
+                                 a direct acquire call (`(acquire!(pool, T, n),)`);
+                                 a literal that also exposes an acquired var is left
+                                 to the direct-exposure stage, so it warns once
 
 `ret_expr` values arrive here either as the bare tail expression (implicit
 return) or as the whole `Expr(:return, ...)` node (explicit `return`, per
@@ -2677,8 +2781,14 @@ function _incidental_exposure(expr, tainted, pool_name)
     if expr.head == :return && !isempty(expr.args)
         return _incidental_exposure(expr.args[1], tainted, pool_name)
     end
+    # identity(x) is transparent (as in `_find_direct_exposure` and the poisoner)
+    unwrapped = _unwrap_identity(expr)
+    unwrapped !== expr && return _incidental_exposure(unwrapped, tainted, pool_name)
     if _is_acquire_call(expr, pool_name)
         return (:acquire_call, expr)
+    elseif expr.head in (:tuple, :vect) && _tuple_contains_acquire_call(expr, pool_name) &&
+            isempty(_find_direct_exposure(expr, tainted))
+        return (:literal_acquire_call, expr)
     elseif _is_dotted_assign_head(expr.head) && length(expr.args) >= 1
         lhs = expr.args[1]
         base = Meta.isexpr(lhs, :ref) ? lhs.args[1] : lhs
@@ -2721,6 +2831,8 @@ function _lint_message(kind, detail, ret_expr; guarded::Bool = false)
     tail = sprint(Base.show_unquoted, ret_expr)
     what = if kind === :acquire_call
         "is a direct acquire call whose pool-backed array"
+    elseif kind === :literal_acquire_call
+        "is a container literal holding a direct acquire call, whose pool-backed array"
     elseif kind === :broadcast_assign
         "writes into the pool-backed array `$(detail)`, whose value"
     elseif kind === :bare_var
@@ -2776,9 +2888,10 @@ assignment, acquire) still execute; only the *yielded value* changes. Explicit
 `return` nodes are never rewritten (they are hard errors in
 `_check_compile_time_escape`). Applied only under `ESCAPE_LINT == "warn"`, in
 lockstep with the checker's warn diagnostics: the tail shapes rewritten here
-mirror `_find_direct_exposure` (bare var, tuple/vect/NamedTuple literals,
-`identity` unwrap) and `_incidental_exposure` (acquire-call tail,
-broadcast-assign tail, assignment tail).
+mirror `_find_direct_exposure` (bare var, tuple/vect/NamedTuple literals incl.
+the `(; v)` shorthand, `identity` unwrap) and `_incidental_exposure` (acquire-call
+tail, broadcast-assign tail, assignment tail, literal holding an acquire call,
+`identity` unwrap). The "checker ⇔ poisoner lockstep" test pins this agreement.
 """
 function _poison_block_tails(expr, pool_name, source::Union{LineNumberNode, Nothing})
     acquired = _extract_ordered_acquired(expr, pool_name)
@@ -2865,6 +2978,9 @@ function _poison_literal(expr, acquired, pool_name, file, line)
                 arg.head, arg.args[1],
                 _poison_literal_value(arg.args[2], acquired, pool_name, file, line)
             )
+        elseif expr.head === :parameters && arg isa Symbol && arg in acquired
+            # `(; v)` shorthand slots accept only a name, never a call: expand to `v = guard`
+            Expr(:kw, arg, _guard_expr(arg, arg, file, line))
         else
             _poison_literal_value(arg, acquired, pool_name, file, line)
         end
@@ -2903,7 +3019,7 @@ function _collect_acquired_in_literal!(found, expr, acquired_keys)
     elseif expr isa Expr
         if expr.head == :call && length(expr.args) >= 2 && expr.args[1] === :identity
             _collect_acquired_in_literal!(found, expr.args[2], acquired_keys)
-        elseif expr.head in (:tuple, :vect)
+        elseif expr.head in (:tuple, :vect, :parameters)
             for arg in expr.args
                 if Meta.isexpr(arg, :(=)) && length(arg.args) >= 2
                     _collect_acquired_in_literal!(found, arg.args[2], acquired_keys)
@@ -3024,17 +3140,19 @@ Checks if the block/function body's return expression directly contains
 a pool-backed variable. This catches the most common beginner mistake
 at zero runtime cost.
 
-Stage 1 — bare symbol (`v`), `return v`, and container patterns (`(v, w)`,
-`[v]`, `(key=v,)`) — always throws `PoolEscapeError`. Stage 2 — the three
-incidental-tail patterns (direct acquire-call tail, broadcast-assign tail,
-assignment tail) — resolves severity by form: with `function_form = true`
-(the scope is a function definition, so the tail IS the function's return
-value), or when the tail is an explicit `return` (which returns from the
-enclosing function even in block form — a `begin` block is not a function
-boundary), the escape is definite and always throws. A block-form implicit
-tail — whose value may simply be discarded by the surrounding code — is
-reported at the `ESCAPE_LINT` severity instead (default `"warn"`; `"error"`
-promotes it, `"off"` disables Stage 2 entirely).
+Stage 1 — direct exposure: bare symbol (`v`), `return v`, and container
+patterns (`(v, w)`, `[v]`, `(key=v,)`, `(; v)`). Stage 2 — the incidental-tail
+patterns (direct acquire-call tail, broadcast-assign tail, assignment tail,
+literal holding a direct acquire call). Both stages look through `identity(...)`
+and resolve severity by form: with `function_form = true` (the scope is a
+function definition, so the tail IS the function's return value), or when the
+tail is an explicit `return` (which returns from the enclosing function even in
+block form — a `begin` block is not a function boundary), the escape is definite
+and always throws `PoolEscapeError`. A block-form implicit tail — whose value
+may simply be discarded by the surrounding code — is reported at the
+`ESCAPE_LINT` severity instead (default `"warn"`: `@warn` + `EscapedPoolArray`
+guard; `"error"` throws; `"off"` skips Stage-1 block tails and disables Stage 2
+entirely).
 
 Skipped when `STATIC_POOLING = false` (pooling disabled, acquire returns normal arrays).
 """
@@ -3129,25 +3247,21 @@ end
 """
     _tuple_contains_acquire_call(expr, target_pool) -> Bool
 
-Check if a tuple/vect literal contains any acquire calls as values.
-Unlike `_literal_contains_acquired`, this checks the RHS calls directly,
-so it works even when `vars` is empty (solves the chicken-and-egg problem).
+Check if a tuple/vect/NamedTuple literal (`(a, b)`, `[a]`, `(k = a,)`, `(; k = a)`)
+contains any direct acquire call as an element, looking through `identity(...)`
+and nested literals. Unlike `_literal_contains_acquired`, this checks the RHS
+calls directly, so it works even when `vars` is empty (solves the
+chicken-and-egg problem).
 """
 function _tuple_contains_acquire_call(expr, target_pool)
     expr isa Expr || return false
-    if expr.head in (:tuple, :vect)
+    if expr.head in (:tuple, :vect, :parameters)
         for arg in expr.args
-            if Meta.isexpr(arg, :(=)) && length(arg.args) >= 2
-                # NamedTuple value: (wv=zeros!(pool, ...), ...)
-                _is_acquire_call(arg.args[2], target_pool) && return true
-                _tuple_contains_acquire_call(arg.args[2], target_pool) && return true
-            elseif Meta.isexpr(arg, :kw) && length(arg.args) >= 2
-                _is_acquire_call(arg.args[2], target_pool) && return true
-                _tuple_contains_acquire_call(arg.args[2], target_pool) && return true
-            else
-                _is_acquire_call(arg, target_pool) && return true
-                _tuple_contains_acquire_call(arg, target_pool) && return true
-            end
+            # NamedTuple value: (wv=zeros!(pool, ...), ...) / (; wv=zeros!(pool, ...))
+            val = Meta.isexpr(arg, (:(=), :kw)) && length(arg.args) >= 2 ? arg.args[2] : arg
+            val = _unwrap_identity(val)
+            _is_acquire_call(val, target_pool) && return true
+            _tuple_contains_acquire_call(val, target_pool) && return true
         end
     end
     return false
@@ -3829,8 +3943,9 @@ end
 function _find_mutation_calls!(points, expr, acquired, current_line::Union{Int, Nothing})
     expr isa Expr || return
 
-    # Skip nested function definitions (they have their own scope)
+    # Skip nested function definitions (they have their own scope), long- or short-form
     expr.head in (:function, :(->)) && return
+    expr.head == :(=) && _is_function_def(expr) && return
 
     # Track line numbers
     if expr.head == :block

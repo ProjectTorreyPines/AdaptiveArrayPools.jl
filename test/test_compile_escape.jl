@@ -13,7 +13,7 @@ import AdaptiveArrayPools: _extract_acquired_vars, _get_last_expression,
     _extract_container_vars,
     _is_dotted_assign_head, _incidental_exposure, _lint_message, ESCAPE_LINT,
     _report_incidental_escape, PoolEscapeError,
-    _poison_block_tails, EscapedPoolArray, EscapedPoolUseError
+    _poison_block_tails, EscapedPoolArray, EscapedPoolUseError, _is_function_def
 
 # Helper: expansion must throw PoolEscapeError (possibly LoadError-wrapped) —
 # the severity of function-form and explicit-return escapes.
@@ -36,6 +36,19 @@ function _expansion_incidental_warns(ex)
     )
     return expanded isa Expr
 end
+
+# Lockstep helpers: did block-form expansion emit the escape @warn, and does the
+# block-tail poisoner change the block? The two must always agree.
+function _block_tail_warned(body)
+    logs, _ = Test.collect_test_logs() do
+        macroexpand(@__MODULE__, :(@with_pool pool $body))
+    end
+    return any(
+        l -> l.level == Base.CoreLogging.Warn &&
+            occursin("becomes the scope's return value", string(l.message)), logs
+    )
+end
+_block_tail_rewritten(body) = _poison_block_tails(body, :pool, LineNumberNode(1, :lockstep)) != body
 
 function _capture_stderr(f)
     tmpf = tempname()
@@ -243,6 +256,13 @@ end
         )
         @test :v in found
         @test :w in found
+
+        # NamedTuple shorthand: (; s, v) — the bare name IS the value
+        @test _find_direct_exposure(:((; s, v)), acquired) == Set([:v])
+        @test _find_direct_exposure(:((; s, v = v, w)), acquired) == Set([:v, :w])
+        # field-access shorthand and non-pool shorthand → not detected
+        @test isempty(_find_direct_exposure(:((; s, t.v)), acquired))
+        @test isempty(_find_direct_exposure(:((; s)), acquired))
 
         # Scalar literal → not detected
         @test isempty(_find_direct_exposure(42, acquired))
@@ -782,6 +802,18 @@ end
             sum(v)
         end
 
+        # Element read from a pool-array loop, then returned → safe (an element is a value)
+        @test_nowarn @macroexpand @with_pool pool begin
+            order = acquire!(pool, Int, 4)
+            contact = 0
+            for k in order
+                if k == 2
+                    contact = k
+                end
+            end
+            contact
+        end
+
         # Indexing → safe (element access, not array itself)
         @test_nowarn @macroexpand @with_pool pool begin
             v = acquire!(pool, Float64, 10)
@@ -1213,6 +1245,286 @@ end
     end
 
     # ==============================================================================
+    # Binding positions: `:(=)` nodes that are NOT assignments (iteration specs,
+    # NamedTuple fields) and loop variables that shadow an outer name
+    # ==============================================================================
+
+    @testset "binding positions: iteration specs, shadowing, NamedTuple fields" begin
+        taint(b) = sort!(collect(_extract_ordered_acquired(b, :pool)))
+
+        # iterating a pool array yields ELEMENTS — the loop variable is not an alias
+        @test taint(
+            quote
+                order = acquire!(pool, Int, n); for k in order
+                end
+            end
+        ) == [:order]
+        @test taint(
+            quote
+                order = acquire!(pool, Int, n); contact = 0
+                for k in order
+                    if k == 2
+                        contact = k
+                    end
+                end
+                contact
+            end
+        ) == [:order]
+        @test taint(
+            quote
+                order = acquire!(pool, Int, n); for i in 1:n, k in order
+                    c = k
+                end
+            end
+        ) == [:order]
+        # generator / filtered / typed / flattened comprehension specs
+        @test taint(
+            quote
+                order = acquire!(pool, Int, n); k = 0; ks = [k for k in order if k > 0]; k
+            end
+        ) == [:order]
+        @test taint(
+            quote
+                order = acquire!(pool, Int, n); k = 0; g = sum(k for k in order); k
+            end
+        ) == [:order]
+        @test taint(
+            quote
+                order = acquire!(pool, Int, n); k = 0; ks = Int[k for k in order]; k
+            end
+        ) == [:order]
+        @test taint(
+            quote
+                order = acquire!(pool, Int, n); k = 0; ks = [k for k in order for j in 1:2]; k
+            end
+        ) == [:order]
+        # a `name = value` child of a tuple is a NamedTuple field, not an assignment
+        @test taint(
+            quote
+                order = acquire!(pool, Int, n); k = 0; s = sum((k = order,).k); k
+            end
+        ) == [:order]
+        @test taint(
+            quote
+                v = acquire!(pool, Int, n); nt = (a = v,)
+            end
+        ) == [:nt, :v]
+        # shadowing: the loop-local `k` is a scalar; the outer `k` stays tainted
+        @test taint(
+            quote
+                v = acquire!(pool, Int, n); order = acquire!(pool, Int, n); k = v; contact = 0
+                for k in order
+                    contact = k
+                end
+            end
+        ) == [:k, :order, :v]
+        # generator specs are bound before the body runs
+        @test taint(
+            quote
+                v = acquire!(pool, Int, n); best = nothing
+                s = sum((best = c) for c in (v,))
+            end
+        ) == [:best, :c, :v]
+        # Known limitation (conservative, loud): a literal-tainted loop variable stays
+        # tainted after the loop, so a same-named OUTER variable used afterwards is
+        # flagged — the price of the in-loop checks below
+        @test taint(
+            quote
+                v = acquire!(pool, Int, n); c = 1.0
+                for c in (v,)
+                    sum(c)
+                end
+                c
+            end
+        ) == [:c, :v]
+        # the escape/mutation checkers are flow-insensitive over one taint set, so the
+        # loop variable must stay tainted for them: a `return c` or a structural
+        # mutation of `c` INSIDE a loop over a literal of pool arrays is still caught
+        @test _expansion_escape_error(
+            :(
+                @with_pool pool begin
+                    v = acquire!(pool, Float64, 3)
+                    for c in (v,)
+                        return c
+                    end
+                    nothing
+                end
+            )
+        )
+        mut_err = try
+            macroexpand(
+                @__MODULE__, :(
+                    @with_pool pool begin
+                        v = acquire!(pool, Float64, 3)
+                        for c in (v,)
+                            resize!(c, 0)
+                        end
+                        nothing
+                    end
+                )
+            )
+            nothing
+        catch e
+            e isa LoadError ? e.error : e
+        end
+        @test mut_err isa AdaptiveArrayPools.PoolMutationError
+        # `outer` loop variable over a literal of pool arrays outlives the loop
+        @test taint(
+            quote
+                v = acquire!(pool, Int, n); for outer c in (v,)
+                end
+            end
+        ) == [:c, :v]
+        # Known limitation: iterating a container VARIABLE is treated as element
+        # iteration, so `c` is not tracked here (a container LITERAL is, below)
+        @test taint(
+            quote
+                v = acquire!(pool, Int, n); t = (v,); for c in t
+                end
+            end
+        ) == [:t, :v]
+
+        # true positives preserved
+        @test taint(
+            quote
+                v = acquire!(pool, Int, n); w = acquire!(pool, Int, n)
+                for c in (v, w)
+                    best = c
+                end
+            end
+        ) == [:best, :c, :v, :w]
+        @test taint(
+            quote
+                v = acquire!(pool, Int, n); for c in [v]
+                    d = c
+                end
+            end
+        ) == [:c, :d, :v]
+        @test taint(
+            quote
+                order = acquire!(pool, Int, n); for outer k in order
+                end
+            end
+        ) == [:order]
+        @test taint(
+            quote
+                v = acquire!(pool, Int, n); let a = v
+                    a
+                end
+            end
+        ) == [:a, :v]
+        @test :w in taint(
+            quote
+                for k in (w = acquire!(pool, Int, n))
+                end
+            end
+        )
+        # Known limitation (pre-existing): destructuring iteration is not tracked
+        @test taint(
+            quote
+                v = acquire!(pool, Int, n); for (c,) in ((v,),)
+                    best = c
+                end
+            end
+        ) == [:v]
+    end
+
+    @testset "short-form nested definitions are skipped like long-form" begin
+        taint(b) = sort!(collect(_extract_ordered_acquired(b, :pool)))
+
+        # a short-form definition's body is its own scope, not the enclosing block
+        @test taint(
+            quote
+                v = acquire!(pool, Int, n); f(x) = (a = v)
+            end
+        ) == [:v]
+        @test taint(
+            quote
+                v = acquire!(pool, Int, n); f(x::T) where {T} = (a = v)
+            end
+        ) == [:v]
+        @test taint(
+            quote
+                v = acquire!(pool, Int, n); f(x)::Int = (a = v; 1)
+            end
+        ) == [:v]
+
+        # hard-error false positives removed (long-form `function g … end` already passes)
+        @test !_expansion_escape_error(
+            :(
+                @with_pool pool begin
+                    v = acquire!(pool, Float64, 3)
+                    g(x) = (return v)
+                    nothing
+                end
+            )
+        )
+        @test (
+            macroexpand(
+                @__MODULE__, :(
+                    @with_pool pool begin
+                        v = acquire!(pool, Float64, 3)
+                        g() = resize!(v, 0)
+                        nothing
+                    end
+                )
+            ); true
+        )    # no PoolMutationError
+
+        # runtime: a `return` inside a short-form nested def must NOT carry the scope's
+        # rewind (regression: calling `g` rewound the pool mid-scope, so the next
+        # acquire reused `v`'s live memory) — block form, function form, and the
+        # `g() = (return v)` shape that used to be a hard PoolEscapeError
+        r = Core.eval(
+            @__MODULE__, :(
+                @with_pool pool begin
+                    v = acquire!(pool, Float64, 3)
+                    v .= 1
+                    g(x) = (return x + 1)
+                    y = g(1)
+                    w = acquire!(pool, Float64, 3)
+                    w .= 2
+                    (sum(v), y)
+                end
+            )
+        )
+        @test r == (3.0, 2)
+        f = Core.eval(
+            @__MODULE__, :(
+                @with_pool pool function short_def_return_fn()
+                    v = acquire!(pool, Float64, 3)
+                    v .= 1
+                    g(x) = (return x + 1)
+                    y = g(1)
+                    w = acquire!(pool, Float64, 3)
+                    w .= 2
+                    sum(v) + y
+                end
+            )
+        )
+        @test Base.invokelatest(f) == 5.0
+        r = Core.eval(
+            @__MODULE__, :(
+                @with_pool pool begin
+                    v = acquire!(pool, Float64, 3)
+                    v .= 1
+                    g() = (return v)
+                    u = g()
+                    w = acquire!(pool, Float64, 3)
+                    w .= 2
+                    sum(v)
+                end
+            )
+        )
+        @test r == 3.0
+
+        # typed / indexed assignments are not definitions
+        @test !_is_function_def(:(a::Vector{Int} = v))
+        @test !_is_function_def(:(a[i] = v))
+        @test _is_function_def(:((f::Foo)(x) = 1))
+    end
+
+    # ==============================================================================
     # Order-aware escape detection through macro pipeline
     # ==============================================================================
 
@@ -1312,6 +1624,20 @@ end
         @test_throws PoolEscapeError @macroexpand @with_pool pool function fn_warn2(n)
             v = acquire!(pool, Float64, n)
             return (v, n)
+        end
+
+        # NamedTuple shorthand tail → escape
+        @test_throws PoolEscapeError @macroexpand @with_pool pool function fn_nt_short(n)
+            v = acquire!(pool, Float64, n)
+            s = 0.0
+            (; s, v)
+        end
+
+        # Semicolon-NamedTuple container, then returned → escape
+        @test_throws PoolEscapeError @macroexpand @with_pool pool function fn_nt_container(n)
+            v = acquire!(pool, Float64, n)
+            d = (; a = v)
+            d
         end
     end
 
@@ -2182,6 +2508,11 @@ end
         @test !_literal_contains_acquired(
             Expr(:tuple, Expr(:kw, :a, :x)), acquired
         )
+
+        # Semicolon NamedTuple: shorthand (; v) and explicit (; a = v)
+        @test _literal_contains_acquired(:((; v)), acquired)
+        @test _literal_contains_acquired(:((; a = v)), acquired)
+        @test !_literal_contains_acquired(:((; a = 1, s)), acquired)
     end
 
     # ==============================================================================
@@ -2206,6 +2537,10 @@ end
             Expr(:tuple, Expr(:kw, :a, :w)), acquired
         )
         @test :w in found
+
+        # Semicolon NamedTuple: shorthand + explicit field
+        found = _collect_acquired_in_literal(:((; s, v, a = w)), acquired)
+        @test sort!(found) == [:v, :w]
 
         # Non-Expr/non-Symbol → empty
         found = _collect_acquired_in_literal(42, acquired)
@@ -2489,11 +2824,20 @@ end
             end
         end
         @test !contains(warn_output2, "PoolContainerEscapeWarning")
+
+        # semicolon-NamedTuple container of an acquire call is a container too
+        @test _extract_container_vars(
+            quote
+                vac = (; wv = zeros!(pool, Float64, 3))
+                vac.wv
+            end, :pool
+        ) == Set([:vac])
     end
 
     # ==============================================================================
     # Incidental-tail escape detection: direct acquire-call tails, broadcast-assign
-    # tails, and assignment tails. Form-based severity: a function-form tail or an
+    # tails, assignment tails, and literals holding a direct acquire call.
+    # Form-based severity: a function-form tail or an
     # explicit `return` (definite escape to the enclosing function's caller) always
     # errors; a block-form implicit tail (value may be discarded) reports at the
     # ESCAPE_LINT severity — "warn" by default.
@@ -2595,6 +2939,24 @@ end
                 :(
                     @with_pool pool function f()
                         acquire!(pool, Float64, 4)
+                    end
+                )
+            )
+
+            # function form, w4: acquire call wrapped in a container literal
+            @test _expansion_escape_error(
+                :(
+                    @with_pool pool function f()
+                        (acquire!(pool, Float64, 2),)
+                    end
+                )
+            )
+
+            # function form: identity-wrapped acquire-call tail
+            @test _expansion_escape_error(
+                :(
+                    @with_pool pool function f()
+                        identity(acquire!(pool, Float64, 2))
                     end
                 )
             )
@@ -2947,7 +3309,7 @@ end
             @test !_is_dotted_assign_head(1)  # non-Symbol head
         end
 
-        @testset "_incidental_exposure: detects the three incidental patterns" begin
+        @testset "_incidental_exposure: detects the incidental patterns" begin
             # w1: direct acquire-family call tail — no tainted vars needed at all
             hit = _incidental_exposure(:(acquire!(pool, Float64, 4)), Set{Symbol}(), :pool)
             @test hit !== nothing
@@ -2977,6 +3339,20 @@ end
             # w3': assignment tail whose RHS is an already-tainted var (alias)
             hit = _incidental_exposure(:(d = v), Set([:v]), :pool)
             @test hit == (:assign, :v)
+
+            # w4: container literal holding a direct acquire call
+            @test _incidental_exposure(:((acquire!(pool, Float64, 2),)), Set{Symbol}(), :pool)[1] === :literal_acquire_call
+            @test _incidental_exposure(:((; a = acquire!(pool, Float64, 2))), Set{Symbol}(), :pool)[1] === :literal_acquire_call
+            @test _incidental_exposure(:([zeros!(pool, Float64, 2)]), Set{Symbol}(), :pool)[1] === :literal_acquire_call
+            # a literal that also exposes a tainted var is Stage 1's (one warning, not two)
+            @test _incidental_exposure(:((v, acquire!(pool, Float64, 2))), Set([:v]), :pool) === nothing
+
+            # identity(x) is transparent, as in the direct-exposure stage and the poisoner
+            @test _incidental_exposure(:(identity(acquire!(pool, Float64, 2))), Set{Symbol}(), :pool)[1] === :acquire_call
+            @test _incidental_exposure(:(Base.identity(v .= 1.0)), Set([:v]), :pool) == (:broadcast_assign, :v)
+            @test _incidental_exposure(:((identity(acquire!(pool, Float64, 2)),)), Set{Symbol}(), :pool)[1] === :literal_acquire_call
+            @test _incidental_exposure(:(identity((acquire!(pool, Float64, 2),))), Set{Symbol}(), :pool)[1] === :literal_acquire_call
+            @test _incidental_exposure(:(identity(v)), Set([:v]), :pool) === nothing   # Stage 1's
         end
 
         @testset "_incidental_exposure: safe tails return nothing" begin
@@ -3010,6 +3386,12 @@ end
 
             assign_expr = :(v = acquire!(pool, Float64, 4))
             msg = _lint_message(:assign, :v, assign_expr)
+            @test occursin("last expression", msg)
+            @test occursin("nothing", msg)
+
+            lit_expr = :((acquire!(pool, Float64, 2),))
+            msg = _lint_message(:literal_acquire_call, lit_expr, lit_expr)
+            @test occursin("holding a direct acquire call", msg)
             @test occursin("last expression", msg)
             @test occursin("nothing", msg)
         end
@@ -3218,6 +3600,37 @@ end
         @test guard_call(thenlast)
         @test elselast === :nothing    # the identifier `nothing` is a Symbol in the AST
 
+        # NamedTuple shorthand: (; s, v) → (; s, v = guard(v)) — a guard CALL is not
+        # a legal shorthand element, so the field is expanded to explicit `kw` form
+        out = _poison_block_tails(
+            :(
+                begin
+                    v = acquire!(pool, Float64, 4)
+                    s = 1.0
+                    (; s, v)
+                end
+            ), :pool, lnn
+        )
+        tail = lastexpr(out)
+        @test Meta.isexpr(tail, :tuple)
+        p = tail.args[1]
+        @test Meta.isexpr(p, :parameters)
+        @test p.args[1] === :s                         # non-pool shorthand untouched
+        @test Meta.isexpr(p.args[2], :kw) && p.args[2].args[1] === :v && guard_call(p.args[2].args[2])
+
+        # field-access shorthand (; s, t.v) is not a bare name → untouched
+        out = _poison_block_tails(
+            :(
+                begin
+                    v = acquire!(pool, Float64, 4)
+                    t = (v = 1,)
+                    s = 1.0
+                    (; s, t.v)
+                end
+            ), :pool, lnn
+        )
+        @test lastexpr(out) == :((; s, t.v))
+
         # safe tail: structurally unchanged
         src = :(
             begin
@@ -3226,6 +3639,60 @@ end
             end
         )
         @test _poison_block_tails(src, :pool, lnn) == src
+    end
+
+    @testset "checker ⇔ poisoner lockstep (block tails)" begin
+        # Every block tail the poisoner rewrites must also be reported by the checker
+        # (and vice versa): a silent rewrite hides the escape, and a warning without a
+        # rewrite leaves the pool-backed value unguarded.
+        prelude = :(
+            begin
+                s = 1.0
+                v = acquire!(pool, Float64, 3)
+                w = acquire!(pool, Float64, 3)
+            end
+        )
+        body(tail) = Expr(:block, prelude.args..., tail)
+        escaping = [
+            :v, :((s, v)), :((; s, v)), :((; s, v = v)), :((a = v,)), :([v, w]),
+            :(identity(v)), :(acquire!(pool, Float64, 2)), :(v .= 1.0), :(dest[:] = v),
+            :(u = acquire!(pool, Float64, 2)), :(
+                if s > 0
+                    v
+                else
+                    nothing
+                end
+            ),
+            # acquire calls held directly in a container literal
+            :((acquire!(pool, Float64, 2),)), :((; a = acquire!(pool, Float64, 2))),
+            :([acquire!(pool, Float64, 2)]),
+            # identity(...) wrappers are transparent to both checker and poisoner
+            :(identity(acquire!(pool, Float64, 2))), :((identity(acquire!(pool, Float64, 2)),)),
+            :(identity((acquire!(pool, Float64, 2),))), :(identity(v .= 1.0)),
+        ]
+        safe = [:(sum(v)), :((; s)), :((; s, n = length(v))), :nothing]
+        for tail in escaping
+            b = body(tail)
+            @test _block_tail_warned(b)
+            @test _block_tail_warned(b) == _block_tail_rewritten(b)
+        end
+        for tail in safe
+            b = body(tail)
+            @test !_block_tail_warned(b)
+            @test _block_tail_warned(b) == _block_tail_rewritten(b)
+        end
+
+        # reporter shape: element read from a pool-array loop, shorthand tail → safe
+        b = quote
+            order = acquire!(pool, Int, 4)
+            contact = 0
+            for k in order
+                contact = k
+            end
+            (; contact)
+        end
+        @test !_block_tail_warned(b)
+        @test _block_tail_warned(b) == _block_tail_rewritten(b)
     end
 
     @testset "block-tail guard integration (runtime)" begin
@@ -3313,6 +3780,65 @@ end
         @test u isa EscapedPoolArray
         @test u.var === :expression
         @test u.dims == (3,)
+
+        # NamedTuple shorthand tail: must expand (regression: the guard call used to
+        # land in a shorthand slot → "invalid named tuple element") with names kept
+        r = @test_logs (:warn, r"becomes the scope's return value") match_mode = :any Core.eval(
+            @__MODULE__, :(
+                @with_pool pool begin
+                    s = 1.5
+                    v = acquire!(pool, Float64, 3)
+                    w = acquire!(pool, Float64, 2)
+                    (; s, v = v, w)
+                end
+            )
+        )
+        @test r isa NamedTuple
+        @test keys(r) == (:s, :v, :w)
+        @test r.s === 1.5
+        @test r.v isa EscapedPoolArray && r.v.var === :v
+        @test r.w isa EscapedPoolArray && r.w.var === :w
+        @test_throws EscapedPoolUseError r.w[1]
+
+        # mixed literal (tainted var + direct acquire call): exactly ONE escape
+        # warning (Stage 1 owns it), and both elements are guarded
+        logs, r = Test.collect_test_logs() do
+            Core.eval(
+                @__MODULE__, :(
+                    @with_pool pool begin
+                        v = acquire!(pool, Float64, 2)
+                        (v, acquire!(pool, Float64, 3))
+                    end
+                )
+            )
+        end
+        @test count(l -> occursin("becomes the scope's return value", string(l.message)), logs) == 1
+        @test r[1] isa EscapedPoolArray && r[2] isa EscapedPoolArray
+    end
+
+    @testset "reporter shape: loop element + NamedTuple shorthand (runtime)" begin
+        # Regression (FastInterpolations): an integer read from `for k in order` was
+        # tainted as an alias of `order`, and the `(; …)` tail then failed to compile.
+        r = @test_logs min_level = Base.CoreLogging.Warn Core.eval(
+            @__MODULE__, :(
+                let n = 4
+                    @with_pool pool begin
+                        order = acquire!(pool, Int, n)
+                        order .= (4, 2, 3, 1)
+                        s = 0.0
+                        contact = 0
+                        for k in order
+                            s += k
+                            if k == 3
+                                contact = k
+                            end
+                        end
+                        (; s, contact)
+                    end
+                end
+            )
+        )
+        @test r === (s = 10.0, contact = 3)
     end
 
 end # Compile-Time Escape Detection
